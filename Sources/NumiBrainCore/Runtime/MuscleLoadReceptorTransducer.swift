@@ -29,9 +29,6 @@ public struct MuscleLoadReceptorTransducer: Codable, Equatable, Hashable, Sendab
         "accepted muscle-load observation must be finite and nonnegative"
       )
     }
-    guard receptorIdentifier != 0 else {
-      throw BrainRuntimeError.invalidEvent("receptor identifier zero is reserved")
-    }
     guard maximumAbsoluteMuscleForce > overloadThreshold else { return nil }
     return try BrainInterruptEvent(
       timestamp: acceptedPhysicsState.acceptedTimestamp,

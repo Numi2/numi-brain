@@ -174,7 +174,9 @@ private final class NumanXMyoSimBridge {
       }
       loadedMuscleIdentifiers.append(identifier)
     }
-    guard loadedMuscleCount == muscleCount else {
+    guard loadedMuscleCount > 0,
+      muscleCount == 0 || loadedMuscleCount == muscleCount
+    else {
       destroyFunction(created)
       dlclose(library)
       throw NSError(
@@ -318,7 +320,7 @@ private func run() throws {
     libraryPath: CommandLine.arguments[1],
     rigidPath: CommandLine.arguments[2],
     musclePath: CommandLine.arguments[3],
-    muscleCount: 6
+    muscleCount: 0
   )
   let motorProfile = try ProtectiveMotorProfile.runtimeFoundationFixture(
     muscleIdentifiers: bridge.muscleIdentifiers
@@ -489,6 +491,7 @@ private func run() throws {
     "receptor_interrupt": "muscle-overload",
     "receptor_event_source": "accepted-numanx-myosim-muscle-force",
     "receptor_event_threshold": 1,
+    "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,
   ]

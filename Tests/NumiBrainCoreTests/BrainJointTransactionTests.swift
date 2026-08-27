@@ -242,13 +242,15 @@ final class BrainJointTransactionTests: XCTestCase {
         receptorIdentifier: 77
       )
     )
-    XCTAssertThrowsError(
-      try transducer.transduce(
+    let zeroIdentifierEvent = try XCTUnwrap(
+      transducer.transduce(
         maximumAbsoluteMuscleForce: 11,
         acceptedPhysicsState: accepted,
         receptorIdentifier: 0
       )
     )
+    XCTAssertEqual(zeroIdentifierEvent.identifier, 0)
+    XCTAssertEqual(zeroIdentifierEvent.mask, .muscleOverload)
     XCTAssertThrowsError(try MuscleLoadReceptorTransducer(overloadThreshold: .nan))
   }
 }

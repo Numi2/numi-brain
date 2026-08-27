@@ -133,21 +133,29 @@ final class ProtectiveMotorAdapterTests: XCTestCase {
 
   func testRuntimeFixtureCanBindNumanXMuscleIdentifiersWithoutChangingGains() throws {
     let synthetic = try ProtectiveMotorProfile.runtimeFoundationFixture()
-    let numanXIdentifiers: [UInt32] = [7, 11, 13, 17, 19, 23]
+    let numanXIdentifiers: [UInt32] = [7, 11, 13, 17, 19, 23, 29, 31]
     let bound = try ProtectiveMotorProfile.runtimeFoundationFixture(
       muscleIdentifiers: numanXIdentifiers
     )
 
     XCTAssertEqual(bound.channels.map(\.muscleIdentifier), numanXIdentifiers)
     XCTAssertEqual(
-      bound.channels.map(\.restingExcitation),
+      bound.channels.prefix(6).map(\.restingExcitation),
       synthetic.channels.map(\.restingExcitation)
     )
     XCTAssertEqual(
-      bound.channels.map(\.withdrawalGain),
+      bound.channels.prefix(6).map(\.withdrawalGain),
       synthetic.channels.map(\.withdrawalGain)
     )
-    XCTAssertEqual(bound.channels.map(\.braceGain), synthetic.channels.map(\.braceGain))
+    XCTAssertEqual(
+      bound.channels.prefix(6).map(\.braceGain),
+      synthetic.channels.map(\.braceGain)
+    )
+    XCTAssertTrue(
+      bound.channels.dropFirst(6).allSatisfy { channel in
+        channel.flags == .valid && channel.restingExcitation == 0
+          && channel.withdrawalGain == 0 && channel.braceGain == 0
+      })
     XCTAssertNotEqual(bound.fingerprint, synthetic.fingerprint)
     XCTAssertThrowsError(
       try ProtectiveMotorProfile.runtimeFoundationFixture(muscleIdentifiers: [1, 2])

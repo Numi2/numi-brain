@@ -1497,7 +1497,6 @@ uint32_t nb_brain_abi_validate_motor_profile(
         (channel.flags & NB_MOTOR_CHANNEL_FLAG_POSTURAL_BRACE) != 0;
     if ((!withdrawal && channel.withdrawal_gain != 0.0F)
         || (!brace && channel.brace_gain != 0.0F)
-        || (!withdrawal && !brace)
         || channel.resting_excitation > channel.maximum_excitation
         || channel.maximum_excitation == 0.0F) {
       return NB_MOTOR_PROFILE_RELATION;
