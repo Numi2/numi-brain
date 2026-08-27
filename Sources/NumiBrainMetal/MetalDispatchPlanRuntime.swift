@@ -17,6 +17,9 @@ public enum MetalDispatchPlanRuntime {
     public let workItems: [BrainDispatchWorkItem]
     public let workFingerprint: UInt64
     public let indirectThreadgroupCount: UInt32
+    public let compactedInvocationCount: Int
+    public let compactedInvocationFingerprint: UInt64
+    public let compactedInvocationByteCount: Int
     public let regionalStates: [BrainCohortRegionalState]
     public let regionalStateFingerprint: UInt64
     public let regionalIndirectThreadgroupCount: UInt32
@@ -225,6 +228,23 @@ public enum MetalDispatchPlanRuntime {
           interruptMask: item.interruptMask
         )
       )
+    }
+    let invocationCapacityPerEnvironment = plan.groups.count
+    let (compactedInvocationCapacity, compactedInvocationCapacityOverflow) =
+      environmentIdentifiers.count.multipliedReportingOverflow(
+        by: invocationCapacityPerEnvironment
+      )
+    let (compactedInvocationByteCount, compactedInvocationByteCountOverflow) =
+      compactedInvocationCapacity.multipliedReportingOverflow(
+        by: MemoryLayout<NBDueInvocation>.stride
+      )
+    let compactedInvocationCountByteCount =
+      environmentIdentifiers.count * MemoryLayout<UInt32>.stride
+    guard !compactedInvocationCapacityOverflow,
+      !compactedInvocationByteCountOverflow,
+      invocationCapacityPerEnvironment > 0
+    else {
+      throw TissueError.metal("cohort invocation compaction exceeds the ABI limit")
     }
     let (regionalStateCount, regionalStateCountOverflow) =
       environmentIdentifiers.count.multipliedReportingOverflow(by: schedule.modules.count)
@@ -492,6 +512,9 @@ public enum MetalDispatchPlanRuntime {
       let regionalFunction = library.makeFunction(
         name: "advance_cohort_regional_diagnostics"
       ),
+      let invocationCompactionFunction = library.makeFunction(
+        name: "compact_cohort_invocations"
+      ),
       let tokenFunction = library.makeFunction(
         name: "advance_cohort_regional_tokens_routed"
       )
@@ -501,11 +524,15 @@ public enum MetalDispatchPlanRuntime {
     let pipeline: any MTLComputePipelineState
     let consumerPipeline: any MTLComputePipelineState
     let regionalPipeline: any MTLComputePipelineState
+    let invocationCompactionPipeline: any MTLComputePipelineState
     let tokenPipeline: any MTLComputePipelineState
     do {
       pipeline = try device.makeComputePipelineState(function: function)
       consumerPipeline = try device.makeComputePipelineState(function: consumerFunction)
       regionalPipeline = try device.makeComputePipelineState(function: regionalFunction)
+      invocationCompactionPipeline = try device.makeComputePipelineState(
+        function: invocationCompactionFunction
+      )
       tokenPipeline = try device.makeComputePipelineState(function: tokenFunction)
     } catch {
       throw TissueError.metal("dispatch-plan pipeline creation failed: \(error)")
@@ -550,6 +577,18 @@ public enum MetalDispatchPlanRuntime {
     else {
       throw TissueError.metal("failed to create the cohort regional-token argument table")
     }
+    let invocationCompactionArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    invocationCompactionArgumentDescriptor.label =
+      "NumiBrain cohort invocation-compaction arguments"
+    invocationCompactionArgumentDescriptor.maxBufferBindCount = 7
+    invocationCompactionArgumentDescriptor.initializeBindings = true
+    guard
+      let invocationCompactionArgumentTable = try? device.makeArgumentTable(
+        descriptor: invocationCompactionArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the invocation-compaction argument table")
+    }
 
     let headerByteCount = MemoryLayout<NBDispatchPlanHeader>.stride
     let groupByteCount = inputGroups.count * MemoryLayout<NBDispatchGroup>.stride
@@ -590,7 +629,8 @@ public enum MetalDispatchPlanRuntime {
       resultByteCount + groupByteCount + entryByteCount
       + indirectStorageByteCount + workItemByteCount + regionalStateByteCount
       + tokenStateByteCount + tokenLastUpdateByteCount + routeHistoryByteCount
-      + routeRuntimeStateByteCount
+      + routeRuntimeStateByteCount + compactedInvocationByteCount
+      + compactedInvocationCountByteCount
     let stagingByteCount = max(
       inspectionByteCount,
       max(
@@ -667,6 +707,14 @@ public enum MetalDispatchPlanRuntime {
     let workItemBuffer = try privateBuffer(
       length: workItemByteCount,
       label: "NumiBrain private indirect dispatch work items"
+    )
+    let compactedInvocationBuffer = try privateBuffer(
+      length: compactedInvocationByteCount,
+      label: "NumiBrain private environment-major due invocations"
+    )
+    let compactedInvocationCountBuffer = try privateBuffer(
+      length: compactedInvocationCountByteCount,
+      label: "NumiBrain private environment-major invocation counts"
     )
     let cohortUniformBuffer = try privateBuffer(
       length: cohortUniformByteCount,
@@ -780,7 +828,7 @@ public enum MetalDispatchPlanRuntime {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
-    residencyDescriptor.initialCapacity = 35
+    residencyDescriptor.initialCapacity = 37
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -797,6 +845,8 @@ public enum MetalDispatchPlanRuntime {
       resultBuffer,
       indirectArgumentBuffer,
       workItemBuffer,
+      compactedInvocationBuffer,
+      compactedInvocationCountBuffer,
       cohortUniformBuffer,
       tokenUniformBuffer,
       environmentIdentifierBuffer,
@@ -1084,12 +1134,28 @@ public enum MetalDispatchPlanRuntime {
     regionalArgumentTable.setAddress(moduleBuffer.gpuAddress, index: 5)
     regionalArgumentTable.setAddress(inputRegionalStateBuffer.gpuAddress, index: 6)
     regionalArgumentTable.setAddress(outputRegionalStateBuffer.gpuAddress, index: 7)
+    invocationCompactionArgumentTable.setAddress(headerBuffer.gpuAddress, index: 0)
+    invocationCompactionArgumentTable.setAddress(cohortUniformBuffer.gpuAddress, index: 1)
+    invocationCompactionArgumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 2)
+    invocationCompactionArgumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 3)
+    invocationCompactionArgumentTable.setAddress(
+      environmentIdentifierBuffer.gpuAddress,
+      index: 4
+    )
+    invocationCompactionArgumentTable.setAddress(
+      compactedInvocationBuffer.gpuAddress,
+      index: 5
+    )
+    invocationCompactionArgumentTable.setAddress(
+      compactedInvocationCountBuffer.gpuAddress,
+      index: 6
+    )
     tokenArgumentTable.setAddress(headerBuffer.gpuAddress, index: 0)
     tokenArgumentTable.setAddress(cohortUniformBuffer.gpuAddress, index: 1)
     tokenArgumentTable.setAddress(tokenUniformBuffer.gpuAddress, index: 2)
     tokenArgumentTable.setAddress(bindingBuffer.gpuAddress, index: 3)
-    tokenArgumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 4)
-    tokenArgumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 5)
+    tokenArgumentTable.setAddress(compactedInvocationBuffer.gpuAddress, index: 4)
+    tokenArgumentTable.setAddress(compactedInvocationCountBuffer.gpuAddress, index: 5)
     tokenArgumentTable.setAddress(environmentIdentifierBuffer.gpuAddress, index: 6)
     tokenArgumentTable.setAddress(moduleBuffer.gpuAddress, index: 7)
     tokenArgumentTable.setAddress(programHeaderBuffer.gpuAddress, index: 8)
@@ -1120,6 +1186,12 @@ public enum MetalDispatchPlanRuntime {
     }
     guard regionalPipeline.maxTotalThreadsPerThreadgroup >= consumerThreadgroupWidth else {
       throw TissueError.metal("cohort regional kernel does not support 64-lane threadgroups")
+    }
+    guard
+      invocationCompactionPipeline.maxTotalThreadsPerThreadgroup
+        >= consumerThreadgroupWidth
+    else {
+      throw TissueError.metal("cohort invocation compaction does not support 64 lanes")
     }
     guard tokenPipeline.maxTotalThreadsPerThreadgroup >= consumerThreadgroupWidth else {
       throw TissueError.metal("cohort regional-token kernel does not support 64 lanes")
@@ -1161,6 +1233,22 @@ public enum MetalDispatchPlanRuntime {
           height: 1,
           depth: 1
         )
+      )
+      encoder.setComputePipelineState(invocationCompactionPipeline)
+      encoder.setArgumentTable(invocationCompactionArgumentTable)
+      encoder.dispatchThreadgroups(
+        indirectBuffer: indirectArgumentBuffer.gpuAddress
+          + UInt64(indirectArgumentByteCount * 2),
+        threadsPerThreadgroup: MTLSize(
+          width: consumerThreadgroupWidth,
+          height: 1,
+          depth: 1
+        )
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
       )
       encoder.setComputePipelineState(tokenPipeline)
       encoder.setArgumentTable(tokenArgumentTable)
@@ -1244,6 +1332,10 @@ public enum MetalDispatchPlanRuntime {
         + routeHistoryTimestampByteCount
       let routeRuntimeStateOffset = routeHistoryValueOffset
         + routeHistoryValueByteCount
+      let compactedInvocationOffset = routeRuntimeStateOffset
+        + routeRuntimeStateByteCount
+      let compactedInvocationCountOffset = compactedInvocationOffset
+        + compactedInvocationByteCount
       encoder.copy(
         sourceBuffer: outputRouteHistoryStateBuffer,
         sourceOffset: 0,
@@ -1271,6 +1363,20 @@ public enum MetalDispatchPlanRuntime {
         destinationBuffer: stagingBuffer,
         destinationOffset: routeRuntimeStateOffset,
         size: routeRuntimeStateByteCount
+      )
+      encoder.copy(
+        sourceBuffer: compactedInvocationBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: compactedInvocationOffset,
+        size: compactedInvocationByteCount
+      )
+      encoder.copy(
+        sourceBuffer: compactedInvocationCountBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: compactedInvocationCountOffset,
+        size: compactedInvocationCountByteCount
       )
     }
 
@@ -1348,6 +1454,10 @@ public enum MetalDispatchPlanRuntime {
       + routeHistoryTimestampByteCount
     let routeRuntimeStateOffset = routeHistoryValueOffset
       + routeHistoryValueByteCount
+    let compactedInvocationOffset = routeRuntimeStateOffset
+      + routeRuntimeStateByteCount
+    let compactedInvocationCountOffset = compactedInvocationOffset
+      + compactedInvocationByteCount
     let outputRouteHistoryStateRecords = Array(
       UnsafeBufferPointer(
         start: inspection.advanced(by: routeHistoryStateOffset)
@@ -1374,6 +1484,20 @@ public enum MetalDispatchPlanRuntime {
         start: inspection.advanced(by: routeRuntimeStateOffset)
           .assumingMemoryBound(to: NBRegionalRouteRuntimeState.self),
         count: cohortRouteCount
+      )
+    )
+    let outputCompactedInvocationRecords = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: compactedInvocationOffset)
+          .assumingMemoryBound(to: NBDueInvocation.self),
+        count: compactedInvocationCapacity
+      )
+    )
+    let outputCompactedInvocationCounts = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: compactedInvocationCountOffset)
+          .assumingMemoryBound(to: UInt32.self),
+        count: environmentIdentifiers.count
       )
     )
     let groups = try outputGroups.map { record -> BrainDispatchGroup in
@@ -1446,6 +1570,51 @@ public enum MetalDispatchPlanRuntime {
       indirectArguments[2].threadgroupsZ == 1
     else {
       throw TissueError.metal("GPU indirect dispatch consumption does not match the plan")
+    }
+    var compactedInvocationCount = 0
+    for (environmentIndex, environmentIdentifier) in
+      environmentIdentifiers.enumerated()
+    {
+      let count = Int(outputCompactedInvocationCounts[environmentIndex])
+      let expected = invocationsByEnvironment[environmentIdentifier] ?? []
+      guard count == expected.count, count <= invocationCapacityPerEnvironment else {
+        throw TissueError.metal("GPU invocation compaction produced an invalid count")
+      }
+      let base = environmentIndex * invocationCapacityPerEnvironment
+      let actual = try (0..<count).map { invocationIndex in
+        let record = outputCompactedInvocationRecords[base + invocationIndex]
+        guard record.environment_identifier == environmentIdentifier,
+          record.reserved == 0
+        else {
+          throw TissueError.metal("GPU invocation compaction crossed agent ownership")
+        }
+        return try BrainModuleInvocation(abiRecord: record)
+      }
+      guard actual == expected else {
+        throw TissueError.metal("GPU invocation compaction does not match the CPU plan")
+      }
+      compactedInvocationCount += count
+    }
+    let compactedInvocationFingerprint =
+      environmentIdentifiers.withUnsafeBufferPointer { identifiers in
+        outputCompactedInvocationRecords.withUnsafeBufferPointer { invocations in
+          outputCompactedInvocationCounts.withUnsafeBufferPointer { counts in
+            nb_brain_abi_cohort_invocation_fingerprint(
+              plan.fingerprint,
+              parameterVersion.fingerprint,
+              identifiers.baseAddress,
+              UInt32(identifiers.count),
+              invocations.baseAddress,
+              counts.baseAddress,
+              UInt32(invocationCapacityPerEnvironment)
+            )
+          }
+        }
+      }
+    guard compactedInvocationCount == plan.entryCount,
+      compactedInvocationFingerprint > 0
+    else {
+      throw TissueError.metal("GPU invocation compaction has no compiled identity")
     }
     let regionalStates = environmentIdentifiers.enumerated().map {
       environmentIndex, environmentIdentifier in
@@ -1571,6 +1740,10 @@ public enum MetalDispatchPlanRuntime {
       workItems: workItems,
       workFingerprint: workFingerprint,
       indirectThreadgroupCount: indirectArguments[0].threadgroupsX,
+      compactedInvocationCount: compactedInvocationCount,
+      compactedInvocationFingerprint: compactedInvocationFingerprint,
+      compactedInvocationByteCount: compactedInvocationByteCount
+        + compactedInvocationCountByteCount,
       regionalStates: regionalStates,
       regionalStateFingerprint: regionalStateFingerprint,
       regionalIndirectThreadgroupCount: indirectArguments[1].threadgroupsX,
@@ -1595,7 +1768,8 @@ public enum MetalDispatchPlanRuntime {
         + tokenStateByteCount * 2 + tokenLastUpdateByteCount
         + routeHistoryByteCount + routeRuntimeStateByteCount
         + resolvedRouteSlotByteCount + selectedRouteIndexByteCount
-        + selectedRouteCountByteCount,
+        + selectedRouteCountByteCount + compactedInvocationByteCount
+        + compactedInvocationCountByteCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )

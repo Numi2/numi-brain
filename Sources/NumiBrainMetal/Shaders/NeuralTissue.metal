@@ -1214,39 +1214,6 @@ inline float regional_route_message_value(
     ];
 }
 
-inline bool cohort_regional_invocation_for_module(
-    device const NBDispatchGroupABI *groups,
-    device const NBDispatchEntryABI *entries,
-    uint groupBegin,
-    uint groupEnd,
-    uint environmentIdentifier,
-    ushort moduleID,
-    thread NBDispatchEntryABI &result
-) {
-    for (uint groupIndex = groupBegin; groupIndex < groupEnd; ++groupIndex) {
-        const NBDispatchGroupABI group = groups[groupIndex];
-        if (group.module_id != moduleID) {
-            continue;
-        }
-        uint lower = group.entry_offset;
-        uint upper = group.entry_offset + group.entry_count;
-        while (lower < upper) {
-            const uint middle = lower + (upper - lower) / 2u;
-            const uint candidate = entries[middle].environment_identifier;
-            if (candidate < environmentIdentifier) {
-                lower = middle + 1u;
-            } else if (candidate > environmentIdentifier) {
-                upper = middle;
-            } else {
-                result = entries[middle];
-                return true;
-            }
-        }
-        return false;
-    }
-    return false;
-}
-
 inline float cohort_regional_route_message_value(
     uint routeIndex,
     ulong timestamp,
@@ -1815,6 +1782,59 @@ kernel void advance_due_regional_tokens(
     }
 }
 
+/// Converts the group-major dispatch plan into one fixed-capacity canonical
+/// invocation span per environment. Lane zero owns each environment's ordered
+/// write; the next kernel consumes these private spans without plan rescans.
+kernel void compact_cohort_invocations(
+    device const NBDispatchPlanHeaderABI *planHeader [[buffer(0)]],
+    device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(1)]],
+    device const NBDispatchGroupABI *groups [[buffer(2)]],
+    device const NBDispatchEntryABI *entries [[buffer(3)]],
+    device const uint *environmentIdentifiers [[buffer(4)]],
+    device NBDueInvocationABI *outputInvocations [[buffer(5)]],
+    device uint *outputCounts [[buffer(6)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 threadgroupPosition [[threadgroup_position_in_grid]]
+) {
+    const uint environmentIndex = threadgroupPosition.x;
+    if (lane != 0u || environmentIndex >= cohortUniforms->environment_count) {
+        return;
+    }
+    const uint environmentIdentifier = environmentIdentifiers[environmentIndex];
+    const ulong outputBase =
+        ulong(environmentIndex) * ulong(planHeader->group_count);
+    uint outputCount = 0u;
+    for (uint groupIndex = 0u;
+         groupIndex < planHeader->group_count;
+         ++groupIndex) {
+        const NBDispatchGroupABI group = groups[groupIndex];
+        uint lower = group.entry_offset;
+        uint upper = group.entry_offset + group.entry_count;
+        while (lower < upper) {
+            const uint middle = lower + (upper - lower) / 2u;
+            const NBDispatchEntryABI entry = entries[middle];
+            if (entry.environment_identifier < environmentIdentifier) {
+                lower = middle + 1u;
+            } else if (entry.environment_identifier > environmentIdentifier) {
+                upper = middle;
+            } else {
+                NBDueInvocationABI invocation;
+                invocation.timestamp_microseconds = group.timestamp_microseconds;
+                invocation.interrupt_mask = entry.interrupt_mask;
+                invocation.environment_identifier = environmentIdentifier;
+                invocation.module_id = group.module_id;
+                invocation.clock_class = group.clock_class;
+                invocation.reason_flags = entry.reason_flags;
+                invocation.reserved = 0u;
+                outputInvocations[outputBase + ulong(outputCount)] = invocation;
+                outputCount += 1u;
+                break;
+            }
+        }
+    }
+    outputCounts[environmentIndex] = outputCount;
+}
+
 /// Routed cohort token operator. One 64-lane threadgroup owns every recurrent,
 /// history, and routing-state write for one environment. Modules sharing a
 /// physical timestamp read one pre-timestamp generation and publish together.
@@ -1823,8 +1843,8 @@ kernel void advance_cohort_regional_tokens_routed(
     device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(1)]],
     device const NBDispatchTokenUniformsABI *tokenUniforms [[buffer(2)]],
     device const NBParameterVersionBindingABI *parameterVersion [[buffer(3)]],
-    device const NBDispatchGroupABI *groups [[buffer(4)]],
-    device const NBDispatchEntryABI *entries [[buffer(5)]],
+    device const NBDueInvocationABI *compactedInvocations [[buffer(4)]],
+    device const uint *compactedInvocationCounts [[buffer(5)]],
     device const uint *environmentIdentifiers [[buffer(6)]],
     device const NBModuleDescriptorABI *modules [[buffer(7)]],
     device const NBRegionalProgramHeaderABI *header [[buffer(8)]],
@@ -1876,6 +1896,14 @@ kernel void advance_cohort_regional_tokens_routed(
         * ulong(header->route_count) * ulong(header->history_capacity);
     const ulong historyValueBase = ulong(environmentIndex)
         * ulong(header->history_scalar_count);
+    device const NBDueInvocationABI *invocations = compactedInvocations
+        + ulong(environmentIndex) * ulong(planHeader->group_count);
+    const uint invocationCount = compactedInvocationCounts[environmentIndex];
+    if (invocationCount > planHeader->group_count
+        || (invocationCount > 0u
+            && invocations[0].environment_identifier != environmentIdentifier)) {
+        return;
+    }
 
     for (uint scalarIndex = lane;
          scalarIndex < header->token_scalar_count;
@@ -1915,11 +1943,11 @@ kernel void advance_cohort_regional_tokens_routed(
 
     const ulong neverUpdated = ~0ul;
     uint cursor = 0u;
-    while (cursor < planHeader->group_count) {
-        const ulong timestamp = groups[cursor].timestamp_microseconds;
+    while (cursor < invocationCount) {
+        const ulong timestamp = invocations[cursor].timestamp_microseconds;
         uint groupEnd = cursor + 1u;
-        while (groupEnd < planHeader->group_count
-               && groups[groupEnd].timestamp_microseconds == timestamp) {
+        while (groupEnd < invocationCount
+               && invocations[groupEnd].timestamp_microseconds == timestamp) {
             groupEnd += 1u;
         }
 
@@ -1957,13 +1985,11 @@ kernel void advance_cohort_regional_tokens_routed(
              moduleIndex += laneCount) {
             selectedRouteCounts[diagnosticBase + moduleIndex] = 0u;
             const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
-            NBDispatchEntryABI receiverInvocation;
-            if (!cohort_regional_invocation_for_module(
-                    groups,
-                    entries,
+            NBDueInvocationABI receiverInvocation;
+            if (!regional_invocation_for_module(
+                    invocations,
                     cursor,
                     groupEnd,
-                    environmentIdentifier,
                     receiver.module_id,
                     receiverInvocation)) {
                 continue;
@@ -2160,13 +2186,11 @@ kernel void advance_cohort_regional_tokens_routed(
                 }
             }
             const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-            NBDispatchEntryABI invocation;
-            const bool due = cohort_regional_invocation_for_module(
-                groups,
-                entries,
+            NBDueInvocationABI invocation;
+            const bool due = regional_invocation_for_module(
+                invocations,
                 cursor,
                 groupEnd,
-                environmentIdentifier,
                 layout.module_id,
                 invocation
             );
@@ -2265,13 +2289,11 @@ kernel void advance_cohort_regional_tokens_routed(
                     break;
                 }
             }
-            NBDispatchEntryABI invocation;
-            if (cohort_regional_invocation_for_module(
-                    groups,
-                    entries,
+            NBDueInvocationABI invocation;
+            if (regional_invocation_for_module(
+                    invocations,
                     cursor,
                     groupEnd,
-                    environmentIdentifier,
                     layouts[moduleIndex].module_id,
                     invocation)) {
                 const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
@@ -2281,13 +2303,11 @@ kernel void advance_cohort_regional_tokens_routed(
         for (uint moduleIndex = lane;
              moduleIndex < header->module_count;
              moduleIndex += laneCount) {
-            NBDispatchEntryABI invocation;
-            if (cohort_regional_invocation_for_module(
-                    groups,
-                    entries,
+            NBDueInvocationABI invocation;
+            if (regional_invocation_for_module(
+                    invocations,
                     cursor,
                     groupEnd,
-                    environmentIdentifier,
                     layouts[moduleIndex].module_id,
                     invocation)) {
                 tokenLastUpdates[diagnosticBase + moduleIndex] = timestamp;
@@ -2299,13 +2319,11 @@ kernel void advance_cohort_regional_tokens_routed(
              routeIndex < header->route_count;
              ++routeIndex) {
             const NBRegionalRouteABI route = routes[routeIndex];
-            NBDispatchEntryABI senderInvocation;
-            if (!cohort_regional_invocation_for_module(
-                    groups,
-                    entries,
+            NBDueInvocationABI senderInvocation;
+            if (!regional_invocation_for_module(
+                    invocations,
                     cursor,
                     groupEnd,
-                    environmentIdentifier,
                     route.sender_module_id,
                     senderInvocation)) {
                 continue;
@@ -2338,13 +2356,11 @@ kernel void advance_cohort_regional_tokens_routed(
              routeIndex < header->route_count;
              routeIndex += laneCount) {
             const NBRegionalRouteABI route = routes[routeIndex];
-            NBDispatchEntryABI senderInvocation;
-            if (!cohort_regional_invocation_for_module(
-                    groups,
-                    entries,
+            NBDueInvocationABI senderInvocation;
+            if (!regional_invocation_for_module(
+                    invocations,
                     cursor,
                     groupEnd,
-                    environmentIdentifier,
                     route.sender_module_id,
                     senderInvocation)) {
                 continue;

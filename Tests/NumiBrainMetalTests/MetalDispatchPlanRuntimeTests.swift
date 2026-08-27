@@ -130,6 +130,11 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertEqual(first.groups, replay.groups)
     XCTAssertEqual(first.workItems, replay.workItems)
     XCTAssertEqual(first.workFingerprint, replay.workFingerprint)
+    XCTAssertEqual(first.compactedInvocationCount, plan.entryCount)
+    XCTAssertEqual(
+      first.compactedInvocationFingerprint,
+      replay.compactedInvocationFingerprint
+    )
     XCTAssertEqual(first.regionalStates, replay.regionalStates)
     XCTAssertEqual(first.regionalStateFingerprint, replay.regionalStateFingerprint)
     XCTAssertEqual(first.tokenStates, replay.tokenStates)
@@ -302,6 +307,51 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       }
     }
     XCTAssertEqual(first.tokenStateFingerprint, expectedTokenFingerprint)
+    var compactedRecords = [NBDueInvocation](
+      repeating: NBDueInvocation(),
+      count: identifiers.count * plan.groups.count
+    )
+    var compactedCounts: [UInt32] = []
+    compactedCounts.reserveCapacity(identifiers.count)
+    for (environmentIndex, identifier) in identifiers.enumerated() {
+      let invocations = plan.invocations(for: identifier)
+      compactedCounts.append(UInt32(invocations.count))
+      for (invocationIndex, invocation) in invocations.enumerated() {
+        var record = NBDueInvocation()
+        record.timestamp_microseconds = invocation.timestamp.rawValue
+        record.interrupt_mask = invocation.interruptMask.rawValue
+        record.environment_identifier = identifier
+        record.module_id = invocation.moduleIdentifier
+        record.clock_class = invocation.clockClass.rawValue
+        record.reason_flags = invocation.reasons.rawValue
+        compactedRecords[
+          environmentIndex * plan.groups.count + invocationIndex
+        ] = record
+      }
+    }
+    let expectedCompactedFingerprint = identifiers.withUnsafeBufferPointer {
+      identifiers in
+      compactedRecords.withUnsafeBufferPointer { invocations in
+        compactedCounts.withUnsafeBufferPointer { counts in
+          nb_brain_abi_cohort_invocation_fingerprint(
+            plan.fingerprint,
+            version.fingerprint,
+            identifiers.baseAddress,
+            UInt32(identifiers.count),
+            invocations.baseAddress,
+            counts.baseAddress,
+            UInt32(plan.groups.count)
+          )
+        }
+      }
+    }
+    XCTAssertEqual(first.compactedInvocationFingerprint, expectedCompactedFingerprint)
+    XCTAssertEqual(
+      first.compactedInvocationByteCount,
+      identifiers.count
+        * (plan.groups.count * MemoryLayout<NBDueInvocation>.stride
+          + MemoryLayout<UInt32>.stride)
+    )
     let historyStateRecords = first.routingStates.flatMap {
       $0.routeHistory.states.map(\.abiRecord)
     }
@@ -373,6 +423,7 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         * MemoryLayout<UInt32>.stride * 2
         + first.routingStates.count * schedule.modules.count
         * MemoryLayout<UInt32>.stride
+        + first.compactedInvocationByteCount
     )
   }
 

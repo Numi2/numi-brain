@@ -568,6 +568,16 @@ uint64_t nb_brain_abi_cohort_routing_state_fingerprint(
     uint32_t history_scalar_count
 );
 
+uint64_t nb_brain_abi_cohort_invocation_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const NBDueInvocation *invocations,
+    const uint32_t *invocation_counts,
+    uint32_t invocation_capacity_per_environment
+);
+
 #ifdef __cplusplus
 }
 #endif

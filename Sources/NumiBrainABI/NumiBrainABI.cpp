@@ -970,3 +970,52 @@ uint64_t nb_brain_abi_cohort_routing_state_fingerprint(
   }
   return hash;
 }
+
+uint64_t nb_brain_abi_cohort_invocation_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const NBDueInvocation *invocations,
+    const uint32_t *invocation_counts,
+    uint32_t invocation_capacity_per_environment
+) {
+  if (plan_fingerprint == 0 || parameter_version_fingerprint == 0
+      || environment_count == 0 || invocation_capacity_per_environment == 0
+      || environment_identifiers == nullptr || invocations == nullptr
+      || invocation_counts == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_DISPATCH_PLAN_VERSION));
+  mix_little_endian(hash, plan_fingerprint);
+  mix_little_endian(hash, parameter_version_fingerprint);
+  mix_little_endian(hash, environment_count);
+  mix_little_endian(hash, invocation_capacity_per_environment);
+  for (uint32_t environment_index = 0;
+       environment_index < environment_count;
+       ++environment_index) {
+    const uint32_t count = invocation_counts[environment_index];
+    if (count > invocation_capacity_per_environment) {
+      return 0;
+    }
+    mix_little_endian(hash, environment_identifiers[environment_index]);
+    mix_little_endian(hash, count);
+    const uint64_t base =
+        static_cast<uint64_t>(environment_index)
+        * invocation_capacity_per_environment;
+    for (uint32_t invocation_index = 0;
+         invocation_index < count;
+         ++invocation_index) {
+      const NBDueInvocation &invocation = invocations[base + invocation_index];
+      mix_little_endian(hash, invocation.timestamp_microseconds);
+      mix_little_endian(hash, invocation.interrupt_mask);
+      mix_little_endian(hash, invocation.environment_identifier);
+      mix_little_endian(hash, invocation.module_id);
+      mix_little_endian(hash, invocation.clock_class);
+      mix_little_endian(hash, invocation.reason_flags);
+      mix_little_endian(hash, invocation.reserved);
+    }
+  }
+  return hash;
+}

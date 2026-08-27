@@ -94,6 +94,7 @@ private struct IdentityEvidence: Codable {
   let cohortFingerprint: String
   let dispatchPlanFingerprint: String
   let dispatchWorkFingerprint: String
+  let compactedInvocationFingerprint: String
   let regionalStateFingerprint: String
   let tokenStateFingerprint: String
   let routingStateFingerprint: String
@@ -120,6 +121,8 @@ private struct MetalEvidence: Codable {
   let workItemCount: Int
   let workItemBytes: Int
   let indirectThreadgroupCount: UInt32
+  let compactedInvocationCount: Int
+  let compactedInvocationBytes: Int
   let regionalEnvironmentCount: Int
   let regionalStateBytes: Int
   let regionalIndirectThreadgroupCount: UInt32
@@ -140,6 +143,7 @@ private struct VerificationEvidence: Codable {
   let canonicalInputOrderExact: Bool
   let gpuMaterializationExact: Bool
   let gpuIndirectConsumptionExact: Bool
+  let gpuInvocationCompactionExact: Bool
   let gpuRegionalCPUReferenceWithinTolerance: Bool
   let gpuRegionalDiscreteStateExact: Bool
   let gpuRegionalOwnershipAndInterruptIsolationExact: Bool
@@ -328,6 +332,9 @@ private struct NumiBrainDispatchCommand {
       && materialized.workFingerprint == plan.workFingerprint
       && materialized.indirectThreadgroupCount
         == UInt32((plan.entryCount + 63) / 64)
+    let invocationCompactionExact =
+      materialized.compactedInvocationCount == plan.entryCount
+      && materialized.compactedInvocationFingerprint > 0
     let regionalTolerance: Float = 2e-6
     var regionalMaximumAbsoluteError: Float = 0
     var regionalDiscreteStateExact = true
@@ -480,6 +487,9 @@ private struct NumiBrainDispatchCommand {
       replay.groups == materialized.groups
       && replay.workItems == materialized.workItems
       && replay.workFingerprint == materialized.workFingerprint
+      && replay.compactedInvocationCount == materialized.compactedInvocationCount
+      && replay.compactedInvocationFingerprint
+        == materialized.compactedInvocationFingerprint
       && replay.regionalStates == materialized.regionalStates
       && replay.regionalStateFingerprint == materialized.regionalStateFingerprint
       && replay.tokenStates == materialized.tokenStates
@@ -490,7 +500,8 @@ private struct NumiBrainDispatchCommand {
       && replay.parameterVersionFingerprint == materialized.parameterVersionFingerprint
       && replay.status == materialized.status
     guard retryExact, shadowStateUnchanged, reversed == plan, materializationExact,
-      indirectConsumptionExact, regionalCPUReferenceWithinTolerance,
+      indirectConsumptionExact, invocationCompactionExact,
+      regionalCPUReferenceWithinTolerance,
       regionalDiscreteStateExact, regionalOwnershipAndInterruptIsolationExact,
       tokenCPUReferenceWithinTolerance, tokenOwnershipExact, replayExact,
       routingCPUReferenceWithinTolerance, routingDiscreteStateExact,
@@ -501,7 +512,7 @@ private struct NumiBrainDispatchCommand {
     }
 
     return DispatchEvidence(
-      schema: "numibrain.cohort-dispatch-evidence.v5",
+      schema: "numibrain.cohort-dispatch-evidence.v6",
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       abi: ABIEvidence(
@@ -527,6 +538,10 @@ private struct NumiBrainDispatchCommand {
         cohortFingerprint: plan.cohortFingerprintHex,
         dispatchPlanFingerprint: plan.fingerprintHex,
         dispatchWorkFingerprint: String(format: "%016llx", plan.workFingerprint),
+        compactedInvocationFingerprint: String(
+          format: "%016llx",
+          materialized.compactedInvocationFingerprint
+        ),
         regionalStateFingerprint: String(
           format: "%016llx",
           materialized.regionalStateFingerprint
@@ -560,6 +575,8 @@ private struct NumiBrainDispatchCommand {
         workItemCount: materialized.workItems.count,
         workItemBytes: materialized.workItems.count * BrainDispatchPlan.workItemByteCount,
         indirectThreadgroupCount: materialized.indirectThreadgroupCount,
+        compactedInvocationCount: materialized.compactedInvocationCount,
+        compactedInvocationBytes: materialized.compactedInvocationByteCount,
         regionalEnvironmentCount: materialized.regionalStates.count,
         regionalStateBytes: materialized.regionalStateByteCount,
         regionalIndirectThreadgroupCount: materialized.regionalIndirectThreadgroupCount,
@@ -572,7 +589,7 @@ private struct NumiBrainDispatchCommand {
         status: materialized.status,
         gpuSeconds: materialized.gpuDurationSeconds,
         execution:
-          "Metal 4 private immutable plan, parameter, schedule, diagnostic, token, route-history and routing-state inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion, compact diagnostic advance and one-threadgroup-per-agent routed token advance -> private transactional generations -> explicit post-completion inspection"
+          "Metal 4 private immutable plan, parameter, schedule, diagnostic, token, route-history and routing-state inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion and environment-major invocation compaction -> compact diagnostic advance and one-threadgroup-per-agent routed token advance -> private transactional generations -> explicit post-completion inspection"
       ),
       verification: VerificationEvidence(
         retryExact: retryExact,
@@ -580,6 +597,7 @@ private struct NumiBrainDispatchCommand {
         canonicalInputOrderExact: reversed == plan,
         gpuMaterializationExact: materializationExact,
         gpuIndirectConsumptionExact: indirectConsumptionExact,
+        gpuInvocationCompactionExact: invocationCompactionExact,
         gpuRegionalCPUReferenceWithinTolerance: regionalCPUReferenceWithinTolerance,
         gpuRegionalDiscreteStateExact: regionalDiscreteStateExact,
         gpuRegionalOwnershipAndInterruptIsolationExact:
@@ -600,12 +618,12 @@ private struct NumiBrainDispatchCommand {
         staleParameterVersionRejected: staleParameterVersionRejected
       ),
       executionPath:
-        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion -> independent compact diagnostic plus routed 10752-scalar recurrent token, delayed-history and dynamic route-state generations",
+        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion and environment-major due-list compaction -> independent compact diagnostic plus routed 10752-scalar recurrent token, delayed-history and dynamic route-state generations",
       limitations: [
         "The CPU oracle currently compiles cohort membership before GPU materialization.",
         "The bounded cohort profile compiles 32 delayed publications per route and rejects a root plan if that capacity cannot preserve every observable delayed value.",
         "Token and routing CPU parity are sampled across deterministic boundary and interrupt-owning environments; ownership, shape and replay are checked across the full cohort.",
-        "GPU seconds are command-feedback telemetry for materialization and three indirect consumers, not a production throughput or counter qualification.",
+        "GPU seconds are command-feedback telemetry for materialization and four indirect consumer dispatches, not a production throughput or counter qualification.",
         "The eight-module runtime-foundation subset is not the complete 96-module graph.",
       ]
     )

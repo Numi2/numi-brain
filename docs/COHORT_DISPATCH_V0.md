@@ -1,8 +1,8 @@
-# Versioned cohort dispatch v0.18
+# Versioned cohort dispatch v0.19
 
-This document defines the first executable routed active-module cohort-token boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. One indirect consumer expands auditable work records; a second advances independent compact diagnostic state; a third jointly advances an independent authoritative 10,752-scalar recurrent token generation, delayed route history, and dynamic routing state for every active environment. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 8, 16, 36, 45, 46, 47, 50, 51, 52, and 62.
+This document defines the first executable routed active-module cohort-token boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. One consumer expands auditable work records; a second advances independent compact diagnostic state; a third materializes canonical environment-major invocation spans; a fourth jointly advances an independent authoritative 10,752-scalar recurrent token generation, delayed route history, and dynamic routing state for every active environment. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 8, 16, 36, 45, 46, 47, 50, 51, 52, and 62.
 
-The v0.18 cohort token program activates seven long-range routes and compiles a version-identified 32-publication ring for each route and agent. Before allocation or upload, the runtime simulates every root-plan publication and delayed read against both bounded and unbounded timestamp histories; it rejects the plan if a bounded ring could hide a still-observable publication. The runtime does not yet perform GPU prefix-sum grouping or execute a complete multi-agent brain tick.
+The v0.19 cohort token program activates seven long-range routes and compiles a version-identified 32-publication ring for each route and agent. Before allocation or upload, the runtime simulates every root-plan publication and delayed read against both bounded and unbounded timestamp histories; it rejects the plan if a bounded ring could hide a still-observable publication. Metal converts the authenticated group-major plan into agent-owned due lists before recurrent execution. The current compactor uses one lane per environment; it does not yet perform parallel GPU count, prefix-sum, and scatter or execute a complete multi-agent brain tick.
 
 ## Stable records
 
@@ -59,7 +59,8 @@ The materializer writes three private 12-byte `MTLDispatchThreadgroupsIndirectAr
 
 1. `consume_dispatch_plan` launches from the first GPU-generated count, finds the source group for each flattened entry, and writes one private `NBDispatchWorkItem` per active environment invocation.
 2. `advance_cohort_regional_diagnostics` launches from the second GPU-generated count. One lane owns one active environment, copies its input generation to its output generation, walks canonical physical-time groups, finds only that environment's entries, and applies the same FP32 recurrence as `CPURegionalModuleOperator`.
-3. `advance_cohort_regional_tokens_routed` launches one threadgroup per active environment from the third count. Its 64 lanes copy that agent's private token, route-history, and routing-state generations; walk canonical physical-time groups; resolve delayed history slots; score and select emergency, persistent, and top-k routes; compute candidates from a stable pre-timestamp vector; publish due modules together; and append sender messages. It uses the same gated FP32 recurrence and route semantics as `CPURegionalTokenOperator`.
+3. `compact_cohort_invocations` launches one threadgroup per active environment from the third count. Lane zero scans the materialized group rows once and emits a canonical private `NBDueInvocation` span plus count for its environment.
+4. `advance_cohort_regional_tokens_routed` launches one threadgroup per active environment from the same third count after a device barrier. Its 64 lanes copy that agent's private token, route-history, and routing-state generations; walk only its compact invocation span; resolve delayed history slots; score and select emergency, persistent, and top-k routes; compute candidates from a stable pre-timestamp vector; publish due modules together; and append sender messages. It uses the same gated FP32 recurrence and route semantics as `CPURegionalTokenOperator`.
 
 There is no count readback between materialization and any consumer. Diagnostic state is stored environment-major and then canonical module-major; token state is environment-major and then canonical regional-scalar-major; history and routing state are environment-major and then canonical route-major. Agents never share recurrent values, timestamps, ring cursors, scores, selections, or counters. Initial state may be supplied explicitly and is rejected if its ownership, program identity, shape, finiteness, ring ordering, or temporal authority drifts.
 
@@ -72,10 +73,10 @@ B_{in}=224+24N_G+16N_E+4N_B+64N_M+32N_BN_M+32N_S+4N_BN_S+24N_R+N_B(48N_R+8N_R C+
 \]
 
 \[
-B_{out}=80+24N_G+48N_E+44N_BN_M+8N_BN_S+N_B(56N_R+8N_R C+4N_H),
+B_{out}=80+24N_G+48N_E+44N_BN_M+8N_BN_S+N_B(56N_R+8N_R C+4N_H+32N_G+4),
 \]
 
-where \(N_G\) is the number of dispatch groups, \(N_E\) is the number of active environment entries, \(N_B\) is the number of active environments, \(N_M\) is the number of modules, \(N_S\) is the token-scalar count per environment, \(N_R\) is the route count, \(C\) is compiled route-history capacity, and \(N_H\) is the route-history scalar count per environment. Output accounting includes token candidates, last-update values, resolved history slots, selected-route indices, and selected-route counts. The 48 bytes after the result are aligned private storage for three 12-byte indirect argument payloads.
+where \(N_G\) is the number of dispatch groups and also the fixed invocation capacity per environment, \(N_E\) is the number of active environment entries, \(N_B\) is the number of active environments, \(N_M\) is the number of modules, \(N_S\) is the token-scalar count per environment, \(N_R\) is the route count, \(C\) is compiled route-history capacity, and \(N_H\) is the route-history scalar count per environment. Output accounting includes token candidates, last-update values, resolved history slots, selected-route indices, selected-route counts, compact invocation storage, and per-environment invocation counts. The 48 bytes after the result are aligned private storage for three 12-byte indirect argument payloads.
 
 ## Evidence gates
 
@@ -87,15 +88,16 @@ where \(N_G\) is the number of dispatch groups, \(N_E\) is the number of active 
 6. Metal output groups and entries exactly equal the compiled CPU plan.
 7. GPU-generated indirect threadgroup counts cover the exact flattened entry count without an intervening CPU readback.
 8. Every indirectly consumed work item and the compiled work fingerprint exactly match the CPU plan.
-9. Every active environment receives exactly one independently owned compact regional-state vector in canonical identifier order.
-10. GPU regional floats match the CPU recurrence within the declared FP32 tolerance; counters and timestamps match exactly.
-11. Environment-specific interrupts alter only their owning states, and the summed interrupt counters equal the source delivery count.
-12. Repeated Metal materialization, indirect consumption, and regional-state advance are discrete-state exact and have the same state fingerprint.
-13. Every active environment receives one independent token vector with the exact compiled scalar count and one GPU-generated threadgroup.
-14. Token values, route-history values, route scores, and normalized strengths match the routed CPU operator within the declared FP32 tolerance.
-15. History cursors, publication timestamps, active selections, selection counts, last-selected times, and switch counts match the CPU operator exactly.
-16. Full-cohort token, route-history, and routing-state ownership, shape, finiteness, replay, and compiled fingerprints are exact.
-17. A stale parameter generation, mismatched program, malformed state, temporally invalid diagnostic input, and unsafe history capacity are rejected before upload.
-18. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
+9. Every GPU-compacted environment span has the exact CPU invocation count, canonical invocation order, agent identifier, zero reserved field, and compiled cohort-invocation fingerprint.
+10. Every active environment receives exactly one independently owned compact regional-state vector in canonical identifier order.
+11. GPU regional floats match the CPU recurrence within the declared FP32 tolerance; counters and timestamps match exactly.
+12. Environment-specific interrupts alter only their owning states, and the summed interrupt counters equal the source delivery count.
+13. Repeated Metal materialization, indirect consumption, compaction, and regional-state advance are discrete-state exact and have the same fingerprints.
+14. Every active environment receives one independent token vector with the exact compiled scalar count and one GPU-generated threadgroup.
+15. Token values, route-history values, route scores, and normalized strengths match the routed CPU operator within the declared FP32 tolerance.
+16. History cursors, publication timestamps, active selections, selection counts, last-selected times, and switch counts match the CPU operator exactly.
+17. Full-cohort token, route-history, and routing-state ownership, shape, finiteness, replay, and compiled fingerprints are exact.
+18. A stale parameter generation, mismatched program, malformed state, temporally invalid diagnostic input, and unsafe history capacity are rejected before upload.
+19. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
 
-Passing these gates establishes a deterministic versioned dispatch boundary, private Metal materialization, GPU-generated indirect work consumption, independent compact diagnostic state, and independent authoritative routed token, history, and selection state. It does not establish GPU-native plan construction, prefix sums, production throughput, or the complete 96-module graph. The current diagnostic lane and token threadgroup both scan canonical groups and perform a binary search for their environment. This transparent CPU-parity implementation is not the final compacted regional executor.
+Passing these gates establishes a deterministic versioned dispatch boundary, private Metal materialization, GPU-generated indirect work consumption and agent-major due-list compaction, independent compact diagnostic state, and independent authoritative routed token, history, and selection state. It does not establish GPU-native plan construction, parallel prefix sums, production throughput, or the complete 96-module graph. The current diagnostic lane and invocation compactor scan canonical groups and perform a binary search for their environment; the routed kernel no longer does. This transparent CPU-parity implementation is not the final parallel compactor.
