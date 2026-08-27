@@ -24,6 +24,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
   }
 
+  public struct FastSystemResult: Equatable, Sendable {
+    public let substep: BrainJointSubstepToken
+    public let gpuStartSeconds: Double
+    public let gpuEndSeconds: Double
+
+    public var gpuDurationSeconds: Double {
+      max(gpuEndSeconds - gpuStartSeconds, 0)
+    }
+  }
+
   public struct SchedulerInspection: Equatable, Sendable {
     public let snapshot: BrainSchedulerSnapshot
     public let invocations: [BrainModuleInvocation]
@@ -144,6 +154,26 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var pendingSchedulerInitialized = false
   private var hasCommittedSchedulerResult = false
   private var pendingJointTransaction: BrainJointTransaction?
+
+  private struct InteractiveCandidate {
+    let substep: BrainJointSubstepToken
+    let destinationIndex: Int
+    let historyWriteSlot: Int
+    let historyWritePlane: UInt32
+  }
+
+  private struct InteractiveJointRoot {
+    var transaction: BrainJointTransaction
+    var rootShadowIndex: Int
+    var historyOwnerMask: UInt32
+    var historyStep: UInt64
+    var acceptedTimeMilliseconds: Float
+    var candidate: InteractiveCandidate?
+    var firstGPUStartSeconds: Double?
+    var lastGPUEndSeconds: Double?
+  }
+
+  private var interactiveJointRoot: InteractiveJointRoot?
 
   public init(
     initialState: TissueGrid,
@@ -1276,6 +1306,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingJointTransaction != nil
   }
 
+  public var hasOpenInteractiveJointControl: Bool {
+    interactiveJointRoot != nil
+  }
+
   public var residencyAllocatedBytes: UInt64 {
     residencySet.allocatedSize
   }
@@ -1305,7 +1339,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     committedTimestamp: BrainTimestamp,
     targetTimestamp: BrainTimestamp
   ) throws -> BrainJointTransaction {
-    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil else {
+    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
+      interactiveJointRoot == nil
+    else {
       throw TissueError.transaction("commit or abort the pending Metal root first")
     }
     guard randomContext.environmentIdentifier == schedulerEnvironmentIdentifier else {
@@ -1330,6 +1366,291 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       randomCounterGeneration: committedStep
     )
     return BrainJointTransaction(token: token)
+  }
+
+  /// Opens an interactive root whose tissue candidate is executed before the
+  /// caller returns NumanX acceptance or rejection. No committed generation is
+  /// published until `finishInteractiveJointControl` and joint commit.
+  public func beginInteractiveJointControl(
+    controlStepIdentifier: UInt64,
+    basePhysicsGeneration: UInt64,
+    committedTimestamp: BrainTimestamp,
+    targetTimestamp: BrainTimestamp
+  ) throws -> BrainJointTransactionToken {
+    let transaction = try beginJointControl(
+      controlStepIdentifier: controlStepIdentifier,
+      basePhysicsGeneration: basePhysicsGeneration,
+      committedTimestamp: committedTimestamp,
+      targetTimestamp: targetTimestamp
+    )
+    let startMilliseconds = Float(Double(committedTimestamp.rawValue) / 1_000)
+    guard try schedulerTimestamp(milliseconds: startMilliseconds) == committedTimestamp else {
+      throw TissueError.transaction(
+        "interactive root time is not representable by the tissue runtime"
+      )
+    }
+    interactiveJointRoot = InteractiveJointRoot(
+      transaction: transaction,
+      rootShadowIndex: committedIndex,
+      historyOwnerMask: committedHistoryOwnerMask,
+      historyStep: committedStep,
+      acceptedTimeMilliseconds: startMilliseconds,
+      candidate: nil,
+      firstGPUStartSeconds: nil,
+      lastGPUEndSeconds: nil
+    )
+    return transaction.token
+  }
+
+  /// Advances one neural tissue candidate without publishing it. The v0.4
+  /// interactive slice intentionally retains the compiled fixed tissue step;
+  /// physical-duration correction is validated as unsupported rather than
+  /// silently changing conduction semantics.
+  public func advanceFastSystems(
+    candidateDurationMicroseconds: UInt64
+  ) throws -> FastSystemResult {
+    guard var root = interactiveJointRoot else {
+      throw TissueError.transaction("begin interactive joint control first")
+    }
+    guard root.candidate == nil else {
+      throw TissueError.transaction("accept or reject the active neural candidate first")
+    }
+    let fixedDuration = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    guard candidateDurationMicroseconds == fixedDuration else {
+      throw TissueError.transaction(
+        "interactive candidate duration does not match fixed tissue conduction semantics"
+      )
+    }
+    var transaction = root.transaction
+    let substep = try transaction.beginPhysicsSubstep(
+      durationMicroseconds: candidateDurationMicroseconds
+    )
+    guard
+      substep.startTimestamp.rawValue
+        == (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds).rawValue)
+    else {
+      throw TissueError.transaction("interactive neural and physical start times diverged")
+    }
+    let (nextHistoryStep, historyOverflow) = root.historyStep.addingReportingOverflow(1)
+    guard !historyOverflow else {
+      throw TissueError.transaction("interactive tissue history step overflows UInt64")
+    }
+    let historyWriteSlot = Int(
+      nextHistoryStep % UInt64(TissueDelayField.historyCapacity)
+    )
+    let currentOwner =
+      (root.historyOwnerMask >> UInt32(historyWriteSlot)) & 1
+    let historyWritePlane = currentOwner ^ 1
+    let destination = destinationIndex(rootShadowIndex: root.rootShadowIndex)
+    let values = TissueUniforms.encode(
+      width: width,
+      height: height,
+      timeMilliseconds: root.acceptedTimeMilliseconds,
+      parameters: parameters,
+      stimulus: stimulus,
+      historyStep: UInt32(root.historyStep % UInt64(TissueDelayField.historyCapacity)),
+      historyOwnerMask: root.historyOwnerMask,
+      historyWriteSlot: UInt32(historyWriteSlot),
+      historyWritePlane: historyWritePlane,
+      eventCount: eventSchedule.eventCount,
+      randomContext: randomContext,
+      acceptedStep: root.historyStep
+    )
+    writeUniforms(values, attempt: 0)
+    let feedback = try submit(label: "NumiBrain interactive fast neural candidate") {
+      encoder in
+      eventArgumentTable.setAddress(uniformBuffer.gpuAddress, index: 0)
+      eventArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+      eventArgumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 2)
+      encoder.setComputePipelineState(eventCompactionPipeline)
+      encoder.setArgumentTable(eventArgumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      argumentTable.setAddress(stateBuffers[root.rootShadowIndex].gpuAddress, index: 0)
+      argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
+      argumentTable.setAddress(uniformBuffer.gpuAddress, index: 2)
+      argumentTable.setAddress(structureBuffer.gpuAddress, index: 3)
+      argumentTable.setAddress(delayBuffer.gpuAddress, index: 4)
+      argumentTable.setAddress(relayHistoryBuffer.gpuAddress, index: 5)
+      argumentTable.setAddress(relayScratchBuffer.gpuAddress, index: 6)
+      argumentTable.setAddress(projectionOffsetBuffer.gpuAddress, index: 7)
+      argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
+      argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
+      argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+      encoder.setComputePipelineState(tissuePipeline)
+      encoder.setArgumentTable(argumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
+        threadsPerThreadgroup: threadgroupSize()
+      )
+    }
+    root.transaction = transaction
+    root.candidate = InteractiveCandidate(
+      substep: substep,
+      destinationIndex: destination,
+      historyWriteSlot: historyWriteSlot,
+      historyWritePlane: historyWritePlane
+    )
+    root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartTime
+    root.lastGPUEndSeconds = feedback.gpuEndTime
+    interactiveJointRoot = root
+    return FastSystemResult(
+      substep: substep,
+      gpuStartSeconds: feedback.gpuStartTime,
+      gpuEndSeconds: feedback.gpuEndTime
+    )
+  }
+
+  public func acceptPhysicsSubstep(
+    _ accepted: AcceptedPhysicsStateToken,
+    for substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent] = []
+  ) throws {
+    guard var root = interactiveJointRoot, let candidate = root.candidate,
+      candidate.substep == substep
+    else {
+      throw TissueError.transaction("stale or missing interactive neural candidate")
+    }
+    var transaction = root.transaction
+    try transaction.acceptPhysicsSubstep(
+      accepted,
+      for: substep,
+      receptorEvents: receptorEvents
+    )
+    root.transaction = transaction
+    root.rootShadowIndex = candidate.destinationIndex
+    root.historyOwnerMask = settingHistoryOwner(
+      mask: root.historyOwnerMask,
+      slot: candidate.historyWriteSlot,
+      owner: candidate.historyWritePlane
+    )
+    root.historyStep += 1
+    root.acceptedTimeMilliseconds = Float(
+      Double(accepted.acceptedTimestamp.rawValue) / 1_000
+    )
+    root.candidate = nil
+    interactiveJointRoot = root
+  }
+
+  public func rejectPhysicsSubstep(
+    _ substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent] = []
+  ) throws {
+    guard var root = interactiveJointRoot, root.candidate?.substep == substep else {
+      throw TissueError.transaction("stale or missing interactive neural candidate")
+    }
+    var transaction = root.transaction
+    try transaction.rejectPhysicsSubstep(
+      substep,
+      receptorEvents: receptorEvents
+    )
+    root.transaction = transaction
+    root.candidate = nil
+    interactiveJointRoot = root
+  }
+
+  /// Finalizes the slow scheduler and regional systems after NumanX has
+  /// accepted enough interactive candidates to reach the root target. The
+  /// accepted tissue generation remains unpublished until joint commit.
+  public func finishInteractiveJointControl(
+    schedulerEvents: [BrainInterruptEvent] = []
+  ) throws -> Submission {
+    guard let root = interactiveJointRoot else {
+      throw TissueError.transaction("there is no interactive joint root to finish")
+    }
+    guard root.candidate == nil else {
+      throw TissueError.transaction("accept or reject the active neural candidate first")
+    }
+    let transaction = root.transaction
+    let token = transaction.token
+    guard transaction.status == .open, transaction.activeSubstep == nil,
+      !transaction.resolutions.isEmpty,
+      transaction.acceptedSubstepCount > 0,
+      transaction.acceptedTimestamp == token.targetTimestamp,
+      transaction.lastAcceptedPhysicsState != nil
+    else {
+      throw TissueError.transaction("interactive joint root has not accepted its target")
+    }
+    guard token.baseBrainGeneration == committedSchedulerGeneration,
+      token.randomCounterGeneration == committedStep,
+      token.parameterVersionFingerprint == parameterVersion.fingerprint,
+      token.environmentIdentifier == schedulerEnvironmentIdentifier
+    else {
+      throw TissueError.transaction("interactive joint identity is stale for this Metal runtime")
+    }
+    guard transaction.acceptedSubstepCount <= UInt32(TissueDelayField.historyCapacity) else {
+      throw TissueError.transaction(
+        "an interactive root cannot accept more than \(TissueDelayField.historyCapacity) delayed substeps"
+      )
+    }
+    guard root.historyStep == committedStep + UInt64(transaction.acceptedSubstepCount),
+      (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds))
+        == token.targetTimestamp
+    else {
+      throw TissueError.transaction("interactive tissue shadow diverged from the joint ledger")
+    }
+
+    let acceptedEvents = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.receptorEvents)
+    let startMilliseconds = Float(Double(token.committedTimestamp.rawValue) / 1_000)
+    let schedulerWindow = try prepareSchedulerWindow(
+      timeMilliseconds: startMilliseconds,
+      acceptedSubstepCount: Int(transaction.acceptedSubstepCount),
+      events: schedulerEvents + acceptedEvents
+    )
+    guard schedulerWindow.targetTime == token.targetTimestamp,
+      committedRegionalStateIndex == schedulerWindow.inputClockIndex
+    else {
+      throw TissueError.transaction("interactive scheduler shadow diverged from the joint token")
+    }
+
+    let feedback = try submit(label: "NumiBrain interactive joint root finalization") {
+      encoder in
+      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    }
+    pendingRootShadowIndex = root.rootShadowIndex
+    pendingRootShadowOwnerMask = root.historyOwnerMask
+    pendingRootShadowStep = root.historyStep
+    pendingSchedulerClockIndex = schedulerWindow.outputClockIndex
+    pendingSchedulerTargetTime = schedulerWindow.targetTime
+    pendingRegionalStateIndex = schedulerWindow.outputClockIndex
+    pendingSchedulerInitialized = schedulerWindow.initialize
+    hasCommittedSchedulerResult = false
+    pendingJointTransaction = transaction
+    interactiveJointRoot = nil
+
+    return Submission(
+      parameterVersionFingerprint: parameterVersion.fingerprint,
+      attemptedSubsteps: transaction.resolutions.count,
+      acceptedSubsteps: Int(transaction.acceptedSubstepCount),
+      eventCompactionDispatches: transaction.resolutions.count,
+      receptorInterruptTransductionDispatches: 1,
+      schedulerDispatches: 1,
+      regionalDispatches: 1,
+      schedulerHostInputEventCount: schedulerWindow.hostEventCount,
+      schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
+      schedulerInputEventCount: schedulerWindow.eventCount,
+      gpuStartSeconds: root.firstGPUStartSeconds ?? feedback.gpuStartTime,
+      gpuEndSeconds: feedback.gpuEndTime
+    )
+  }
+
+  public func abortInteractiveJointControl() throws {
+    guard var root = interactiveJointRoot else {
+      throw TissueError.transaction("there is no interactive joint root to abort")
+    }
+    try root.transaction.abort()
+    interactiveJointRoot = nil
   }
 
   /// Encodes a Metal root from the exact accepted/rejected NumanX ledger. The
@@ -1366,9 +1687,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let timestep = try schedulerTimestamp(
       milliseconds: parameters.timestepMilliseconds
     ).rawValue
-    guard transaction.resolutions.allSatisfy({
-      $0.substep.durationMicroseconds == timestep
-    }) else {
+    guard
+      transaction.resolutions.allSatisfy({
+        $0.substep.durationMicroseconds == timestep
+      })
+    else {
       throw TissueError.transaction(
         "joint substep duration does not match the fixed Metal tissue timestep"
       )
@@ -1393,8 +1716,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let startMilliseconds = Float(
       Double(token.committedTimestamp.rawValue) / 1_000
     )
-    guard try schedulerTimestamp(milliseconds: startMilliseconds)
-      == token.committedTimestamp
+    guard
+      try schedulerTimestamp(milliseconds: startMilliseconds)
+        == token.committedTimestamp
     else {
       throw TissueError.transaction("joint root time is not representable by the tissue runtime")
     }
@@ -1403,8 +1727,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       acceptedSubsteps: acceptance,
       schedulerEvents: schedulerEvents
         + transaction.resolutions.lazy
-          .filter(\.isAccepted)
-          .flatMap(\.receptorEvents)
+        .filter(\.isAccepted)
+        .flatMap(\.receptorEvents)
     )
     guard pendingSchedulerTargetTime == token.targetTimestamp else {
       try abortRootTransaction()
@@ -1419,7 +1743,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     acceptedSubsteps: [Bool],
     schedulerEvents: [BrainInterruptEvent] = []
   ) throws -> Submission {
-    guard pendingRootShadowIndex == nil else {
+    guard pendingRootShadowIndex == nil, interactiveJointRoot == nil else {
       throw TissueError.transaction("commit or abort the pending Metal root transaction first")
     }
     guard timeMilliseconds.isFinite else {
@@ -2125,6 +2449,144 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       committedTime: committedSchedulerTime,
       generation: committedSchedulerGeneration,
       routingState: routingState
+    )
+  }
+
+  private func encodeRootFinalization(
+    _ encoder: any MTL4ComputeCommandEncoder,
+    schedulerWindow: PreparedSchedulerWindow
+  ) {
+    receptorInterruptArgumentTable.setAddress(
+      receptorEventTransductionUniformBuffer.gpuAddress,
+      index: 0
+    )
+    receptorInterruptArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+    receptorInterruptArgumentTable.setAddress(
+      schedulerEventUploadBuffer.gpuAddress,
+      index: 2
+    )
+    receptorInterruptArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress,
+      index: 3
+    )
+    receptorInterruptArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress,
+      index: 4
+    )
+    encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
+    encoder.setArgumentTable(receptorInterruptArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
+    schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
+    schedulerArgumentTable.setAddress(
+      schedulerClockBuffers[schedulerWindow.inputClockIndex].gpuAddress,
+      index: 2
+    )
+    schedulerArgumentTable.setAddress(
+      schedulerClockBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 3
+    )
+    schedulerArgumentTable.setAddress(transducedSchedulerEventBuffer.gpuAddress, index: 4)
+    schedulerArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 5)
+    schedulerArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 6)
+    schedulerArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress,
+      index: 7
+    )
+    schedulerArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 8)
+    encoder.setComputePipelineState(schedulerPipeline)
+    encoder.setArgumentTable(schedulerArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    regionalArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
+    regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
+    regionalArgumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 2)
+    regionalArgumentTable.setAddress(regionalRouteBuffer.gpuAddress, index: 3)
+    regionalArgumentTable.setAddress(regionalParameterBuffer.gpuAddress, index: 4)
+    regionalArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 5)
+    regionalArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 6)
+    regionalArgumentTable.setAddress(
+      regionalStateBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 7
+    )
+    regionalArgumentTable.setAddress(
+      regionalStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 8
+    )
+    regionalArgumentTable.setAddress(
+      regionalTokenStateBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 9
+    )
+    regionalArgumentTable.setAddress(
+      regionalTokenStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 10
+    )
+    regionalArgumentTable.setAddress(regionalTokenCandidateBuffer.gpuAddress, index: 11)
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryStateBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 12
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 13
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryTimestampBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 14
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryTimestampBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 15
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryValueBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 16
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteHistoryValueBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 17
+    )
+    regionalArgumentTable.setAddress(
+      regionalResolvedRouteHistorySlotBuffer.gpuAddress,
+      index: 18
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteRuntimeStateBuffers[committedRegionalStateIndex].gpuAddress,
+      index: 19
+    )
+    regionalArgumentTable.setAddress(
+      regionalRouteRuntimeStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 20
+    )
+    regionalArgumentTable.setAddress(
+      regionalSelectedRouteIndexBuffer.gpuAddress,
+      index: 21
+    )
+    regionalArgumentTable.setAddress(
+      regionalSelectedRouteCountBuffer.gpuAddress,
+      index: 22
+    )
+    regionalArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 23)
+    encoder.setComputePipelineState(regionalPipeline)
+    encoder.setArgumentTable(regionalArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: regionalThreadgroupSize(),
+      threadsPerThreadgroup: regionalThreadgroupSize()
     )
   }
 

@@ -136,6 +136,179 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
   }
 
+  func testInteractiveJointCandidatesMatchBatchedLedgerExactly() throws {
+    try requireMetal4()
+    let batched = try makeRuntime(maxEncodedSubsteps: 3)
+    let interactive = try makeRuntime(maxEncodedSubsteps: 3)
+    let committed = BrainTimestamp(microseconds: 0)
+    let target = BrainTimestamp(microseconds: 2_000)
+    let rejectedPain = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 500),
+      mask: .pain,
+      identifier: 900,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    let acceptedSupportLoss = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 750),
+      mask: .lossOfSupport,
+      identifier: 901,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+
+    var batchedJoint = try batched.beginJointControl(
+      controlStepIdentifier: 4,
+      basePhysicsGeneration: 100,
+      committedTimestamp: committed,
+      targetTimestamp: target
+    )
+    let batchedRejected = try batchedJoint.beginPhysicsSubstep(
+      durationMicroseconds: 1_000
+    )
+    try batchedJoint.rejectPhysicsSubstep(
+      batchedRejected,
+      receptorEvents: [rejectedPain]
+    )
+    let batchedRetry = try batchedJoint.beginPhysicsSubstep(durationMicroseconds: 1_000)
+    let batchedFirstPhysics = try AcceptedPhysicsStateToken(
+      transaction: batchedJoint.token,
+      substep: batchedRetry,
+      physicsStateFingerprint: 0xabc1,
+      physicsGeneration: 101
+    )
+    try batchedJoint.acceptPhysicsSubstep(
+      batchedFirstPhysics,
+      for: batchedRetry,
+      receptorEvents: [acceptedSupportLoss]
+    )
+    let batchedSecond = try batchedJoint.beginPhysicsSubstep(durationMicroseconds: 1_000)
+    let batchedSecondPhysics = try AcceptedPhysicsStateToken(
+      transaction: batchedJoint.token,
+      substep: batchedSecond,
+      physicsStateFingerprint: 0xabc2,
+      physicsGeneration: 102
+    )
+    try batchedJoint.acceptPhysicsSubstep(batchedSecondPhysics, for: batchedSecond)
+    let batchedSubmission = try batched.runJointRootTransaction(batchedJoint)
+    let batchedCommit = try batched.commitJointRootTransaction()
+
+    let interactiveToken = try interactive.beginInteractiveJointControl(
+      controlStepIdentifier: 4,
+      basePhysicsGeneration: 100,
+      committedTimestamp: committed,
+      targetTimestamp: target
+    )
+    XCTAssertEqual(interactiveToken, batchedJoint.token)
+    let rejectedCandidate = try interactive.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    XCTAssertEqual(rejectedCandidate.substep, batchedRejected)
+    try interactive.rejectPhysicsSubstep(
+      rejectedCandidate.substep,
+      receptorEvents: [rejectedPain]
+    )
+    let retryCandidate = try interactive.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    XCTAssertEqual(retryCandidate.substep, batchedRetry)
+    let interactiveFirstPhysics = try AcceptedPhysicsStateToken(
+      transaction: interactiveToken,
+      substep: retryCandidate.substep,
+      physicsStateFingerprint: 0xabc1,
+      physicsGeneration: 101
+    )
+    try interactive.acceptPhysicsSubstep(
+      interactiveFirstPhysics,
+      for: retryCandidate.substep,
+      receptorEvents: [acceptedSupportLoss]
+    )
+    let secondCandidate = try interactive.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    XCTAssertEqual(secondCandidate.substep, batchedSecond)
+    let interactiveSecondPhysics = try AcceptedPhysicsStateToken(
+      transaction: interactiveToken,
+      substep: secondCandidate.substep,
+      physicsStateFingerprint: 0xabc2,
+      physicsGeneration: 102
+    )
+    try interactive.acceptPhysicsSubstep(
+      interactiveSecondPhysics,
+      for: secondCandidate.substep
+    )
+    let interactiveSubmission = try interactive.finishInteractiveJointControl()
+    XCTAssertFalse(interactive.hasOpenInteractiveJointControl)
+    XCTAssertTrue(interactive.hasPendingRootTransaction)
+    XCTAssertTrue(interactive.hasPendingJointTransaction)
+    let interactiveCommit = try interactive.commitJointRootTransaction()
+
+    XCTAssertEqual(interactiveSubmission.attemptedSubsteps, 3)
+    XCTAssertEqual(interactiveSubmission.acceptedSubsteps, 2)
+    XCTAssertEqual(interactiveSubmission.eventCompactionDispatches, 3)
+    XCTAssertEqual(interactiveSubmission.schedulerHostInputEventCount, 1)
+    XCTAssertGreaterThanOrEqual(
+      interactiveSubmission.gpuEndSeconds,
+      interactiveSubmission.gpuStartSeconds
+    )
+    XCTAssertEqual(interactiveCommit, batchedCommit)
+    XCTAssertEqual(interactiveSubmission.attemptedSubsteps, batchedSubmission.attemptedSubsteps)
+    XCTAssertEqual(interactiveSubmission.acceptedSubsteps, batchedSubmission.acceptedSubsteps)
+    XCTAssertEqual(
+      try interactive.snapshotCommitted().stableHash(),
+      try batched.snapshotCommitted().stableHash()
+    )
+    XCTAssertEqual(
+      try interactive.inspectCommittedScheduler(),
+      try batched.inspectCommittedScheduler()
+    )
+    XCTAssertEqual(
+      try interactive.snapshotCommittedRegionalState().stableHash(),
+      try batched.snapshotCommittedRegionalState().stableHash()
+    )
+    XCTAssertEqual(
+      try interactive.snapshotCommittedRegionalTokens().stableHash(),
+      try batched.snapshotCommittedRegionalTokens().stableHash()
+    )
+    XCTAssertEqual(
+      try interactive.snapshotCommittedRegionalRouteHistory().stableHash(),
+      try batched.snapshotCommittedRegionalRouteHistory().stableHash()
+    )
+    XCTAssertEqual(
+      try interactive.snapshotCommittedRegionalRoutingState().stableHash(),
+      try batched.snapshotCommittedRegionalRoutingState().stableHash()
+    )
+  }
+
+  func testInteractiveAbortAndUnsupportedDurationPublishNothing() throws {
+    try requireMetal4()
+    let runtime = try makeRuntime(maxEncodedSubsteps: 2)
+    let before = try runtime.snapshotCommitted().stableHash()
+    _ = try runtime.beginInteractiveJointControl(
+      controlStepIdentifier: 4,
+      basePhysicsGeneration: 100,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 1_000)
+    )
+    XCTAssertThrowsError(
+      try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
+    )
+    let candidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_000)
+    XCTAssertTrue(runtime.hasOpenInteractiveJointControl)
+    XCTAssertThrowsError(try runtime.finishInteractiveJointControl())
+    XCTAssertThrowsError(
+      try runtime.runRootTransaction(at: 0, acceptedSubsteps: [true])
+    )
+    XCTAssertEqual(candidate.substep.startTimestamp, BrainTimestamp(microseconds: 0))
+    try runtime.abortInteractiveJointControl()
+
+    XCTAssertFalse(runtime.hasOpenInteractiveJointControl)
+    XCTAssertFalse(runtime.hasPendingRootTransaction)
+    XCTAssertFalse(runtime.hasPendingJointTransaction)
+    XCTAssertEqual(runtime.committedStep, 0)
+    XCTAssertEqual(runtime.schedulerCommittedGeneration, 0)
+    XCTAssertNil(runtime.schedulerCommittedTimestamp)
+    XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
+  }
+
   func testJointMetalBindingRejectsVariableDurationAndStaleGeneration() throws {
     try requireMetal4()
     let runtime = try makeRuntime(maxEncodedSubsteps: 2)
