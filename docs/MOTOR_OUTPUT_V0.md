@@ -111,6 +111,13 @@ exact CPU/Metal excitation output, accepted next-candidate mapping, rejected
 event silence, abort restoration, commit publication, and transaction-bound
 GPU-address packet validation, exact opaque-buffer identity, and stale-lease
 rejection. They do not establish
-a live NumanX consumer, physical muscle activation, localized reflexes, species
+a single-executable NumiBrain-to-NumanX consumer, localized reflexes, species
 calibration, voluntary movement, motor learning, autonomic physiology,
 biological behavior, or performance qualification.
+
+The isolated NumanX receiver revision recorded in
+`evidence/numanx-myosim-interop-v0.1` consumes a private borrowed excitation
+buffer before MyoSim force evaluation and demonstrates an activation, force,
+and articulated-state consequence on Apple M4 Pro. Its producer fixture is not
+the actual NumiBrain runtime, so it qualifies the receiving end of this
+contract rather than an integrated root transaction.

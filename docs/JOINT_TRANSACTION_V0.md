@@ -184,8 +184,11 @@ covered by deterministic CPU and Metal tests. The interactive and batched
 paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
-There is no in-repository live NumanX receiver or demonstrated atomic physical/brain pointer
-publication yet. Accepted receptor events reach a fast scheduler/regional
+The isolated NumanX receiver at `b42b283` imports an equivalent private
+excitation buffer into the owning MyoSim command buffer and has a measured
+full-body physical consequence. There is no single executable passing the
+actual NumiBrain lease to that receiver or demonstrated atomic physical/brain
+pointer publication yet. Accepted receptor events reach a fast scheduler/regional
 shadow and a species-neutral protective command after physical acceptance and
 before the next candidate; they cannot alter the physical candidate that has
 already been accepted. The timestamped Metal history is bounded to 32 accepted
