@@ -86,6 +86,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let regionalRouteHistoryTimestampBuffers: [any MTLBuffer]
   private let regionalRouteHistoryValueBuffers: [any MTLBuffer]
   private let regionalResolvedRouteHistorySlotBuffer: any MTLBuffer
+  private let regionalRouteRuntimeStateBuffers: [any MTLBuffer]
+  private let regionalSelectedRouteIndexBuffer: any MTLBuffer
+  private let regionalSelectedRouteCountBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
   private let relayByteCount: Int
@@ -105,6 +108,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let regionalRouteHistoryStateByteCount: Int
   public let regionalRouteHistoryTimestampByteCount: Int
   public let regionalRouteHistoryValueByteCount: Int
+  public let regionalRouteRuntimeStateByteCount: Int
+  public let regionalSelectedRouteIndexByteCount: Int
+  public let regionalSelectedRouteCountByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -132,6 +138,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     randomContext: TissueRandomContext = .deterministicDefault,
     brainSchedule requestedBrainSchedule: BrainModuleSchedule? = nil,
     regionalTokenProgram requestedRegionalTokenProgram: RegionalTokenProgram? = nil,
+    initialRegionalTokenValues requestedInitialRegionalTokenValues: [Float]? = nil,
+    initialRegionalRoutingState requestedInitialRegionalRoutingState: RegionalRoutingState? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -189,6 +197,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ?? RegionalTokenProgram.runtimeFoundationV0(schedule: brainSchedule)
     guard regionalTokenProgram.scheduleFingerprint == brainSchedule.fingerprint else {
       throw TissueError.metal("regional token program does not match the brain schedule")
+    }
+    let initialRegionalTokenValues =
+      requestedInitialRegionalTokenValues
+      ?? [Float](repeating: 0, count: regionalTokenProgram.scalarCount)
+    guard initialRegionalTokenValues.count == regionalTokenProgram.scalarCount,
+      initialRegionalTokenValues.allSatisfy(\.isFinite)
+    else {
+      throw TissueError.metal("initial regional token values do not match the program")
+    }
+    let initialRegionalRoutingState =
+      requestedInitialRegionalRoutingState
+      ?? RegionalRoutingState(program: regionalTokenProgram)
+    do {
+      try initialRegionalRoutingState.validate(program: regionalTokenProgram)
+    } catch {
+      throw TissueError.metal("initial regional routing state is invalid: \(error)")
     }
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
@@ -321,7 +345,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 19
+    regionalArgumentDescriptor.maxBufferBindCount = 23
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -435,7 +459,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<NBRegionalProgramHeader>.stride
         == Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT),
       MemoryLayout<NBRegionalRouteHistoryState>.stride
-        == Int(NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT)
+        == Int(NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT),
+      MemoryLayout<NBRegionalRouteRuntimeState>.stride
+        == Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT)
     else {
       throw TissueError.metal("Swift imported scheduler ABI does not match NumiBrainABI")
     }
@@ -476,6 +502,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       regionalTokenProgram.routeHistoryScalarCount * MemoryLayout<Float>.stride
     let regionalResolvedRouteHistorySlotByteCount =
       regionalTokenProgram.routes.count * MemoryLayout<UInt32>.stride
+    let regionalRouteRuntimeStateByteCount =
+      regionalTokenProgram.routes.count
+      * MemoryLayout<NBRegionalRouteRuntimeState>.stride
+    let regionalSelectedRouteIndexByteCount =
+      regionalTokenProgram.routes.count * MemoryLayout<UInt32>.stride
+    let regionalSelectedRouteCountByteCount =
+      regionalTokenProgram.layouts.count * MemoryLayout<UInt32>.stride
     guard
       let schedulerDescriptorBuffer = device.makeBuffer(
         length: schedulerDescriptorByteCount,
@@ -574,6 +607,28 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       let regionalResolvedRouteHistorySlotBuffer = device.makeBuffer(
         length: max(regionalResolvedRouteHistorySlotByteCount, MemoryLayout<UInt32>.stride),
         options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let firstRegionalRouteRuntimeStateBuffer = device.makeBuffer(
+        length: max(
+          regionalRouteRuntimeStateByteCount,
+          MemoryLayout<NBRegionalRouteRuntimeState>.stride
+        ),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondRegionalRouteRuntimeStateBuffer = device.makeBuffer(
+        length: max(
+          regionalRouteRuntimeStateByteCount,
+          MemoryLayout<NBRegionalRouteRuntimeState>.stride
+        ),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalSelectedRouteIndexBuffer = device.makeBuffer(
+        length: max(regionalSelectedRouteIndexByteCount, MemoryLayout<UInt32>.stride),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalSelectedRouteCountBuffer = device.makeBuffer(
+        length: max(regionalSelectedRouteCountByteCount, MemoryLayout<UInt32>.stride),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate scheduler ABI buffers")
@@ -601,6 +656,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let regionalRouteHistoryValueBuffers: [any MTLBuffer] = [
       firstRegionalRouteHistoryValueBuffer,
       secondRegionalRouteHistoryValueBuffer,
+    ]
+    let regionalRouteRuntimeStateBuffers: [any MTLBuffer] = [
+      firstRegionalRouteRuntimeStateBuffer,
+      secondRegionalRouteRuntimeStateBuffer,
     ]
     schedulerDescriptorBuffer.label = "NumiBrain immutable module descriptors"
     firstSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 0"
@@ -632,6 +691,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain regional route-history values generation 1"
     regionalResolvedRouteHistorySlotBuffer.label =
       "NumiBrain resolved delayed regional route slots"
+    firstRegionalRouteRuntimeStateBuffer.label =
+      "NumiBrain regional routing state generation 0"
+    secondRegionalRouteRuntimeStateBuffer.label =
+      "NumiBrain regional routing state generation 1"
+    regionalSelectedRouteIndexBuffer.label =
+      "NumiBrain compacted selected regional route indices"
+    regionalSelectedRouteCountBuffer.label =
+      "NumiBrain selected regional route counts"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -654,7 +721,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         max(regionalTokenStateByteCount, regionalRouteHistoryTimestampByteCount),
         max(
           max(regionalLayoutByteCount, regionalRouteByteCount),
-          regionalRouteHistoryStateByteCount
+          max(regionalRouteHistoryStateByteCount, regionalRouteRuntimeStateByteCount)
         )
       )
     )
@@ -682,7 +749,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 33
+    residencyDescriptor.initialCapacity = stateBuffers.count + 37
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -730,6 +797,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       residencySet.addAllocation(buffer)
     }
     residencySet.addAllocation(regionalResolvedRouteHistorySlotBuffer)
+    for buffer in regionalRouteRuntimeStateBuffers {
+      residencySet.addAllocation(buffer)
+    }
+    residencySet.addAllocation(regionalSelectedRouteIndexBuffer)
+    residencySet.addAllocation(regionalSelectedRouteCountBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
@@ -791,6 +863,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalRouteHistoryTimestampBuffers = regionalRouteHistoryTimestampBuffers
     self.regionalRouteHistoryValueBuffers = regionalRouteHistoryValueBuffers
     self.regionalResolvedRouteHistorySlotBuffer = regionalResolvedRouteHistorySlotBuffer
+    self.regionalRouteRuntimeStateBuffers = regionalRouteRuntimeStateBuffers
+    self.regionalSelectedRouteIndexBuffer = regionalSelectedRouteIndexBuffer
+    self.regionalSelectedRouteCountBuffer = regionalSelectedRouteCountBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
@@ -810,6 +885,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalRouteHistoryStateByteCount = regionalRouteHistoryStateByteCount
     self.regionalRouteHistoryTimestampByteCount = regionalRouteHistoryTimestampByteCount
     self.regionalRouteHistoryValueByteCount = regionalRouteHistoryValueByteCount
+    self.regionalRouteRuntimeStateByteCount = regionalRouteRuntimeStateByteCount
+    self.regionalSelectedRouteIndexByteCount = regionalSelectedRouteIndexByteCount
+    self.regionalSelectedRouteCountByteCount = regionalSelectedRouteCountByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -972,11 +1050,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: regionalParameterByteCount,
       label: "NumiBrain regional slow-parameter upload"
     )
-    let initialRegionalTokens = [Float](
-      repeating: 0,
-      count: regionalTokenProgram.scalarCount
-    )
-    initialRegionalTokens.withUnsafeBytes { sourceBytes in
+    initialRegionalTokenValues.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
       stagingBuffer.contents().copyMemory(from: source, byteCount: regionalTokenStateByteCount)
     }
@@ -1038,6 +1112,24 @@ public final class MetalTissueRuntime: @unchecked Sendable {
           destination: buffer,
           size: regionalRouteHistoryValueByteCount,
           label: "NumiBrain regional route-history values generation \(index) upload"
+        )
+      }
+    }
+    if regionalRouteRuntimeStateByteCount > 0 {
+      let routeRuntimeRecords = initialRegionalRoutingState.states.map(\.abiRecord)
+      routeRuntimeRecords.withUnsafeBytes { sourceBytes in
+        guard let source = sourceBytes.baseAddress else { return }
+        stagingBuffer.contents().copyMemory(
+          from: source,
+          byteCount: regionalRouteRuntimeStateByteCount
+        )
+      }
+      for (index, buffer) in regionalRouteRuntimeStateBuffers.enumerated() {
+        try copy(
+          source: stagingBuffer,
+          destination: buffer,
+          size: regionalRouteRuntimeStateByteCount,
+          label: "NumiBrain regional routing-state generation \(index) upload"
         )
       }
     }
@@ -1284,6 +1376,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       regionalArgumentTable.setAddress(
         regionalResolvedRouteHistorySlotBuffer.gpuAddress,
         index: 18
+      )
+      regionalArgumentTable.setAddress(
+        regionalRouteRuntimeStateBuffers[committedRegionalStateIndex].gpuAddress,
+        index: 19
+      )
+      regionalArgumentTable.setAddress(
+        regionalRouteRuntimeStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+        index: 20
+      )
+      regionalArgumentTable.setAddress(
+        regionalSelectedRouteIndexBuffer.gpuAddress,
+        index: 21
+      )
+      regionalArgumentTable.setAddress(
+        regionalSelectedRouteCountBuffer.gpuAddress,
+        index: 22
       )
       encoder.setComputePipelineState(regionalPipeline)
       encoder.setArgumentTable(regionalArgumentTable)
@@ -1632,6 +1740,45 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       committedTime: committedSchedulerTime,
       generation: committedSchedulerGeneration,
       history: history
+    )
+  }
+
+  public func snapshotCommittedRegionalRoutingState() throws -> RegionalRoutingSnapshot {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading regional routing state")
+    }
+    guard let committedSchedulerTime else {
+      throw TissueError.transaction("there is no committed regional routing state to read")
+    }
+    let states: [RegionalRouteRuntimeState]
+    if regionalTokenProgram.routes.isEmpty {
+      states = []
+    } else {
+      try copy(
+        source: regionalRouteRuntimeStateBuffers[committedRegionalStateIndex],
+        destination: stagingBuffer,
+        size: regionalRouteRuntimeStateByteCount,
+        label: "NumiBrain committed regional routing-state inspection"
+      )
+      let statePointer = stagingBuffer.contents().bindMemory(
+        to: NBRegionalRouteRuntimeState.self,
+        capacity: regionalTokenProgram.routes.count
+      )
+      states = UnsafeBufferPointer(
+        start: statePointer,
+        count: regionalTokenProgram.routes.count
+      ).map(RegionalRouteRuntimeState.init(abiRecord:))
+    }
+    let routingState = try RegionalRoutingState(
+      program: regionalTokenProgram,
+      states: states
+    )
+    return RegionalRoutingSnapshot(
+      scheduleFingerprint: brainSchedule.fingerprint,
+      programFingerprint: regionalTokenProgram.fingerprint,
+      committedTime: committedSchedulerTime,
+      generation: committedSchedulerGeneration,
+      routingState: routingState
     )
   }
 

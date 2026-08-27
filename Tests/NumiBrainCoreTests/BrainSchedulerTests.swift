@@ -16,8 +16,9 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_regional_token_layout_size(), 32)
     XCTAssertEqual(nb_brain_abi_regional_route_size(), 24)
     XCTAssertEqual(nb_brain_abi_regional_token_parameters_size(), 32)
-    XCTAssertEqual(nb_brain_abi_regional_program_header_size(), 32)
+    XCTAssertEqual(nb_brain_abi_regional_program_header_size(), 48)
     XCTAssertEqual(nb_brain_abi_regional_route_history_state_size(), 16)
+    XCTAssertEqual(nb_brain_abi_regional_route_runtime_state_size(), 32)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_module_id(), 0)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_interrupt_mask(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_flags(), 28)
@@ -201,7 +202,12 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(program.headerRecord.program_fingerprint, program.fingerprint)
     XCTAssertEqual(program.headerRecord.history_capacity, 512)
     XCTAssertEqual(program.headerRecord.history_scalar_count, 393_216)
+    XCTAssertEqual(program.headerRecord.program_version, 2)
+    XCTAssertEqual(program.headerRecord.minimum_route_persistence_microseconds, 2_000)
+    XCTAssertEqual(program.headerRecord.salience_gain, 0.125)
+    XCTAssertEqual(program.headerRecord.persistence_bonus, 0.05)
     XCTAssertEqual(program.routeHistoryScalarCount, 393_216)
+    XCTAssertEqual(program.layouts.map(\.normalRouteBudget), [0, 1, 0, 0, 1, 1, 0, 1])
     XCTAssertEqual(program.routes.map(\.delayMicroseconds), [2_000, 0, 5_000, 1_000, 0, 250, 250])
     XCTAssertEqual(
       program.layouts.map(\.scalarOffset), [0, 256, 4_352, 4_864, 6_912, 8_960, 9_984, 10_240])
@@ -325,7 +331,8 @@ final class BrainSchedulerTests: XCTestCase {
       schedule: schedule,
       program: routedProgram,
       invocations: secondInvocations,
-      routeHistory: firstTransition.routeHistory
+      routeHistory: firstTransition.routeHistory,
+      routingState: firstTransition.routingState
     )
     XCTAssertEqual(routed, chunked)
 
@@ -379,11 +386,13 @@ final class BrainSchedulerTests: XCTestCase {
     let initialValues = [Float](repeating: 0, count: delayedProgram.scalarCount)
     var delayedTransition = RegionalTokenTransition(
       values: initialValues,
-      routeHistory: RegionalRouteHistory(program: delayedProgram)
+      routeHistory: RegionalRouteHistory(program: delayedProgram),
+      routingState: RegionalRoutingState(program: delayedProgram)
     )
     var isolatedTransition = RegionalTokenTransition(
       values: initialValues,
-      routeHistory: RegionalRouteHistory(program: isolatedProgram)
+      routeHistory: RegionalRouteHistory(program: isolatedProgram),
+      routingState: RegionalRoutingState(program: isolatedProgram)
     )
     var delayedDiagnostics = initialDiagnostics
     var isolatedDiagnostics = initialDiagnostics
@@ -400,7 +409,8 @@ final class BrainSchedulerTests: XCTestCase {
         schedule: schedule,
         program: delayedProgram,
         invocations: invocations,
-        routeHistory: delayedTransition.routeHistory
+        routeHistory: delayedTransition.routeHistory,
+        routingState: delayedTransition.routingState
       )
       isolatedTransition = try CPURegionalTokenOperator.advance(
         state: isolatedTransition.values,
@@ -408,7 +418,8 @@ final class BrainSchedulerTests: XCTestCase {
         schedule: schedule,
         program: isolatedProgram,
         invocations: invocations,
-        routeHistory: isolatedTransition.routeHistory
+        routeHistory: isolatedTransition.routeHistory,
+        routingState: isolatedTransition.routingState
       )
       delayedDiagnostics = try CPURegionalModuleOperator.advance(
         states: delayedDiagnostics,
@@ -446,6 +457,127 @@ final class BrainSchedulerTests: XCTestCase {
         delayMicroseconds: 5_001,
         gain: 1
       )
+    )
+  }
+
+  func testRegionalTopKRoutingIsDynamicPersistentAndEmergencySafe() throws {
+    let schedule = try BrainModuleSchedule(
+      modules: try (1...4).map { identifier in
+        try BrainModuleDescriptor(
+          moduleIdentifier: UInt16(identifier),
+          clockClass: .cortical,
+          periodMicroseconds: 1_000,
+          intrinsicTimescaleMicroseconds: 4_000,
+          tokenCount: 1,
+          tokenDimension: 4
+        )
+      })
+    let program = try RegionalTokenProgram(
+      schedule: schedule,
+      routes: [
+        RegionalTokenRoute(senderModuleIdentifier: 1, receiverModuleIdentifier: 4, gain: 1),
+        RegionalTokenRoute(senderModuleIdentifier: 2, receiverModuleIdentifier: 4, gain: 1),
+        RegionalTokenRoute(
+          senderModuleIdentifier: 3,
+          receiverModuleIdentifier: 4,
+          gain: 1,
+          flags: [.emergency, .persistent]
+        ),
+      ]
+    )
+    XCTAssertEqual(program.layouts[3].normalRouteBudget, 1)
+    XCTAssertThrowsError(
+      try RegionalTokenProgram(
+        schedule: schedule,
+        routes: program.routes,
+        parameters: program.parameters,
+        normalRouteBudgets: [4: 3]
+      )
+    )
+
+    func invocations(at microseconds: UInt64) -> [BrainModuleInvocation] {
+      schedule.modules.map { module in
+        BrainModuleInvocation(
+          timestamp: time(microseconds),
+          moduleIdentifier: module.moduleIdentifier,
+          clockClass: module.clockClass,
+          reasons: .periodic,
+          interruptMask: []
+        )
+      }
+    }
+    func setToken(_ value: Float, moduleIndex: Int, in values: inout [Float]) {
+      let range = program.layouts[moduleIndex].scalarRange
+      for index in range { values[index] = value }
+    }
+
+    var values = [Float](repeating: 0, count: program.scalarCount)
+    setToken(2, moduleIndex: 0, in: &values)
+    setToken(0.5, moduleIndex: 1, in: &values)
+    setToken(0.25, moduleIndex: 2, in: &values)
+    setToken(1, moduleIndex: 3, in: &values)
+    var diagnostics = schedule.modules.map { _ in RegionalModuleState() }
+    var transition = try CPURegionalTokenOperator.advance(
+      state: values,
+      diagnostics: diagnostics,
+      schedule: schedule,
+      program: program,
+      invocations: invocations(at: 0)
+    )
+    diagnostics = try CPURegionalModuleOperator.advance(
+      states: diagnostics,
+      schedule: schedule,
+      invocations: invocations(at: 0)
+    )
+    XCTAssertEqual(transition.routingState.states.map(\.isActive), [true, false, true])
+    XCTAssertEqual(
+      transition.routingState.states.map(\.strength).reduce(0, +),
+      1,
+      accuracy: 1e-6
+    )
+
+    values = transition.values
+    setToken(0, moduleIndex: 0, in: &values)
+    setToken(4, moduleIndex: 1, in: &values)
+    setToken(0.25, moduleIndex: 2, in: &values)
+    setToken(1, moduleIndex: 3, in: &values)
+    transition = try CPURegionalTokenOperator.advance(
+      state: values,
+      diagnostics: diagnostics,
+      schedule: schedule,
+      program: program,
+      invocations: invocations(at: 1_000),
+      routeHistory: transition.routeHistory,
+      routingState: transition.routingState
+    )
+    diagnostics = try CPURegionalModuleOperator.advance(
+      states: diagnostics,
+      schedule: schedule,
+      invocations: invocations(at: 1_000)
+    )
+    XCTAssertEqual(transition.routingState.states.map(\.isActive), [true, false, true])
+
+    values = transition.values
+    setToken(0, moduleIndex: 0, in: &values)
+    setToken(4, moduleIndex: 1, in: &values)
+    setToken(0.25, moduleIndex: 2, in: &values)
+    setToken(1, moduleIndex: 3, in: &values)
+    transition = try CPURegionalTokenOperator.advance(
+      state: values,
+      diagnostics: diagnostics,
+      schedule: schedule,
+      program: program,
+      invocations: invocations(at: 3_000),
+      routeHistory: transition.routeHistory,
+      routingState: transition.routingState
+    )
+    XCTAssertEqual(transition.routingState.states.map(\.isActive), [false, true, true])
+    XCTAssertEqual(transition.routingState.states.map(\.selectionCount), [2, 1, 3])
+    XCTAssertEqual(transition.routingState.states.map(\.switchCount), [2, 1, 1])
+    XCTAssertEqual(
+      transition.routingState.states.map(\.strength).reduce(0, +),
+      1,
+      accuracy: 1e-6
     )
   }
 

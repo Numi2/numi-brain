@@ -4,10 +4,10 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue source slice v0.9, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.5
-- Implemented runtime code: deterministic scheduler, recurrent regional-token, diagnostic-state, route-history, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven fixed sparse regional routes with timestamped conduction history, receptor events, counter randomness, and a destination-major tissue CSR graph
+- Current state: specification, GPU-compacted tissue source slice v0.10, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.6
+- Implemented runtime code: deterministic scheduler, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, receptor events, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
-- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional token, diagnostic, and route-history generations
+- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU performance evidence: bounded Apple M4 Pro remote correctness probe only; production throughput and counter qualification remain pending
@@ -38,23 +38,28 @@ The scheduler foundation currently proves:
 - no per-root scheduler readback, with explicit staging only after completion;
 - one `advance_due_regional_tokens` threadgroup that consumes the private canonical due list without a host count readback;
 - 10,752 FP32 region-major token scalars across the eight executable module shapes;
-- compiled 32-byte token layouts, 24-byte sparse route records, 32-byte per-scalar immutable parameter records, and a fingerprinted 32-byte program header;
-- seven fixed sparse routes evaluated from a common pre-timestamp sender state;
+- compiled 32-byte token layouts with per-receiver normal-route budgets, 24-byte sparse route records, 32-byte per-scalar immutable parameter records, a fingerprinted 48-byte version-2 program header, and 32-byte per-agent route-runtime records;
+- seven candidate sparse routes scored from a common causal pre-timestamp state;
+- deterministic normal-route top-k selection with canonical route-index tie breaking;
+- permanent emergency-route bypass outside the normal budget;
+- a 2 ms minimum route-persistence interval and explicit persistence score bonus;
+- stable softmax normalization over selected emergency and normal routes;
+- compact selected-route index spans consumed by the recurrent scalar gather;
 - compiled 0-5 ms route delays resolved from per-route 512-slot timestamped message rings;
 - conservative configuration-time capacity validation that rejects a route-history overwrite risk before dispatch;
 - gated recurrent updates using module intrinsic timescales, local token context, periodic or interrupt drive, and routed input;
 - compact 32-byte module diagnostics with activation, integration, interrupt salience, phase, counters, and last-update time;
-- CPU/Metal token, diagnostic, and delayed route-history numerical parity plus exact discrete counters and timestamps;
+- CPU/Metal token, diagnostic, delayed route-history, score, and strength numerical parity plus exact discrete counters, selections, switches, and timestamps;
 - a Metal route-ablation test that changes receiver tokens while preserving tissue and diagnostic state;
-- recurrent token and route-history replay, retry, abort, and control-interval chunking equivalence.
+- recurrent token, route-history, and routing-state replay, retry, abort, and control-interval chunking equivalence.
 
-The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded one-agent Metal kernels share the compiled ABI and deterministic semantics. The token operator is authoritative regional neural state; the compact trace is diagnostic metadata. Dynamic top-k routing, dense tiled matrices, fast-plastic bases, GPU cohort prefix sums, indirect execution, adaptive periods, learned production weights, and the complete 96-module graph remain unimplemented.
+The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded one-agent Metal kernels share the compiled ABI and deterministic semantics. The token operator is authoritative regional neural state; the compact trace is diagnostic metadata. Learned/context-conditioned route biases, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, GPU cohort prefix sums, indirect execution, adaptive periods, learned production weights, and the complete 96-module graph remain unimplemented.
 
 The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advanced four independent scheduler states through 200 ms in ten root transactions. It emitted 3,064 invocations, compacted them into 772 canonical groups, and delivered eight module interrupts from three fractional-time source events with zero timestamp latency. Replay, retry, abort, independent-state, and canonical-order checks passed. The exact JSON is in [`evidence/scheduler-v0.1`](evidence/scheduler-v0.1/README.md). This is CPU semantic evidence, not GPU scheduler or throughput qualification.
 
 ## Implemented tissue and regional evidence
 
-The v0.9 source slice retains the v0.8 tissue behavior and additionally proves transaction-owned regional route delay semantics in local tests. A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8.
+The v0.10 source slice retains the v0.9 route-delay behavior and additionally proves deterministic dynamic route selection, emergency bypass, persistence, normalized strengths, selected-route compaction, and transaction-owned routing state in local tests. A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8.
 
 The implemented tissue slice currently proves:
 
@@ -85,8 +90,12 @@ The implemented tissue slice currently proves:
 - delayed regional messages remain withheld until their compiled conduction timestamp;
 - CPU/Metal agreement for route-history state, publication timestamps, and FP32 message values;
 - route-history rollback, retry, replay, and root-window chunking equivalence.
+- route scores and normalized strengths agree between CPU and Metal within FP32 tolerance;
+- content changes which normal route wins deterministic top-k selection while an emergency route remains continuously active;
+- route selection counters, last-selected timestamps, and switch counters agree exactly between CPU and Metal;
+- routing state rolls back, retries, replays, and chunks at the same transaction boundary as tokens and route history.
 
-The XCTest suite contains 38 passing tests: 13 tissue CPU tests, 12 scheduler/regional CPU tests, and 13 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence and seed-dependent trajectories. Metal tests require exact scheduler invocation parity, recurrent token and route-history CPU numerical parity, delayed-message and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
+The XCTest suite contains 40 passing tests: 13 tissue CPU tests, 13 scheduler/regional CPU tests, and 14 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence and seed-dependent trajectories. Metal tests require exact scheduler invocation parity, recurrent token, route-history, and routing-state CPU numerical parity, dynamic-selection, delayed-message, emergency-bypass and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable event uses three `float4` records, or 48 bytes. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
@@ -100,7 +109,7 @@ Checked on 2026-08-27:
 
 - Numi Lab: 0.4.0
 - Runtime root: `/Users/home/Documents/emergentnumilife/MetalRobo`
-- Runtime revision: `7086aab`
+- Runtime revision: `2035cfd`
 - Runtime branch: `coupled`
 - Workspace: `/Users/home/numi-brain`
 - Apple Silicon: available

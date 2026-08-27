@@ -235,7 +235,8 @@ struct NBRegionalTokenLayoutABI {
     ushort token_dimension;
     ushort incoming_route_count;
     uint flags;
-    uint reserved;
+    ushort normal_route_budget;
+    ushort reserved;
 };
 
 struct NBRegionalRouteABI {
@@ -268,12 +269,26 @@ struct NBRegionalProgramHeaderABI {
     ulong program_fingerprint;
     uint history_capacity;
     uint history_scalar_count;
+    uint program_version;
+    uint minimum_route_persistence_microseconds;
+    float salience_gain;
+    float persistence_bonus;
 };
 
 struct NBRegionalRouteHistoryStateABI {
     uint next_slot;
     uint count;
     ulong latest_timestamp_microseconds;
+};
+
+struct NBRegionalRouteRuntimeStateABI {
+    float score;
+    float strength;
+    uint active;
+    uint selection_count;
+    ulong last_selected_timestamp_microseconds;
+    uint switch_count;
+    uint reserved;
 };
 
 static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
@@ -286,8 +301,9 @@ static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift"
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
-static_assert(sizeof(NBRegionalProgramHeaderABI) == 32, "regional header ABI drift");
+static_assert(sizeof(NBRegionalProgramHeaderABI) == 48, "regional header ABI drift");
 static_assert(sizeof(NBRegionalRouteHistoryStateABI) == 16, "route history ABI drift");
+static_assert(sizeof(NBRegionalRouteRuntimeStateABI) == 32, "route state ABI drift");
 
 constant uint NBSchedulerFlagInitialize = 1u << 0;
 constant uint NBSchedulerReasonPeriodic = 1u << 0;
@@ -462,6 +478,46 @@ inline bool regional_invocation_for_module(
     return false;
 }
 
+inline float regional_route_message_value(
+    uint routeIndex,
+    ulong timestamp,
+    uint feature,
+    device const NBRegionalProgramHeaderABI *header,
+    device const NBRegionalTokenLayoutABI *layouts,
+    device const NBRegionalRouteABI *routes,
+    device const float *tokens,
+    device const float *routeHistoryValues,
+    device const uint *resolvedRouteHistorySlots
+) {
+    const NBRegionalRouteABI route = routes[routeIndex];
+    if (route.delay_microseconds == 0u) {
+        const uint senderIndex = regional_module_index(
+            layouts,
+            header->module_count,
+            route.sender_module_id
+        );
+        const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
+        const uint senderFeature = feature % uint(sender.token_dimension);
+        return tokens[
+            sender.scalar_offset
+            + uint(route.sender_token) * uint(sender.token_dimension)
+            + senderFeature
+        ];
+    }
+    if (timestamp < ulong(route.delay_microseconds)) {
+        return 0.0f;
+    }
+    const uint resolvedSlot = resolvedRouteHistorySlots[routeIndex];
+    if (resolvedSlot == ~0u) {
+        return 0.0f;
+    }
+    return routeHistoryValues[
+        route.history_value_offset
+        + resolvedSlot * route.message_dimension
+        + feature % route.message_dimension
+    ];
+}
+
 /// Executable factorized recurrent token operator. Exactly one threadgroup owns
 /// an agent. All due modules at one timestamp read the same pre-timestamp state,
 /// then publish together, preventing route cycles from observing partial peers.
@@ -485,6 +541,10 @@ kernel void advance_due_regional_tokens(
     device const float *inputRouteHistoryValues [[buffer(16)]],
     device float *outputRouteHistoryValues [[buffer(17)]],
     device uint *resolvedRouteHistorySlots [[buffer(18)]],
+    device const NBRegionalRouteRuntimeStateABI *inputRouteRuntimeStates [[buffer(19)]],
+    device NBRegionalRouteRuntimeStateABI *outputRouteRuntimeStates [[buffer(20)]],
+    device uint *selectedRouteIndices [[buffer(21)]],
+    device uint *selectedRouteCounts [[buffer(22)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
@@ -516,6 +576,11 @@ kernel void advance_due_regional_tokens(
          historyScalarIndex += laneCount) {
         outputRouteHistoryValues[historyScalarIndex] =
             inputRouteHistoryValues[historyScalarIndex];
+    }
+    for (uint routeIndex = lane;
+         routeIndex < header->route_count;
+         routeIndex += laneCount) {
+        outputRouteRuntimeStates[routeIndex] = inputRouteRuntimeStates[routeIndex];
     }
     threadgroup_barrier(mem_flags::mem_device);
 
@@ -557,6 +622,181 @@ kernel void advance_due_regional_tokens(
                 }
             }
             resolvedRouteHistorySlots[routeIndex] = resolvedSlot;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint moduleIndex = lane;
+             moduleIndex < header->module_count;
+             moduleIndex += laneCount) {
+            selectedRouteCounts[moduleIndex] = 0u;
+            const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
+            NBDueInvocationABI receiverInvocation;
+            if (!regional_invocation_for_module(
+                    invocations,
+                    cursor,
+                    groupEnd,
+                    receiver.module_id,
+                    receiverInvocation)) {
+                continue;
+            }
+            const uint routeBegin = receiver.incoming_route_offset;
+            const uint routeEnd = routeBegin + uint(receiver.incoming_route_count);
+            if (routeBegin == routeEnd) {
+                continue;
+            }
+            const uint queryDimension = uint(receiver.token_dimension);
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                float dot = 0.0f;
+                float salience = 0.0f;
+                for (uint feature = 0u; feature < queryDimension; ++feature) {
+                    const float message = regional_route_message_value(
+                        routeIndex,
+                        timestamp,
+                        feature,
+                        header,
+                        layouts,
+                        routes,
+                        outputTokens,
+                        outputRouteHistoryValues,
+                        resolvedRouteHistorySlots
+                    );
+                    dot += outputTokens[receiver.scalar_offset + feature] * message;
+                    salience += abs(message);
+                }
+                NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeIndex];
+                state.score = dot / sqrt(float(queryDimension))
+                    + header->salience_gain * salience / float(queryDimension);
+                if (state.active != 0u) {
+                    state.score += header->persistence_bonus;
+                }
+                outputRouteRuntimeStates[routeIndex] = state;
+            }
+
+            uint selectedCount = 0u;
+            uint normalSelected = 0u;
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                if ((routes[routeIndex].flags & 1u) != 0u) {
+                    selectedRouteIndices[routeBegin + selectedCount] = routeIndex;
+                    selectedCount += 1u;
+                }
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd
+                     && normalSelected < uint(receiver.normal_route_budget);
+                 ++routeIndex) {
+                const NBRegionalRouteABI route = routes[routeIndex];
+                const NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeIndex];
+                if ((route.flags & 1u) != 0u
+                    || state.active == 0u
+                    || state.last_selected_timestamp_microseconds == ~0ul
+                    || timestamp < state.last_selected_timestamp_microseconds) {
+                    continue;
+                }
+                if (timestamp - state.last_selected_timestamp_microseconds
+                    < ulong(header->minimum_route_persistence_microseconds)) {
+                    selectedRouteIndices[routeBegin + selectedCount] = routeIndex;
+                    selectedCount += 1u;
+                    normalSelected += 1u;
+                }
+            }
+            while (normalSelected < uint(receiver.normal_route_budget)) {
+                uint bestRoute = ~0u;
+                float bestScore = -INFINITY;
+                for (uint routeIndex = routeBegin;
+                     routeIndex < routeEnd;
+                     ++routeIndex) {
+                    if ((routes[routeIndex].flags & 1u) != 0u) {
+                        continue;
+                    }
+                    bool alreadySelected = false;
+                    for (uint selectedIndex = 0u;
+                         selectedIndex < selectedCount;
+                         ++selectedIndex) {
+                        if (selectedRouteIndices[routeBegin + selectedIndex] == routeIndex) {
+                            alreadySelected = true;
+                            break;
+                        }
+                    }
+                    if (alreadySelected) {
+                        continue;
+                    }
+                    const float score = outputRouteRuntimeStates[routeIndex].score;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestRoute = routeIndex;
+                    }
+                }
+                if (bestRoute == ~0u) {
+                    break;
+                }
+                selectedRouteIndices[routeBegin + selectedCount] = bestRoute;
+                selectedCount += 1u;
+                normalSelected += 1u;
+            }
+
+            float maximumScore = 0.0f;
+            if (selectedCount > 0u) {
+                maximumScore = outputRouteRuntimeStates[
+                    selectedRouteIndices[routeBegin]
+                ].score;
+                for (uint selectedIndex = 1u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    maximumScore = max(
+                        maximumScore,
+                        outputRouteRuntimeStates[
+                            selectedRouteIndices[routeBegin + selectedIndex]
+                        ].score
+                    );
+                }
+            }
+            float strengthDenominator = 0.0f;
+            for (uint selectedIndex = 0u;
+                 selectedIndex < selectedCount;
+                 ++selectedIndex) {
+                strengthDenominator += exp(
+                    outputRouteRuntimeStates[
+                        selectedRouteIndices[routeBegin + selectedIndex]
+                    ].score - maximumScore
+                );
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeIndex];
+                const bool wasActive = state.active != 0u;
+                bool isActive = false;
+                for (uint selectedIndex = 0u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    if (selectedRouteIndices[routeBegin + selectedIndex] == routeIndex) {
+                        isActive = true;
+                        break;
+                    }
+                }
+                state.active = isActive ? 1u : 0u;
+                state.strength = isActive && strengthDenominator > 0.0f
+                    ? exp(state.score - maximumScore) / strengthDenominator
+                    : 0.0f;
+                if (isActive) {
+                    if (state.selection_count != ~0u) {
+                        state.selection_count += 1u;
+                    }
+                    state.last_selected_timestamp_microseconds = timestamp;
+                }
+                if (isActive != wasActive && state.switch_count != ~0u) {
+                    state.switch_count += 1u;
+                }
+                outputRouteRuntimeStates[routeIndex] = state;
+            }
+            selectedRouteCounts[moduleIndex] = selectedCount;
         }
         threadgroup_barrier(mem_flags::mem_device);
 
@@ -610,35 +850,27 @@ kernel void advance_due_regional_tokens(
             }
             const float localMean = localSum / float(dimension);
             float routedInput = 0.0f;
-            const uint routeEnd = layout.incoming_route_offset
-                + uint(layout.incoming_route_count);
-            for (uint routeIndex = layout.incoming_route_offset;
-                 routeIndex < routeEnd;
-                 ++routeIndex) {
+            const uint selectedCount = selectedRouteCounts[moduleIndex];
+            for (uint selectedIndex = 0u;
+                 selectedIndex < selectedCount;
+                 ++selectedIndex) {
+                const uint routeIndex = selectedRouteIndices[
+                    layout.incoming_route_offset + selectedIndex
+                ];
                 const NBRegionalRouteABI route = routes[routeIndex];
-                if (route.delay_microseconds == 0u) {
-                    const uint senderIndex = regional_module_index(
+                routedInput += route.gain
+                    * outputRouteRuntimeStates[routeIndex].strength
+                    * regional_route_message_value(
+                        routeIndex,
+                        timestamp,
+                        feature,
+                        header,
                         layouts,
-                        header->module_count,
-                        route.sender_module_id
+                        routes,
+                        outputTokens,
+                        outputRouteHistoryValues,
+                        resolvedRouteHistorySlots
                     );
-                    const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
-                    const uint senderFeature = feature % uint(sender.token_dimension);
-                    const uint senderScalar = sender.scalar_offset
-                        + uint(route.sender_token) * uint(sender.token_dimension)
-                        + senderFeature;
-                    routedInput += route.gain * outputTokens[senderScalar];
-                } else {
-                    const uint resolvedSlot = resolvedRouteHistorySlots[routeIndex];
-                    if (resolvedSlot != ~0u) {
-                        const uint messageFeature = feature % route.message_dimension;
-                        const uint historyScalar = route.history_value_offset
-                            + resolvedSlot * route.message_dimension
-                            + messageFeature;
-                        routedInput += route.gain
-                            * outputRouteHistoryValues[historyScalar];
-                    }
-                }
             }
             const NBRegionalTokenParametersABI parameter =
                 parameters[layout.parameter_offset + localScalar];

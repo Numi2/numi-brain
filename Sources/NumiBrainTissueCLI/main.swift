@@ -363,6 +363,7 @@ private struct SchedulerEvidence: Codable {
 }
 
 private struct RegionalExecutionEvidence: Codable {
+  let programVersion: UInt32
   let stateGenerationCount: Int
   let stateBytes: Int
   let finalSnapshotHash: String
@@ -371,15 +372,26 @@ private struct RegionalExecutionEvidence: Codable {
   let routeCount: Int
   let routeBytes: Int
   let routeDelaysMicroseconds: [UInt32]
+  let normalRouteBudgets: [UInt16]
   let routeHistoryGenerationCount: Int
   let routeHistoryCapacity: Int
   let routeHistoryStateBytes: Int
   let routeHistoryTimestampBytes: Int
   let routeHistoryValueBytes: Int
+  let routeRuntimeStateGenerationCount: Int
+  let routeRuntimeStateBytes: Int
+  let selectedRouteIndexBytes: Int
+  let selectedRouteCountBytes: Int
   let parameterBytes: Int
   let programFingerprint: String
   let finalTokenSnapshotHash: String
   let finalRouteHistorySnapshotHash: String
+  let finalRoutingSnapshotHash: String
+  let activeRouteCount: Int
+  let normalActiveRouteCount: Int
+  let emergencyActiveRouteCount: Int
+  let totalRouteSelectionCount: UInt64
+  let totalRouteSwitchCount: UInt64
   let totalUpdateCount: UInt64
   let totalInterruptCount: UInt64
   let cpuReferenceMaximumAbsoluteError: Float
@@ -391,6 +403,9 @@ private struct RegionalExecutionEvidence: Codable {
   let routeHistoryCPUReferenceMaximumAbsoluteError: Float
   let routeHistoryCPUReferenceTolerance: Float
   let routeHistoryCPUReferencePassed: Bool
+  let routingCPUReferenceMaximumAbsoluteError: Float
+  let routingCPUReferenceTolerance: Float
+  let routingCPUReferencePassed: Bool
   let execution: String
   let interpretation: String
 }
@@ -634,6 +649,7 @@ private struct NumiBrainTissueCommand {
       var replayRegionalHash: String?
       var replayRegionalTokenHash: String?
       var replayRegionalRouteHistoryHash: String?
+      var replayRegionalRoutingHash: String?
       switch options.backend {
       case .cpu:
         replay = try runCPU(
@@ -670,6 +686,8 @@ private struct NumiBrainTissueCommand {
         replayRegionalTokenHash = metalReplay.regionalExecution?.finalTokenSnapshotHash
         replayRegionalRouteHistoryHash =
           metalReplay.regionalExecution?.finalRouteHistorySnapshotHash
+        replayRegionalRoutingHash =
+          metalReplay.regionalExecution?.finalRoutingSnapshotHash
       }
       replayExact =
         replay.stableHash() == result.state.stableHash()
@@ -678,6 +696,8 @@ private struct NumiBrainTissueCommand {
         && replayRegionalTokenHash == result.regionalExecution?.finalTokenSnapshotHash
         && replayRegionalRouteHistoryHash
           == result.regionalExecution?.finalRouteHistorySnapshotHash
+        && replayRegionalRoutingHash
+          == result.regionalExecution?.finalRoutingSnapshotHash
     } else {
       replayExact = nil
     }
@@ -692,13 +712,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v9",
+      schema: "numibrain.tissue-simulation-evidence.v10",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, factorized recurrent regional token state, compiled sparse routes with transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -799,7 +819,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU tissue, regional token, diagnostic, and sparse-route history generations, immutable regional parameters and routes, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
+          ? "private GPU tissue, regional token, diagnostic, sparse-route history, and dynamic routing-state generations; immutable regional parameters and topology; compact selected-route scratch; scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -813,7 +833,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> delayed sparse-route resolution -> advance_due_regional_tokens -> atomic host generation publication"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> delayed route-message resolution -> deterministic top-k route scoring and compaction -> advance_due_regional_tokens -> atomic host generation publication"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -925,6 +945,8 @@ private struct NumiBrainTissueCommand {
     let regionalTokenInspection = try runtime.snapshotCommittedRegionalTokens()
     let regionalRouteHistoryInspection =
       try runtime.snapshotCommittedRegionalRouteHistory()
+    let regionalRoutingInspection =
+      try runtime.snapshotCommittedRegionalRoutingState()
     var schedulerOracle = CPUMultiRateScheduler(schedule: runtime.brainSchedule)
     var regionalOracleStates = runtime.brainSchedule.modules.map { _ in RegionalModuleState() }
     var regionalOracleTokens = [Float](
@@ -932,6 +954,9 @@ private struct NumiBrainTissueCommand {
       count: runtime.regionalTokenProgram.scalarCount
     )
     var regionalOracleRouteHistory = RegionalRouteHistory(
+      program: runtime.regionalTokenProgram
+    )
+    var regionalOracleRoutingState = RegionalRoutingState(
       program: runtime.regionalTokenProgram
     )
     var schedulerOracleCompleted = 0
@@ -956,10 +981,12 @@ private struct NumiBrainTissueCommand {
         schedule: runtime.brainSchedule,
         program: runtime.regionalTokenProgram,
         invocations: invocations,
-        routeHistory: regionalOracleRouteHistory
+        routeHistory: regionalOracleRouteHistory,
+        routingState: regionalOracleRoutingState
       )
       regionalOracleTokens = regionalTransition.values
       regionalOracleRouteHistory = regionalTransition.routeHistory
+      regionalOracleRoutingState = regionalTransition.routingState
       regionalOracleStates = try CPURegionalModuleOperator.advance(
         states: regionalOracleStates,
         schedule: runtime.brainSchedule,
@@ -1017,7 +1044,36 @@ private struct NumiBrainTissueCommand {
       regionalRouteHistoryInspection.history.states == regionalOracleRouteHistory.states
       && regionalRouteHistoryInspection.history.timestamps
         == regionalOracleRouteHistory.timestamps
+    let regionalRoutingError = zip(
+      regionalRoutingInspection.routingState.states,
+      regionalOracleRoutingState.states
+    ).reduce(Float.zero) { result, pair in
+      max(
+        result,
+        max(
+          abs(pair.0.score - pair.1.score),
+          abs(pair.0.strength - pair.1.strength)
+        )
+      )
+    }
+    let regionalRoutingTolerance: Float = 3e-6
+    let regionalRoutingDiscreteExact = zip(
+      regionalRoutingInspection.routingState.states,
+      regionalOracleRoutingState.states
+    ).allSatisfy { gpu, cpu in
+      gpu.isActive == cpu.isActive
+        && gpu.selectionCount == cpu.selectionCount
+        && gpu.lastSelectedTimestamp == cpu.lastSelectedTimestamp
+        && gpu.switchCount == cpu.switchCount
+    }
+    let activeRoutes = regionalRoutingInspection.routingState.states.enumerated().filter {
+      $0.element.isActive
+    }
+    let emergencyActiveRouteCount = activeRoutes.filter {
+      runtime.regionalTokenProgram.routes[$0.offset].flags.contains(.emergency)
+    }.count
     let regionalEvidence = RegionalExecutionEvidence(
+      programVersion: RegionalTokenProgram.programVersion,
       stateGenerationCount: 2,
       stateBytes: runtime.regionalStateByteCount * 2,
       finalSnapshotHash: regionalInspection.stableHash(),
@@ -1026,15 +1082,30 @@ private struct NumiBrainTissueCommand {
       routeCount: runtime.regionalTokenProgram.routes.count,
       routeBytes: runtime.regionalRouteByteCount,
       routeDelaysMicroseconds: runtime.regionalTokenProgram.routes.map(\.delayMicroseconds),
+      normalRouteBudgets: runtime.regionalTokenProgram.layouts.map(\.normalRouteBudget),
       routeHistoryGenerationCount: 2,
       routeHistoryCapacity: RegionalTokenProgram.routeHistoryCapacity,
       routeHistoryStateBytes: runtime.regionalRouteHistoryStateByteCount * 2,
       routeHistoryTimestampBytes: runtime.regionalRouteHistoryTimestampByteCount * 2,
       routeHistoryValueBytes: runtime.regionalRouteHistoryValueByteCount * 2,
+      routeRuntimeStateGenerationCount: 2,
+      routeRuntimeStateBytes: runtime.regionalRouteRuntimeStateByteCount * 2,
+      selectedRouteIndexBytes: runtime.regionalSelectedRouteIndexByteCount,
+      selectedRouteCountBytes: runtime.regionalSelectedRouteCountByteCount,
       parameterBytes: runtime.regionalParameterByteCount,
       programFingerprint: runtime.regionalTokenProgram.fingerprintHex,
       finalTokenSnapshotHash: regionalTokenInspection.stableHash(),
       finalRouteHistorySnapshotHash: regionalRouteHistoryInspection.stableHash(),
+      finalRoutingSnapshotHash: regionalRoutingInspection.stableHash(),
+      activeRouteCount: activeRoutes.count,
+      normalActiveRouteCount: activeRoutes.count - emergencyActiveRouteCount,
+      emergencyActiveRouteCount: emergencyActiveRouteCount,
+      totalRouteSelectionCount: regionalRoutingInspection.routingState.states.reduce(0) {
+        $0 + UInt64($1.selectionCount)
+      },
+      totalRouteSwitchCount: regionalRoutingInspection.routingState.states.reduce(0) {
+        $0 + UInt64($1.switchCount)
+      },
       totalUpdateCount: regionalInspection.states.reduce(0) {
         $0 + UInt64($1.updateCount)
       },
@@ -1051,10 +1122,14 @@ private struct NumiBrainTissueCommand {
       routeHistoryCPUReferenceTolerance: regionalRouteHistoryTolerance,
       routeHistoryCPUReferencePassed: regionalRouteHistoryDiscreteExact
         && regionalRouteHistoryError <= regionalRouteHistoryTolerance,
+      routingCPUReferenceMaximumAbsoluteError: regionalRoutingError,
+      routingCPUReferenceTolerance: regionalRoutingTolerance,
+      routingCPUReferencePassed: regionalRoutingDiscreteExact
+        && regionalRoutingError <= regionalRoutingTolerance,
       execution:
-        "one advance_due_regional_tokens threadgroup per root consumes the private due list, synchronizes modules by timestamp, resolves delayed routes from per-route timestamped rings, and writes private token, diagnostic, and route-history shadow generations",
+        "one advance_due_regional_tokens threadgroup per root consumes the private due list, synchronizes modules by timestamp, resolves causal route messages, scores and compacts deterministic top-k routes, preserves emergency bypass and minimum persistence, normalizes selected strengths, and writes private token, diagnostic, route-history, and routing-state shadow generations",
       interpretation:
-        "10,752 FP32 recurrent token scalars over eight logical modules with immutable factorized slow parameters and seven fixed sparse routes carrying 0-5 ms compiled delays; dynamic top-k, dense tiled matrices, fast-plastic bases, and cohort compaction remain unimplemented"
+        "10,752 FP32 recurrent token scalars over eight logical modules with immutable factorized slow parameters and seven candidate sparse routes carrying 0-5 ms compiled delays; context-conditioned route biases, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, and cohort compaction remain unimplemented"
     )
     return (
       try runtime.snapshotCommitted(),
@@ -1232,7 +1307,9 @@ private struct NumiBrainTissueCommand {
           && (try direct.snapshotCommittedRegionalTokens())
             == (try retried.snapshotCommittedRegionalTokens())
           && (try direct.snapshotCommittedRegionalRouteHistory())
-            == (try retried.snapshotCommittedRegionalRouteHistory()),
+            == (try retried.snapshotCommittedRegionalRouteHistory())
+          && (try direct.snapshotCommittedRegionalRoutingState())
+            == (try retried.snapshotCommittedRegionalRoutingState()),
         try aborted.snapshotCommitted().stableHash()
           == abortBaseline.snapshotCommitted().stableHash()
           && (try aborted.snapshotCommittedScheduler())
@@ -1243,6 +1320,8 @@ private struct NumiBrainTissueCommand {
             == (try abortBaseline.snapshotCommittedRegionalTokens())
           && (try aborted.snapshotCommittedRegionalRouteHistory())
             == (try abortBaseline.snapshotCommittedRegionalRouteHistory())
+          && (try aborted.snapshotCommittedRegionalRoutingState())
+            == (try abortBaseline.snapshotCommittedRegionalRoutingState())
       )
     }
   }

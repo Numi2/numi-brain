@@ -82,6 +82,7 @@ public struct RegionalTokenLayout: Codable, Equatable, Hashable, Sendable {
   public let incomingRouteOffset: UInt32
   public let incomingRouteCount: UInt16
   public let flags: UInt32
+  public let normalRouteBudget: UInt16
 
   public var scalarRange: Range<Int> {
     Int(scalarOffset)..<Int(scalarOffset + scalarCount)
@@ -98,6 +99,8 @@ public struct RegionalTokenLayout: Codable, Equatable, Hashable, Sendable {
     record.token_dimension = tokenDimension
     record.incoming_route_count = incomingRouteCount
     record.flags = flags
+    record.normal_route_budget = normalRouteBudget
+    record.reserved = 0
     return record
   }
 }
@@ -152,8 +155,13 @@ public struct RegionalTokenParameters: Codable, Equatable, Hashable, Sendable {
 
 @frozen
 public struct RegionalTokenProgram: Equatable, Sendable {
-  public static let programVersion: UInt32 = 1
+  public static let programVersion = UInt32(NB_REGIONAL_PROGRAM_VERSION)
   public static let routeHistoryCapacity = Int(NB_REGIONAL_ROUTE_HISTORY_CAPACITY)
+  public static let minimumRoutePersistenceMicroseconds = UInt32(
+    NB_REGIONAL_MIN_ROUTE_PERSISTENCE_MICROSECONDS
+  )
+  public static let routeSalienceGain: Float = 0.125
+  public static let routePersistenceBonus: Float = 0.05
 
   public let scheduleFingerprint: UInt64
   public let layouts: [RegionalTokenLayout]
@@ -167,7 +175,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   public init(
     schedule: BrainModuleSchedule,
     routes requestedRoutes: [RegionalTokenRoute],
-    parameters requestedParameters: [RegionalTokenParameters]? = nil
+    parameters requestedParameters: [RegionalTokenParameters]? = nil,
+    normalRouteBudgets requestedNormalRouteBudgets: [UInt16: UInt16] = [:]
   ) throws {
     let moduleIdentifiers = Set(schedule.modules.map(\.moduleIdentifier))
     let canonicalRoutes = requestedRoutes.sorted {
@@ -180,7 +189,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
       return $0.senderToken < $1.senderToken
     }
     guard Set(canonicalRoutes.map(\.senderModuleIdentifier)).isSubset(of: moduleIdentifiers),
-      Set(canonicalRoutes.map(\.receiverModuleIdentifier)).isSubset(of: moduleIdentifiers)
+      Set(canonicalRoutes.map(\.receiverModuleIdentifier)).isSubset(of: moduleIdentifiers),
+      Set(requestedNormalRouteBudgets.keys).isSubset(of: moduleIdentifiers)
     else {
       throw BrainRuntimeError.invalidSchedule("regional route names an unknown module")
     }
@@ -206,13 +216,24 @@ public struct RegionalTokenProgram: Equatable, Sendable {
       else {
         throw BrainRuntimeError.invalidSchedule("regional token scalar count exceeds ABI limits")
       }
-      let incomingCount = canonicalRoutes.lazy.filter {
+      let incomingRoutes = canonicalRoutes.filter {
         $0.receiverModuleIdentifier == module.moduleIdentifier
+      }
+      let incomingCount = incomingRoutes.count
+      let normalRouteCount = incomingRoutes.lazy.filter {
+        !$0.flags.contains(.emergency)
       }.count
+      let normalRouteBudget = Int(
+        requestedNormalRouteBudgets[module.moduleIdentifier]
+          ?? UInt16(min(normalRouteCount, 1))
+      )
       guard incomingCount <= Int(UInt16.max),
-        UInt64(incomingRouteOffset) + UInt64(incomingCount) <= UInt64(UInt32.max)
+        UInt64(incomingRouteOffset) + UInt64(incomingCount) <= UInt64(UInt32.max),
+        normalRouteBudget <= normalRouteCount
       else {
-        throw BrainRuntimeError.invalidSchedule("regional incoming route count exceeds ABI limits")
+        throw BrainRuntimeError.invalidSchedule(
+          "regional route count or normal-route budget exceeds compiled limits"
+        )
       }
       layouts.append(
         RegionalTokenLayout(
@@ -224,7 +245,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
           parameterOffset: scalarOffset,
           incomingRouteOffset: incomingRouteOffset,
           incomingRouteCount: UInt16(incomingCount),
-          flags: module.flags
+          flags: module.flags,
+          normalRouteBudget: UInt16(normalRouteBudget)
         )
       )
       scalarOffset += UInt32(scalarProduct)
@@ -340,6 +362,10 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     record.program_fingerprint = fingerprint
     record.history_capacity = UInt32(Self.routeHistoryCapacity)
     record.history_scalar_count = UInt32(routeHistoryScalarCount)
+    record.program_version = Self.programVersion
+    record.minimum_route_persistence_microseconds = Self.minimumRoutePersistenceMicroseconds
+    record.salience_gain = Self.routeSalienceGain
+    record.persistence_bonus = Self.routePersistenceBonus
     return record
   }
 
@@ -614,13 +640,142 @@ public struct RegionalRouteHistory: Equatable, Sendable {
 }
 
 @frozen
+public struct RegionalRouteRuntimeState: Equatable, Hashable, Sendable {
+  public static let neverSelected = UInt64.max
+
+  public var score: Float
+  public var strength: Float
+  public var isActive: Bool
+  public var selectionCount: UInt32
+  public var lastSelectedTimestamp: BrainTimestamp?
+  public var switchCount: UInt32
+
+  public init(
+    score: Float = 0,
+    strength: Float = 0,
+    isActive: Bool = false,
+    selectionCount: UInt32 = 0,
+    lastSelectedTimestamp: BrainTimestamp? = nil,
+    switchCount: UInt32 = 0
+  ) {
+    self.score = score
+    self.strength = strength
+    self.isActive = isActive
+    self.selectionCount = selectionCount
+    self.lastSelectedTimestamp = lastSelectedTimestamp
+    self.switchCount = switchCount
+  }
+
+  public var abiRecord: NBRegionalRouteRuntimeState {
+    var record = NBRegionalRouteRuntimeState()
+    record.score = score
+    record.strength = strength
+    record.active = isActive ? 1 : 0
+    record.selection_count = selectionCount
+    record.last_selected_timestamp_microseconds =
+      lastSelectedTimestamp?.rawValue ?? Self.neverSelected
+    record.switch_count = switchCount
+    record.reserved = 0
+    return record
+  }
+
+  public init(abiRecord: NBRegionalRouteRuntimeState) {
+    self.init(
+      score: abiRecord.score,
+      strength: abiRecord.strength,
+      isActive: abiRecord.active != 0,
+      selectionCount: abiRecord.selection_count,
+      lastSelectedTimestamp: abiRecord.last_selected_timestamp_microseconds == Self.neverSelected
+        ? nil
+        : BrainTimestamp(
+          microseconds: abiRecord.last_selected_timestamp_microseconds
+        ),
+      switchCount: abiRecord.switch_count
+    )
+  }
+}
+
+/// Per-agent route scores, selections, normalized strengths, and persistence.
+/// Shared route topology and scoring constants remain immutable in the program.
+@frozen
+public struct RegionalRoutingState: Equatable, Sendable {
+  public let programFingerprint: UInt64
+  public var states: [RegionalRouteRuntimeState]
+
+  public init(program: RegionalTokenProgram) {
+    programFingerprint = program.fingerprint
+    states = program.routes.map { _ in RegionalRouteRuntimeState() }
+  }
+
+  public init(
+    program: RegionalTokenProgram,
+    states: [RegionalRouteRuntimeState]
+  ) throws {
+    programFingerprint = program.fingerprint
+    self.states = states
+    try validate(program: program)
+  }
+
+  public func validate(program: RegionalTokenProgram) throws {
+    guard programFingerprint == program.fingerprint,
+      states.count == program.routes.count
+    else {
+      throw BrainRuntimeError.invalidSchedule("regional routing-state program mismatch")
+    }
+    for state in states {
+      guard state.score.isFinite, state.strength.isFinite,
+        state.strength >= 0, state.strength <= 1,
+        !state.isActive || state.lastSelectedTimestamp != nil,
+        (state.selectionCount == 0) == (state.lastSelectedTimestamp == nil)
+      else {
+        throw BrainRuntimeError.invalidSchedule("regional routing state is invalid")
+      }
+    }
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt64, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x0000_0100_0000_01b3
+        }
+      }
+    }
+    mix(programFingerprint, into: &hash)
+    mix(UInt64(states.count), into: &hash)
+    for state in states {
+      mix(UInt64(state.score.bitPattern), into: &hash)
+      mix(UInt64(state.strength.bitPattern), into: &hash)
+      mix(state.isActive ? 1 : 0, into: &hash)
+      mix(UInt64(state.selectionCount), into: &hash)
+      mix(
+        state.lastSelectedTimestamp?.rawValue ?? RegionalRouteRuntimeState.neverSelected,
+        into: &hash
+      )
+      mix(UInt64(state.switchCount), into: &hash)
+    }
+    return String(format: "%016llx", hash)
+  }
+}
+
+@frozen
 public struct RegionalTokenTransition: Equatable, Sendable {
   public let values: [Float]
   public let routeHistory: RegionalRouteHistory
+  public let routingState: RegionalRoutingState
 
-  public init(values: [Float], routeHistory: RegionalRouteHistory) {
+  public init(
+    values: [Float],
+    routeHistory: RegionalRouteHistory,
+    routingState: RegionalRoutingState
+  ) {
     self.values = values
     self.routeHistory = routeHistory
+    self.routingState = routingState
   }
 }
 
@@ -663,6 +818,52 @@ public struct RegionalRouteHistorySnapshot: Equatable, Sendable {
     mix(committedTime.rawValue, into: &hash)
     mix(generation, into: &hash)
     for byte in history.stableHash().utf8 {
+      hash ^= UInt64(byte)
+      hash &*= 0x0000_0100_0000_01b3
+    }
+    return String(format: "%016llx", hash)
+  }
+}
+
+@frozen
+public struct RegionalRoutingSnapshot: Equatable, Sendable {
+  public let scheduleFingerprint: UInt64
+  public let programFingerprint: UInt64
+  public let committedTime: BrainTimestamp
+  public let generation: UInt64
+  public let routingState: RegionalRoutingState
+
+  public init(
+    scheduleFingerprint: UInt64,
+    programFingerprint: UInt64,
+    committedTime: BrainTimestamp,
+    generation: UInt64,
+    routingState: RegionalRoutingState
+  ) {
+    self.scheduleFingerprint = scheduleFingerprint
+    self.programFingerprint = programFingerprint
+    self.committedTime = committedTime
+    self.generation = generation
+    self.routingState = routingState
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt64, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x0000_0100_0000_01b3
+        }
+      }
+    }
+    mix(scheduleFingerprint, into: &hash)
+    mix(programFingerprint, into: &hash)
+    mix(committedTime.rawValue, into: &hash)
+    mix(generation, into: &hash)
+    for byte in routingState.stableHash().utf8 {
       hash ^= UInt64(byte)
       hash &*= 0x0000_0100_0000_01b3
     }
@@ -723,7 +924,8 @@ public enum CPURegionalTokenOperator {
     schedule: BrainModuleSchedule,
     program: RegionalTokenProgram,
     invocations: [BrainModuleInvocation],
-    routeHistory initialRouteHistory: RegionalRouteHistory? = nil
+    routeHistory initialRouteHistory: RegionalRouteHistory? = nil,
+    routingState initialRoutingState: RegionalRoutingState? = nil
   ) throws -> RegionalTokenTransition {
     guard program.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.invalidSchedule("regional program and schedule fingerprints differ")
@@ -736,6 +938,8 @@ public enum CPURegionalTokenOperator {
     }
     var routeHistory = initialRouteHistory ?? RegionalRouteHistory(program: program)
     try routeHistory.validate(program: program)
+    var routingState = initialRoutingState ?? RegionalRoutingState(program: program)
+    try routingState.validate(program: program)
     let moduleIndices = Dictionary(
       uniqueKeysWithValues: schedule.modules.enumerated().map {
         ($0.element.moduleIdentifier, $0.offset)
@@ -754,6 +958,19 @@ public enum CPURegionalTokenOperator {
         end += 1
       }
       let preTimestamp = values
+      let dueModules = Set(invocations[cursor..<end].map(\.moduleIdentifier))
+      for moduleIndex in program.layouts.indices
+      where dueModules.contains(program.layouts[moduleIndex].moduleIdentifier) {
+        try selectRoutes(
+          receiverModuleIndex: moduleIndex,
+          timestamp: timestamp,
+          preTimestamp: preTimestamp,
+          routeHistory: routeHistory,
+          routingState: &routingState,
+          program: program,
+          moduleIndices: moduleIndices
+        )
+      }
       for invocation in invocations[cursor..<end] {
         guard let moduleIndex = moduleIndices[invocation.moduleIdentifier] else {
           throw BrainRuntimeError.invalidSchedule("regional invocation names an unknown module")
@@ -798,30 +1015,20 @@ public enum CPURegionalTokenOperator {
           let localMean = localSum / Float(dimension)
           var routedInput: Float = 0
           for routeIndex in routeRange {
+            let routeState = routingState.states[routeIndex]
+            guard routeState.isActive else { continue }
             let route = program.routes[routeIndex]
-            if route.delayMicroseconds == 0 {
-              guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
-                throw BrainRuntimeError.invalidSchedule("regional route sender disappeared")
-              }
-              let sender = program.layouts[senderIndex]
-              let senderFeature = feature % Int(sender.tokenDimension)
-              let senderScalar =
-                Int(sender.scalarOffset)
-                + Int(route.senderToken) * Int(sender.tokenDimension)
-                + senderFeature
-              routedInput += route.gain * preTimestamp[senderScalar]
-            } else if invocation.timestamp.rawValue >= UInt64(route.delayMicroseconds) {
-              routedInput +=
-                route.gain
-                * routeHistory.sample(
-                  routeIndex: routeIndex,
-                  targetTimestamp: BrainTimestamp(
-                    microseconds: invocation.timestamp.rawValue - UInt64(route.delayMicroseconds)
-                  ),
-                  feature: feature,
-                  program: program
-                )
-            }
+            routedInput +=
+              route.gain * routeState.strength
+              * (try routeMessageValue(
+                routeIndex: routeIndex,
+                timestamp: invocation.timestamp,
+                feature: feature,
+                preTimestamp: preTimestamp,
+                routeHistory: routeHistory,
+                program: program,
+                moduleIndices: moduleIndices
+              ))
           }
           let parameter = program.parameters[scalarIndex]
           let current = preTimestamp[scalarIndex]
@@ -845,7 +1052,6 @@ public enum CPURegionalTokenOperator {
         }
         lastUpdates[moduleIndex] = invocation.timestamp
       }
-      let dueModules = Set(invocations[cursor..<end].map(\.moduleIdentifier))
       for routeIndex in program.routes.indices
       where dueModules.contains(program.routes[routeIndex].senderModuleIdentifier) {
         try routeHistory.append(
@@ -858,6 +1064,170 @@ public enum CPURegionalTokenOperator {
       }
       cursor = end
     }
-    return RegionalTokenTransition(values: values, routeHistory: routeHistory)
+    return RegionalTokenTransition(
+      values: values,
+      routeHistory: routeHistory,
+      routingState: routingState
+    )
+  }
+
+  private static func routeMessageValue(
+    routeIndex: Int,
+    timestamp: BrainTimestamp,
+    feature: Int,
+    preTimestamp: [Float],
+    routeHistory: RegionalRouteHistory,
+    program: RegionalTokenProgram,
+    moduleIndices: [UInt16: Int]
+  ) throws -> Float {
+    let route = program.routes[routeIndex]
+    if route.delayMicroseconds == 0 {
+      guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
+        throw BrainRuntimeError.invalidSchedule("regional route sender disappeared")
+      }
+      let sender = program.layouts[senderIndex]
+      let senderFeature = feature % Int(sender.tokenDimension)
+      let senderScalar =
+        Int(sender.scalarOffset)
+        + Int(route.senderToken) * Int(sender.tokenDimension)
+        + senderFeature
+      return preTimestamp[senderScalar]
+    }
+    guard timestamp.rawValue >= UInt64(route.delayMicroseconds) else { return 0 }
+    return routeHistory.sample(
+      routeIndex: routeIndex,
+      targetTimestamp: BrainTimestamp(
+        microseconds: timestamp.rawValue - UInt64(route.delayMicroseconds)
+      ),
+      feature: feature,
+      program: program
+    )
+  }
+
+  private static func selectRoutes(
+    receiverModuleIndex: Int,
+    timestamp: BrainTimestamp,
+    preTimestamp: [Float],
+    routeHistory: RegionalRouteHistory,
+    routingState: inout RegionalRoutingState,
+    program: RegionalTokenProgram,
+    moduleIndices: [UInt16: Int]
+  ) throws {
+    let receiver = program.layouts[receiverModuleIndex]
+    let routeRange =
+      Int(
+        receiver.incomingRouteOffset)..<Int(
+        receiver.incomingRouteOffset + UInt32(receiver.incomingRouteCount)
+      )
+    guard !routeRange.isEmpty else { return }
+    let queryDimension = Int(receiver.tokenDimension)
+    let queryBase = Int(receiver.scalarOffset)
+    for routeIndex in routeRange {
+      var dot: Float = 0
+      var salience: Float = 0
+      for feature in 0..<queryDimension {
+        let message = try routeMessageValue(
+          routeIndex: routeIndex,
+          timestamp: timestamp,
+          feature: feature,
+          preTimestamp: preTimestamp,
+          routeHistory: routeHistory,
+          program: program,
+          moduleIndices: moduleIndices
+        )
+        dot += preTimestamp[queryBase + feature] * message
+        salience += abs(message)
+      }
+      var score =
+        dot / Float(Foundation.sqrt(Double(queryDimension)))
+        + program.headerRecord.salience_gain * salience / Float(queryDimension)
+      let previous = routingState.states[routeIndex]
+      if previous.isActive {
+        score += program.headerRecord.persistence_bonus
+      }
+      routingState.states[routeIndex].score = score
+    }
+
+    var selected: [Int] = []
+    selected.reserveCapacity(routeRange.count)
+    for routeIndex in routeRange where program.routes[routeIndex].flags.contains(.emergency) {
+      selected.append(routeIndex)
+    }
+    let normalBudget = Int(receiver.normalRouteBudget)
+    if normalBudget > 0 {
+      for routeIndex in routeRange
+      where !program.routes[routeIndex].flags.contains(.emergency)
+        && routingState.states[routeIndex].isActive
+        && selected.count < routeRange.count
+      {
+        guard let lastSelected = routingState.states[routeIndex].lastSelectedTimestamp,
+          timestamp >= lastSelected
+        else { continue }
+        if timestamp.rawValue - lastSelected.rawValue
+          < UInt64(program.headerRecord.minimum_route_persistence_microseconds)
+        {
+          selected.append(routeIndex)
+          if selected.lazy.filter({
+            !program.routes[$0].flags.contains(.emergency)
+          }).count == normalBudget {
+            break
+          }
+        }
+      }
+      while selected.lazy.filter({
+        !program.routes[$0].flags.contains(.emergency)
+      }).count < normalBudget {
+        var bestRoute: Int?
+        var bestScore = -Float.infinity
+        for routeIndex in routeRange
+        where !program.routes[routeIndex].flags.contains(.emergency)
+          && !selected.contains(routeIndex)
+        {
+          let score = routingState.states[routeIndex].score
+          if score > bestScore {
+            bestScore = score
+            bestRoute = routeIndex
+          }
+        }
+        guard let bestRoute else { break }
+        selected.append(bestRoute)
+      }
+    }
+
+    let maximumScore = selected.map { routingState.states[$0].score }.max() ?? 0
+    var strengthDenominator: Float = 0
+    var unnormalized: [Int: Float] = [:]
+    unnormalized.reserveCapacity(selected.count)
+    for routeIndex in selected {
+      let value = Float(
+        Foundation.exp(Double(routingState.states[routeIndex].score - maximumScore))
+      )
+      unnormalized[routeIndex] = value
+      strengthDenominator += value
+    }
+    let selectedSet = Set(selected)
+    for routeIndex in routeRange {
+      var state = routingState.states[routeIndex]
+      let wasActive = state.isActive
+      state.isActive = selectedSet.contains(routeIndex)
+      state.strength =
+        state.isActive && strengthDenominator > 0
+        ? (unnormalized[routeIndex] ?? 0) / strengthDenominator
+        : 0
+      if state.isActive {
+        state.selectionCount =
+          state.selectionCount == UInt32.max
+          ? UInt32.max
+          : state.selectionCount + 1
+        state.lastSelectedTimestamp = timestamp
+      }
+      if state.isActive != wasActive {
+        state.switchCount =
+          state.switchCount == UInt32.max
+          ? UInt32.max
+          : state.switchCount + 1
+      }
+      routingState.states[routeIndex] = state
+    }
   }
 }

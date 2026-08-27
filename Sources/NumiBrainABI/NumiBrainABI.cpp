@@ -18,6 +18,7 @@ static_assert(sizeof(NBRegionalRoute) == NB_REGIONAL_ROUTE_BYTE_COUNT);
 static_assert(sizeof(NBRegionalTokenParameters) == NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT);
 static_assert(sizeof(NBRegionalProgramHeader) == NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT);
 static_assert(sizeof(NBRegionalRouteHistoryState) == NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT);
+static_assert(sizeof(NBRegionalRouteRuntimeState) == NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -26,6 +27,8 @@ namespace {
 
 constexpr uint64_t kFNVOffset = 0xcbf29ce484222325ULL;
 constexpr uint64_t kFNVPrime = 0x100000001b3ULL;
+constexpr float kRegionalRouteSalienceGain = 0.125F;
+constexpr float kRegionalRoutePersistenceBonus = 0.05F;
 
 void mix_byte(uint64_t &hash, uint8_t byte) {
   hash ^= static_cast<uint64_t>(byte);
@@ -103,6 +106,10 @@ size_t nb_brain_abi_regional_program_header_size(void) {
 
 size_t nb_brain_abi_regional_route_history_state_size(void) {
   return sizeof(NBRegionalRouteHistoryState);
+}
+
+size_t nb_brain_abi_regional_route_runtime_state_size(void) {
+  return sizeof(NBRegionalRouteRuntimeState);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -211,6 +218,17 @@ uint32_t nb_brain_abi_validate_regional_program(
         return NB_REGIONAL_PROGRAM_LAYOUT_MISMATCH;
       }
     }
+    uint32_t normal_route_count = 0;
+    for (uint32_t route_index = layout.incoming_route_offset;
+         route_index < layout.incoming_route_offset + layout.incoming_route_count;
+         ++route_index) {
+      if ((routes[route_index].flags & 1U) == 0U) {
+        ++normal_route_count;
+      }
+    }
+    if (layout.normal_route_budget > normal_route_count || layout.reserved != 0) {
+      return NB_REGIONAL_PROGRAM_LAYOUT_MISMATCH;
+    }
     expected_scalar_offset += layout.scalar_count;
     expected_route_offset += layout.incoming_route_count;
   }
@@ -301,6 +319,13 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
       hash,
       static_cast<uint32_t>(NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS)
   );
+  mix_little_endian(hash, static_cast<uint32_t>(NB_REGIONAL_PROGRAM_VERSION));
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_REGIONAL_MIN_ROUTE_PERSISTENCE_MICROSECONDS)
+  );
+  mix_float(hash, kRegionalRouteSalienceGain);
+  mix_float(hash, kRegionalRoutePersistenceBonus);
   for (uint32_t index = 0; index < module_count; ++index) {
     const NBRegionalTokenLayout &value = layouts[index];
     mix_little_endian(hash, value.scalar_offset);
@@ -312,6 +337,8 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     mix_little_endian(hash, value.token_dimension);
     mix_little_endian(hash, value.incoming_route_count);
     mix_little_endian(hash, value.flags);
+    mix_little_endian(hash, value.normal_route_budget);
+    mix_little_endian(hash, value.reserved);
   }
   for (uint32_t index = 0; index < route_count; ++index) {
     const NBRegionalRoute &value = routes[index];

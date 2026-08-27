@@ -1,4 +1,4 @@
-# Multi-rate scheduler and module ABI v0.4
+# Multi-rate scheduler and module ABI v0.5
 
 This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and schedule-driven recurrent regional-token operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
@@ -25,10 +25,12 @@ ABI version 1 compiles the following standard-layout records:
 | `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
 | `NBRegionalModuleState` | 32 | Compact population trace, counters, phase, and last-update time |
-| `NBRegionalTokenLayout` | 32 | Region-major token and incoming-route spans |
+| `NBRegionalTokenLayout` | 32 | Region-major token, incoming-route span, and normal-route budget |
 | `NBRegionalRoute` | 24 | Compiled sparse message edge |
 | `NBRegionalTokenParameters` | 32 | Immutable factorized recurrence and gate coefficients per scalar |
-| `NBRegionalProgramHeader` | 32 | Program counts, version flags, and fingerprint |
+| `NBRegionalProgramHeader` | 48 | Versioned program counts, routing policy constants, and fingerprint |
+| `NBRegionalRouteHistoryState` | 16 | Timestamped causal-message ring cursor |
+| `NBRegionalRouteRuntimeState` | 32 | Per-agent route score, strength, selection, persistence, and counters |
 
 The module descriptor layout is:
 
@@ -103,7 +105,7 @@ After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal 
 
 Two private token generations and two private diagnostic generations track the scheduler clock generations. Commit publishes tissue, scheduler clocks, token state, and diagnostics together; abort publishes none. The 32-byte diagnostic record retains update counts, interrupt counts, phase, salience, and last-update time, but is no longer the authoritative regional neural state. The token operator has a deterministic CPU numerical oracle and performs no hot-path readback.
 
-The executable token program is fingerprinted and immutable during rollout. Seven fixed sparse routes provide the first live routed input sum with compiled 0-5 ms delays and transaction-owned 512-slot message rings. Dynamic top-k selection, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
+The executable token program is fingerprinted and immutable during rollout. Seven candidate sparse routes provide the first live routed input sum with compiled 0-5 ms delays and transaction-owned 512-slot message rings. At each due receiver timestamp, the deployment path deterministically scores causal messages, retains routes inside a 2 ms minimum-persistence interval, fills the receiver's normal top-k budget with canonical tie breaking, includes every emergency route outside that budget, normalizes the selected strengths, and gathers compact selected indices. Two private route-runtime generations commit scores, selections, timestamps, and counters with tokens and clocks. Learned/context-conditioned routing, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
 
 ## Cohort compaction oracle
 
@@ -164,5 +166,10 @@ These names define scheduling roles. Every role currently executes the common fa
 27. A Metal route ablation changes the compiled receiver token state while tissue and scheduler diagnostics remain identical.
 28. Token generations are exact across replay and rejected retry, unchanged by abort, and state-equivalent across control-window chunking.
 29. Schema-v9 records program fingerprint, token and route-history snapshot hashes, token, parameter, and route-history memory, and CPU parity.
+30. Version-2 regional programs fingerprint per-receiver route budgets, minimum persistence, and score constants.
+31. CPU and Metal agree on route scores and strengths within FP32 tolerance and exactly on active flags, selection counters, last-selected timestamps, and switch counters.
+32. Different sender-token content changes the normal top-k winner while the emergency route remains active.
+33. Route-runtime generations retry, abort, replay, and chunk at the same transaction boundary as tokens, history, clocks, and tissue.
+34. Schema-v10 records route budgets, routing memory, active-route counts, routing snapshot identity, and CPU parity.
 
-Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, fixed delayed sparse messages, and the shared transaction boundary. It does not establish learned production weights, dynamic top-k routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
