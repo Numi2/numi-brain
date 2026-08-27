@@ -45,6 +45,7 @@ static_assert(
     == NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT
 );
 static_assert(sizeof(NBJointCommitToken) == NB_JOINT_COMMIT_TOKEN_BYTE_COUNT);
+static_assert(sizeof(NBProtectiveCommand) == NB_PROTECTIVE_COMMAND_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -204,6 +205,10 @@ size_t nb_brain_abi_accepted_physics_state_token_size(void) {
 
 size_t nb_brain_abi_joint_commit_token_size(void) {
   return sizeof(NBJointCommitToken);
+}
+
+size_t nb_brain_abi_protective_command_size(void) {
+  return sizeof(NBProtectiveCommand);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -1294,4 +1299,90 @@ uint32_t nb_brain_abi_validate_joint_commit(
     return NB_JOINT_TRANSACTION_FINGERPRINT;
   }
   return NB_JOINT_TRANSACTION_VALID;
+}
+
+uint64_t nb_brain_abi_protective_command_fingerprint(
+    const NBProtectiveCommand *command
+) {
+  if (command == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_PROTECTIVE_COMMAND_VERSION));
+  mix_little_endian(hash, command->format_version);
+  mix_little_endian(hash, command->flags);
+  mix_little_endian(hash, command->timestamp_microseconds);
+  mix_little_endian(hash, command->brain_generation);
+  mix_little_endian(hash, command->interrupt_mask);
+  mix_float(hash, command->withdrawal_drive);
+  mix_float(hash, command->postural_stiffness);
+  mix_float(hash, command->motor_inhibition);
+  mix_float(hash, command->autonomic_arousal);
+  mix_little_endian(hash, command->environment_identifier);
+  mix_little_endian(hash, command->reserved);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_protective_command(
+    const NBProtectiveCommand *command
+) {
+  if (command == nullptr) {
+    return NB_PROTECTIVE_COMMAND_NULL;
+  }
+  if (command->format_version != NB_PROTECTIVE_COMMAND_VERSION) {
+    return NB_PROTECTIVE_COMMAND_FORMAT;
+  }
+  constexpr uint32_t known_flags =
+      NB_PROTECTIVE_COMMAND_FLAG_VALID
+      | NB_PROTECTIVE_COMMAND_FLAG_EMERGENCY_STOP
+      | NB_PROTECTIVE_COMMAND_FLAG_WITHDRAWAL
+      | NB_PROTECTIVE_COMMAND_FLAG_POSTURAL_BRACE
+      | NB_PROTECTIVE_COMMAND_FLAG_AUTONOMIC_AROUSAL;
+  if ((command->flags & NB_PROTECTIVE_COMMAND_FLAG_VALID) == 0
+      || (command->flags & ~known_flags) != 0 || command->reserved != 0) {
+    return NB_PROTECTIVE_COMMAND_FLAGS;
+  }
+  if (command->brain_generation == 0 && command->timestamp_microseconds != 0) {
+    return NB_PROTECTIVE_COMMAND_GENERATION;
+  }
+  const float drives[] = {
+      command->withdrawal_drive,
+      command->postural_stiffness,
+      command->motor_inhibition,
+      command->autonomic_arousal,
+  };
+  for (float drive : drives) {
+    if (!std::isfinite(drive)) {
+      return NB_PROTECTIVE_COMMAND_NONFINITE;
+    }
+    if (drive < 0.0F || drive > 1.0F) {
+      return NB_PROTECTIVE_COMMAND_RANGE;
+    }
+  }
+  const bool has_interrupt = command->interrupt_mask != 0;
+  const bool emergency =
+      (command->flags & NB_PROTECTIVE_COMMAND_FLAG_EMERGENCY_STOP) != 0;
+  const bool withdrawal =
+      (command->flags & NB_PROTECTIVE_COMMAND_FLAG_WITHDRAWAL) != 0;
+  const bool brace =
+      (command->flags & NB_PROTECTIVE_COMMAND_FLAG_POSTURAL_BRACE) != 0;
+  const bool arousal =
+      (command->flags & NB_PROTECTIVE_COMMAND_FLAG_AUTONOMIC_AROUSAL) != 0;
+  if ((!has_interrupt && (command->flags != NB_PROTECTIVE_COMMAND_FLAG_VALID
+          || command->withdrawal_drive != 0.0F
+          || command->postural_stiffness != 0.0F
+          || command->motor_inhibition != 0.0F
+          || command->autonomic_arousal != 0.0F))
+      || (emergency != (command->motor_inhibition == 1.0F))
+      || (withdrawal != (command->withdrawal_drive > 0.0F))
+      || (brace != (command->postural_stiffness > 0.0F))
+      || (arousal != (command->autonomic_arousal > 0.0F))) {
+    return NB_PROTECTIVE_COMMAND_RELATION;
+  }
+  if (command->command_fingerprint == 0
+      || command->command_fingerprint
+          != nb_brain_abi_protective_command_fingerprint(command)) {
+    return NB_PROTECTIVE_COMMAND_FINGERPRINT;
+  }
+  return NB_PROTECTIVE_COMMAND_VALID;
 }

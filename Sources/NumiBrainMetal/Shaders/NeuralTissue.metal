@@ -391,6 +391,27 @@ struct NBRegionalModuleStateABI {
     ulong last_update_microseconds;
 };
 
+struct NBProtectiveCommandUniformsABI {
+    ulong brain_generation;
+    uint module_count;
+    uint environment_identifier;
+};
+
+struct NBProtectiveCommandABI {
+    uint format_version;
+    uint flags;
+    ulong timestamp_microseconds;
+    ulong brain_generation;
+    ulong interrupt_mask;
+    float withdrawal_drive;
+    float postural_stiffness;
+    float motor_inhibition;
+    float autonomic_arousal;
+    uint environment_identifier;
+    uint reserved;
+    ulong command_fingerprint;
+};
+
 struct NBRegionalTokenLayoutABI {
     uint scalar_offset;
     uint scalar_count;
@@ -482,6 +503,8 @@ static_assert(sizeof(NBDispatchTokenUniformsABI) == 32, "token uniform ABI drift
 static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
+static_assert(sizeof(NBProtectiveCommandUniformsABI) == 16, "protective uniforms drift");
+static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
@@ -508,6 +531,60 @@ constant uint NBReceptorTransductionStatusValid = 0u;
 constant uint NBReceptorTransductionStatusEventCapacity = 1u;
 constant uint NBReceptorTransductionStatusTimeOverflow = 2u;
 constant uint NBInterruptEventFlagReceptorDerived = 1u << 0;
+constant uint NBProtectiveCommandVersion = 1u;
+constant uint NBProtectiveCommandFlagValid = 1u << 0;
+constant uint NBProtectiveCommandFlagEmergencyStop = 1u << 1;
+constant uint NBProtectiveCommandFlagWithdrawal = 1u << 2;
+constant uint NBProtectiveCommandFlagPosturalBrace = 1u << 3;
+constant uint NBProtectiveCommandFlagAutonomicArousal = 1u << 4;
+constant ulong NBInterruptPain = 1ul << 0;
+constant ulong NBInterruptDamagingContact = 1ul << 1;
+constant ulong NBInterruptLossOfSupport = 1ul << 2;
+constant ulong NBInterruptImpact = 1ul << 3;
+constant ulong NBInterruptPhysiologicalCritical = 1ul << 4;
+constant ulong NBInterruptJointLimit = 1ul << 5;
+constant ulong NBInterruptMuscleOverload = 1ul << 6;
+constant ulong NBInterruptRescue = 1ul << 9;
+
+inline void protective_mix_byte(thread ulong &hash, uchar byte) {
+    hash ^= ulong(byte);
+    hash *= 0x100000001b3ul;
+}
+
+inline void protective_mix_uint(thread ulong &hash, uint value) {
+    for (uint byte = 0u; byte < 4u; ++byte) {
+        protective_mix_byte(hash, uchar(value >> (byte * 8u)));
+    }
+}
+
+inline void protective_mix_ulong(thread ulong &hash, ulong value) {
+    for (uint byte = 0u; byte < 8u; ++byte) {
+        protective_mix_byte(hash, uchar(value >> (byte * 8u)));
+    }
+}
+
+inline void protective_mix_float(thread ulong &hash, float value) {
+    protective_mix_uint(hash, as_type<uint>(value));
+}
+
+inline ulong protective_command_fingerprint(
+    thread const NBProtectiveCommandABI &command
+) {
+    ulong hash = 0xcbf29ce484222325ul;
+    protective_mix_uint(hash, NBProtectiveCommandVersion);
+    protective_mix_uint(hash, command.format_version);
+    protective_mix_uint(hash, command.flags);
+    protective_mix_ulong(hash, command.timestamp_microseconds);
+    protective_mix_ulong(hash, command.brain_generation);
+    protective_mix_ulong(hash, command.interrupt_mask);
+    protective_mix_float(hash, command.withdrawal_drive);
+    protective_mix_float(hash, command.postural_stiffness);
+    protective_mix_float(hash, command.motor_inhibition);
+    protective_mix_float(hash, command.autonomic_arousal);
+    protective_mix_uint(hash, command.environment_identifier);
+    protective_mix_uint(hash, command.reserved);
+    return hash;
+}
 
 inline bool interrupt_event_less(
     thread const NBInterruptEventABI &lhs,
@@ -2472,6 +2549,79 @@ kernel void advance_cohort_regional_tokens_routed(
         threadgroup_barrier(mem_flags::mem_device);
         cursor = groupEnd;
     }
+}
+
+/// Derives one species-neutral protective command from the accepted regional
+/// prefix. The command remains in private GPU memory for the next physical
+/// candidate; a species adapter owns its final muscle/actuator mapping.
+kernel void derive_protective_command(
+    device const NBSchedulerResultABI *schedulerResult [[buffer(0)]],
+    device const NBDueInvocationABI *invocations [[buffer(1)]],
+    device const NBModuleDescriptorABI *modules [[buffer(2)]],
+    device const NBRegionalModuleStateABI *regionalStates [[buffer(3)]],
+    constant NBProtectiveCommandUniformsABI *uniforms [[buffer(4)]],
+    device NBProtectiveCommandABI *output [[buffer(5)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+    ulong interruptMask = 0ul;
+    if (schedulerResult->status == NBSchedulerStatusValid) {
+        for (uint index = 0u; index < schedulerResult->invocation_count; ++index) {
+            const NBDueInvocationABI invocation = invocations[index];
+            if ((invocation.reason_flags & NBSchedulerReasonInterrupt) != 0u) {
+                interruptMask |= invocation.interrupt_mask;
+            }
+        }
+    }
+    float regionalSalience = 0.0f;
+    for (uint index = 0u; index < uniforms->module_count; ++index) {
+        const ushort clockClass = modules[index].clock_class;
+        if (clockClass == 1u || clockClass == 2u) {
+            regionalSalience = max(
+                regionalSalience,
+                clamp(regionalStates[index].interrupt_salience, 0.0f, 1.0f)
+            );
+        }
+    }
+    const ulong withdrawalCauses =
+        NBInterruptPain | NBInterruptDamagingContact
+        | NBInterruptJointLimit | NBInterruptMuscleOverload;
+    const ulong braceCauses = NBInterruptLossOfSupport | NBInterruptImpact;
+    const ulong stopCauses =
+        withdrawalCauses | braceCauses | NBInterruptPhysiologicalCritical
+        | NBInterruptRescue;
+    const bool withdrawal = (interruptMask & withdrawalCauses) != 0ul;
+    const bool brace = (interruptMask & braceCauses) != 0ul;
+    const bool emergencyStop = (interruptMask & stopCauses) != 0ul;
+    const bool arousal = interruptMask != 0ul;
+    NBProtectiveCommandABI command;
+    command.format_version = NBProtectiveCommandVersion;
+    command.flags = NBProtectiveCommandFlagValid;
+    if (emergencyStop) {
+        command.flags |= NBProtectiveCommandFlagEmergencyStop;
+    }
+    if (withdrawal) {
+        command.flags |= NBProtectiveCommandFlagWithdrawal;
+    }
+    if (brace) {
+        command.flags |= NBProtectiveCommandFlagPosturalBrace;
+    }
+    if (arousal) {
+        command.flags |= NBProtectiveCommandFlagAutonomicArousal;
+    }
+    command.timestamp_microseconds = schedulerResult->target_time_microseconds;
+    command.brain_generation = uniforms->brain_generation;
+    command.interrupt_mask = interruptMask;
+    command.withdrawal_drive = withdrawal ? max(0.5f, regionalSalience) : 0.0f;
+    command.postural_stiffness = brace ? max(0.75f, regionalSalience) : 0.0f;
+    command.motor_inhibition = emergencyStop ? 1.0f : 0.0f;
+    command.autonomic_arousal = arousal ? max(0.5f, regionalSalience) : 0.0f;
+    command.environment_identifier = uniforms->environment_identifier;
+    command.reserved = 0u;
+    command.command_fingerprint = protective_command_fingerprint(command);
+    output[0] = command;
 }
 
 kernel void neural_tissue_step(

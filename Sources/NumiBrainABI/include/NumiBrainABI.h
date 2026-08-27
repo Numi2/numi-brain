@@ -41,8 +41,10 @@ enum {
   NB_JOINT_SUBSTEP_TOKEN_BYTE_COUNT = 72,
   NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT = 64,
   NB_JOINT_COMMIT_TOKEN_BYTE_COUNT = 64,
+  NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
+  NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -50,6 +52,11 @@ enum {
   NB_RECEPTOR_EVENT_ABI_VERSION = 1,
   NB_RECEPTOR_MAX_CONDUCTION_LATENCY_MICROSECONDS = 500000,
   NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED = 1 << 0,
+  NB_PROTECTIVE_COMMAND_FLAG_VALID = 1 << 0,
+  NB_PROTECTIVE_COMMAND_FLAG_EMERGENCY_STOP = 1 << 1,
+  NB_PROTECTIVE_COMMAND_FLAG_WITHDRAWAL = 1 << 2,
+  NB_PROTECTIVE_COMMAND_FLAG_POSTURAL_BRACE = 1 << 3,
+  NB_PROTECTIVE_COMMAND_FLAG_AUTONOMIC_AROUSAL = 1 << 4,
 };
 
 typedef struct NBModuleDescriptor {
@@ -390,6 +397,24 @@ typedef struct NBJointCommitToken {
   uint64_t commit_fingerprint;
 } NBJointCommitToken;
 
+/// Species-neutral protective output derived from accepted fast regional
+/// state. A species motor adapter maps these bounded drives to muscles or
+/// actuators for the following physical candidate.
+typedef struct NBProtectiveCommand {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t timestamp_microseconds;
+  uint64_t brain_generation;
+  uint64_t interrupt_mask;
+  float withdrawal_drive;
+  float postural_stiffness;
+  float motor_inhibition;
+  float autonomic_arousal;
+  uint32_t environment_identifier;
+  uint32_t reserved;
+  uint64_t command_fingerprint;
+} NBProtectiveCommand;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -498,6 +523,18 @@ typedef enum NBJointTransactionValidation {
   NB_JOINT_TRANSACTION_RELATION = 8,
 } NBJointTransactionValidation;
 
+typedef enum NBProtectiveCommandValidation {
+  NB_PROTECTIVE_COMMAND_VALID = 0,
+  NB_PROTECTIVE_COMMAND_NULL = 1,
+  NB_PROTECTIVE_COMMAND_FORMAT = 2,
+  NB_PROTECTIVE_COMMAND_FLAGS = 3,
+  NB_PROTECTIVE_COMMAND_GENERATION = 4,
+  NB_PROTECTIVE_COMMAND_NONFINITE = 5,
+  NB_PROTECTIVE_COMMAND_RANGE = 6,
+  NB_PROTECTIVE_COMMAND_RELATION = 7,
+  NB_PROTECTIVE_COMMAND_FINGERPRINT = 8,
+} NBProtectiveCommandValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -528,6 +565,7 @@ size_t nb_brain_abi_joint_transaction_token_size(void);
 size_t nb_brain_abi_joint_substep_token_size(void);
 size_t nb_brain_abi_accepted_physics_state_token_size(void);
 size_t nb_brain_abi_joint_commit_token_size(void);
+size_t nb_brain_abi_protective_command_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -697,6 +735,14 @@ uint32_t nb_brain_abi_validate_joint_commit(
     const NBJointTransactionToken *transaction,
     const NBAcceptedPhysicsStateToken *accepted,
     const NBJointCommitToken *commit
+);
+
+uint64_t nb_brain_abi_protective_command_fingerprint(
+    const NBProtectiveCommand *command
+);
+
+uint32_t nb_brain_abi_validate_protective_command(
+    const NBProtectiveCommand *command
 );
 
 #ifdef __cplusplus

@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.6
+# NumanX joint transaction contract v0.7
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -7,7 +7,8 @@ candidates, accepted physical shadows, and final commit.
 
 ## Stable ABI
 
-The C++ ABI owns four standard-layout records and field-wise fingerprints:
+The C++ ABI owns four standard-layout transaction records plus one output
+record, all with field-wise fingerprints:
 
 - `NBJointTransactionToken` (96 bytes) binds environment, episode, control
   step, immutable parameter version, base brain and physics generations,
@@ -22,6 +23,9 @@ The C++ ABI owns four standard-layout records and field-wise fingerprints:
 - `NBJointCommitToken` (64 bytes) binds the accepted physical proof to the new
   brain and physics generations, committed timestamp, parameter version, and
   environment.
+- `NBProtectiveCommand` (64 bytes) binds one accepted brain generation and
+  timestamp to its interrupt mask, bounded withdrawal, bracing,
+  motor-inhibition, and autonomic-arousal drives, environment, and flags.
 
 Fingerprints mix fields explicitly in little-endian order and never hash struct
 padding. Validation rejects version, identity, time, generation, flag,
@@ -117,15 +121,28 @@ unchanged and the retry recomputes tissue from the previous accepted state.
 Neither path publishes committed state.
 
 Each accepted prefix includes all accepted substep events from the root start,
-so bounded v0.6 execution recomputes a canonical prefix rather than mutating
+so bounded v0.7 execution recomputes a canonical prefix rather than mutating
 the committed generation incrementally. After the final accepted physical
 token reaches the target, `finishInteractiveJointControl` binds that fast
 shadow and the accepted tissue shadow to the joint-only commit guard. A final
 prefix is recomputed only when the caller supplies additional host-only events
 at finish. The resulting commit receipt remains the only publication point.
 Interactive abort, including abort with an active GPU candidate, publishes no
-tissue, scheduler, token, delayed-route, routing, time, or random-counter
-history.
+tissue, scheduler, token, delayed-route, routing, protective-command, time, or
+random-counter history.
+
+After every accepted scheduler/regional prefix, `derive_protective_command`
+unions the accepted interrupt invocations and reads emergency/spinal diagnostic
+salience. It writes a fingerprinted command into the private generation paired
+with that prefix. The next `advanceFastSystems` result exposes the command as a
+GPU buffer address, byte count, physical timestamp, and brain generation. The
+first candidate receives the committed idle command. Rejected events launch no
+derivation and cannot alter the latest accepted command. Commit publishes the
+paired command generation; abort restores the prior committed generation.
+
+The command is deliberately species neutral. A body adapter must translate its
+drives into muscle excitation, autonomic input, or a robot actuator contract.
+The command does not write NumanX state directly.
 
 The reference implementation deliberately synchronizes the host after each
 candidate Metal submission so an external physical solver can return its
@@ -143,10 +160,10 @@ delayed-route, and routing-state fingerprints.
 
 There is no live NumanX adapter or demonstrated atomic physical/brain pointer
 publication yet. Accepted receptor events reach a fast scheduler/regional
-shadow after physical acceptance and before the next candidate; they cannot
-alter the physical candidate that has already been accepted, and no protective
-motor-output adapter exists yet. The timestamped Metal history is bounded to 32
-accepted samples; a corrected-duration candidate fails before dispatch if
-accepting it would erase the only bracket required by the maximum configured
-delay. Cross-runtime command coordination and protective output remain required
-before this boundary can claim working NumanX coupling.
+shadow and a species-neutral protective command after physical acceptance and
+before the next candidate; they cannot alter the physical candidate that has
+already been accepted. The timestamped Metal history is bounded to 32 accepted
+samples; a corrected-duration candidate fails before dispatch if accepting it
+would erase the only bracket required by the maximum configured delay. A live
+cross-runtime consumer and the body-specific command-to-muscle mapping remain
+required before this boundary can claim working NumanX coupling.
