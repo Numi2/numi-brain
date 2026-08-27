@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.10
+# Mesoscale neural tissue model v0.11
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -26,7 +26,9 @@ An immutable `uint8` field stores outgoing local-conduction delay class `d_j` fo
 
 Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own 0–31 step delay. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
-Runtime input uses an immutable canonical schedule of at most 64 receptor-derived events. Each event stores a unique identifier, normalized center and radius, half-open physical-time interval, excitatory and inhibitory drive, bounded noise amplitude, and flags. The schedule is neural input after receptor transduction; it is not raw or privileged NumanX state. Before every attempted tissue substep, a Metal kernel compacts the due schedule indices into a private GPU buffer. A device barrier publishes that list before the tissue kernel, so each site scans only the active set. The CPU oracle constructs the same canonical active-index list. Future records may remain in the immutable schedule without entering tissue computation before their timestamps.
+Runtime input uses an immutable canonical schedule of at most 64 receptor-derived events. Each compiled 64-byte event stores a unique schedule identifier, normalized center and radius, half-open physical-time interval, excitatory and inhibitory drive, bounded noise amplitude, flags, interrupt class, conduction latency, receptor identity, magnitude, and auxiliary metadata. The schedule is neural input after receptor transduction; it is not raw or privileged NumanX state. Before every attempted tissue substep, a Metal kernel compacts the due schedule indices into a private GPU buffer. A device barrier publishes that list before the tissue kernel, so each site scans only the active set. The CPU oracle constructs the same canonical active-index list. Future records may remain in the immutable schedule without entering tissue computation before their timestamps.
+
+After the accepted candidate sequence, `transduce_receptor_interrupts` derives each due onset timestamp as start time plus conduction latency, merges it with any host scheduler events, canonically sorts the result, and leaves the compact queue and count in private GPU memory for `schedule_due_modules`. The first scheduler root includes its lower boundary; later roots exclude it to prevent duplicate onset delivery. This is a root-level causal bridge into regional computation, not yet a mid-physics-substep protective loop.
 
 The update is a normalized Wilson-Cowan-family system:
 
@@ -100,7 +102,7 @@ The uncalibrated v0 parameter set is:
 | Inhibitory bias | -3.0 |
 | Sigmoid gains | 1, 1 |
 
-Grid coordinates are normalized, not millimetres. Event noise is a bounded numerical receptor-drive perturbation, not a fit to receptor or neural noise statistics. V0.8 therefore establishes causal GPU-compacted noisy-event and delayed structured neural-field computation integrated transactionally with scheduler-driven recurrent regional tokens. It does not establish measured sensing, conduction velocity, cortical thickness, anatomical connectivity, learned regional dynamics, lesion pathology, or tissue scale.
+Grid coordinates are normalized, not millimetres. Event noise is a bounded numerical receptor-drive perturbation, not a fit to receptor or neural noise statistics. V0.11 therefore establishes causal GPU-compacted noisy-event and receptor-interrupt computation with delayed structured neural-field and recurrent regional execution. It does not establish measured sensing, conduction velocity, cortical thickness, anatomical connectivity, learned regional dynamics, lesion pathology, tissue scale, or mid-NumanX-substep emergency latency.
 
 Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in 1972 and extended the theory to two-dimensional cortical and thalamic sheets with recurrent lateral connections in 1973. Those papers establish the model class, not this repository's chosen parameters or biological calibration:
 
@@ -163,6 +165,11 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 39. CPU and Metal agree on route scores and normalized strengths within FP32 tolerance and exactly on selections, counters, and timestamps.
 40. Routing state retries, aborts, replays, and chunks at the shared tissue, scheduler, token, and route-history transaction boundary.
 41. Schema-v10 reports program version, route budgets, routing-state memory, selected-route scratch, active-route counts, routing snapshot identity, and CPU parity.
+42. Compiled receptor records include typed interrupt, latency, receptor identity, magnitude, and auxiliary metadata in 64 bytes across C++, Swift, and Metal.
+43. CPU and Metal derive the same latency-shifted receptor interrupt without future leakage or adjacent-root boundary duplication.
+44. The private transduced interrupt queue is consumed without a hot-path CPU count readback.
+45. Rejected retry and full root abort reproduce the same receptor-derived interrupt and regional emergency response.
+46. Schema-v11 reports receptor ABI, interrupt and latency configuration, transduction dispatches, private queue memory, typed result status, counts, and CPU parity.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -172,7 +179,7 @@ The Metal implementation compiles `NeuralTissue.metal` as Metal language version
 
 Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure, per-site delay classes, CSR destination offsets, packed `uint4` projection edges, and packed receptor events. A bounded `compact_receptor_events` dispatch writes one count and the due canonical event indices into a 260-byte private buffer. After an explicit device barrier, each Metal tissue thread gathers only the incoming edges for its destination site, samples edge-specific history, and scans only those compacted event indices. Relay history uses two private 32-slot FP32 planes. A 32-bit owner mask selects the authoritative plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private scratch buffer. Commit publishes the shadow owner mask and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative.
 
-After the accepted tissue candidate sequence, the same encoder dispatches `schedule_due_modules`. It reads private immutable module descriptors and the committed private clock generation, then writes the other clock generation plus a private due-invocation list. Root commit publishes tissue, relay, and scheduler ownership together. Abort publishes none of them. Scheduler inspection is an explicit post-completion staging operation and never occurs between control roots.
+After the accepted tissue candidate sequence, the same encoder dispatches `transduce_receptor_interrupts`, barriers its canonical private event queue, then dispatches `schedule_due_modules`. The scheduler reads private immutable module descriptors and the committed private clock generation, then writes the other clock generation plus a private due-invocation list. Root commit publishes tissue, relay, and scheduler ownership together. Abort publishes none of their neural effects. Scheduler inspection is an explicit post-completion staging operation and never occurs between control roots.
 
 After another device barrier, `advance_due_regional_tokens` consumes the private result and due list with one 256-lane threadgroup. Lanes stride across 10,752 FP32 region-major token scalars and resolve delayed messages from per-route timestamp rings. At each due timestamp, one lane per receiver scores its causal candidate messages, compacts every emergency route plus the configured normal top-k, preserves active routes inside a 2 ms minimum interval, and normalizes selected strengths. Scalar lanes gather only those compacted indices before publishing the timestamp synchronously. The kernel writes the other private token, diagnostic, route-history, and per-agent routing-state generations. Regional ownership is published with scheduler clock and tissue generations. The factorized parameter and score fixtures have learned-model form but are not trained production models; learned/context-conditioned routing and its differentiable training form remain absent.
 
@@ -190,12 +197,12 @@ For `N` tissue sites and `E` projections, the immutable sparse graph adds
 4(N+1)+16E\text{ bytes}
 \]
 
-before allocator alignment. Every event adds another 48 immutable bytes. The fixed active-event allocation is
+before allocator alignment. Every event adds another 64 immutable bytes. The fixed active-event allocation is
 
 \[
 4(1+64)=260\text{ bytes},
 \]
 
-holding one 32-bit count and up to 64 32-bit schedule indices. The default scheduler adds 256 descriptor bytes, two 128-byte private clock generations, a 1,536-byte shared interrupt capacity, 40 shared uniform bytes, a 131,072-byte private invocation capacity, and a 16-byte private result. Regional execution adds two 256-byte diagnostic generations, two 43,008-byte token generations, one 43,008-byte candidate buffer, 344,064 immutable parameter bytes, 256 layout bytes, 168 route bytes, a 48-byte program header, two 224-byte route-runtime generations, a 28-byte selected-route-index span, and a 32-byte selected-count span before allocator alignment. Graph, event, scheduler, regional, routing, memory, transaction, and input identities are explicit schema-v10 evidence fields.
+holding one 32-bit count and up to 64 32-bit schedule indices. The default scheduler adds 256 descriptor bytes, two 128-byte private clock generations, a 1,536-byte shared host-interrupt capacity, a second 1,536-byte private transduced-interrupt capacity, 40 shared transduction-uniform bytes, a 16-byte private transduction result, 40 shared scheduler-uniform bytes, a 131,072-byte private invocation capacity, and a 16-byte private scheduler result. Regional execution adds two 256-byte diagnostic generations, two 43,008-byte token generations, one 43,008-byte candidate buffer, 344,064 immutable parameter bytes, 256 layout bytes, 168 route bytes, a 48-byte program header, two 224-byte route-runtime generations, a 28-byte selected-route-index span, and a 32-byte selected-count span before allocator alignment. Graph, event, scheduler, regional, routing, memory, transaction, and input identities are explicit schema-v11 evidence fields.
 
 The bounded one-lane GPU compactor removes inactive schedule entries from per-site work, but it is not the final large-cohort event path. Dynamic NumanX event packets, parallel prefix-sum cohort compaction, event-specific indirect dispatch, and queue-capacity pressure handling remain Phase 1/2 work before production-scale claims.

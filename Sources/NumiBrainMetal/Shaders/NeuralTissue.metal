@@ -136,12 +136,30 @@ inline float tissue_random_symmetric_unit(
     return 2.0f * uniform - 1.0f;
 }
 
+struct NBReceptorEventABI {
+    float center_x;
+    float center_y;
+    float radius;
+    float start_milliseconds;
+    float end_milliseconds;
+    float excitatory_drive;
+    float inhibitory_drive;
+    float noise_amplitude;
+    uint identifier;
+    uint flags;
+    ulong interrupt_mask;
+    uint conduction_latency_microseconds;
+    uint receptor_identifier;
+    float magnitude;
+    float auxiliary_value;
+};
+
 /// Compacts temporally due receptor events into canonical schedule order.
 /// One deterministic GPU lane is sufficient for the bounded v0 schedule;
 /// larger cohort queues will replace this with a prefix-sum implementation.
 kernel void compact_receptor_events(
     constant float *uniforms [[buffer(0)]],
-    device const float4 *receptorEvents [[buffer(1)]],
+    device const NBReceptorEventABI *receptorEvents [[buffer(1)]],
     device uint *activeEventIndices [[buffer(2)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
@@ -152,11 +170,10 @@ kernel void compact_receptor_events(
     const float time = uniforms[TissueTimeMilliseconds];
     uint activeCount = 0u;
     for (uint eventIndex = 0u; eventIndex < eventCount; ++eventIndex) {
-        const float4 geometryAndStart = receptorEvents[eventIndex * 3u];
-        const float4 endDriveAndNoise = receptorEvents[eventIndex * 3u + 1u];
-        if (geometryAndStart.z > 0.0f
-            && time >= geometryAndStart.w
-            && time < endDriveAndNoise.x) {
+        const NBReceptorEventABI event = receptorEvents[eventIndex];
+        if (event.radius > 0.0f
+            && time >= event.start_milliseconds
+            && time < event.end_milliseconds) {
             activeEventIndices[activeCount + 1u] = eventIndex;
             activeCount += 1u;
         }
@@ -186,6 +203,24 @@ struct NBInterruptEventABI {
     ulong interrupt_mask;
     uint identifier;
     uint flags;
+};
+
+struct NBReceptorEventTransductionUniformsABI {
+    ulong committed_time_microseconds;
+    ulong target_time_microseconds;
+    uint receptor_event_count;
+    uint host_event_count;
+    uint event_capacity;
+    uint flags;
+    uint reserved_0;
+    uint reserved_1;
+};
+
+struct NBReceptorEventTransductionResultABI {
+    uint event_count;
+    uint receptor_event_count;
+    uint status;
+    uint reserved;
 };
 
 struct NBDueInvocationABI {
@@ -293,7 +328,16 @@ struct NBRegionalRouteRuntimeStateABI {
 
 static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
 static_assert(sizeof(NBModuleClockStateABI) == 16, "module clock ABI drift");
+static_assert(sizeof(NBReceptorEventABI) == 64, "receptor event ABI drift");
 static_assert(sizeof(NBInterruptEventABI) == 24, "interrupt event ABI drift");
+static_assert(
+    sizeof(NBReceptorEventTransductionUniformsABI) == 40,
+    "receptor transduction uniform ABI drift"
+);
+static_assert(
+    sizeof(NBReceptorEventTransductionResultABI) == 16,
+    "receptor transduction result ABI drift"
+);
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 40, "scheduler uniform ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
@@ -311,6 +355,113 @@ constant uint NBSchedulerReasonInterrupt = 1u << 1;
 constant uint NBSchedulerStatusValid = 0u;
 constant uint NBSchedulerStatusInvocationCapacity = 1u;
 constant uint NBSchedulerStatusTimeOverflow = 2u;
+constant uint NBSchedulerStatusEventTransduction = 3u;
+constant uint NBReceptorTransductionStatusValid = 0u;
+constant uint NBReceptorTransductionStatusEventCapacity = 1u;
+constant uint NBReceptorTransductionStatusTimeOverflow = 2u;
+constant uint NBInterruptEventFlagReceptorDerived = 1u << 0;
+
+inline bool interrupt_event_less(
+    thread const NBInterruptEventABI &lhs,
+    thread const NBInterruptEventABI &rhs
+) {
+    if (lhs.timestamp_microseconds != rhs.timestamp_microseconds) {
+        return lhs.timestamp_microseconds < rhs.timestamp_microseconds;
+    }
+    if (lhs.identifier != rhs.identifier) {
+        return lhs.identifier < rhs.identifier;
+    }
+    if (lhs.interrupt_mask != rhs.interrupt_mask) {
+        return lhs.interrupt_mask < rhs.interrupt_mask;
+    }
+    return lhs.flags < rhs.flags;
+}
+
+/// Converts immutable receptor-event onsets into the scheduler's compact
+/// interrupt ABI. The output remains private GPU memory and is consumed by the
+/// scheduler in the same command-buffer timeline.
+kernel void transduce_receptor_interrupts(
+    constant NBReceptorEventTransductionUniformsABI *uniforms [[buffer(0)]],
+    device const NBReceptorEventABI *receptorEvents [[buffer(1)]],
+    device const NBInterruptEventABI *hostEvents [[buffer(2)]],
+    device NBInterruptEventABI *outputEvents [[buffer(3)]],
+    device NBReceptorEventTransductionResultABI *result [[buffer(4)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+    result->event_count = 0u;
+    result->receptor_event_count = 0u;
+    result->status = NBReceptorTransductionStatusValid;
+    result->reserved = 0u;
+
+    uint outputCount = 0u;
+    for (uint index = 0u; index < uniforms->host_event_count; ++index) {
+        if (outputCount >= uniforms->event_capacity) {
+            result->status = NBReceptorTransductionStatusEventCapacity;
+            return;
+        }
+        outputEvents[outputCount++] = hostEvents[index];
+    }
+
+    const bool includeCommittedBoundary =
+        (uniforms->flags & NBSchedulerFlagInitialize) != 0u;
+    uint receptorCount = 0u;
+    for (uint index = 0u; index < uniforms->receptor_event_count; ++index) {
+        const NBReceptorEventABI receptor = receptorEvents[index];
+        if (receptor.interrupt_mask == 0ul
+            || receptor.radius <= 0.0f
+            || receptor.end_milliseconds <= receptor.start_milliseconds) {
+            continue;
+        }
+        const float onsetScaled = receptor.start_milliseconds * 1000.0f;
+        if (!isfinite(onsetScaled) || onsetScaled < 0.0f) {
+            result->status = NBReceptorTransductionStatusTimeOverflow;
+            return;
+        }
+        const ulong onset = ulong(round(onsetScaled));
+        const ulong latency = ulong(receptor.conduction_latency_microseconds);
+        if (onset > (~0ul) - latency) {
+            result->status = NBReceptorTransductionStatusTimeOverflow;
+            return;
+        }
+        const ulong timestamp = onset + latency;
+        const bool afterLowerBound = includeCommittedBoundary
+            ? timestamp >= uniforms->committed_time_microseconds
+            : timestamp > uniforms->committed_time_microseconds;
+        if (!afterLowerBound || timestamp > uniforms->target_time_microseconds) {
+            continue;
+        }
+        if (outputCount >= uniforms->event_capacity) {
+            result->status = NBReceptorTransductionStatusEventCapacity;
+            return;
+        }
+        NBInterruptEventABI event;
+        event.timestamp_microseconds = timestamp;
+        event.interrupt_mask = receptor.interrupt_mask;
+        event.identifier = receptor.receptor_identifier;
+        event.flags = NBInterruptEventFlagReceptorDerived;
+        outputEvents[outputCount++] = event;
+        receptorCount += 1u;
+    }
+
+    for (uint index = 1u; index < outputCount; ++index) {
+        const NBInterruptEventABI key = outputEvents[index];
+        uint destination = index;
+        while (destination > 0u) {
+            const NBInterruptEventABI previous = outputEvents[destination - 1u];
+            if (!interrupt_event_less(key, previous)) {
+                break;
+            }
+            outputEvents[destination] = previous;
+            destination -= 1u;
+        }
+        outputEvents[destination] = key;
+    }
+    result->event_count = outputCount;
+    result->receptor_event_count = receptorCount;
+}
 
 inline bool scheduler_invocation_less(
     thread const NBDueInvocationABI &lhs,
@@ -336,6 +487,7 @@ kernel void schedule_due_modules(
     device const NBInterruptEventABI *events [[buffer(4)]],
     device NBDueInvocationABI *invocations [[buffer(5)]],
     device NBSchedulerResultABI *result [[buffer(6)]],
+    device const NBReceptorEventTransductionResultABI *eventResult [[buffer(7)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -348,6 +500,10 @@ kernel void schedule_due_modules(
     result->invocation_count = 0u;
     result->status = NBSchedulerStatusValid;
     result->target_time_microseconds = uniforms->target_time_microseconds;
+    if (eventResult->status != NBReceptorTransductionStatusValid) {
+        result->status = NBSchedulerStatusEventTransduction;
+        return;
+    }
 
     for (uint moduleIndex = 0u; moduleIndex < uniforms->module_count; ++moduleIndex) {
         const NBModuleDescriptorABI module = modules[moduleIndex];
@@ -385,7 +541,7 @@ kernel void schedule_due_modules(
         outputClocks[moduleIndex] = clock;
     }
 
-    for (uint eventIndex = 0u; eventIndex < uniforms->event_count; ++eventIndex) {
+    for (uint eventIndex = 0u; eventIndex < eventResult->event_count; ++eventIndex) {
         const NBInterruptEventABI event = events[eventIndex];
         for (uint moduleIndex = 0u; moduleIndex < uniforms->module_count; ++moduleIndex) {
             const NBModuleDescriptorABI module = modules[moduleIndex];
@@ -1042,7 +1198,7 @@ kernel void neural_tissue_step(
     device float *relayScratch [[buffer(6)]],
     device const uint *projectionOffsets [[buffer(7)]],
     device const uint4 *projectionEdges [[buffer(8)]],
-    device const float4 *receptorEvents [[buffer(9)]],
+    device const NBReceptorEventABI *receptorEvents [[buffer(9)]],
     device const uint *activeEventIndices [[buffer(10)]],
     uint2 position [[thread_position_in_grid]]
 ) {
@@ -1160,17 +1316,15 @@ kernel void neural_tissue_step(
          activeEventIndex < activeEventCount;
          ++activeEventIndex) {
         const uint eventIndex = activeEventIndices[activeEventIndex + 1u];
-        const float4 geometryAndStart = receptorEvents[eventIndex * 3];
-        const float4 endDriveAndNoise = receptorEvents[eventIndex * 3 + 1];
-        const float4 metadata = receptorEvents[eventIndex * 3 + 2];
-        const float radius = geometryAndStart.z;
-        const float dx = normalizedX - geometryAndStart.x;
-        const float dy = normalizedY - geometryAndStart.y;
+        const NBReceptorEventABI event = receptorEvents[eventIndex];
+        const float radius = event.radius;
+        const float dx = normalizedX - event.center_x;
+        const float dy = normalizedY - event.center_y;
         if (dx * dx + dy * dy > radius * radius) {
             continue;
         }
-        const uint eventIdentifier = as_type<uint>(metadata.x);
-        const float noiseAmplitude = endDriveAndNoise.w;
+        const uint eventIdentifier = event.identifier;
+        const float noiseAmplitude = event.noise_amplitude;
         const float excitatoryNoise = noiseAmplitude * tissue_random_symmetric_unit(
             randomSeed,
             randomEnvironment,
@@ -1193,8 +1347,8 @@ kernel void neural_tissue_step(
             index,
             1u
         );
-        stimulusE += endDriveAndNoise.y + excitatoryNoise;
-        stimulusI += endDriveAndNoise.z + inhibitoryNoise;
+        stimulusE += event.excitatory_drive + excitatoryNoise;
+        stimulusI += event.inhibitory_drive + inhibitoryNoise;
     }
 
     const float targetE = tissue_sigmoid(

@@ -1,4 +1,4 @@
-# Multi-rate scheduler and module ABI v0.5
+# Multi-rate scheduler and module ABI v0.6
 
 This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and schedule-driven recurrent regional-token operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
@@ -20,7 +20,10 @@ ABI version 1 compiles the following standard-layout records:
 | --- | ---: | --- |
 | `NBModuleDescriptor` | 32 | Immutable module identity, timing, interrupt, and token shape |
 | `NBModuleClockState` | 16 | Per-agent next-due and last-update physical time |
+| `NBReceptorEvent` | 64 | Canonical tissue drive plus interrupt, latency, receptor identity, and magnitude metadata |
 | `NBInterruptEvent` | 24 | Timestamped receptor-derived interrupt class |
+| `NBReceptorEventTransductionUniforms` | 40 | Root interval and bounded input/output queue counts |
+| `NBReceptorEventTransductionResult` | 16 | Private compacted event counts and typed status |
 | `NBDueInvocation` | 32 | Compacted environment/module execution request |
 | `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
@@ -78,7 +81,9 @@ Interrupt events carry a physical timestamp and a bit mask. An event immediately
 
 If a module is both periodically due and interrupted at the same timestamp, the oracle emits one invocation with both reasons. Multiple matching events at the same module and timestamp merge their masks. Interrupts do not reset the periodic clock.
 
-Events earlier than committed scheduler time or later than the current transaction target are rejected. The v0.3 Metal path consumes a bounded committed input view from shared unified memory. Dynamic NumanX-owned GPU event queues will later replace that upload view and retain future packets; neither the CPU nor Metal path silently accepts and drops one.
+Events earlier than committed scheduler time or later than the current transaction target are rejected. Receptor events carry an onset, interrupt mask, receptor identity, and conduction latency. Their effective interrupt timestamp is the onset plus latency. The first root includes an onset at its committed lower boundary; later roots exclude that boundary so an event cannot be delivered twice. Future receptor events stay in the immutable schedule without entering the current compact queue.
+
+The Metal path dispatches `transduce_receptor_interrupts` after the accepted tissue sequence. One deterministic lane merges due receptor onsets with the bounded host input view, sorts the combined 24-byte records by timestamp, identifier, mask, and flags, and writes a private GPU interrupt queue plus private result header. `schedule_due_modules` consumes that result after a device barrier without a CPU count readback. The CPU oracle independently derives the same records from the 64-byte receptor ABI. Dynamic NumanX-owned GPU event queues will later replace the host upload view and immutable development schedule.
 
 ## Transactions and checkpointing
 
@@ -97,7 +102,9 @@ A checkpoint restore validates schedule identity, clock count, next-due time, an
 
 The integrated Metal path uses two private clock generations. `schedule_due_modules` reads the committed generation and overwrites the other generation after the accepted tissue candidate sequence on the same compute encoder. A root commit swaps tissue and scheduler generation ownership together. Abort leaves the committed clock pointer, time, and generation unchanged. Rejected physical attempts affect the accepted target time only when simulated time actually advances.
 
-The compacted due-invocation buffer and result header remain private. Explicit inspection stages them only after command completion; the control loop performs no invocation-count readback.
+The compacted receptor-interrupt queue, transduction result, due-invocation buffer, and scheduler result header remain private. Explicit inspection stages result metadata only after command completion; the control loop performs no event- or invocation-count readback.
+
+This v0.6 bridge preserves event time and root transaction semantics, but it dispatches after the accepted tissue candidate sequence. It does not yet provide a mid-NumanX-substep protective interrupt path; that requires the nested NumanX transaction interface and fast-system loop.
 
 ## Recurrent regional execution
 
@@ -171,5 +178,10 @@ These names define scheduling roles. Every role currently executes the common fa
 32. Different sender-token content changes the normal top-k winner while the emergency route remains active.
 33. Route-runtime generations retry, abort, replay, and chunk at the same transaction boundary as tokens, history, clocks, and tissue.
 34. Schema-v10 records route budgets, routing memory, active-route counts, routing snapshot identity, and CPU parity.
+35. C++, Swift, and Metal agree on the 64-byte receptor record and 40/16-byte transduction records.
+36. A receptor onset plus conduction latency produces the same timestamped interrupt in the CPU oracle and private Metal queue, without future leakage.
+37. A committed lower-bound onset is included only for initialization and is not delivered again in the adjacent root.
+38. Rejected candidates and full root abort do not change the derived interrupt, scheduler clocks, or regional effects on retry.
+39. Schema-v11 records receptor ABI size, interrupt class, latency, transduction dispatches, private queue/result memory, event counts, typed status, and CPU parity.
 
 Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.

@@ -182,6 +182,9 @@ final class MetalTissueRuntimeTests: XCTestCase {
 
     XCTAssertEqual(submission.schedulerDispatches, 1)
     XCTAssertEqual(submission.regionalDispatches, 1)
+    XCTAssertEqual(submission.receptorInterruptTransductionDispatches, 1)
+    XCTAssertEqual(submission.schedulerHostInputEventCount, schedulerEvents.count)
+    XCTAssertEqual(submission.schedulerReceptorInputEventCount, 0)
     XCTAssertEqual(submission.schedulerInputEventCount, schedulerEvents.count)
     XCTAssertEqual(metal.schedulerDescriptorByteCount, 8 * 32)
     XCTAssertEqual(metal.schedulerClockByteCount, 8 * 16)
@@ -198,6 +201,9 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(metal.regionalSelectedRouteIndexByteCount, 7 * 4)
     XCTAssertEqual(metal.regionalSelectedRouteCountByteCount, 8 * 4)
     XCTAssertEqual(inspection.status, 0)
+    XCTAssertEqual(inspection.transducedEventCount, schedulerEvents.count)
+    XCTAssertEqual(inspection.receptorEventCount, 0)
+    XCTAssertEqual(inspection.transductionStatus, 0)
     XCTAssertEqual(inspection.invocations, cpuTransaction.invocations)
     XCTAssertEqual(inspection.snapshot, cpu.snapshot)
     try assertRegionalStatesEqual(
@@ -283,6 +289,102 @@ final class MetalTissueRuntimeTests: XCTestCase {
       program: regionalProgram,
       schedulerSnapshot: cpu.snapshot
     )
+  }
+
+  func testMetalReceptorOnsetBecomesTransactionalEmergencyInterrupt() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let receptorSchedule = try TissueEventSchedule(
+      events: [
+        TissueReceptorEvent(
+          identifier: 41,
+          centerX: 0.5,
+          centerY: 0.5,
+          radius: 0.2,
+          excitatoryDrive: 4,
+          startMilliseconds: 2,
+          endMilliseconds: 8,
+          flags: .emergency,
+          interruptMask: .pain,
+          conductionLatencyMicroseconds: 500,
+          receptorIdentifier: 701,
+          magnitude: 4
+        )
+      ]
+    )
+    let receptorInterrupts = try receptorSchedule.schedulerInterruptEvents(
+      committedTime: BrainTimestamp(microseconds: 0),
+      targetTime: BrainTimestamp(microseconds: 5_000),
+      includeCommittedBoundary: true
+    )
+    var cpu = CPUMultiRateScheduler(schedule: schedule)
+    let cpuTransaction = try cpu.beginAdvance(
+      to: BrainTimestamp(microseconds: 5_000),
+      events: receptorInterrupts
+    )
+    try cpu.commit(cpuTransaction)
+    let cpuRegionalStates = try CPURegionalModuleOperator.advance(
+      states: schedule.modules.map { _ in RegionalModuleState() },
+      schedule: schedule,
+      invocations: cpuTransaction.invocations
+    )
+
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 12,
+      height: 8,
+      parameters: parameters
+    )
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      eventSchedule: receptorSchedule,
+      brainSchedule: schedule,
+      maxEncodedSubsteps: 8
+    )
+    let attempts = [true, false, true, true, true, true]
+    _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: attempts)
+    try metal.abortRootTransaction()
+    XCTAssertNil(metal.schedulerCommittedTimestamp)
+
+    let submission = try metal.runRootTransaction(at: 0, acceptedSubsteps: attempts)
+    try metal.commitRootTransaction()
+    let inspection = try metal.inspectCommittedScheduler()
+    XCTAssertEqual(submission.schedulerHostInputEventCount, 0)
+    XCTAssertEqual(submission.schedulerReceptorInputEventCount, 1)
+    XCTAssertEqual(submission.schedulerInputEventCount, 1)
+    XCTAssertEqual(submission.receptorInterruptTransductionDispatches, 1)
+    XCTAssertEqual(inspection.transducedEventCount, 1)
+    XCTAssertEqual(inspection.receptorEventCount, 1)
+    XCTAssertEqual(inspection.invocations, cpuTransaction.invocations)
+    XCTAssertEqual(inspection.snapshot, cpu.snapshot)
+    XCTAssertTrue(
+      inspection.invocations.contains {
+        $0.timestamp == BrainTimestamp(microseconds: 2_500)
+          && $0.moduleIdentifier == 26
+          && $0.reasons.contains(.interrupt)
+          && $0.interruptMask == .pain
+      }
+    )
+    try assertRegionalStatesEqual(
+      try metal.snapshotCommittedRegionalState(),
+      cpuStates: cpuRegionalStates,
+      schedulerSnapshot: cpu.snapshot
+    )
+    let painModules = zip(schedule.modules, cpuRegionalStates)
+      .filter { $0.0.interruptMask.contains(.pain) }
+    XCTAssertEqual(painModules.map { $0.0.moduleIdentifier }, [12, 26, 95])
+    XCTAssertTrue(painModules.allSatisfy { $0.1.interruptCount == 1 })
+
+    let second = try metal.runRootTransaction(
+      at: 5,
+      acceptedSubsteps: Array(repeating: true, count: 5)
+    )
+    try metal.commitRootTransaction()
+    let secondInspection = try metal.inspectCommittedScheduler()
+    XCTAssertEqual(second.schedulerReceptorInputEventCount, 0)
+    XCTAssertEqual(secondInspection.receptorEventCount, 0)
+    XCTAssertEqual(secondInspection.transducedEventCount, 0)
   }
 
   func testMetalSchedulerRetryAndAbortAreTransactional() throws {

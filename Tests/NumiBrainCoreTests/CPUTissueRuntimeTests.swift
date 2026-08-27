@@ -66,10 +66,72 @@ final class CPUTissueRuntimeTests: XCTestCase {
     )
     XCTAssertEqual(
       forward.packedByteCount,
-      2 * TissueEventSchedule.packedVectorsPerEvent
-        * MemoryLayout<TissueEventSchedule.PackedVector>.stride
+      2 * TissueEventSchedule.receptorEventByteCount
     )
+    XCTAssertEqual(TissueEventSchedule.receptorEventByteCount, 64)
     XCTAssertThrowsError(try TissueEventSchedule(events: [early, early]))
+  }
+
+  func testReceptorInterruptTransductionIsCausalLatentAndBoundaryExact() throws {
+    let pain = TissueReceptorEvent(
+      identifier: 9,
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 0.2,
+      excitatoryDrive: 4,
+      startMilliseconds: 2,
+      endMilliseconds: 8,
+      interruptMask: .pain,
+      conductionLatencyMicroseconds: 500,
+      receptorIdentifier: 77,
+      magnitude: 4,
+      auxiliaryValue: 0.25
+    )
+    let future = TissueReceptorEvent(
+      identifier: 10,
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 0.2,
+      excitatoryDrive: 1,
+      startMilliseconds: 20,
+      endMilliseconds: 25,
+      interruptMask: .impact
+    )
+    let disabled = TissueReceptorEvent(
+      identifier: 11,
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 0,
+      excitatoryDrive: 1,
+      startMilliseconds: 3,
+      endMilliseconds: 4,
+      interruptMask: .pain
+    )
+    let schedule = try TissueEventSchedule(events: [future, disabled, pain])
+
+    let first = try schedule.schedulerInterruptEvents(
+      committedTime: BrainTimestamp(microseconds: 0),
+      targetTime: BrainTimestamp(microseconds: 2_499),
+      includeCommittedBoundary: true
+    )
+    XCTAssertTrue(first.isEmpty)
+
+    let delivered = try schedule.schedulerInterruptEvents(
+      committedTime: BrainTimestamp(microseconds: 0),
+      targetTime: BrainTimestamp(microseconds: 2_500),
+      includeCommittedBoundary: true
+    )
+    XCTAssertEqual(delivered.count, 1)
+    XCTAssertEqual(delivered[0].timestamp, BrainTimestamp(microseconds: 2_500))
+    XCTAssertEqual(delivered[0].mask, .pain)
+    XCTAssertEqual(delivered[0].identifier, 77)
+
+    let repeatedBoundary = try schedule.schedulerInterruptEvents(
+      committedTime: BrainTimestamp(microseconds: 2_500),
+      targetTime: BrainTimestamp(microseconds: 5_000),
+      includeCommittedBoundary: false
+    )
+    XCTAssertTrue(repeatedBoundary.isEmpty)
   }
 
   func testNoisyReceptorEventsAreCausalAndSeedDependent() throws {

@@ -26,6 +26,24 @@ private enum ConnectomeProfile: String, Codable {
   case bilateral
 }
 
+private enum ReceptorInterrupt: String, Codable {
+  case none
+  case pain
+  case impact
+  case visualTransient = "visual-transient"
+  case soundOnset = "sound-onset"
+
+  var mask: BrainInterruptMask {
+    switch self {
+    case .none: []
+    case .pain: .pain
+    case .impact: .impact
+    case .visualTransient: .visualTransient
+    case .soundOnset: .soundOnset
+    }
+  }
+}
+
 private struct LesionOptions: Codable {
   var centerX: Float = 0.5
   var centerY: Float = 0.5
@@ -47,6 +65,8 @@ private struct Options {
   var delayProfile: DelayProfile = .layered
   var connectomeProfile: ConnectomeProfile = .bilateral
   var stimulusNoiseAmplitude: Float = 0.25
+  var receptorInterrupt: ReceptorInterrupt = .pain
+  var receptorLatencyMicroseconds: UInt32 = 500
   var randomSeed: UInt32 = 1
   var environmentIdentifier: UInt32 = 0
   var episodeIdentifier: UInt32 = 0
@@ -159,6 +179,19 @@ private struct Options {
           try value(after: argument),
           flag: argument
         )
+      case "--receptor-interrupt":
+        let raw = try value(after: argument)
+        guard let interrupt = ReceptorInterrupt(rawValue: raw) else {
+          throw CLIError(
+            "--receptor-interrupt must be none, pain, impact, visual-transient, or sound-onset"
+          )
+        }
+        options.receptorInterrupt = interrupt
+      case "--receptor-latency-us":
+        options.receptorLatencyMicroseconds = try parseUInt32(
+          try value(after: argument),
+          flag: argument
+        )
       case "--seed":
         options.randomSeed = try parseUInt32(try value(after: argument), flag: argument)
       case "--environment-id":
@@ -258,6 +291,9 @@ private struct Options {
         --stimulus-start-ms N Stimulus start time (default: 20)
         --stimulus-end-ms N   Stimulus end time (default: 70)
         --stimulus-noise N    Bounded receptor-drive noise (default: 0.25)
+        --receptor-interrupt none|pain|impact|visual-transient|sound-onset
+                              Scheduler interrupt derived from stimulus onset (default: pain)
+        --receptor-latency-us N  Receptor conduction latency in microseconds (default: 500)
         --seed N              Counter-random seed, decimal or hex (default: 1)
         --environment-id N    Counter-random environment identity (default: 0)
         --episode-id N        Counter-random episode identity (default: 0)
@@ -285,6 +321,7 @@ private struct TimingEvidence: Codable {
   let acceptedSubsteps: Int
   let rootTransactions: Int
   let gpuEventCompactionDispatches: Int?
+  let gpuReceptorInterruptTransductionDispatches: Int?
   let gpuSchedulerDispatches: Int?
   let gpuRegionalDispatches: Int?
   let cellUpdatesPerSecond: Double
@@ -333,8 +370,11 @@ private struct EventEvidence: Codable {
   let maximumScheduleCount: Int
   let maximumSimultaneouslyActiveCount: Int
   let packedBytes: Int
+  let receptorEventABIBytes: Int
   let stimulusNoiseAmplitude: Float
   let flags: UInt32
+  let interruptMask: UInt64
+  let conductionLatencyMicroseconds: UInt32
   let execution: String
   let interpretation: String
 }
@@ -347,6 +387,9 @@ private struct SchedulerEvidence: Codable {
   let clockGenerationCount: Int
   let clockBytes: Int
   let sharedEventCapacityBytes: Int
+  let privateTransducedEventCapacityBytes: Int
+  let sharedTransductionUniformBytes: Int
+  let privateTransductionResultBytes: Int
   let sharedUniformBytes: Int
   let privateInvocationCapacityBytes: Int
   let privateResultBytes: Int
@@ -355,9 +398,13 @@ private struct SchedulerEvidence: Codable {
   let committedTimeMicroseconds: UInt64
   let committedGeneration: UInt64
   let finalRootInvocationCount: Int
+  let totalReceptorEventsTransduced: Int
+  let finalRootTransducedEventCount: Int
+  let finalRootReceptorEventCount: Int
   let finalSnapshotHash: String
   let cpuReferenceExact: Bool
   let status: UInt32
+  let transductionStatus: UInt32
   let execution: String
   let interpretation: String
 }
@@ -540,7 +587,11 @@ private struct NumiBrainTissueCommand {
     }
     let eventSchedule = try TissueEventSchedule.singleStimulus(
       stimulus,
-      noiseAmplitude: options.stimulusNoiseAmplitude
+      noiseAmplitude: options.stimulusNoiseAmplitude,
+      flags: options.receptorInterrupt == .none ? [] : .emergency,
+      interruptMask: options.receptorInterrupt.mask,
+      conductionLatencyMicroseconds: options.receptorLatencyMicroseconds,
+      receptorIdentifier: 1
     )
     let randomContext = TissueRandomContext(
       seed: options.randomSeed,
@@ -571,6 +622,7 @@ private struct NumiBrainTissueCommand {
         rootTransactions: Int,
         residencyAllocatedBytes: UInt64?,
         eventCompactionDispatches: Int?,
+        receptorInterruptTransductionDispatches: Int?,
         schedulerDispatches: Int?,
         regionalDispatches: Int?,
         scheduler: SchedulerEvidence?,
@@ -712,13 +764,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v10",
+      schema: "numibrain.tissue-simulation-evidence.v11",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, causal GPU receptor-onset interrupt transduction, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -759,12 +811,17 @@ private struct NumiBrainTissueCommand {
         maximumSimultaneouslyActiveCount:
           eventSchedule.maximumSimultaneouslyActiveEventCount,
         packedBytes: eventSchedule.packedByteCount,
+        receptorEventABIBytes: TissueEventSchedule.receptorEventByteCount,
         stimulusNoiseAmplitude: options.stimulusNoiseAmplitude,
         flags: eventSchedule.events.reduce(UInt32.zero) { result, event in
           result | event.flags.rawValue
         },
+        interruptMask: eventSchedule.events.reduce(UInt64.zero) { result, event in
+          result | event.interruptMask.rawValue
+        },
+        conductionLatencyMicroseconds: options.receptorLatencyMicroseconds,
         execution: options.backend == .metal
-          ? "GPU compact_receptor_events dispatch per attempted substep, followed by active-only tissue scan"
+          ? "GPU compact_receptor_events dispatch per attempted substep plus one private receptor-onset interrupt transduction dispatch per root"
           : "CPU canonical active-index selection followed by active-only tissue scan",
         interpretation:
           "receptor-derived neural input schedule; not raw or privileged simulator state"
@@ -788,6 +845,8 @@ private struct NumiBrainTissueCommand {
         acceptedSubsteps: totalSubsteps,
         rootTransactions: result.rootTransactions,
         gpuEventCompactionDispatches: result.eventCompactionDispatches,
+        gpuReceptorInterruptTransductionDispatches:
+          result.receptorInterruptTransductionDispatches,
         gpuSchedulerDispatches: result.schedulerDispatches,
         gpuRegionalDispatches: result.regionalDispatches,
         cellUpdatesPerSecond: wallSeconds > 0 ? cellUpdates / wallSeconds : 0,
@@ -819,7 +878,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU tissue, regional token, diagnostic, sparse-route history, and dynamic routing-state generations; immutable regional parameters and topology; compact selected-route scratch; scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
+          ? "private GPU tissue, regional token, diagnostic, sparse-route history, dynamic routing-state, transduced interrupt queue, and transduction-result generations; immutable regional parameters and topology; compact selected-route scratch; scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -833,7 +892,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> delayed route-message resolution -> deterministic top-k route scoring and compaction -> advance_due_regional_tokens -> atomic host generation publication"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> transduce_receptor_interrupts -> schedule_due_modules -> delayed route-message resolution -> deterministic top-k route scoring and compaction -> advance_due_regional_tokens -> atomic host generation publication"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -856,6 +915,7 @@ private struct NumiBrainTissueCommand {
     rootTransactions: Int,
     residencyAllocatedBytes: UInt64?,
     eventCompactionDispatches: Int?,
+    receptorInterruptTransductionDispatches: Int?,
     schedulerDispatches: Int?,
     regionalDispatches: Int?,
     scheduler: SchedulerEvidence?,
@@ -882,7 +942,10 @@ private struct NumiBrainTissueCommand {
       completed += count
       rootTransactions += 1
     }
-    return (runtime.committed, "CPU reference", nil, rootTransactions, nil, nil, nil, nil, nil, nil)
+    return (
+      runtime.committed, "CPU reference", nil, rootTransactions,
+      nil, nil, nil, nil, nil, nil, nil
+    )
   }
 
   @available(macOS 26.0, *)
@@ -904,6 +967,7 @@ private struct NumiBrainTissueCommand {
     rootTransactions: Int,
     residencyAllocatedBytes: UInt64?,
     eventCompactionDispatches: Int?,
+    receptorInterruptTransductionDispatches: Int?,
     schedulerDispatches: Int?,
     regionalDispatches: Int?,
     scheduler: SchedulerEvidence?,
@@ -924,6 +988,8 @@ private struct NumiBrainTissueCommand {
     var rootTransactions = 0
     var gpuSeconds = 0.0
     var eventCompactionDispatches = 0
+    var receptorInterruptTransductionDispatches = 0
+    var receptorEventsTransduced = 0
     var schedulerDispatches = 0
     var regionalDispatches = 0
     while completed < totalSubsteps {
@@ -935,6 +1001,9 @@ private struct NumiBrainTissueCommand {
       try runtime.commitRootTransaction()
       gpuSeconds += submission.gpuDurationSeconds
       eventCompactionDispatches += submission.eventCompactionDispatches
+      receptorInterruptTransductionDispatches +=
+        submission.receptorInterruptTransductionDispatches
+      receptorEventsTransduced += submission.schedulerReceptorInputEventCount
       schedulerDispatches += submission.schedulerDispatches
       regionalDispatches += submission.regionalDispatches
       completed += count
@@ -964,16 +1033,25 @@ private struct NumiBrainTissueCommand {
       (parameters.timestepMilliseconds * 1_000).rounded()
     )
     while schedulerOracleCompleted < totalSubsteps {
+      let rootStartMicroseconds =
+        UInt64(schedulerOracleCompleted)
+        * schedulerTimestepMicroseconds
       let count = min(
         substepsPerControl,
         totalSubsteps - schedulerOracleCompleted
       )
       schedulerOracleCompleted += count
+      let targetMicroseconds =
+        UInt64(schedulerOracleCompleted)
+        * schedulerTimestepMicroseconds
+      let receptorEvents = try eventSchedule.schedulerInterruptEvents(
+        committedTime: BrainTimestamp(microseconds: rootStartMicroseconds),
+        targetTime: BrainTimestamp(microseconds: targetMicroseconds),
+        includeCommittedBoundary: rootStartMicroseconds == 0
+      )
       let invocations = try schedulerOracle.advance(
-        to: BrainTimestamp(
-          microseconds: UInt64(schedulerOracleCompleted)
-            * schedulerTimestepMicroseconds
-        )
+        to: BrainTimestamp(microseconds: targetMicroseconds),
+        events: receptorEvents
       )
       let regionalTransition = try CPURegionalTokenOperator.advance(
         state: regionalOracleTokens,
@@ -1001,6 +1079,9 @@ private struct NumiBrainTissueCommand {
       clockGenerationCount: 2,
       clockBytes: runtime.schedulerClockByteCount * 2,
       sharedEventCapacityBytes: runtime.schedulerEventCapacityByteCount,
+      privateTransducedEventCapacityBytes: runtime.schedulerEventCapacityByteCount,
+      sharedTransductionUniformBytes: runtime.receptorEventTransductionUniformByteCount,
+      privateTransductionResultBytes: runtime.receptorEventTransductionResultByteCount,
       sharedUniformBytes: runtime.schedulerUniformByteCount,
       privateInvocationCapacityBytes: runtime.schedulerInvocationCapacityByteCount,
       privateResultBytes: runtime.schedulerResultByteCount,
@@ -1009,11 +1090,15 @@ private struct NumiBrainTissueCommand {
       committedTimeMicroseconds: schedulerInspection.snapshot.committedTime.rawValue,
       committedGeneration: schedulerInspection.snapshot.generation,
       finalRootInvocationCount: schedulerInspection.invocations.count,
+      totalReceptorEventsTransduced: receptorEventsTransduced,
+      finalRootTransducedEventCount: schedulerInspection.transducedEventCount,
+      finalRootReceptorEventCount: schedulerInspection.receptorEventCount,
       finalSnapshotHash: schedulerInspection.snapshot.stableHash(),
       cpuReferenceExact: schedulerInspection.snapshot == schedulerOracle.snapshot,
       status: schedulerInspection.status,
+      transductionStatus: schedulerInspection.transductionStatus,
       execution:
-        "one Metal schedule_due_modules dispatch per root on the tissue command encoder; private shadow clocks publish only with tissue commit",
+        "one Metal transduce_receptor_interrupts and schedule_due_modules dispatch per root on the tissue command encoder; the compact interrupt queue and shadow clocks stay private and publish neural effects only with tissue commit",
       interpretation:
         "eight-module runtime-foundation schedule feeding the live recurrent token-state operator"
     )
@@ -1138,6 +1223,7 @@ private struct NumiBrainTissueCommand {
       rootTransactions,
       runtime.residencyAllocatedBytes,
       eventCompactionDispatches,
+      receptorInterruptTransductionDispatches,
       schedulerDispatches,
       regionalDispatches,
       schedulerEvidence,

@@ -4,10 +4,10 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue source slice v0.10, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.6
-- Implemented runtime code: deterministic scheduler, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, receptor events, counter randomness, and a destination-major tissue CSR graph
+- Current state: specification, GPU-compacted tissue source slice v0.11, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.7
+- Implemented runtime code: deterministic scheduler, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with a compiled 64-byte receptor-event ABI, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
-- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional token, diagnostic, route-history, and routing-state generations
+- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU performance evidence: bounded Apple M4 Pro remote correctness probe only; production throughput and counter qualification remain pending
@@ -31,6 +31,10 @@ The scheduler foundation currently proves:
 - deterministic cohort grouping by timestamp, clock class, module, and environment identifier;
 - validated serialization that recomputes and checks the compiled schedule fingerprint;
 - C++/Swift/Metal size parity for descriptors, clocks, interrupts, invocations, scheduler uniforms, and result records;
+- C++/Swift/Metal size parity for the 64-byte receptor event and 40/16-byte transduction records;
+- causal onset-plus-conduction-latency conversion with no future leakage or adjacent-root boundary duplication;
+- a private GPU queue that canonically merges receptor-derived and host interrupt packets without a hot-path count readback;
+- exact CPU/Metal receptor-interrupt and emergency-module parity through rejected retry and full root abort;
 - one `schedule_due_modules` dispatch per root inside the tissue command encoder;
 - private committed/shadow clock generations and a private compacted due list;
 - exact CPU/Metal parity for periodic boundaries and fractional-time pain/support interrupts;
@@ -59,7 +63,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue and regional evidence
 
-The v0.10 source slice retains the v0.9 route-delay behavior and additionally proves deterministic dynamic route selection, emergency bypass, persistence, normalized strengths, selected-route compaction, and transaction-owned routing state in local tests. A bounded local Apple M4 artifact is checked into [`evidence/tissue-v0.10`](evidence/tissue-v0.10/README.md). A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8.
+The v0.11 source slice retains the v0.10 dynamic-routing behavior and additionally proves a compiled receptor-event ABI, GPU-resident onset interrupt transduction, causal latency, boundary deduplication, emergency-module delivery, and shared transaction semantics. A bounded local Apple M4 artifact is checked into [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md). A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8 because the Mini was occupied by an existing crow evaluation.
 
 The implemented tissue slice currently proves:
 
@@ -72,6 +76,10 @@ The implemented tissue slice currently proves:
 - delayed long-range recruitment at a target outside the source's local stencil;
 - deterministic canonicalization and hashing of the destination-major sparse projection graph;
 - deterministic canonicalization and hashing of a bounded timestamped receptor-event schedule;
+- compiled 64-byte receptor records with interrupt class, conduction latency, receptor identity, magnitude, and auxiliary metadata;
+- one private GPU receptor-interrupt transduction dispatch per accepted root;
+- latency-shifted pain delivery to nociceptive, emergency-bus, and spinal modules at the CPU-oracle timestamp;
+- no receptor-onset redelivery at an adjacent committed boundary;
 - deterministic half-open active-event selection and maximum-overlap accounting;
 - future events do not affect tissue state before their timestamps;
 - bounded receptor-drive noise changes across committed sample keys and seeds;
@@ -95,9 +103,9 @@ The implemented tissue slice currently proves:
 - route selection counters, last-selected timestamps, and switch counters agree exactly between CPU and Metal;
 - routing state rolls back, retries, replays, and chunks at the same transaction boundary as tokens and route history.
 
-The XCTest suite contains 40 passing tests: 13 tissue CPU tests, 13 scheduler/regional CPU tests, and 14 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence and seed-dependent trajectories. Metal tests require exact scheduler invocation parity, recurrent token, route-history, and routing-state CPU numerical parity, dynamic-selection, delayed-message, emergency-bypass and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
+The XCTest suite contains 42 passing tests: 14 tissue CPU tests, 13 scheduler/regional CPU tests, and 15 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence, exact receptor latency and boundary semantics, and seed-dependent trajectories. Metal tests require exact receptor-derived and host scheduler invocation parity, recurrent token, route-history, and routing-state CPU numerical parity, dynamic-selection, delayed-message, emergency-bypass and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
 
-The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable event uses three `float4` records, or 48 bytes. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
+The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable receptor event uses one compiled 64-byte record. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. The scheduler owns a 1,536-byte private transduced-interrupt queue and a 16-byte private result in addition to the host event view. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
 The latest checked Apple M4 Pro development probe on 2026-08-27 used source commit `a237cac`, a 256×192 GPU-compacted noisy-event sparse-projection delayed layered sheet, a circular partial-viability lesion, and 70 accepted 1 ms substeps. It issued 70 event-compaction, four scheduler, and four regional-token dispatches. The eight-module schedule committed to 70,000 microseconds at generation 4 with clock hash `7f0410c814a02d9c`, zero device status, and exact CPU clock parity. The regional program fingerprint was `7693586fd2b592a9`; it consumed 271 module invocations, advanced 10,752 token scalars through seven routes, produced token hash `5cc6cce810370af4`, and reported `1.1920929e-07` maximum CPU/Metal token error. Diagnostic hash `d78c1c595e2fe734` retained exact discrete CPU state and `1.4901161e-08` maximum float error. The primary tissue hash was `1d4534c321f98fe7`; matched no-noise and alternate-seed controls produced `3db4f53ab3fd8e42` and `73d0eb346080c5de`. All three runs replayed exactly, preserved delayed retry and root abort, and reported `1.1920929e-07` maximum tissue CPU/Metal error. The JSON controls and inspected PNG are in [`evidence/tissue-v0.8`](evidence/tissue-v0.8/README.md). This is implementation evidence, not calibrated receptor, learned cognition, or brain-tissue behavior and not a production GPU benchmark.
 

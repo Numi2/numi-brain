@@ -8,7 +8,16 @@
 static_assert(std::is_standard_layout_v<NBModuleDescriptor>);
 static_assert(sizeof(NBModuleDescriptor) == NB_MODULE_DESCRIPTOR_BYTE_COUNT);
 static_assert(sizeof(NBModuleClockState) == NB_MODULE_CLOCK_STATE_BYTE_COUNT);
+static_assert(sizeof(NBReceptorEvent) == NB_RECEPTOR_EVENT_BYTE_COUNT);
 static_assert(sizeof(NBInterruptEvent) == NB_INTERRUPT_EVENT_BYTE_COUNT);
+static_assert(
+    sizeof(NBReceptorEventTransductionUniforms)
+    == NB_RECEPTOR_EVENT_TRANSDUCTION_UNIFORMS_BYTE_COUNT
+);
+static_assert(
+    sizeof(NBReceptorEventTransductionResult)
+    == NB_RECEPTOR_EVENT_TRANSDUCTION_RESULT_BYTE_COUNT
+);
 static_assert(sizeof(NBDueInvocation) == NB_DUE_INVOCATION_BYTE_COUNT);
 static_assert(sizeof(NBSchedulerUniforms) == NB_SCHEDULER_UNIFORMS_BYTE_COUNT);
 static_assert(sizeof(NBSchedulerResult) == NB_SCHEDULER_RESULT_BYTE_COUNT);
@@ -68,8 +77,20 @@ size_t nb_brain_abi_module_clock_state_size(void) {
   return sizeof(NBModuleClockState);
 }
 
+size_t nb_brain_abi_receptor_event_size(void) {
+  return sizeof(NBReceptorEvent);
+}
+
 size_t nb_brain_abi_interrupt_event_size(void) {
   return sizeof(NBInterruptEvent);
+}
+
+size_t nb_brain_abi_receptor_event_transduction_uniforms_size(void) {
+  return sizeof(NBReceptorEventTransductionUniforms);
+}
+
+size_t nb_brain_abi_receptor_event_transduction_result_size(void) {
+  return sizeof(NBReceptorEventTransductionResult);
 }
 
 size_t nb_brain_abi_due_invocation_size(void) {
@@ -172,6 +193,84 @@ uint64_t nb_brain_abi_module_descriptor_fingerprint(
     mix_little_endian(hash, descriptor.token_count);
     mix_little_endian(hash, descriptor.token_dimension);
     mix_little_endian(hash, descriptor.flags);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_receptor_events(
+    const NBReceptorEvent *events,
+    uint32_t count
+) {
+  if (count > 0 && events == nullptr) {
+    return NB_RECEPTOR_EVENT_NULL;
+  }
+  for (uint32_t index = 0; index < count; ++index) {
+    const NBReceptorEvent &event = events[index];
+    const float values[] = {
+        event.center_x,
+        event.center_y,
+        event.radius,
+        event.start_milliseconds,
+        event.end_milliseconds,
+        event.excitatory_drive,
+        event.inhibitory_drive,
+        event.noise_amplitude,
+        event.magnitude,
+        event.auxiliary_value,
+    };
+    for (float value : values) {
+      if (!std::isfinite(value)) {
+        return NB_RECEPTOR_EVENT_NONFINITE;
+      }
+    }
+    if (event.center_x < 0.0F || event.center_x > 1.0F
+        || event.center_y < 0.0F || event.center_y > 1.0F) {
+      return NB_RECEPTOR_EVENT_COORDINATE_RANGE;
+    }
+    if (event.radius < 0.0F || event.noise_amplitude < 0.0F
+        || event.magnitude < 0.0F) {
+      return NB_RECEPTOR_EVENT_NEGATIVE_EXTENT;
+    }
+    if (event.end_milliseconds < event.start_milliseconds) {
+      return NB_RECEPTOR_EVENT_TIME_ORDER;
+    }
+    if (event.conduction_latency_microseconds
+        > NB_RECEPTOR_MAX_CONDUCTION_LATENCY_MICROSECONDS) {
+      return NB_RECEPTOR_EVENT_LATENCY_RANGE;
+    }
+    for (uint32_t previous = 0; previous < index; ++previous) {
+      if (events[previous].identifier == event.identifier) {
+        return NB_RECEPTOR_EVENT_DUPLICATE_IDENTIFIER;
+      }
+    }
+  }
+  return NB_RECEPTOR_EVENT_VALID;
+}
+
+uint64_t nb_brain_abi_receptor_event_fingerprint(
+    const NBReceptorEvent *events,
+    uint32_t count
+) {
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_RECEPTOR_EVENT_ABI_VERSION));
+  mix_little_endian(hash, count);
+  for (uint32_t index = 0; index < count; ++index) {
+    const NBReceptorEvent &event = events[index];
+    mix_float(hash, event.center_x);
+    mix_float(hash, event.center_y);
+    mix_float(hash, event.radius);
+    mix_float(hash, event.start_milliseconds);
+    mix_float(hash, event.end_milliseconds);
+    mix_float(hash, event.excitatory_drive);
+    mix_float(hash, event.inhibitory_drive);
+    mix_float(hash, event.noise_amplitude);
+    mix_little_endian(hash, event.identifier);
+    mix_little_endian(hash, event.flags);
+    mix_little_endian(hash, event.interrupt_mask);
+    mix_little_endian(hash, event.conduction_latency_microseconds);
+    mix_little_endian(hash, event.receptor_identifier);
+    mix_float(hash, event.magnitude);
+    mix_float(hash, event.auxiliary_value);
   }
   return hash;
 }

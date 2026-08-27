@@ -12,7 +12,10 @@ enum {
   NB_BRAIN_ABI_VERSION = 1,
   NB_MODULE_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MODULE_CLOCK_STATE_BYTE_COUNT = 16,
+  NB_RECEPTOR_EVENT_BYTE_COUNT = 64,
   NB_INTERRUPT_EVENT_BYTE_COUNT = 24,
+  NB_RECEPTOR_EVENT_TRANSDUCTION_UNIFORMS_BYTE_COUNT = 40,
+  NB_RECEPTOR_EVENT_TRANSDUCTION_RESULT_BYTE_COUNT = 16,
   NB_DUE_INVOCATION_BYTE_COUNT = 32,
   NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 40,
   NB_SCHEDULER_RESULT_BYTE_COUNT = 16,
@@ -27,6 +30,9 @@ enum {
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
   NB_REGIONAL_MIN_ROUTE_PERSISTENCE_MICROSECONDS = 2000,
+  NB_RECEPTOR_EVENT_ABI_VERSION = 1,
+  NB_RECEPTOR_MAX_CONDUCTION_LATENCY_MICROSECONDS = 500000,
+  NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED = 1 << 0,
 };
 
 typedef struct NBModuleDescriptor {
@@ -46,12 +52,48 @@ typedef struct NBModuleClockState {
   uint64_t last_update_microseconds;
 } NBModuleClockState;
 
+typedef struct NBReceptorEvent {
+  float center_x;
+  float center_y;
+  float radius;
+  float start_milliseconds;
+  float end_milliseconds;
+  float excitatory_drive;
+  float inhibitory_drive;
+  float noise_amplitude;
+  uint32_t identifier;
+  uint32_t flags;
+  uint64_t interrupt_mask;
+  uint32_t conduction_latency_microseconds;
+  uint32_t receptor_identifier;
+  float magnitude;
+  float auxiliary_value;
+} NBReceptorEvent;
+
 typedef struct NBInterruptEvent {
   uint64_t timestamp_microseconds;
   uint64_t interrupt_mask;
   uint32_t identifier;
   uint32_t flags;
 } NBInterruptEvent;
+
+typedef struct NBReceptorEventTransductionUniforms {
+  uint64_t committed_time_microseconds;
+  uint64_t target_time_microseconds;
+  uint32_t receptor_event_count;
+  uint32_t host_event_count;
+  uint32_t event_capacity;
+  uint32_t flags;
+  uint32_t reserved_0;
+  uint32_t reserved_1;
+} NBReceptorEventTransductionUniforms;
+
+typedef struct NBReceptorEventTransductionResult {
+  uint32_t event_count;
+  uint32_t receptor_event_count;
+  uint32_t status;
+  uint32_t reserved;
+} NBReceptorEventTransductionResult;
 
 typedef struct NBDueInvocation {
   uint64_t timestamp_microseconds;
@@ -160,7 +202,25 @@ typedef enum NBSchedulerStatus {
   NB_SCHEDULER_STATUS_VALID = 0,
   NB_SCHEDULER_STATUS_INVOCATION_CAPACITY = 1,
   NB_SCHEDULER_STATUS_TIME_OVERFLOW = 2,
+  NB_SCHEDULER_STATUS_EVENT_TRANSDUCTION = 3,
 } NBSchedulerStatus;
+
+typedef enum NBReceptorEventTransductionStatus {
+  NB_RECEPTOR_TRANSDUCTION_STATUS_VALID = 0,
+  NB_RECEPTOR_TRANSDUCTION_STATUS_EVENT_CAPACITY = 1,
+  NB_RECEPTOR_TRANSDUCTION_STATUS_TIME_OVERFLOW = 2,
+} NBReceptorEventTransductionStatus;
+
+typedef enum NBReceptorEventValidation {
+  NB_RECEPTOR_EVENT_VALID = 0,
+  NB_RECEPTOR_EVENT_NULL = 1,
+  NB_RECEPTOR_EVENT_NONFINITE = 2,
+  NB_RECEPTOR_EVENT_COORDINATE_RANGE = 3,
+  NB_RECEPTOR_EVENT_NEGATIVE_EXTENT = 4,
+  NB_RECEPTOR_EVENT_TIME_ORDER = 5,
+  NB_RECEPTOR_EVENT_LATENCY_RANGE = 6,
+  NB_RECEPTOR_EVENT_DUPLICATE_IDENTIFIER = 7,
+} NBReceptorEventValidation;
 
 typedef enum NBModuleDescriptorValidation {
   NB_MODULE_DESCRIPTOR_VALID = 0,
@@ -187,7 +247,10 @@ typedef enum NBRegionalProgramValidation {
 
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
+size_t nb_brain_abi_receptor_event_size(void);
 size_t nb_brain_abi_interrupt_event_size(void);
+size_t nb_brain_abi_receptor_event_transduction_uniforms_size(void);
+size_t nb_brain_abi_receptor_event_transduction_result_size(void);
 size_t nb_brain_abi_due_invocation_size(void);
 size_t nb_brain_abi_scheduler_uniforms_size(void);
 size_t nb_brain_abi_scheduler_result_size(void);
@@ -210,6 +273,16 @@ uint32_t nb_brain_abi_validate_module_descriptors(
 
 uint64_t nb_brain_abi_module_descriptor_fingerprint(
     const NBModuleDescriptor *descriptors,
+    uint32_t count
+);
+
+uint32_t nb_brain_abi_validate_receptor_events(
+    const NBReceptorEvent *events,
+    uint32_t count
+);
+
+uint64_t nb_brain_abi_receptor_event_fingerprint(
+    const NBReceptorEvent *events,
     uint32_t count
 );
 

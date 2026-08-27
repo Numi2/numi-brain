@@ -1,4 +1,5 @@
 import Foundation
+import NumiBrainABI
 
 /// Stable identity for counter-based stochastic tissue samples.
 ///
@@ -122,6 +123,11 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
   public var startMilliseconds: Float
   public var endMilliseconds: Float
   public var flags: TissueEventFlags
+  public var interruptMask: BrainInterruptMask
+  public var conductionLatencyMicroseconds: UInt32
+  public var receptorIdentifier: UInt32
+  public var magnitude: Float
+  public var auxiliaryValue: Float
 
   public init(
     identifier: UInt32,
@@ -133,7 +139,12 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
     noiseAmplitude: Float = 0,
     startMilliseconds: Float,
     endMilliseconds: Float,
-    flags: TissueEventFlags = []
+    flags: TissueEventFlags = [],
+    interruptMask: BrainInterruptMask = [],
+    conductionLatencyMicroseconds: UInt32 = 0,
+    receptorIdentifier: UInt32? = nil,
+    magnitude: Float? = nil,
+    auxiliaryValue: Float = 0
   ) {
     self.identifier = identifier
     self.centerX = centerX
@@ -145,13 +156,25 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
     self.startMilliseconds = startMilliseconds
     self.endMilliseconds = endMilliseconds
     self.flags = flags
+    self.interruptMask = interruptMask
+    self.conductionLatencyMicroseconds = conductionLatencyMicroseconds
+    self.receptorIdentifier = receptorIdentifier ?? identifier
+    self.magnitude =
+      magnitude
+      ?? max(abs(excitatoryDrive), abs(inhibitoryDrive)) + noiseAmplitude
+    self.auxiliaryValue = auxiliaryValue
   }
 
   public init(
     stimulus: TissueStimulus,
     identifier: UInt32 = 0,
     noiseAmplitude: Float = 0,
-    flags: TissueEventFlags = []
+    flags: TissueEventFlags = [],
+    interruptMask: BrainInterruptMask = [],
+    conductionLatencyMicroseconds: UInt32 = 0,
+    receptorIdentifier: UInt32? = nil,
+    magnitude: Float? = nil,
+    auxiliaryValue: Float = 0
   ) {
     self.init(
       identifier: identifier,
@@ -163,14 +186,19 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
       noiseAmplitude: noiseAmplitude,
       startMilliseconds: stimulus.startMilliseconds,
       endMilliseconds: stimulus.endMilliseconds,
-      flags: flags
+      flags: flags,
+      interruptMask: interruptMask,
+      conductionLatencyMicroseconds: conductionLatencyMicroseconds,
+      receptorIdentifier: receptorIdentifier,
+      magnitude: magnitude,
+      auxiliaryValue: auxiliaryValue
     )
   }
 
   public func validate() throws {
     let values = [
       centerX, centerY, radius, excitatoryDrive, inhibitoryDrive,
-      noiseAmplitude, startMilliseconds, endMilliseconds,
+      noiseAmplitude, startMilliseconds, endMilliseconds, magnitude, auxiliaryValue,
     ]
     guard values.allSatisfy(\.isFinite) else {
       throw TissueError.invalidEvents("all event values must be finite")
@@ -178,12 +206,45 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
     guard (0...1).contains(centerX), (0...1).contains(centerY) else {
       throw TissueError.invalidEvents("event center must use normalized [0, 1] coordinates")
     }
-    guard radius >= 0, noiseAmplitude >= 0 else {
-      throw TissueError.invalidEvents("event radius and noise amplitude must be nonnegative")
+    guard radius >= 0, noiseAmplitude >= 0, magnitude >= 0 else {
+      throw TissueError.invalidEvents(
+        "event radius, noise amplitude, and magnitude must be nonnegative"
+      )
     }
     guard endMilliseconds >= startMilliseconds else {
       throw TissueError.invalidEvents("event end time must not precede start time")
     }
+    guard
+      conductionLatencyMicroseconds
+        <= UInt32(NB_RECEPTOR_MAX_CONDUCTION_LATENCY_MICROSECONDS)
+    else {
+      throw TissueError.invalidEvents("event conduction latency exceeds the receptor ABI limit")
+    }
+    if !interruptMask.isEmpty, startMilliseconds < 0 {
+      throw TissueError.invalidEvents(
+        "interrupt-producing receptor events cannot begin before simulation time zero"
+      )
+    }
+  }
+
+  public var abiRecord: NBReceptorEvent {
+    var record = NBReceptorEvent()
+    record.center_x = centerX
+    record.center_y = centerY
+    record.radius = radius
+    record.start_milliseconds = startMilliseconds
+    record.end_milliseconds = endMilliseconds
+    record.excitatory_drive = excitatoryDrive
+    record.inhibitory_drive = inhibitoryDrive
+    record.noise_amplitude = noiseAmplitude
+    record.identifier = identifier
+    record.flags = flags.rawValue
+    record.interrupt_mask = interruptMask.rawValue
+    record.conduction_latency_microseconds = conductionLatencyMicroseconds
+    record.receptor_identifier = receptorIdentifier
+    record.magnitude = magnitude
+    record.auxiliary_value = auxiliaryValue
+    return record
   }
 }
 
@@ -193,9 +254,9 @@ public struct TissueReceptorEvent: Equatable, Sendable, Codable {
 /// bounded scan in the tissue kernel; dynamic GPU event compaction remains a
 /// later runtime-foundation gate.
 public struct TissueEventSchedule: Equatable, Sendable {
-  public typealias PackedVector = SIMD4<Float>
+  public typealias PackedRecord = NBReceptorEvent
   public static let maximumEventCount = 64
-  public static let packedVectorsPerEvent = 3
+  public static let receptorEventByteCount = Int(NB_RECEPTOR_EVENT_BYTE_COUNT)
 
   public let events: [TissueReceptorEvent]
 
@@ -208,10 +269,17 @@ public struct TissueEventSchedule: Equatable, Sendable {
     for event in events {
       try event.validate()
     }
-    guard Set(events.map(\.identifier)).count == events.count else {
-      throw TissueError.invalidEvents("event identifiers must be unique")
+    let canonical = events.sorted(by: Self.canonicalOrder)
+    let records = canonical.map(\.abiRecord)
+    let validation = records.withUnsafeBufferPointer { buffer in
+      nb_brain_abi_validate_receptor_events(buffer.baseAddress, UInt32(buffer.count))
     }
-    self.events = events.sorted(by: Self.canonicalOrder)
+    guard validation == UInt32(NB_RECEPTOR_EVENT_VALID.rawValue) else {
+      throw TissueError.invalidEvents(
+        "compiled receptor ABI validation failed with code \(validation)"
+      )
+    }
+    self.events = canonical
   }
 
   private init(validatedEvents: [TissueReceptorEvent]) {
@@ -220,7 +288,7 @@ public struct TissueEventSchedule: Equatable, Sendable {
 
   public var eventCount: Int { events.count }
   public var packedByteCount: Int {
-    eventCount * Self.packedVectorsPerEvent * MemoryLayout<PackedVector>.stride
+    eventCount * MemoryLayout<PackedRecord>.stride
   }
   public var activeIndexByteCapacity: Int {
     (Self.maximumEventCount + 1) * MemoryLayout<UInt32>.stride
@@ -236,7 +304,11 @@ public struct TissueEventSchedule: Equatable, Sendable {
 
   public static func singleStimulus(
     _ stimulus: TissueStimulus,
-    noiseAmplitude: Float = 0
+    noiseAmplitude: Float = 0,
+    flags: TissueEventFlags = [],
+    interruptMask: BrainInterruptMask = [],
+    conductionLatencyMicroseconds: UInt32 = 0,
+    receptorIdentifier: UInt32? = nil
   ) throws -> TissueEventSchedule {
     try stimulus.validate()
     guard stimulus.radius > 0,
@@ -250,7 +322,11 @@ public struct TissueEventSchedule: Equatable, Sendable {
       events: [
         TissueReceptorEvent(
           stimulus: stimulus,
-          noiseAmplitude: noiseAmplitude
+          noiseAmplitude: noiseAmplitude,
+          flags: flags,
+          interruptMask: interruptMask,
+          conductionLatencyMicroseconds: conductionLatencyMicroseconds,
+          receptorIdentifier: receptorIdentifier
         )
       ]
     )
@@ -272,57 +348,82 @@ public struct TissueEventSchedule: Equatable, Sendable {
     }
   }
 
-  public func packedVectors() -> [PackedVector] {
-    events.flatMap { event in
-      [
-        PackedVector(
-          event.centerX,
-          event.centerY,
-          event.radius,
-          event.startMilliseconds
-        ),
-        PackedVector(
-          event.endMilliseconds,
-          event.excitatoryDrive,
-          event.inhibitoryDrive,
-          event.noiseAmplitude
-        ),
-        PackedVector(
-          Float(bitPattern: event.identifier),
-          Float(bitPattern: event.flags.rawValue),
-          0,
-          0
-        ),
-      ]
-    }
+  public func packedRecords() -> [PackedRecord] {
+    events.map(\.abiRecord)
   }
 
   public func stableHash() -> String {
-    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-    @inline(__always)
-    func mix(_ value: UInt32, into hash: inout UInt64) {
-      var littleEndian = value.littleEndian
-      withUnsafeBytes(of: &littleEndian) { bytes in
-        for byte in bytes {
-          hash ^= UInt64(byte)
-          hash &*= 0x100_0000_01b3
-        }
-      }
-    }
-    mix(UInt32(eventCount), into: &hash)
-    for event in events {
-      mix(event.identifier, into: &hash)
-      mix(event.centerX.bitPattern, into: &hash)
-      mix(event.centerY.bitPattern, into: &hash)
-      mix(event.radius.bitPattern, into: &hash)
-      mix(event.excitatoryDrive.bitPattern, into: &hash)
-      mix(event.inhibitoryDrive.bitPattern, into: &hash)
-      mix(event.noiseAmplitude.bitPattern, into: &hash)
-      mix(event.startMilliseconds.bitPattern, into: &hash)
-      mix(event.endMilliseconds.bitPattern, into: &hash)
-      mix(event.flags.rawValue, into: &hash)
+    let records = packedRecords()
+    let hash = records.withUnsafeBufferPointer { buffer in
+      nb_brain_abi_receptor_event_fingerprint(buffer.baseAddress, UInt32(buffer.count))
     }
     return String(format: "%016llx", hash)
+  }
+
+  /// Produces causal event-onset interrupts for a committed scheduler window.
+  /// The first root includes its lower boundary; later roots exclude it so an
+  /// onset exactly at a committed boundary cannot be delivered twice.
+  public func schedulerInterruptEvents(
+    committedTime: BrainTimestamp,
+    targetTime: BrainTimestamp,
+    includeCommittedBoundary: Bool
+  ) throws -> [BrainInterruptEvent] {
+    guard targetTime >= committedTime else {
+      throw TissueError.invalidEvents("scheduler interrupt window runs backward")
+    }
+    var result: [BrainInterruptEvent] = []
+    result.reserveCapacity(events.count)
+    for event in events where !event.interruptMask.isEmpty {
+      guard event.radius > 0, event.endMilliseconds > event.startMilliseconds else {
+        continue
+      }
+      let onset = try Self.timestampMicroseconds(milliseconds: event.startMilliseconds)
+      let (delivered, overflow) = onset.addingReportingOverflow(
+        UInt64(event.conductionLatencyMicroseconds)
+      )
+      guard !overflow else {
+        throw TissueError.invalidEvents("receptor interrupt timestamp overflows UInt64")
+      }
+      let timestamp = BrainTimestamp(microseconds: delivered)
+      let afterLowerBound =
+        includeCommittedBoundary
+        ? timestamp >= committedTime
+        : timestamp > committedTime
+      guard afterLowerBound, timestamp <= targetTime else { continue }
+      result.append(
+        try BrainInterruptEvent(
+          timestamp: timestamp,
+          mask: event.interruptMask,
+          identifier: event.receptorIdentifier,
+          flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+        )
+      )
+    }
+    return result.sorted(by: Self.interruptOrder)
+  }
+
+  private static func timestampMicroseconds(milliseconds: Float) throws -> UInt64 {
+    guard milliseconds.isFinite, milliseconds >= 0 else {
+      throw TissueError.invalidEvents("receptor interrupt time must be nonnegative and finite")
+    }
+    let scaled = Double(milliseconds) * 1_000
+    let rounded = scaled.rounded()
+    guard rounded < Double(UInt64.max), abs(scaled - rounded) <= 0.01 else {
+      throw TissueError.invalidEvents(
+        "receptor interrupt time is not representable in integer microseconds"
+      )
+    }
+    return UInt64(rounded)
+  }
+
+  private static func interruptOrder(
+    _ lhs: BrainInterruptEvent,
+    _ rhs: BrainInterruptEvent
+  ) -> Bool {
+    if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+    if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
+    if lhs.mask.rawValue != rhs.mask.rawValue { return lhs.mask.rawValue < rhs.mask.rawValue }
+    return lhs.flags < rhs.flags
   }
 
   private static func canonicalOrder(
