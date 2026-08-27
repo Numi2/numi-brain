@@ -59,7 +59,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue and regional evidence
 
-The v0.10 source slice retains the v0.9 route-delay behavior and additionally proves deterministic dynamic route selection, emergency bypass, persistence, normalized strengths, selected-route compaction, and transaction-owned routing state in local tests. A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8.
+The v0.10 source slice retains the v0.9 route-delay behavior and additionally proves deterministic dynamic route selection, emergency bypass, persistence, normalized strengths, selected-route compaction, and transaction-owned routing state in local tests. A bounded local Apple M4 artifact is checked into [`evidence/tissue-v0.10`](evidence/tissue-v0.10/README.md). A new checked remote evidence bundle has not yet been produced; the latest checked Apple M4 Pro evidence remains v0.8.
 
 The implemented tissue slice currently proves:
 
