@@ -10,7 +10,7 @@
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
-- GPU performance evidence: bounded Apple M4 v0.12 and earlier Apple M4 Pro/M4 v0.11 correctness probes only; v0.12 M4 Pro execution, production throughput, and counter qualification remain pending
+- GPU performance evidence: bounded Apple M4 Pro/M4 v0.12 and earlier v0.11 correctness probes only; production throughput and counter qualification remain pending
 
 The architecture document remains a design contract. Only the tissue and scheduler behavior owned by the source and tests in this repository is currently live.
 
@@ -69,7 +69,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue and regional evidence
 
-The v0.12 source slice retains the v0.11 receptor-interrupt behavior and adds compiled immutable parameter manifests, synchronization-boundary publication, CPU checkpoint/cohort version identity, separate regional shape/content fingerprints, and private Metal version validation. A bounded Apple M4 artifact is checked into [`evidence/tissue-v0.12`](evidence/tissue-v0.12/README.md); v0.12 M4 Pro qualification is deferred while an unrelated crow workload owns that GPU. Earlier M4 Pro/M4 artifacts remain in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md).
+The v0.12 source slice retains the v0.11 receptor-interrupt behavior and adds compiled immutable parameter manifests, synchronization-boundary publication, CPU checkpoint/cohort version identity, separate regional shape/content fingerprints, and private Metal version validation. Bounded Apple M4 Pro and Apple M4 artifacts are checked into [`evidence/tissue-v0.12`](evidence/tissue-v0.12/README.md). The heavy run began only after the unrelated crow workload ended; earlier M4 Pro/M4 artifacts remain in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md).
 
 The implemented tissue slice currently proves:
 
@@ -116,6 +116,8 @@ The Metal history ring uses two private 32-slot FP32 relay planes plus one rejec
 The latest checked Apple M4 Pro development probe on 2026-08-27 used source commit `45f53e4`, a 256×192 GPU-compacted noisy-event sparse-projection delayed layered sheet, and 60 accepted 1 ms substeps. It issued 60 tissue event-compaction dispatches plus three receptor-interrupt, scheduler, and regional dispatches. One 10 ms pain onset with 500 microseconds of conduction latency entered the private interrupt queue, produced three regional interrupt deliveries, and was not repeated in the final root. The scheduler committed to 60,000 microseconds at generation 3 with hash `1e425263c7384285`, zero scheduler and transduction status, and exact CPU clock parity. Tissue CPU/Metal error was `1.1920929e-07`; regional, token, route-history, and routing errors passed their declared tolerances. Replay, rejected retry, and root abort were exact. The JSON and inspected PNG are in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md). This is implementation evidence, not calibrated receptor, learned cognition, mid-physics-substep interruption, biological behavior, or a production GPU benchmark.
 
 The previous v0.8 M4 Pro probe remains available for its lesion, no-noise, and alternate-seed control set. It predates dynamic regional routing and receptor-interrupt transduction.
+
+The v0.12 source and full 48-test suite were synchronized, built, and executed through `/Users/n/numi-brain` on `macmini` after confirming no competing crow, MetalRobo, Swift, or NumiBrain workload. The M4 Pro run retained the same parameter fingerprint `f5e9c9c4aa094246`, structural fingerprint `97cc4e9a47c2baa8`, regional content fingerprint `704931c121ffb989`, and scheduler snapshot hash `79eb6335afc2f14b` as the M4 control. Recorded GPU seconds remain bounded telemetry, not a throughput or counter qualification.
 
 The v0.11 source and full 42-test suite were synchronized, built, and executed through `/Users/n/numi-brain` on `macmini` after confirming no competing crow, MetalRobo, Swift, or NumiBrain workload. The recorded GPU seconds are retained as bounded run telemetry, not promoted as a throughput claim; same-workload counter capture and production-cohort qualification remain pending.
 
