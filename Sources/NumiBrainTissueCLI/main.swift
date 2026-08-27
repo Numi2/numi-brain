@@ -21,6 +21,12 @@ private struct Options {
   var snapshotPath: String?
   var verifyCPU = false
   var verifyReplay = false
+  var stimulus = TissueStimulus(
+    radius: 0.08,
+    excitatoryDrive: 5,
+    startMilliseconds: 20,
+    endMilliseconds: 70
+  )
 
   static func parse(_ arguments: [String]) throws -> Options {
     var options = Options()
@@ -66,6 +72,32 @@ private struct Options {
         options.verifyCPU = true
       case "--verify-replay":
         options.verifyReplay = true
+      case "--stimulus-x":
+        options.stimulus.centerX = try parseFloat(try value(after: argument), flag: argument)
+      case "--stimulus-y":
+        options.stimulus.centerY = try parseFloat(try value(after: argument), flag: argument)
+      case "--stimulus-radius":
+        options.stimulus.radius = try parseFloat(try value(after: argument), flag: argument)
+      case "--stimulus-drive":
+        options.stimulus.excitatoryDrive = try parseFloat(
+          try value(after: argument),
+          flag: argument
+        )
+      case "--stimulus-inhibition":
+        options.stimulus.inhibitoryDrive = try parseFloat(
+          try value(after: argument),
+          flag: argument
+        )
+      case "--stimulus-start-ms":
+        options.stimulus.startMilliseconds = try parseFloat(
+          try value(after: argument),
+          flag: argument
+        )
+      case "--stimulus-end-ms":
+        options.stimulus.endMilliseconds = try parseFloat(
+          try value(after: argument),
+          flag: argument
+        )
       case "--help", "-h":
         printUsage()
         Darwin.exit(EXIT_SUCCESS)
@@ -81,6 +113,7 @@ private struct Options {
     guard options.durationMilliseconds > 0, options.controlMilliseconds > 0 else {
       throw CLIError("duration and control interval must be positive")
     }
+    try options.stimulus.validate()
     return options
   }
 
@@ -112,6 +145,13 @@ private struct Options {
         --snapshot PATH       Write final activity as a PNG heatmap
         --verify-cpu          Compare the final Metal state with the CPU oracle
         --verify-replay       Repeat the run and compare the final state hash
+        --stimulus-x N        Normalized stimulus center x (default: 0.5)
+        --stimulus-y N        Normalized stimulus center y (default: 0.5)
+        --stimulus-radius N   Normalized stimulus radius (default: 0.08)
+        --stimulus-drive N    Excitatory drive (default: 5)
+        --stimulus-inhibition N  Inhibitory drive (default: 0)
+        --stimulus-start-ms N Stimulus start time (default: 20)
+        --stimulus-end-ms N   Stimulus end time (default: 70)
         --help                Show this help
       """
     )
@@ -164,6 +204,8 @@ private struct SimulationEvidence: Codable {
   let model: String
   let numericalScope: String
   let grid: GridShape
+  let parameters: TissueParameters
+  let stimulus: TissueStimulus
   let timestepMilliseconds: Float
   let acceptedDurationMilliseconds: Float
   let controlIntervalMilliseconds: Float
@@ -204,12 +246,7 @@ private struct NumiBrainTissueCommand {
 
   private static func run(options: Options) throws -> SimulationEvidence {
     let parameters = TissueParameters.corticalSheetV0
-    let stimulus = TissueStimulus(
-      radius: 0.08,
-      excitatoryDrive: 5,
-      startMilliseconds: 20,
-      endMilliseconds: 70
-    )
+    let stimulus = options.stimulus
     let initialState = try CPUTissueDynamics.makeRestingGrid(
       width: options.width,
       height: options.height,
@@ -328,6 +365,8 @@ private struct NumiBrainTissueCommand {
         height: initialState.height,
         cells: initialState.count
       ),
+      parameters: parameters,
+      stimulus: stimulus,
       timestepMilliseconds: parameters.timestepMilliseconds,
       acceptedDurationMilliseconds: Float(totalSubsteps) * parameters.timestepMilliseconds,
       controlIntervalMilliseconds: Float(substepsPerControl) * parameters.timestepMilliseconds,
@@ -347,10 +386,10 @@ private struct NumiBrainTissueCommand {
         stateGenerationCount: 3,
         stateGenerationBytes: initialState.count * MemoryLayout<TissueCell>.stride * 3,
         uniformArenaBytes: max(substepsPerControl, 2) * TissueUniforms.byteCount,
-                residencyAllocatedBytes: result.residencyAllocatedBytes,
-                storageMode: options.backend == .metal
-                    ? "private GPU state generations plus shared uniforms and explicit inspection staging"
-                    : "CPU reference arrays"
+        residencyAllocatedBytes: result.residencyAllocatedBytes,
+        storageMode: options.backend == .metal
+          ? "private GPU state generations plus shared uniforms and explicit inspection staging"
+          : "CPU reference arrays"
       ),
       metrics: metrics,
       rollbackRetryExact: rollback.retry,
