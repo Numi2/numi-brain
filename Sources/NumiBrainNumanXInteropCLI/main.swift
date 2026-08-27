@@ -23,12 +23,15 @@ private final class NumanXMyoSimBridge {
   private typealias UInt32Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt32
   private typealias IndexedUInt32Function =
     @convention(c) (UnsafeMutableRawPointer?, UInt32) -> UInt32
+  private typealias CStringFunction =
+    @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
   private typealias FloatFunction = @convention(c) (UnsafeMutableRawPointer?) -> Float
   private typealias DoubleFunction = @convention(c) (UnsafeMutableRawPointer?) -> Double
 
   private let library: UnsafeMutableRawPointer
   private let bridge: UnsafeMutableRawPointer
   private let destroyFunction: DestroyFunction
+  private let lastErrorFunction: CStringFunction
   private let muscleCountFunction: UInt32Function
   private let muscleIdentifierFunction: IndexedUInt32Function
   private let beginRootFunction: StatusFunction
@@ -68,6 +71,9 @@ private final class NumanXMyoSimBridge {
     )
     destroyFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_destroy", from: library
+    )
+    lastErrorFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_last_error", from: library
     )
     muscleCountFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_muscle_count", from: library
@@ -263,10 +269,14 @@ private final class NumanXMyoSimBridge {
 
   private func requireSuccess(_ status: UInt32, _ operation: String) throws {
     guard status == 0 else {
+      let detail = lastErrorFunction(bridge).map(String.init(cString:)) ?? "unknown failure"
       throw NSError(
         domain: "NumiBrainNumanXInterop",
         code: Int(status),
-        userInfo: [NSLocalizedDescriptionKey: "\(operation) failed with status \(status)"]
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "\(operation) failed with status \(status): \(detail)"
+        ]
       )
     }
   }
