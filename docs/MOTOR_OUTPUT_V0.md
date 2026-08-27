@@ -107,9 +107,10 @@ ordered source-muscle catalog loaded from the NumanX `.nhmyo` asset. The first
 six channels retain deterministic fixture gains; the remaining channels have
 zero neural output gain but retain NumanX passive force. An immutable catalog
 maps each tendon to its ordered first and terminal route-site body identifiers
-and local coordinates. Peak force is therefore mechanically localized, but the
-global protective command still cannot express body-side withdrawal, and the
-overload threshold is not calibrated.
+and local coordinates. Accepted overload now selects every motor route sharing
+an affected endpoint and inhibits the exact overloaded source channel on Metal.
+The global protective command still cannot infer a safe body-side or neighbor-
+muscle withdrawal direction, and the overload threshold is not calibrated.
 
 ## Evidence boundary
 
@@ -125,10 +126,13 @@ The isolated NumanX receiver revision recorded in
 `evidence/numanx-myosim-interop-v0.1` consumes a private borrowed excitation
 buffer before MyoSim force evaluation and demonstrates an activation, force,
 and articulated-state consequence on Apple M4 Pro. The later
-`evidence/numanx-joint-root-v0.5` artifact executes the actual 416-channel
+`evidence/numanx-joint-root-v0.6` artifact executes the actual 416-channel
 NumiBrain producer and that receiving path in one Apple M4 process, including
 cross-language attachment identity, tendon-to-endpoint-body localization,
-transaction-owned committed feedback, and exact physical retry. It still uses separate command
-queues, staged diagnostics, CPU articulated integration, and sequential root
-publication. The v0.4 attachment-catalog, v0.3 full-muscle, and v0.2 selected-
-muscle controls remain.
+transaction-owned body-load state, endpoint-sharing candidate selection,
+overloaded-source inhibition on Metal, and exact physical retry. Tendon `215`
+has zero fixture neural gain and passive force, so this is command-inhibition
+evidence rather than physical load-reduction evidence. It still uses separate
+command queues, staged diagnostics, CPU articulated integration, and sequential root
+publication. The v0.5 committed-localization, v0.4 attachment-catalog, v0.3
+full-muscle, and v0.2 selected-muscle controls remain.
