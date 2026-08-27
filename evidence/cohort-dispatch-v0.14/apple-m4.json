@@ -1,0 +1,58 @@
+{
+  "abi" : {
+    "cohortEnvironmentBytes" : 40,
+    "entryBytes" : 16,
+    "groupBytes" : 24,
+    "headerBytes" : 48,
+    "parameterBindingBytes" : 64,
+    "planVersion" : 1,
+    "resultBytes" : 32,
+    "workItemBytes" : 32
+  },
+  "cohort" : {
+    "dispatchEntryCount" : 679943,
+    "dispatchGroupCount" : 90,
+    "environmentCount" : 8192,
+    "interruptDeliveryCount" : 11,
+    "maximumEnvironmentCountPerGroup" : 8192,
+    "moduleCount" : 8,
+    "sourceInvocationCount" : 679943
+  },
+  "executionPath" : "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect dispatch consumption",
+  "identity" : {
+    "cohortFingerprint" : "dda9ac241e3ce636",
+    "dispatchPlanFingerprint" : "51a78f0bcdbe4665",
+    "dispatchWorkFingerprint" : "1e3c0e0c326b212e",
+    "parameterVersionFingerprint" : "f5e9c9c4aa094246",
+    "scheduleFingerprint" : "c0162952817e2b01"
+  },
+  "limitations" : [
+    "The CPU oracle currently compiles cohort membership before GPU materialization.",
+    "The indirect consumer expands work records but does not yet update cohort recurrent regional state.",
+    "GPU seconds are command-feedback telemetry for materialization and indirect consumption, not a production throughput or counter qualification.",
+    "The eight-module runtime-foundation subset is not the complete 96-module graph."
+  ],
+  "metal" : {
+    "device" : "Apple M4",
+    "execution" : "Metal 4 private immutable plan and parameter inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect consume -> private work items -> explicit post-completion inspection",
+    "gpuSeconds" : 0.001240041572600603,
+    "indirectThreadgroupCount" : 10625,
+    "privateInputBytes" : 10881360,
+    "privateOutputBytes" : 32639472,
+    "status" : 0,
+    "workItemBytes" : 21758176,
+    "workItemCount" : 679943
+  },
+  "operatingSystem" : "Version 26.6 (Build 25G5028f)",
+  "revision" : "487c2483e20a1929b113726a1833d59bf30fdccf",
+  "schema" : "numibrain.cohort-dispatch-evidence.v2",
+  "verification" : {
+    "canonicalInputOrderExact" : true,
+    "discardedShadowStateUnchanged" : true,
+    "gpuIndirectConsumptionExact" : true,
+    "gpuMaterializationExact" : true,
+    "gpuReplayExact" : true,
+    "retryExact" : true,
+    "staleParameterVersionRejected" : true
+  }
+}

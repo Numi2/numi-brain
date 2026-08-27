@@ -87,7 +87,7 @@ swift run -c release numi-brain-dispatch \
 
 The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU materialization, exact indirect work consumption and replay, and stale-parameter rejection. The CPU currently owns plan construction; Metal owns private region-major materialization and the no-readback handoff into the indirect consumer. The consumer emits work records but does not yet update recurrent cohort state. This is not yet GPU prefix-sum grouping or cohort throughput qualification.
 
-The exact 8,192-environment Apple M4 correctness artifact is checked into [evidence/cohort-dispatch-v0.13](evidence/cohort-dispatch-v0.13/README.md). Its command-feedback timing covers only the materialization kernel and is not a production performance claim.
+The exact 8,192-environment Apple M4 indirect-consumption artifact is checked into [evidence/cohort-dispatch-v0.14](evidence/cohort-dispatch-v0.14/README.md); the preceding materialization-only artifact remains in [v0.13](evidence/cohort-dispatch-v0.13/README.md). Their command-feedback timings cover only the named kernels and are not production performance claims.
 
 ## Foundational invariants
 
