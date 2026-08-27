@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture plus the first executable mesoscale neural-tissue vertical slice. The complete NumiBrain runtime is not implemented or qualified yet.
+> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue vertical slice. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 
@@ -37,13 +37,18 @@ swift run -c release numi-brain-tissue \
   --height 256 \
   --duration-ms 40 \
   --control-ms 20 \
+  --structure layered \
+  --lesion-x 0.62 \
+  --lesion-y 0.5 \
+  --lesion-radius 0.10 \
+  --lesion-viability 0 \
   --verify-cpu \
   --verify-replay \
   --snapshot artifacts/tissue-activity.png \
   --output artifacts/tissue-evidence.json
 ```
 
-The executable also supports `--backend cpu` as a deterministic FP32 oracle. JSON evidence separates wall time from Metal 4 GPU time and records the state hash, device, execution path, memory footprint, boundedness, rollback/retry result, replay result, and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
+The executable also supports `--backend cpu` as a deterministic FP32 oracle and `--structure homogeneous` as a baseline. Layered structure and lesion controls are synthetic experiment inputs, not anatomical or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state and structure hashes, device, execution path, memory footprint, boundedness, rollback/retry result, replay result, and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
 ## Foundational invariants
 
@@ -58,7 +63,7 @@ The executable also supports `--backend cpu` as a deterministic FP32 oracle. JSO
 
 ## Implementation order
 
-The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, short-range spatial coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement multi-region routing, sensor transduction, NumanX interop, learning, memory, or motor control.
+The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, lesionable short-range coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement spiking neurons, distance-indexed delay rings, multi-region routing, sensor transduction, NumanX interop, learning, memory, or motor control.
 
 The next runtime-foundation work is a stable brain-state ABI, multi-rate scheduler, event queue, immutable parameter versions, counter-based randomness, indirect active-region dispatch, nested NumanX transaction interop, and private-heap state storage. Later phases add causal receptors, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
 

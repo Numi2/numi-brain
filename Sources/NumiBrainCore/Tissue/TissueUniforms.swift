@@ -6,6 +6,7 @@ public enum TissueUniformIndex: Int, Sendable {
   case excitatoryTimeConstant = 4
   case inhibitoryTimeConstant = 5
   case adaptationTimeConstant = 6
+  case axonalRelayTimeConstant = 7
   case excitatorySelfWeight = 8
   case inhibitoryToExcitatoryWeight = 9
   case excitatoryToInhibitoryWeight = 10
@@ -48,6 +49,8 @@ public enum TissueUniforms {
       parameters.inhibitoryTimeConstantMilliseconds
     values[TissueUniformIndex.adaptationTimeConstant.rawValue] =
       parameters.adaptationTimeConstantMilliseconds
+    values[TissueUniformIndex.axonalRelayTimeConstant.rawValue] =
+      parameters.axonalRelayTimeConstantMilliseconds
     values[TissueUniformIndex.excitatorySelfWeight.rawValue] = parameters.excitatorySelfWeight
     values[TissueUniformIndex.inhibitoryToExcitatoryWeight.rawValue] =
       parameters.inhibitoryToExcitatoryWeight

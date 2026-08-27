@@ -20,6 +20,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let height: Int
   public let parameters: TissueParameters
   public let stimulus: TissueStimulus
+  public let structureHash: String
   public let maxEncodedSubsteps: Int
 
   private let device: any MTLDevice
@@ -30,6 +31,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let argumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
+  private let structureBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
@@ -41,11 +43,25 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     initialState: TissueGrid,
     parameters: TissueParameters,
     stimulus: TissueStimulus,
+    structure requestedStructure: TissueStructure? = nil,
     maxEncodedSubsteps: Int = 4_096,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws {
     try parameters.validate()
     try stimulus.validate()
+    let structure: TissueStructure
+    if let requestedStructure {
+      structure = requestedStructure
+    } else {
+      structure = try TissueStructure.homogeneous(
+        width: initialState.width,
+        height: initialState.height
+      )
+    }
+    try structure.validate()
+    guard structure.width == initialState.width, structure.height == initialState.height else {
+      throw TissueError.invalidStructure("structure dimensions must match the initial state")
+    }
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
     }
@@ -94,7 +110,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain tissue arguments"
-    argumentDescriptor.maxBufferBindCount = 3
+    argumentDescriptor.maxBufferBindCount = 4
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the Metal 4 argument table")
@@ -113,6 +129,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       buffer.label = "NumiBrain tissue state generation \(index)"
       return buffer
     }
+    guard
+      let structureBuffer = device.makeBuffer(
+        length: stateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate the tissue structure field")
+    }
+    structureBuffer.label = "NumiBrain immutable tissue structure"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -135,7 +160,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 2
+    residencyDescriptor.initialCapacity = stateBuffers.count + 3
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -145,6 +170,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for buffer in stateBuffers {
       residencySet.addAllocation(buffer)
     }
+    residencySet.addAllocation(structureBuffer)
     residencySet.addAllocation(uniformBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
@@ -156,6 +182,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.height = initialState.height
     self.parameters = parameters
     self.stimulus = stimulus
+    self.structureHash = structure.stableHash()
     self.maxEncodedSubsteps = maxEncodedSubsteps
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
@@ -164,6 +191,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.argumentTable = argumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
+    self.structureBuffer = structureBuffer
     self.uniformBuffer = uniformBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
@@ -176,6 +204,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       source: stagingBuffer,
       destination: stateBuffers[committedIndex],
       label: "NumiBrain tissue initial upload"
+    )
+    structure.sites.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: stateByteCount)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: structureBuffer,
+      label: "NumiBrain tissue structure upload"
     )
   }
 
@@ -244,6 +281,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
           uniformBuffer.gpuAddress + UInt64(attempt * TissueUniforms.byteCount),
           index: 2
         )
+        argumentTable.setAddress(structureBuffer.gpuAddress, index: 3)
         encoder.setArgumentTable(argumentTable)
         encoder.dispatchThreads(
           threadsPerGrid: MTLSize(width: width, height: height, depth: 1),

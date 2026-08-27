@@ -9,6 +9,7 @@ enum TissueUniformIndex : uint {
     TissueExcitatoryTimeConstant = 4,
     TissueInhibitoryTimeConstant = 5,
     TissueAdaptationTimeConstant = 6,
+    TissueAxonalRelayTimeConstant = 7,
     TissueExcitatorySelfWeight = 8,
     TissueInhibitoryToExcitatoryWeight = 9,
     TissueExcitatoryToInhibitoryWeight = 10,
@@ -37,6 +38,7 @@ kernel void neural_tissue_step(
     device const float4 *input [[buffer(0)]],
     device float4 *output [[buffer(1)]],
     constant float *uniforms [[buffer(2)]],
+    device const float4 *structure [[buffer(3)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -58,10 +60,25 @@ kernel void neural_tissue_step(
     const float4 south = input[down * width + x];
     const float4 west = input[y * width + left];
     const float4 east = input[y * width + right];
-    const float neighborE = 0.25f * (north.x + south.x + west.x + east.x);
-    const float neighborI = 0.25f * (north.y + south.y + west.y + east.y);
+    const float4 centerSite = structure[index];
+    const float4 northSite = structure[up * width + x];
+    const float4 southSite = structure[down * width + x];
+    const float4 westSite = structure[y * width + left];
+    const float4 eastSite = structure[y * width + right];
+    const float neighborRelay = 0.25f * (
+        north.w * northSite.z * northSite.w
+        + south.w * southSite.z * southSite.w
+        + west.w * westSite.z * westSite.w
+        + east.w * eastSite.z * eastSite.w
+    );
+    const float neighborI = 0.25f * (
+        north.y * northSite.z * northSite.w
+        + south.y * southSite.z * southSite.w
+        + west.y * westSite.z * westSite.w
+        + east.y * eastSite.z * eastSite.w
+    );
     const float spatialE = center.x
-        + uniforms[TissueExcitatorySpatialMix] * (neighborE - center.x);
+        + uniforms[TissueExcitatorySpatialMix] * (neighborRelay - center.x);
     const float spatialI = center.y
         + uniforms[TissueInhibitorySpatialMix] * (neighborI - center.y);
 
@@ -83,7 +100,7 @@ kernel void neural_tissue_step(
     }
 
     const float targetE = tissue_sigmoid(
-        uniforms[TissueExcitatoryGain] * (
+        uniforms[TissueExcitatoryGain] * centerSite.x * (
             uniforms[TissueExcitatorySelfWeight] * spatialE
             - uniforms[TissueInhibitoryToExcitatoryWeight] * center.y
             - uniforms[TissueAdaptationStrength] * center.z
@@ -92,7 +109,7 @@ kernel void neural_tissue_step(
         )
     );
     const float targetI = tissue_sigmoid(
-        uniforms[TissueInhibitoryGain] * (
+        uniforms[TissueInhibitoryGain] * centerSite.y * (
             uniforms[TissueExcitatoryToInhibitoryWeight] * spatialE
             - uniforms[TissueInhibitorySelfWeight] * spatialI
             + uniforms[TissueInhibitoryBias]
@@ -101,12 +118,14 @@ kernel void neural_tissue_step(
     );
     const float dt = uniforms[TissueTimestepMilliseconds];
     const float nextE = clamp(
-        center.x + dt / uniforms[TissueExcitatoryTimeConstant] * (targetE - center.x),
+        center.x + dt / uniforms[TissueExcitatoryTimeConstant]
+            * (centerSite.w * targetE - center.x),
         0.0f,
         1.0f
     );
     const float nextI = clamp(
-        center.y + dt / uniforms[TissueInhibitoryTimeConstant] * (targetI - center.y),
+        center.y + dt / uniforms[TissueInhibitoryTimeConstant]
+            * (centerSite.w * targetI - center.y),
         0.0f,
         1.0f
     );
@@ -115,5 +134,10 @@ kernel void neural_tissue_step(
         0.0f,
         1.0f
     );
-    output[index] = float4(nextE, nextI, nextA, 0.0f);
+    const float nextRelay = clamp(
+        center.w + dt / uniforms[TissueAxonalRelayTimeConstant] * (center.x - center.w),
+        0.0f,
+        1.0f
+    );
+    output[index] = float4(nextE, nextI, nextA, nextRelay);
 }

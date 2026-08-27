@@ -4,10 +4,10 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification plus mesoscale tissue vertical slice v0
-- Implemented runtime code: deterministic CPU oracle and Metal 4 cortical-sheet runtime
+- Current state: specification plus heterogeneous mesoscale tissue vertical slice v0.1
+- Implemented runtime code: deterministic CPU oracle and Metal 4 structured-sheet runtime
 - Build and test system: Swift Package Manager and XCTest
-- Metal kernels: one FP32 Wilson-Cowan-family tissue step
+- Metal kernels: one FP32 Wilson-Cowan-family tissue step with relay and structure field
 - NumanX interop: none
 - Checkpoint or replay artifacts: none
 - GPU performance evidence: bounded local probe only; remote production-size qualification pending
@@ -16,16 +16,21 @@ The architecture document remains a design contract. Only the tissue behavior ow
 
 ## Implemented tissue evidence
 
-The v0 slice currently proves:
+The v0.1 slice currently proves:
 
 - finite, bounded resting-state integration;
 - transient activation from a physically timed localized input;
 - short-range recruitment outside the direct input footprint;
+- a finite-time axonal relay that lags local population recruitment;
+- deterministic synthetic tissue strata with per-site excitatory, inhibitory, coupling, and viability coefficients;
+- exact silence and blocked outgoing transmission for zero-viability lesion sites;
 - inhibitory/adaptation-driven recovery;
 - bit-exact CPU replay for a fixed acceptance/rejection schedule;
 - bit-exact root abort and rejected-substep retry;
 - Metal 4 execution through `MTL4CommandQueue`, a reusable `MTL4CommandBuffer`, `MTL4ComputeCommandEncoder`, and `MTL4ArgumentTable`;
 - CPU/Metal agreement within an FP32 tolerance.
+
+The current XCTest suite contains 13 passing tests: eight CPU oracle tests and five Metal 4 tests. One parity test advances a layered, circularly lesioned sheet on both implementations and requires both FP32 agreement and exact zero state at every nonviable site.
 
 A lightweight Apple M4 development probe on 2026-08-27 used a 48×48 grid for 40 accepted 1 ms substeps. It reported `5.9604645e-08` maximum CPU/Metal error, exact replay and rollback, and finite bounded output. This is implementation evidence, not a calibrated brain-tissue result or production GPU benchmark.
 

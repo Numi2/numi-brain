@@ -11,6 +11,18 @@ private enum Backend: String, Codable {
   case metal
 }
 
+private enum StructureProfile: String, Codable {
+  case homogeneous
+  case layered
+}
+
+private struct LesionOptions: Codable {
+  var centerX: Float = 0.5
+  var centerY: Float = 0.5
+  var radius: Float = 0
+  var viability: Float = 0
+}
+
 private struct Options {
   var backend: Backend = .metal
   var width = 128
@@ -21,6 +33,8 @@ private struct Options {
   var snapshotPath: String?
   var verifyCPU = false
   var verifyReplay = false
+  var structureProfile: StructureProfile = .layered
+  var lesion = LesionOptions()
   var stimulus = TissueStimulus(
     radius: 0.08,
     excitatoryDrive: 5,
@@ -72,6 +86,20 @@ private struct Options {
         options.verifyCPU = true
       case "--verify-replay":
         options.verifyReplay = true
+      case "--structure":
+        let raw = try value(after: argument)
+        guard let profile = StructureProfile(rawValue: raw) else {
+          throw CLIError("--structure must be homogeneous or layered")
+        }
+        options.structureProfile = profile
+      case "--lesion-x":
+        options.lesion.centerX = try parseFloat(try value(after: argument), flag: argument)
+      case "--lesion-y":
+        options.lesion.centerY = try parseFloat(try value(after: argument), flag: argument)
+      case "--lesion-radius":
+        options.lesion.radius = try parseFloat(try value(after: argument), flag: argument)
+      case "--lesion-viability":
+        options.lesion.viability = try parseFloat(try value(after: argument), flag: argument)
       case "--stimulus-x":
         options.stimulus.centerX = try parseFloat(try value(after: argument), flag: argument)
       case "--stimulus-y":
@@ -114,6 +142,15 @@ private struct Options {
       throw CLIError("duration and control interval must be positive")
     }
     try options.stimulus.validate()
+    guard (0...1).contains(options.lesion.centerX),
+      (0...1).contains(options.lesion.centerY),
+      options.lesion.radius >= 0,
+      (0...1).contains(options.lesion.viability)
+    else {
+      throw CLIError(
+        "lesion center and viability must lie in [0, 1], with nonnegative radius"
+      )
+    }
     return options
   }
 
@@ -145,6 +182,11 @@ private struct Options {
         --snapshot PATH       Write final activity as a PNG heatmap
         --verify-cpu          Compare the final Metal state with the CPU oracle
         --verify-replay       Repeat the run and compare the final state hash
+        --structure homogeneous|layered  Tissue profile (default: layered)
+        --lesion-x N          Normalized lesion center x (default: 0.5)
+        --lesion-y N          Normalized lesion center y (default: 0.5)
+        --lesion-radius N     Normalized lesion radius (default: 0, disabled)
+        --lesion-viability N  Remaining viability inside lesion (default: 0)
         --stimulus-x N        Normalized stimulus center x (default: 0.5)
         --stimulus-y N        Normalized stimulus center y (default: 0.5)
         --stimulus-radius N   Normalized stimulus radius (default: 0.08)
@@ -184,8 +226,17 @@ private struct MemoryEvidence: Codable {
   let stateGenerationCount: Int
   let stateGenerationBytes: Int
   let uniformArenaBytes: Int
+  let structureBytes: Int
   let residencyAllocatedBytes: UInt64?
   let storageMode: String
+}
+
+private struct StructureEvidence: Codable {
+  let profile: StructureProfile
+  let hash: String
+  let bytes: Int
+  let lesion: LesionOptions
+  let interpretation: String
 }
 
 private struct VerificationEvidence: Codable {
@@ -206,6 +257,7 @@ private struct SimulationEvidence: Codable {
   let grid: GridShape
   let parameters: TissueParameters
   let stimulus: TissueStimulus
+  let structure: StructureEvidence
   let timestepMilliseconds: Float
   let acceptedDurationMilliseconds: Float
   let controlIntervalMilliseconds: Float
@@ -247,10 +299,30 @@ private struct NumiBrainTissueCommand {
   private static func run(options: Options) throws -> SimulationEvidence {
     let parameters = TissueParameters.corticalSheetV0
     let stimulus = options.stimulus
+    var structure: TissueStructure
+    switch options.structureProfile {
+    case .homogeneous:
+      structure = try TissueStructure.homogeneous(
+        width: options.width,
+        height: options.height
+      )
+    case .layered:
+      structure = try TissueStructure.layeredCorticalSheetV0(
+        width: options.width,
+        height: options.height
+      )
+    }
+    if options.lesion.radius > 0 {
+      try structure.applyCircularLesion(
+        centerX: options.lesion.centerX,
+        centerY: options.lesion.centerY,
+        radius: options.lesion.radius,
+        viability: options.lesion.viability
+      )
+    }
     let initialState = try CPUTissueDynamics.makeRestingGrid(
-      width: options.width,
-      height: options.height,
-      parameters: parameters
+      parameters: parameters,
+      structure: structure
     )
     let totalSubsteps = Int(
       ceil(
@@ -278,6 +350,7 @@ private struct NumiBrainTissueCommand {
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -289,6 +362,7 @@ private struct NumiBrainTissueCommand {
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -301,7 +375,7 @@ private struct NumiBrainTissueCommand {
       backend: options.backend,
       initialState: initialState,
       parameters: parameters,
-      stimulus: stimulus
+      stimulus: stimulus, structure: structure
     )
     let cpuParity: (error: Float, tolerance: Float, passed: Bool)?
     if options.verifyCPU, options.backend == .metal {
@@ -309,6 +383,7 @@ private struct NumiBrainTissueCommand {
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       ).0
@@ -327,6 +402,7 @@ private struct NumiBrainTissueCommand {
           initialState: initialState,
           parameters: parameters,
           stimulus: stimulus,
+          structure: structure,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -338,6 +414,7 @@ private struct NumiBrainTissueCommand {
           initialState: initialState,
           parameters: parameters,
           stimulus: stimulus,
+          structure: structure,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -346,19 +423,23 @@ private struct NumiBrainTissueCommand {
     } else {
       replayExact = nil
     }
-    let metrics = CPUTissueDynamics.metrics(for: result.state, stimulus: stimulus)
+    let metrics = CPUTissueDynamics.metrics(
+      for: result.state,
+      stimulus: stimulus,
+      structure: structure
+    )
     let cellUpdates = Double(initialState.count * totalSubsteps)
     if let snapshotPath = options.snapshotPath {
       try writeSnapshot(result.state, to: snapshotPath)
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v0",
+      schema: "numibrain.tissue-simulation-evidence.v1",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
-      model: "spatially-extended normalized Wilson-Cowan E/I field with adaptation",
+      model: "heterogeneous Wilson-Cowan E/I field with adaptation and axonal relay",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -367,6 +448,13 @@ private struct NumiBrainTissueCommand {
       ),
       parameters: parameters,
       stimulus: stimulus,
+      structure: StructureEvidence(
+        profile: options.structureProfile,
+        hash: structure.stableHash(),
+        bytes: structure.count * MemoryLayout<TissueSite>.stride,
+        lesion: options.lesion,
+        interpretation: "synthetic uncalibrated strata; viability gates activity and coupling"
+      ),
       timestepMilliseconds: parameters.timestepMilliseconds,
       acceptedDurationMilliseconds: Float(totalSubsteps) * parameters.timestepMilliseconds,
       controlIntervalMilliseconds: Float(substepsPerControl) * parameters.timestepMilliseconds,
@@ -386,6 +474,7 @@ private struct NumiBrainTissueCommand {
         stateGenerationCount: 3,
         stateGenerationBytes: initialState.count * MemoryLayout<TissueCell>.stride * 3,
         uniformArenaBytes: max(substepsPerControl, 2) * TissueUniforms.byteCount,
+        structureBytes: structure.count * MemoryLayout<TissueSite>.stride,
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
           ? "private GPU state generations plus shared uniforms and explicit inspection staging"
@@ -411,13 +500,14 @@ private struct NumiBrainTissueCommand {
     initialState: TissueGrid,
     parameters: TissueParameters,
     stimulus: TissueStimulus,
+    structure: TissueStructure,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
     var runtime = try CPUTissueRuntime(
       initialState: initialState,
       parameters: parameters,
-      stimulus: stimulus
+      stimulus: stimulus, structure: structure
     )
     var completed = 0
     var rootTransactions = 0
@@ -438,6 +528,7 @@ private struct NumiBrainTissueCommand {
     initialState: TissueGrid,
     parameters: TissueParameters,
     stimulus: TissueStimulus,
+    structure: TissueStructure,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
@@ -445,6 +536,7 @@ private struct NumiBrainTissueCommand {
       initialState: initialState,
       parameters: parameters,
       stimulus: stimulus,
+      structure: structure,
       maxEncodedSubsteps: max(substepsPerControl, 2)
     )
     var completed = 0
@@ -474,14 +566,14 @@ private struct NumiBrainTissueCommand {
     backend: Backend,
     initialState: TissueGrid,
     parameters: TissueParameters,
-    stimulus: TissueStimulus
+    stimulus: TissueStimulus, structure: TissueStructure
   ) throws -> (retry: Bool, abort: Bool) {
     switch backend {
     case .cpu:
       var direct = try CPUTissueRuntime(
         initialState: initialState,
         parameters: parameters,
-        stimulus: stimulus
+        stimulus: stimulus, structure: structure
       )
       var retried = direct
       var aborted = direct
@@ -500,18 +592,21 @@ private struct NumiBrainTissueCommand {
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         maxEncodedSubsteps: 2
       )
       let retried = try MetalTissueRuntime(
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         maxEncodedSubsteps: 2
       )
       let aborted = try MetalTissueRuntime(
         initialState: initialState,
         parameters: parameters,
         stimulus: stimulus,
+        structure: structure,
         maxEncodedSubsteps: 2
       )
       _ = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])

@@ -41,6 +41,69 @@ final class CPUTissueRuntimeTests: XCTestCase {
     XCTAssertGreaterThan(metrics.maximumExcitatoryOutsideStimulus, 0.055)
   }
 
+  func testAxonalRelayLagsLocalExcitatoryRecruitment() throws {
+    let stimulus = TissueStimulus(
+      radius: 0.12,
+      excitatoryDrive: 6,
+      startMilliseconds: 0,
+      endMilliseconds: 10
+    )
+    var runtime = try makeRuntime(width: 25, height: 25, stimulus: stimulus)
+    try runtime.runRootTransaction(at: 0, acceptedSubsteps: [true])
+
+    let center = runtime.committed[12, 12]
+    XCTAssertGreaterThan(center.x, center.w)
+    XCTAssertGreaterThan(center.w, 0)
+  }
+
+  func testLayeredStructureAndLesionAreDeterministicAndSilent() throws {
+    var structure = try TissueStructure.layeredCorticalSheetV0(width: 48, height: 32)
+    let pristineHash = structure.stableHash()
+    let duplicate = try TissueStructure.layeredCorticalSheetV0(width: 48, height: 32)
+    XCTAssertEqual(pristineHash, duplicate.stableHash())
+    XCTAssertNotEqual(structure[12, 4], structure[12, 16])
+
+    try structure.applyCircularLesion(
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 0.12,
+      viability: 0
+    )
+    XCTAssertNotEqual(pristineHash, structure.stableHash())
+
+    let stimulus = TissueStimulus(
+      radius: 0.16,
+      excitatoryDrive: 8,
+      startMilliseconds: 0,
+      endMilliseconds: 30
+    )
+    let state = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    var runtime = try CPUTissueRuntime(
+      initialState: state,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure
+    )
+    try runtime.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: Array(repeating: true, count: 20)
+    )
+
+    assertLesionIsSilent(runtime.committed, structure: structure)
+    let metrics = CPUTissueDynamics.metrics(
+      for: runtime.committed,
+      stimulus: stimulus,
+      structure: structure
+    )
+    XCTAssertTrue(metrics.finite)
+    XCTAssertTrue(metrics.bounded)
+    XCTAssertLessThan(metrics.viableFraction, 1)
+    XCTAssertGreaterThan(metrics.viableFraction, 0.9)
+  }
+
   func testRejectedSubstepDoesNotAdvanceCommittedTrajectory() throws {
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
     var direct = try makeRuntime(width: 16, height: 16, stimulus: stimulus)
@@ -127,6 +190,17 @@ final class CPUTissueRuntimeTests: XCTestCase {
         result,
         max(abs(difference.x), abs(difference.y), abs(difference.z), abs(difference.w))
       )
+    }
+  }
+
+  private func assertLesionIsSilent(
+    _ grid: TissueGrid,
+    structure: TissueStructure,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    for index in structure.sites.indices where structure.sites[index].w == 0 {
+      XCTAssertEqual(grid.cells[index], .zero, file: file, line: line)
     }
   }
 }

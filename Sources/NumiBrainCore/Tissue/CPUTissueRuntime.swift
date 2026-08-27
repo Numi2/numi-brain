@@ -1,5 +1,19 @@
 import Foundation
 
+private struct TissueSiteKey: Hashable {
+  let excitatoryScale: UInt32
+  let inhibitoryScale: UInt32
+  let couplingScale: UInt32
+  let viability: UInt32
+
+  init(_ site: TissueSite) {
+    excitatoryScale = site.x.bitPattern
+    inhibitoryScale = site.y.bitPattern
+    couplingScale = site.z.bitPattern
+    viability = site.w.bitPattern
+  }
+}
+
 public enum CPUTissueDynamics {
   @inline(__always)
   private static func sigmoid(_ value: Float) -> Float {
@@ -13,9 +27,18 @@ public enum CPUTissueDynamics {
 
   public static func restingCell(
     parameters: TissueParameters,
+    site: TissueSite = TissueSite(repeating: 1),
     iterations: Int = 4_096
   ) throws -> TissueCell {
     try parameters.validate()
+    guard site.x.isFinite, site.y.isFinite, site.z.isFinite, site.w.isFinite,
+      site.x >= 0, site.y >= 0, site.z >= 0, (0...1).contains(site.w)
+    else {
+      throw TissueError.invalidStructure("resting-site coefficients are invalid")
+    }
+    if site.w == 0 {
+      return .zero
+    }
     var cell = TissueCell(0.05, 0.05, 0.05, 0)
     let relaxation: Float = 0.02
 
@@ -24,22 +47,23 @@ public enum CPUTissueDynamics {
       let i = cell.y
       let a = cell.z
       let targetE = sigmoid(
-        parameters.excitatoryGain
+        parameters.excitatoryGain * site.x
           * (parameters.excitatorySelfWeight * e
             - parameters.inhibitoryToExcitatoryWeight * i
             - parameters.adaptationStrength * a
             + parameters.excitatoryBias)
       )
       let targetI = sigmoid(
-        parameters.inhibitoryGain
+        parameters.inhibitoryGain * site.y
           * (parameters.excitatoryToInhibitoryWeight * e
             - parameters.inhibitorySelfWeight * i
             + parameters.inhibitoryBias)
       )
-      cell.x += relaxation * (targetE - e)
-      cell.y += relaxation * (targetI - i)
-      cell.z += relaxation * (e - a)
+      cell.x += relaxation * (site.w * targetE - e)
+      cell.y += relaxation * (site.w * targetI - i)
+      cell.z += relaxation * (site.w * e - a)
     }
+    cell.w = cell.x
     return cell
   }
 
@@ -48,11 +72,29 @@ public enum CPUTissueDynamics {
     height: Int,
     parameters: TissueParameters
   ) throws -> TissueGrid {
-    try TissueGrid(
-      width: width,
-      height: height,
-      repeating: restingCell(parameters: parameters)
-    )
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    return try makeRestingGrid(parameters: parameters, structure: structure)
+  }
+
+  public static func makeRestingGrid(
+    parameters: TissueParameters,
+    structure: TissueStructure
+  ) throws -> TissueGrid {
+    try structure.validate()
+    var cells: [TissueCell] = []
+    cells.reserveCapacity(structure.count)
+    var equilibriumCache: [TissueSiteKey: TissueCell] = [:]
+    for site in structure.sites {
+      let key = TissueSiteKey(site)
+      if let cached = equilibriumCache[key] {
+        cells.append(cached)
+      } else {
+        let equilibrium = try restingCell(parameters: parameters, site: site)
+        equilibriumCache[key] = equilibrium
+        cells.append(equilibrium)
+      }
+    }
+    return try TissueGrid(width: structure.width, height: structure.height, cells: cells)
   }
 
   public static func advance(
@@ -61,8 +103,29 @@ public enum CPUTissueDynamics {
     parameters: TissueParameters,
     stimulus: TissueStimulus
   ) throws -> TissueGrid {
+    let structure = try TissueStructure.homogeneous(width: input.width, height: input.height)
+    return try advance(
+      input,
+      timeMilliseconds: timeMilliseconds,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure
+    )
+  }
+
+  public static func advance(
+    _ input: TissueGrid,
+    timeMilliseconds: Float,
+    parameters: TissueParameters,
+    stimulus: TissueStimulus,
+    structure: TissueStructure
+  ) throws -> TissueGrid {
     try parameters.validate()
     try stimulus.validate()
+    try structure.validate()
+    guard structure.width == input.width, structure.height == input.height else {
+      throw TissueError.invalidStructure("structure dimensions must match the state grid")
+    }
     guard timeMilliseconds.isFinite else {
       throw TissueError.invalidParameters("simulation time must be finite")
     }
@@ -87,11 +150,27 @@ public enum CPUTissueDynamics {
         let west = input[left, y]
         let east = input[right, y]
 
-        let neighborE = 0.25 * (north.x + south.x + west.x + east.x)
-        let neighborI = 0.25 * (north.y + south.y + west.y + east.y)
+        let centerSite = structure[x, y]
+        let northSite = structure[x, up]
+        let southSite = structure[x, down]
+        let westSite = structure[left, y]
+        let eastSite = structure[right, y]
+
+        let neighborRelay =
+          0.25
+          * (north.w * northSite.z * northSite.w
+            + south.w * southSite.z * southSite.w
+            + west.w * westSite.z * westSite.w
+            + east.w * eastSite.z * eastSite.w)
+        let neighborI =
+          0.25
+          * (north.y * northSite.z * northSite.w
+            + south.y * southSite.z * southSite.w
+            + west.y * westSite.z * westSite.w
+            + east.y * eastSite.z * eastSite.w)
         let spatialE =
           center.x
-          + parameters.excitatorySpatialMix * (neighborE - center.x)
+          + parameters.excitatorySpatialMix * (neighborRelay - center.x)
         let spatialI =
           center.y
           + parameters.inhibitorySpatialMix * (neighborI - center.y)
@@ -110,7 +189,7 @@ public enum CPUTissueDynamics {
         }
 
         let targetE = sigmoid(
-          parameters.excitatoryGain
+          parameters.excitatoryGain * centerSite.x
             * (parameters.excitatorySelfWeight * spatialE
               - parameters.inhibitoryToExcitatoryWeight * center.y
               - parameters.adaptationStrength * center.z
@@ -118,7 +197,7 @@ public enum CPUTissueDynamics {
               + stimulusE)
         )
         let targetI = sigmoid(
-          parameters.inhibitoryGain
+          parameters.inhibitoryGain * centerSite.y
             * (parameters.excitatoryToInhibitoryWeight * spatialE
               - parameters.inhibitorySelfWeight * spatialI
               + parameters.inhibitoryBias
@@ -130,7 +209,7 @@ public enum CPUTissueDynamics {
             center.x
               + parameters.timestepMilliseconds
               / parameters.excitatoryTimeConstantMilliseconds
-              * (targetE - center.x),
+              * (centerSite.w * targetE - center.x),
             0
           ), 1)
         let nextI = min(
@@ -138,7 +217,7 @@ public enum CPUTissueDynamics {
             center.y
               + parameters.timestepMilliseconds
               / parameters.inhibitoryTimeConstantMilliseconds
-              * (targetI - center.y),
+              * (centerSite.w * targetI - center.y),
             0
           ), 1)
         let nextA = min(
@@ -150,7 +229,16 @@ public enum CPUTissueDynamics {
             0
           ), 1)
 
-        output[x, y] = TissueCell(nextE, nextI, nextA, 0)
+        let nextRelay = min(
+          max(
+            center.w
+              + parameters.timestepMilliseconds
+              / parameters.axonalRelayTimeConstantMilliseconds
+              * (center.x - center.w),
+            0
+          ), 1)
+
+        output[x, y] = TissueCell(nextE, nextI, nextA, nextRelay)
       }
     }
     return output
@@ -159,11 +247,14 @@ public enum CPUTissueDynamics {
   public static func metrics(
     for grid: TissueGrid,
     stimulus: TissueStimulus,
+    structure: TissueStructure? = nil,
     activeThreshold: Float = 0.2
   ) -> TissueMetrics {
     var sumE: Float = 0
     var sumI: Float = 0
     var sumA: Float = 0
+    var sumRelay: Float = 0
+    var viableCount: Float = 0
     var maximumE = -Float.infinity
     var minimumE = Float.infinity
     var activeCount = 0
@@ -182,14 +273,19 @@ public enum CPUTissueDynamics {
         sumE += cell.x
         sumI += cell.y
         sumA += cell.z
+        sumRelay += cell.w
+        viableCount += structure?[x, y].w ?? 1
         maximumE = max(maximumE, cell.x)
         minimumE = min(minimumE, cell.x)
-        finite = finite && cell.x.isFinite && cell.y.isFinite && cell.z.isFinite
+        finite =
+          finite && cell.x.isFinite && cell.y.isFinite && cell.z.isFinite
+          && cell.w.isFinite
         bounded =
           bounded
           && (0...1).contains(cell.x)
           && (0...1).contains(cell.y)
           && (0...1).contains(cell.z)
+          && (0...1).contains(cell.w)
         if cell.x >= activeThreshold {
           activeCount += 1
         }
@@ -214,6 +310,7 @@ public enum CPUTissueDynamics {
       meanExcitatory: sumE / count,
       meanInhibitory: sumI / count,
       meanAdaptation: sumA / count,
+      meanAxonalRelay: sumRelay / count,
       maximumExcitatory: maximumE,
       minimumExcitatory: minimumE,
       maximumExcitatoryOutsideStimulus: outsideExcitatoryMaximum,
@@ -224,6 +321,7 @@ public enum CPUTissueDynamics {
       recruitedOutsideStimulusFraction: outsideCount == 0
         ? 0
         : Float(outsideActiveCount) / Float(outsideCount),
+      viableFraction: viableCount / count,
       finite: finite,
       bounded: bounded,
       stateHash: grid.stableHash()
@@ -236,6 +334,7 @@ public struct CPUTissueRuntime: Sendable {
   public private(set) var committed: TissueGrid
   public let parameters: TissueParameters
   public let stimulus: TissueStimulus
+  public let structure: TissueStructure
 
   private var rootShadow: TissueGrid?
   private var candidate: TissueGrid?
@@ -246,11 +345,34 @@ public struct CPUTissueRuntime: Sendable {
     parameters: TissueParameters,
     stimulus: TissueStimulus
   ) throws {
+    let structure = try TissueStructure.homogeneous(
+      width: initialState.width,
+      height: initialState.height
+    )
+    try self.init(
+      initialState: initialState,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure
+    )
+  }
+
+  public init(
+    initialState: TissueGrid,
+    parameters: TissueParameters,
+    stimulus: TissueStimulus,
+    structure: TissueStructure
+  ) throws {
     try parameters.validate()
     try stimulus.validate()
+    try structure.validate()
+    guard structure.width == initialState.width, structure.height == initialState.height else {
+      throw TissueError.invalidStructure("structure dimensions must match the initial state")
+    }
     self.committed = initialState
     self.parameters = parameters
     self.stimulus = stimulus
+    self.structure = structure
   }
 
   public var hasOpenRootTransaction: Bool { rootShadow != nil }
@@ -279,7 +401,8 @@ public struct CPUTissueRuntime: Sendable {
       rootShadow,
       timeMilliseconds: time,
       parameters: parameters,
-      stimulus: stimulus
+      stimulus: stimulus,
+      structure: structure
     )
   }
 

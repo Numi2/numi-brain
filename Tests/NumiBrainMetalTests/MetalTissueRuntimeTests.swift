@@ -37,6 +37,54 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
   }
 
+  func testMetalAgreesWithCPUForLayeredLesionedTissue() throws {
+    try requireMetal4()
+    var structure = try TissueStructure.layeredCorticalSheetV0(width: 32, height: 24)
+    try structure.applyCircularLesion(
+      centerX: 0.55,
+      centerY: 0.5,
+      radius: 0.14,
+      viability: 0
+    )
+    let stimulus = TissueStimulus(
+      centerX: 0.42,
+      centerY: 0.5,
+      radius: 0.1,
+      excitatoryDrive: 6,
+      startMilliseconds: 0,
+      endMilliseconds: 20
+    )
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let acceptance = Array(repeating: true, count: 24)
+    var cpu = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure
+    )
+    try cpu.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      maxEncodedSubsteps: acceptance.count
+    )
+    _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try metal.commitRootTransaction()
+    let gpu = try metal.snapshotCommitted()
+
+    XCTAssertEqual(metal.structureHash, structure.stableHash())
+    XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
+    for index in structure.sites.indices where structure.sites[index].w == 0 {
+      XCTAssertEqual(gpu.cells[index], .zero)
+    }
+  }
+
   func testMetalRejectedRetryMatchesDirectAcceptance() throws {
     try requireMetal4()
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
