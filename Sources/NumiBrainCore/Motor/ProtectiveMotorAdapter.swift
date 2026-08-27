@@ -95,42 +95,49 @@ public struct ProtectiveMotorProfile: Codable, Equatable, Hashable, Sendable {
 
   /// Synthetic bilateral channels used only by the executable foundation.
   /// The identifiers and gains are deterministic fixtures, not anatomy.
-  public static func runtimeFoundationFixture() throws -> Self {
-    try Self(
+  public static func runtimeFoundationFixture(
+    muscleIdentifiers: [UInt32] = [100, 101, 102, 103, 104, 105]
+  ) throws -> Self {
+    guard muscleIdentifiers.count == 6 else {
+      throw BrainRuntimeError.transaction(
+        "runtime-foundation protective profile requires exactly six muscle identifiers"
+      )
+    }
+    return try Self(
       channels: [
         ProtectiveMuscleChannel(
-          muscleIdentifier: 100,
+          muscleIdentifier: muscleIdentifiers[0],
           flags: .withdrawal,
           restingExcitation: 0.02,
           withdrawalGain: 1
         ),
         ProtectiveMuscleChannel(
-          muscleIdentifier: 101,
+          muscleIdentifier: muscleIdentifiers[1],
           flags: .withdrawal,
           restingExcitation: 0.02,
           withdrawalGain: 0.9
         ),
         ProtectiveMuscleChannel(
-          muscleIdentifier: 102,
+          muscleIdentifier: muscleIdentifiers[2],
           flags: .posturalBrace,
           restingExcitation: 0.05,
           braceGain: 0.85
         ),
         ProtectiveMuscleChannel(
-          muscleIdentifier: 103,
+          muscleIdentifier: muscleIdentifiers[3],
           flags: .posturalBrace,
           restingExcitation: 0.05,
           braceGain: 0.85
         ),
         ProtectiveMuscleChannel(
-          muscleIdentifier: 104,
+          muscleIdentifier: muscleIdentifiers[4],
           flags: [.withdrawal, .posturalBrace],
           restingExcitation: 0.03,
           withdrawalGain: 0.4,
           braceGain: 0.7
         ),
         ProtectiveMuscleChannel(
-          muscleIdentifier: 105,
+          muscleIdentifier: muscleIdentifiers[5],
           flags: [.withdrawal, .posturalBrace],
           restingExcitation: 0.03,
           withdrawalGain: 0.4,

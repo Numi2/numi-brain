@@ -130,4 +130,27 @@ final class ProtectiveMotorAdapterTests: XCTestCase {
       )
     )
   }
+
+  func testRuntimeFixtureCanBindNumanXMuscleIdentifiersWithoutChangingGains() throws {
+    let synthetic = try ProtectiveMotorProfile.runtimeFoundationFixture()
+    let numanXIdentifiers: [UInt32] = [7, 11, 13, 17, 19, 23]
+    let bound = try ProtectiveMotorProfile.runtimeFoundationFixture(
+      muscleIdentifiers: numanXIdentifiers
+    )
+
+    XCTAssertEqual(bound.channels.map(\.muscleIdentifier), numanXIdentifiers)
+    XCTAssertEqual(
+      bound.channels.map(\.restingExcitation),
+      synthetic.channels.map(\.restingExcitation)
+    )
+    XCTAssertEqual(
+      bound.channels.map(\.withdrawalGain),
+      synthetic.channels.map(\.withdrawalGain)
+    )
+    XCTAssertEqual(bound.channels.map(\.braceGain), synthetic.channels.map(\.braceGain))
+    XCTAssertNotEqual(bound.fingerprint, synthetic.fingerprint)
+    XCTAssertThrowsError(
+      try ProtectiveMotorProfile.runtimeFoundationFixture(muscleIdentifiers: [1, 2])
+    )
+  }
 }

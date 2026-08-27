@@ -20,12 +20,17 @@ private final class NumanXMyoSimBridge {
       UInt32, UInt64, UInt64
     ) -> UInt32
   private typealias UInt64Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt64
+  private typealias UInt32Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt32
+  private typealias IndexedUInt32Function =
+    @convention(c) (UnsafeMutableRawPointer?, UInt32) -> UInt32
   private typealias FloatFunction = @convention(c) (UnsafeMutableRawPointer?) -> Float
   private typealias DoubleFunction = @convention(c) (UnsafeMutableRawPointer?) -> Double
 
   private let library: UnsafeMutableRawPointer
   private let bridge: UnsafeMutableRawPointer
   private let destroyFunction: DestroyFunction
+  private let muscleCountFunction: UInt32Function
+  private let muscleIdentifierFunction: IndexedUInt32Function
   private let beginRootFunction: StatusFunction
   private let runCandidateFunction: CandidateFunction
   private let acceptCandidateFunction: StatusFunction
@@ -40,6 +45,7 @@ private final class NumanXMyoSimBridge {
   private let pendingMaximumConfigurationDeltaFunction: DoubleFunction
   private let committedFingerprintFunction: UInt64Function
   private let committedGenerationFunction: UInt64Function
+  let muscleIdentifiers: [UInt32]
 
   init(
     libraryPath: String,
@@ -60,6 +66,12 @@ private final class NumanXMyoSimBridge {
     )
     destroyFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_destroy", from: library
+    )
+    muscleCountFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_muscle_count", from: library
+    )
+    muscleIdentifierFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_muscle_identifier", from: library
     )
     beginRootFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_begin_root", from: library
@@ -131,6 +143,32 @@ private final class NumanXMyoSimBridge {
       )
     }
     bridge = created
+    let loadedMuscleCount = muscleCountFunction(created)
+    var loadedMuscleIdentifiers = [UInt32]()
+    loadedMuscleIdentifiers.reserveCapacity(Int(loadedMuscleCount))
+    for muscleIndex in 0..<loadedMuscleCount {
+      let identifier = muscleIdentifierFunction(created, muscleIndex)
+      guard identifier != UInt32.max else {
+        destroyFunction(created)
+        dlclose(library)
+        throw NSError(
+          domain: "NumiBrainNumanXInterop",
+          code: 9,
+          userInfo: [NSLocalizedDescriptionKey: "NumanX muscle catalog is invalid"]
+        )
+      }
+      loadedMuscleIdentifiers.append(identifier)
+    }
+    guard loadedMuscleCount == muscleCount else {
+      destroyFunction(created)
+      dlclose(library)
+      throw NSError(
+        domain: "NumiBrainNumanXInterop",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "NumanX muscle catalog count drift"]
+      )
+    }
+    muscleIdentifiers = loadedMuscleIdentifiers
   }
 
   deinit {
@@ -253,6 +291,15 @@ private func run() throws {
     height: 8,
     parameters: parameters
   )
+  let bridge = try NumanXMyoSimBridge(
+    libraryPath: CommandLine.arguments[1],
+    rigidPath: CommandLine.arguments[2],
+    musclePath: CommandLine.arguments[3],
+    muscleCount: 6
+  )
+  let motorProfile = try ProtectiveMotorProfile.runtimeFoundationFixture(
+    muscleIdentifiers: bridge.muscleIdentifiers
+  )
   let runtime = try MetalTissueRuntime(
     initialState: initial,
     parameters: parameters,
@@ -262,14 +309,9 @@ private func run() throws {
       environmentIdentifier: 7,
       episodeIdentifier: 23
     ),
+    protectiveMotorProfile: motorProfile,
     schedulerEnvironmentIdentifier: 7,
     maxEncodedSubsteps: 3
-  )
-  let bridge = try NumanXMyoSimBridge(
-    libraryPath: CommandLine.arguments[1],
-    rigidPath: CommandLine.arguments[2],
-    musclePath: CommandLine.arguments[3],
-    muscleCount: UInt32(runtime.protectiveMotorProfile.channels.count)
   )
   let muscleLoadTransducer = try MuscleLoadReceptorTransducer(overloadThreshold: 1)
   try bridge.beginRoot()
@@ -414,6 +456,8 @@ private func run() throws {
     "receptor_interrupt": "muscle-overload",
     "receptor_event_source": "accepted-numanx-myosim-generalized-force",
     "receptor_event_threshold": 1,
+    "numanx_muscle_identifiers": bridge.muscleIdentifiers,
+    "numanx_motor_profile_fingerprint": motorProfile.fingerprint,
   ]
   let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
   print(String(decoding: data, as: UTF8.self))
