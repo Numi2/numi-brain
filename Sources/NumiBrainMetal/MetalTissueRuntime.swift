@@ -23,6 +23,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let structureHash: String
   public let delayFieldHash: String
   public let connectomeHash: String
+  public let eventScheduleHash: String
+  public let eventSchedule: TissueEventSchedule
+  public let randomContext: TissueRandomContext
   public let historyCapacity = TissueDelayField.historyCapacity
   public let maxEncodedSubsteps: Int
   public private(set) var committedStep: UInt64 = 0
@@ -41,6 +44,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let relayScratchBuffer: any MTLBuffer
   private let projectionOffsetBuffer: any MTLBuffer
   private let projectionEdgeBuffer: any MTLBuffer
+  private let eventBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
@@ -48,6 +52,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let relayHistoryByteCount: Int
   public let projectionOffsetByteCount: Int
   public let projectionEdgeByteCount: Int
+  public let eventByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -62,6 +67,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     structure requestedStructure: TissueStructure? = nil,
     delayField requestedDelayField: TissueDelayField? = nil,
     connectome requestedConnectome: TissueConnectome? = nil,
+    eventSchedule requestedEventSchedule: TissueEventSchedule? = nil,
+    randomContext: TissueRandomContext = .deterministicDefault,
     maxEncodedSubsteps: Int = 4_096,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws {
@@ -105,6 +112,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard connectome.width == initialState.width, connectome.height == initialState.height else {
       throw TissueError.invalidConnectome("connectome dimensions must match the initial state")
     }
+    let eventSchedule =
+      try requestedEventSchedule
+      ?? TissueEventSchedule.singleStimulus(stimulus)
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
     }
@@ -153,7 +163,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain tissue arguments"
-    argumentDescriptor.maxBufferBindCount = 9
+    argumentDescriptor.maxBufferBindCount = 10
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the Metal 4 argument table")
@@ -231,6 +241,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     projectionOffsetBuffer.label = "NumiBrain projection CSR offsets"
     projectionEdgeBuffer.label = "NumiBrain packed delayed projections"
+    let packedEvents = eventSchedule.packedVectors()
+    let eventByteCount = eventSchedule.packedByteCount
+    guard
+      let eventBuffer = device.makeBuffer(
+        length: max(eventByteCount, MemoryLayout<TissueEventSchedule.PackedVector>.stride),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate the private receptor-event schedule")
+    }
+    eventBuffer.label = "NumiBrain immutable receptor-event schedule"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -245,7 +266,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       let stagingBuffer = device.makeBuffer(
         length: max(
           stateByteCount,
-          max(projectionOffsetByteCount, projectionEdgeByteCount)
+          max(
+            eventByteCount,
+            max(projectionOffsetByteCount, projectionEdgeByteCount)
+          )
         ),
         options: [.storageModeShared, .hazardTrackingModeTracked]
       )
@@ -256,7 +280,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 8
+    residencyDescriptor.initialCapacity = stateBuffers.count + 9
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -272,6 +296,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(relayScratchBuffer)
     residencySet.addAllocation(projectionOffsetBuffer)
     residencySet.addAllocation(projectionEdgeBuffer)
+    residencySet.addAllocation(eventBuffer)
     residencySet.addAllocation(uniformBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
@@ -286,6 +311,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.structureHash = structure.stableHash()
     self.delayFieldHash = delayField.stableHash()
     self.connectomeHash = connectome.stableHash()
+    self.eventScheduleHash = eventSchedule.stableHash()
+    self.eventSchedule = eventSchedule
+    self.randomContext = randomContext
     self.maxEncodedSubsteps = maxEncodedSubsteps
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
@@ -300,6 +328,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.relayScratchBuffer = relayScratchBuffer
     self.projectionOffsetBuffer = projectionOffsetBuffer
     self.projectionEdgeBuffer = projectionEdgeBuffer
+    self.eventBuffer = eventBuffer
     self.uniformBuffer = uniformBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
@@ -307,6 +336,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.relayHistoryByteCount = relayHistoryByteCount
     self.projectionOffsetByteCount = projectionOffsetByteCount
     self.projectionEdgeByteCount = projectionEdgeByteCount
+    self.eventByteCount = eventByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -362,6 +392,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destination: projectionEdgeBuffer,
         size: projectionEdgeByteCount,
         label: "NumiBrain projection edge upload"
+      )
+    }
+    if eventByteCount > 0 {
+      packedEvents.withUnsafeBytes { sourceBytes in
+        guard let source = sourceBytes.baseAddress else { return }
+        stagingBuffer.contents().copyMemory(from: source, byteCount: eventByteCount)
+      }
+      try copy(
+        source: stagingBuffer,
+        destination: eventBuffer,
+        size: eventByteCount,
+        label: "NumiBrain receptor-event upload"
       )
     }
   }
@@ -427,7 +469,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         historyStep: UInt32(historyStep % UInt64(TissueDelayField.historyCapacity)),
         historyOwnerMask: historyOwnerMask,
         historyWriteSlot: UInt32(historyWriteSlot),
-        historyWritePlane: historyWritePlane
+        historyWritePlane: historyWritePlane,
+        eventCount: eventSchedule.eventCount,
+        randomContext: randomContext,
+        acceptedStep: historyStep
       )
       let destination = destinationIndex(rootShadowIndex: rootShadowIndex)
       writeUniforms(values, attempt: attempt)
@@ -464,6 +509,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         argumentTable.setAddress(relayScratchBuffer.gpuAddress, index: 6)
         argumentTable.setAddress(projectionOffsetBuffer.gpuAddress, index: 7)
         argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
+        argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
         encoder.setArgumentTable(argumentTable)
         encoder.dispatchThreads(
           threadsPerGrid: MTLSize(width: width, height: height, depth: 1),

@@ -5,6 +5,123 @@ import XCTest
 final class CPUTissueRuntimeTests: XCTestCase {
   private let parameters = TissueParameters.corticalSheetV0
 
+  func testCounterRandomAndEventScheduleAreCanonical() throws {
+    let context = TissueRandomContext(
+      seed: 42,
+      environmentIdentifier: 7,
+      episodeIdentifier: 9,
+      moduleIdentifier: 12
+    )
+    XCTAssertEqual(
+      TissueCounterRandom.sampleBits(
+        context: context,
+        acceptedStep: 0x1_0000_0002,
+        eventIdentifier: 99,
+        siteIndex: 123
+      ),
+      0xac0f_81a4
+    )
+    XCTAssertEqual(
+      TissueCounterRandom.sampleBits(
+        context: context,
+        acceptedStep: 0x1_0000_0002,
+        eventIdentifier: 99,
+        siteIndex: 123,
+        sampleIndex: 1
+      ),
+      0x5173_2ae8
+    )
+
+    let early = TissueReceptorEvent(
+      identifier: 2,
+      centerX: 0.25,
+      centerY: 0.5,
+      radius: 0.1,
+      excitatoryDrive: 3,
+      startMilliseconds: 5,
+      endMilliseconds: 10
+    )
+    let late = TissueReceptorEvent(
+      identifier: 1,
+      centerX: 0.75,
+      centerY: 0.5,
+      radius: 0.1,
+      excitatoryDrive: 2,
+      startMilliseconds: 15,
+      endMilliseconds: 20
+    )
+    let forward = try TissueEventSchedule(events: [early, late])
+    let reversed = try TissueEventSchedule(events: [late, early])
+    XCTAssertEqual(forward.events.map(\.identifier), [2, 1])
+    XCTAssertEqual(forward.stableHash(), reversed.stableHash())
+    XCTAssertEqual(
+      forward.packedByteCount,
+      2 * TissueEventSchedule.packedVectorsPerEvent
+        * MemoryLayout<TissueEventSchedule.PackedVector>.stride
+    )
+    XCTAssertThrowsError(try TissueEventSchedule(events: [early, early]))
+  }
+
+  func testNoisyReceptorEventsAreCausalAndSeedDependent() throws {
+    let width = 21
+    let height = 21
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let delayField = try TissueDelayField.instantaneous(width: width, height: height)
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let event = TissueReceptorEvent(
+      identifier: 17,
+      centerX: 0.5,
+      centerY: 0.5,
+      radius: 0.12,
+      excitatoryDrive: 3,
+      noiseAmplitude: 0.5,
+      startMilliseconds: 10,
+      endMilliseconds: 20
+    )
+    let schedule = try TissueEventSchedule(events: [event])
+    var first = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField,
+      eventSchedule: schedule,
+      randomContext: TissueRandomContext(seed: 1)
+    )
+    var secondSeed = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField,
+      eventSchedule: schedule,
+      randomContext: TissueRandomContext(seed: 2)
+    )
+    var noEvent = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField
+    )
+
+    let preEventSteps = Array(repeating: true, count: 10)
+    try first.runRootTransaction(at: 0, acceptedSubsteps: preEventSteps)
+    try secondSeed.runRootTransaction(at: 0, acceptedSubsteps: preEventSteps)
+    try noEvent.runRootTransaction(at: 0, acceptedSubsteps: preEventSteps)
+    XCTAssertEqual(first.committed, noEvent.committed)
+    XCTAssertEqual(secondSeed.committed, noEvent.committed)
+
+    try first.runRootTransaction(at: 10, acceptedSubsteps: [true])
+    try secondSeed.runRootTransaction(at: 10, acceptedSubsteps: [true])
+    try noEvent.runRootTransaction(at: 10, acceptedSubsteps: [true])
+    XCTAssertNotEqual(first.committed, noEvent.committed)
+    XCTAssertNotEqual(first.committed, secondSeed.committed)
+  }
+
   func testRestingStateRemainsStableAndBounded() throws {
     var runtime = try makeRuntime(width: 24, height: 24, stimulus: .none)
     let initial = runtime.committed
@@ -305,7 +422,13 @@ final class CPUTissueRuntimeTests: XCTestCase {
 
   func testRejectedSubstepDoesNotAdvanceCommittedTrajectory() throws {
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
-    var direct = try makeRuntime(width: 16, height: 16, stimulus: stimulus)
+    var direct = try makeRuntime(
+      width: 16,
+      height: 16,
+      stimulus: stimulus,
+      noiseAmplitude: 0.4,
+      seed: 91
+    )
     var retried = direct
 
     try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
@@ -317,7 +440,13 @@ final class CPUTissueRuntimeTests: XCTestCase {
 
   func testRootAbortRestoresEntireCommittedState() throws {
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
-    var runtime = try makeRuntime(width: 16, height: 16, stimulus: stimulus)
+    var runtime = try makeRuntime(
+      width: 16,
+      height: 16,
+      stimulus: stimulus,
+      noiseAmplitude: 0.4,
+      seed: 91
+    )
     let before = runtime.committed
 
     try runtime.runRootTransaction(
@@ -332,7 +461,13 @@ final class CPUTissueRuntimeTests: XCTestCase {
 
   func testReplayIsBitExact() throws {
     let stimulus = TissueStimulus(startMilliseconds: 5, endMilliseconds: 35)
-    var first = try makeRuntime(width: 20, height: 20, stimulus: stimulus)
+    var first = try makeRuntime(
+      width: 20,
+      height: 20,
+      stimulus: stimulus,
+      noiseAmplitude: 0.3,
+      seed: 123
+    )
     var second = first
     let acceptance = [true, true, false, true, true, false, true, true]
 
@@ -345,7 +480,13 @@ final class CPUTissueRuntimeTests: XCTestCase {
 
   func testControlIntervalChunkingDoesNotChangeTrajectory() throws {
     let stimulus = TissueStimulus(startMilliseconds: 5, endMilliseconds: 35)
-    var single = try makeRuntime(width: 20, height: 20, stimulus: stimulus)
+    var single = try makeRuntime(
+      width: 20,
+      height: 20,
+      stimulus: stimulus,
+      noiseAmplitude: 0.3,
+      seed: 123
+    )
     var chunked = single
 
     try single.runRootTransaction(
@@ -368,17 +509,27 @@ final class CPUTissueRuntimeTests: XCTestCase {
   private func makeRuntime(
     width: Int,
     height: Int,
-    stimulus: TissueStimulus
+    stimulus: TissueStimulus,
+    noiseAmplitude: Float = 0,
+    seed: UInt32 = 0
   ) throws -> CPUTissueRuntime {
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let delayField = try TissueDelayField.instantaneous(width: width, height: height)
     let state = try CPUTissueDynamics.makeRestingGrid(
-      width: width,
-      height: height,
-      parameters: parameters
+      parameters: parameters,
+      structure: structure
     )
     return try CPUTissueRuntime(
       initialState: state,
       parameters: parameters,
-      stimulus: stimulus
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      eventSchedule: TissueEventSchedule.singleStimulus(
+        stimulus,
+        noiseAmplitude: noiseAmplitude
+      ),
+      randomContext: TissueRandomContext(seed: seed)
     )
   }
 

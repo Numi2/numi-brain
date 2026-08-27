@@ -31,6 +31,13 @@ public enum TissueUniformIndex: Int, Sendable {
   case historyOwnerMask = 29
   case historyWriteSlot = 30
   case historyWritePlane = 31
+  case eventCount = 32
+  case randomSeed = 33
+  case randomEnvironmentIdentifier = 34
+  case randomEpisodeIdentifier = 35
+  case randomModuleIdentifier = 36
+  case acceptedStepLow = 37
+  case acceptedStepHigh = 38
 }
 
 public enum TissueUniforms {
@@ -46,7 +53,10 @@ public enum TissueUniforms {
     historyStep: UInt32 = 0,
     historyOwnerMask: UInt32 = 0,
     historyWriteSlot: UInt32 = 0,
-    historyWritePlane: UInt32 = 2
+    historyWritePlane: UInt32 = 2,
+    eventCount: Int = 0,
+    randomContext: TissueRandomContext = .deterministicDefault,
+    acceptedStep: UInt64 = 0
   ) -> [Float] {
     var values = Array(repeating: Float.zero, count: count)
     values[TissueUniformIndex.width.rawValue] = Float(width)
@@ -88,6 +98,23 @@ public enum TissueUniforms {
     values[TissueUniformIndex.historyOwnerMask.rawValue] = Float(bitPattern: historyOwnerMask)
     values[TissueUniformIndex.historyWriteSlot.rawValue] = Float(historyWriteSlot)
     values[TissueUniformIndex.historyWritePlane.rawValue] = Float(historyWritePlane)
+    values[TissueUniformIndex.eventCount.rawValue] = Float(eventCount)
+    values[TissueUniformIndex.randomSeed.rawValue] = Float(bitPattern: randomContext.seed)
+    values[TissueUniformIndex.randomEnvironmentIdentifier.rawValue] = Float(
+      bitPattern: randomContext.environmentIdentifier
+    )
+    values[TissueUniformIndex.randomEpisodeIdentifier.rawValue] = Float(
+      bitPattern: randomContext.episodeIdentifier
+    )
+    values[TissueUniformIndex.randomModuleIdentifier.rawValue] = Float(
+      bitPattern: randomContext.moduleIdentifier
+    )
+    values[TissueUniformIndex.acceptedStepLow.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: acceptedStep)
+    )
+    values[TissueUniformIndex.acceptedStepHigh.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: acceptedStep >> 32)
+    )
     return values
   }
 }

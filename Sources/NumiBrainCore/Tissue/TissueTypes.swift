@@ -717,6 +717,7 @@ public enum TissueError: Error, Equatable, CustomStringConvertible {
   case invalidStructure(String)
   case invalidConduction(String)
   case invalidConnectome(String)
+  case invalidEvents(String)
   case invalidParameters(String)
   case invalidStimulus(String)
   case transaction(String)
@@ -728,6 +729,7 @@ public enum TissueError: Error, Equatable, CustomStringConvertible {
     case .invalidStructure(let message): "invalid tissue structure: \(message)"
     case .invalidConduction(let message): "invalid tissue conduction: \(message)"
     case .invalidConnectome(let message): "invalid tissue connectome: \(message)"
+    case .invalidEvents(let message): "invalid tissue events: \(message)"
     case .invalidParameters(let message): "invalid parameters: \(message)"
     case .invalidStimulus(let message): "invalid stimulus: \(message)"
     case .transaction(let message): "transaction error: \(message)"

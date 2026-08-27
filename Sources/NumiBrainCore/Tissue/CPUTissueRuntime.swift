@@ -120,7 +120,10 @@ public enum CPUTissueDynamics {
     stimulus: TissueStimulus,
     structure: TissueStructure,
     delayedRelay: [Float]? = nil,
-    longRangeExcitatoryDrive: [Float]? = nil
+    longRangeExcitatoryDrive: [Float]? = nil,
+    eventSchedule: TissueEventSchedule? = nil,
+    randomContext: TissueRandomContext = .deterministicDefault,
+    acceptedStep: UInt64 = 0
   ) throws -> TissueGrid {
     try parameters.validate()
     try stimulus.validate()
@@ -141,8 +144,9 @@ public enum CPUTissueDynamics {
     var output = try TissueGrid(width: input.width, height: input.height)
     let widthScale = Float(max(input.width - 1, 1))
     let heightScale = Float(max(input.height - 1, 1))
-    let stimulusActive =
-      timeMilliseconds >= stimulus.startMilliseconds
+    let legacyStimulusActive =
+      eventSchedule == nil
+      && timeMilliseconds >= stimulus.startMilliseconds
       && timeMilliseconds < stimulus.endMilliseconds
       && stimulus.radius > 0
 
@@ -191,7 +195,7 @@ public enum CPUTissueDynamics {
 
         var stimulusE: Float = 0
         var stimulusI: Float = 0
-        if stimulusActive {
+        if legacyStimulusActive {
           let normalizedX = Float(x) / widthScale
           let normalizedY = Float(y) / heightScale
           let dx = normalizedX - stimulus.centerX
@@ -199,6 +203,40 @@ public enum CPUTissueDynamics {
           if dx * dx + dy * dy <= stimulus.radius * stimulus.radius {
             stimulusE = stimulus.excitatoryDrive
             stimulusI = stimulus.inhibitoryDrive
+          }
+        }
+        if let eventSchedule {
+          let siteIndex = UInt32(truncatingIfNeeded: y * input.width + x)
+          let normalizedX = Float(x) / widthScale
+          let normalizedY = Float(y) / heightScale
+          for event in eventSchedule.events
+          where timeMilliseconds >= event.startMilliseconds
+            && timeMilliseconds < event.endMilliseconds
+            && event.radius > 0
+          {
+            let dx = normalizedX - event.centerX
+            let dy = normalizedY - event.centerY
+            guard dx * dx + dy * dy <= event.radius * event.radius else { continue }
+            let excitatoryNoise =
+              event.noiseAmplitude
+              * TissueCounterRandom.symmetricUnit(
+                context: randomContext,
+                acceptedStep: acceptedStep,
+                eventIdentifier: event.identifier,
+                siteIndex: siteIndex,
+                sampleIndex: 0
+              )
+            let inhibitoryNoise =
+              event.noiseAmplitude
+              * TissueCounterRandom.symmetricUnit(
+                context: randomContext,
+                acceptedStep: acceptedStep,
+                eventIdentifier: event.identifier,
+                siteIndex: siteIndex,
+                sampleIndex: 1
+              )
+            stimulusE += event.excitatoryDrive + excitatoryNoise
+            stimulusI += event.inhibitoryDrive + inhibitoryNoise
           }
         }
 
@@ -353,6 +391,8 @@ public struct CPUTissueRuntime: Sendable {
   public let structure: TissueStructure
   public let delayField: TissueDelayField
   public let connectome: TissueConnectome
+  public let eventSchedule: TissueEventSchedule
+  public let randomContext: TissueRandomContext
 
   private var rootShadow: TissueGrid?
   private var candidate: TissueGrid?
@@ -381,7 +421,9 @@ public struct CPUTissueRuntime: Sendable {
       stimulus: stimulus,
       structure: structure,
       delayField: delayField,
-      connectome: nil
+      connectome: nil,
+      eventSchedule: nil,
+      randomContext: .deterministicDefault
     )
   }
 
@@ -401,7 +443,9 @@ public struct CPUTissueRuntime: Sendable {
       stimulus: stimulus,
       structure: structure,
       delayField: delayField,
-      connectome: nil
+      connectome: nil,
+      eventSchedule: nil,
+      randomContext: .deterministicDefault
     )
   }
 
@@ -411,7 +455,9 @@ public struct CPUTissueRuntime: Sendable {
     stimulus: TissueStimulus,
     structure: TissueStructure,
     delayField: TissueDelayField,
-    connectome requestedConnectome: TissueConnectome? = nil
+    connectome requestedConnectome: TissueConnectome? = nil,
+    eventSchedule requestedEventSchedule: TissueEventSchedule? = nil,
+    randomContext: TissueRandomContext = .deterministicDefault
   ) throws {
     try parameters.validate()
     try stimulus.validate()
@@ -435,12 +481,17 @@ public struct CPUTissueRuntime: Sendable {
     guard connectome.width == initialState.width, connectome.height == initialState.height else {
       throw TissueError.invalidConnectome("connectome dimensions must match the initial state")
     }
+    let eventSchedule =
+      try requestedEventSchedule
+      ?? TissueEventSchedule.singleStimulus(stimulus)
     self.committed = initialState
     self.parameters = parameters
     self.stimulus = stimulus
     self.structure = structure
     self.delayField = delayField
     self.connectome = connectome
+    self.eventSchedule = eventSchedule
+    self.randomContext = randomContext
     let initialRelay = initialState.cells.map(\.w)
     self.committedRelayHistory = Array(
       repeating: initialRelay,
@@ -484,7 +535,10 @@ public struct CPUTissueRuntime: Sendable {
       stimulus: stimulus,
       structure: structure,
       delayedRelay: delayedRelay,
-      longRangeExcitatoryDrive: projectionDrive
+      longRangeExcitatoryDrive: projectionDrive,
+      eventSchedule: eventSchedule,
+      randomContext: randomContext,
+      acceptedStep: rootAcceptedStep
     )
     self.candidate = candidate
     candidateRelay = candidate.cells.map(\.w)

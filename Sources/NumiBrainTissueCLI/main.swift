@@ -46,6 +46,10 @@ private struct Options {
   var structureProfile: StructureProfile = .layered
   var delayProfile: DelayProfile = .layered
   var connectomeProfile: ConnectomeProfile = .bilateral
+  var stimulusNoiseAmplitude: Float = 0.25
+  var randomSeed: UInt32 = 1
+  var environmentIdentifier: UInt32 = 0
+  var episodeIdentifier: UInt32 = 0
   var lesion = LesionOptions()
   var stimulus = TissueStimulus(
     radius: 0.08,
@@ -150,6 +154,23 @@ private struct Options {
           try value(after: argument),
           flag: argument
         )
+      case "--stimulus-noise":
+        options.stimulusNoiseAmplitude = try parseFloat(
+          try value(after: argument),
+          flag: argument
+        )
+      case "--seed":
+        options.randomSeed = try parseUInt32(try value(after: argument), flag: argument)
+      case "--environment-id":
+        options.environmentIdentifier = try parseUInt32(
+          try value(after: argument),
+          flag: argument
+        )
+      case "--episode-id":
+        options.episodeIdentifier = try parseUInt32(
+          try value(after: argument),
+          flag: argument
+        )
       case "--help", "-h":
         printUsage()
         Darwin.exit(EXIT_SUCCESS)
@@ -166,6 +187,9 @@ private struct Options {
       throw CLIError("duration and control interval must be positive")
     }
     try options.stimulus.validate()
+    guard options.stimulusNoiseAmplitude >= 0 else {
+      throw CLIError("--stimulus-noise must be nonnegative")
+    }
     guard (0...1).contains(options.lesion.centerX),
       (0...1).contains(options.lesion.centerY),
       options.lesion.radius >= 0,
@@ -188,6 +212,19 @@ private struct Options {
   private static func parseFloat(_ raw: String, flag: String) throws -> Float {
     guard let value = Float(raw), value.isFinite else {
       throw CLIError("\(flag) expects a finite number")
+    }
+    return value
+  }
+
+  private static func parseUInt32(_ raw: String, flag: String) throws -> UInt32 {
+    let value: UInt32?
+    if raw.lowercased().hasPrefix("0x") {
+      value = UInt32(raw.dropFirst(2), radix: 16)
+    } else {
+      value = UInt32(raw)
+    }
+    guard let value else {
+      throw CLIError("\(flag) expects an unsigned 32-bit integer")
     }
     return value
   }
@@ -220,6 +257,10 @@ private struct Options {
         --stimulus-inhibition N  Inhibitory drive (default: 0)
         --stimulus-start-ms N Stimulus start time (default: 20)
         --stimulus-end-ms N   Stimulus end time (default: 70)
+        --stimulus-noise N    Bounded receptor-drive noise (default: 0.25)
+        --seed N              Counter-random seed, decimal or hex (default: 1)
+        --environment-id N    Counter-random environment identity (default: 0)
+        --episode-id N        Counter-random episode identity (default: 0)
         --help                Show this help
       """
     )
@@ -256,6 +297,7 @@ private struct MemoryEvidence: Codable {
   let delayFieldBytes: Int
   let projectionOffsetBytes: Int
   let projectionEdgeBytes: Int
+  let eventScheduleBytes: Int
   let relayHistoryPlaneCount: Int
   let relayHistoryBytes: Int
   let relayTransactionBytes: Int
@@ -279,6 +321,24 @@ private struct ConnectomeEvidence: Codable {
   let maximumIncomingProjectionCount: Int
   let maximumDelaySteps: Int
   let interpretation: String
+}
+
+private struct EventEvidence: Codable {
+  let hash: String
+  let count: Int
+  let maximumScheduleCount: Int
+  let packedBytes: Int
+  let stimulusNoiseAmplitude: Float
+  let flags: UInt32
+  let execution: String
+  let interpretation: String
+}
+
+private struct RandomEvidence: Codable {
+  let generator: String
+  let context: TissueRandomContext
+  let mutableStateBytes: Int
+  let key: String
 }
 
 private struct StructureEvidence: Codable {
@@ -310,6 +370,8 @@ private struct SimulationEvidence: Codable {
   let structure: StructureEvidence
   let conduction: ConductionEvidence
   let connectome: ConnectomeEvidence
+  let events: EventEvidence
+  let random: RandomEvidence
   let timestepMilliseconds: Float
   let acceptedDurationMilliseconds: Float
   let controlIntervalMilliseconds: Float
@@ -398,6 +460,15 @@ private struct NumiBrainTissueCommand {
         height: options.height
       )
     }
+    let eventSchedule = try TissueEventSchedule.singleStimulus(
+      stimulus,
+      noiseAmplitude: options.stimulusNoiseAmplitude
+    )
+    let randomContext = TissueRandomContext(
+      seed: options.randomSeed,
+      environmentIdentifier: options.environmentIdentifier,
+      episodeIdentifier: options.episodeIdentifier
+    )
     let initialState = try CPUTissueDynamics.makeRestingGrid(
       parameters: parameters,
       structure: structure
@@ -431,6 +502,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -445,6 +518,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -460,7 +535,9 @@ private struct NumiBrainTissueCommand {
       stimulus: stimulus,
       structure: structure,
       delayField: delayField,
-      connectome: connectome
+      connectome: connectome,
+      eventSchedule: eventSchedule,
+      randomContext: randomContext
     )
     let cpuParity: (error: Float, tolerance: Float, passed: Bool)?
     if options.verifyCPU, options.backend == .metal {
@@ -471,6 +548,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       ).0
@@ -492,6 +571,8 @@ private struct NumiBrainTissueCommand {
           structure: structure,
           delayField: delayField,
           connectome: connectome,
+          eventSchedule: eventSchedule,
+          randomContext: randomContext,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -506,6 +587,8 @@ private struct NumiBrainTissueCommand {
           structure: structure,
           delayField: delayField,
           connectome: connectome,
+          eventSchedule: eventSchedule,
+          randomContext: randomContext,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -525,13 +608,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v3",
+      schema: "numibrain.tissue-simulation-evidence.v4",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with timestamped noisy receptor events, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -565,6 +648,26 @@ private struct NumiBrainTissueCommand {
         interpretation:
           "synthetic destination-major sparse projection graph; not an anatomical connectome"
       ),
+      events: EventEvidence(
+        hash: eventSchedule.stableHash(),
+        count: eventSchedule.eventCount,
+        maximumScheduleCount: TissueEventSchedule.maximumEventCount,
+        packedBytes: eventSchedule.packedByteCount,
+        stimulusNoiseAmplitude: options.stimulusNoiseAmplitude,
+        flags: eventSchedule.events.reduce(UInt32.zero) { result, event in
+          result | event.flags.rawValue
+        },
+        execution: "bounded canonical event scan per active tissue site",
+        interpretation:
+          "receptor-derived neural input schedule; not raw or privileged simulator state"
+      ),
+      random: RandomEvidence(
+        generator: "NumiBrain counter hash v1 with upper-24-bit FP32 uniform samples",
+        context: randomContext,
+        mutableStateBytes: 0,
+        key:
+          "seed, environment, episode, module, accepted step, event identifier, site, sample lane"
+      ),
       timestepMilliseconds: parameters.timestepMilliseconds,
       acceptedDurationMilliseconds: Float(totalSubsteps) * parameters.timestepMilliseconds,
       controlIntervalMilliseconds: Float(substepsPerControl) * parameters.timestepMilliseconds,
@@ -590,6 +693,7 @@ private struct NumiBrainTissueCommand {
           * MemoryLayout<UInt32>.stride,
         projectionEdgeBytes: connectome.edgeCount
           * MemoryLayout<TissueConnectome.PackedEdge>.stride,
+        eventScheduleBytes: eventSchedule.packedByteCount,
         relayHistoryPlaneCount: options.backend == .metal ? 2 : 1,
         relayHistoryBytes: delayField.count * MemoryLayout<Float>.stride
           * TissueDelayField.historyCapacity * (options.backend == .metal ? 2 : 1),
@@ -599,7 +703,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU state and two-plane relay history plus shared uniforms and explicit inspection staging"
+          ? "private GPU state, relay history, connectome, and receptor events plus shared uniforms and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -625,6 +729,8 @@ private struct NumiBrainTissueCommand {
     structure: TissueStructure,
     delayField: TissueDelayField,
     connectome: TissueConnectome,
+    eventSchedule: TissueEventSchedule,
+    randomContext: TissueRandomContext,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
@@ -634,7 +740,9 @@ private struct NumiBrainTissueCommand {
       stimulus: stimulus,
       structure: structure,
       delayField: delayField,
-      connectome: connectome
+      connectome: connectome,
+      eventSchedule: eventSchedule,
+      randomContext: randomContext
     )
     var completed = 0
     var rootTransactions = 0
@@ -658,6 +766,8 @@ private struct NumiBrainTissueCommand {
     structure: TissueStructure,
     delayField: TissueDelayField,
     connectome: TissueConnectome,
+    eventSchedule: TissueEventSchedule,
+    randomContext: TissueRandomContext,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
@@ -668,6 +778,8 @@ private struct NumiBrainTissueCommand {
       structure: structure,
       delayField: delayField,
       connectome: connectome,
+      eventSchedule: eventSchedule,
+      randomContext: randomContext,
       maxEncodedSubsteps: max(substepsPerControl, 2)
     )
     var completed = 0
@@ -700,7 +812,9 @@ private struct NumiBrainTissueCommand {
     stimulus: TissueStimulus,
     structure: TissueStructure,
     delayField: TissueDelayField,
-    connectome: TissueConnectome
+    connectome: TissueConnectome,
+    eventSchedule: TissueEventSchedule,
+    randomContext: TissueRandomContext
   ) throws -> (retry: Bool, abort: Bool) {
     let followUpSteps = min(
       max(
@@ -713,6 +827,9 @@ private struct NumiBrainTissueCommand {
       TissueDelayField.historyCapacity
     )
     let followUp = Array(repeating: true, count: followUpSteps)
+    let rollbackStartMilliseconds = eventSchedule.events.first?.startMilliseconds ?? 0
+    let rollbackFollowUpMilliseconds =
+      rollbackStartMilliseconds + parameters.timestepMilliseconds
     switch backend {
     case .cpu:
       var direct = try CPUTissueRuntime(
@@ -721,24 +838,42 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
-        connectome: connectome
+        connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext
       )
       var retried = direct
       var aborted = direct
       var abortBaseline = direct
-      try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
-      try retried.runRootTransaction(at: 0, acceptedSubsteps: [false, true])
-      try aborted.runRootTransaction(at: 0, acceptedSubsteps: [true], commit: false)
       try direct.runRootTransaction(
-        at: parameters.timestepMilliseconds,
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [true]
+      )
+      try retried.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [false, true]
+      )
+      try aborted.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [true],
+        commit: false
+      )
+      try direct.runRootTransaction(
+        at: rollbackFollowUpMilliseconds,
         acceptedSubsteps: followUp
       )
       try retried.runRootTransaction(
-        at: parameters.timestepMilliseconds,
+        at: rollbackFollowUpMilliseconds,
         acceptedSubsteps: followUp
       )
-      try aborted.runRootTransaction(at: 0, acceptedSubsteps: followUp)
-      try abortBaseline.runRootTransaction(at: 0, acceptedSubsteps: followUp)
+      try aborted.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: followUp
+      )
+      try abortBaseline.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: followUp
+      )
       return (
         direct.committed.stableHash() == retried.committed.stableHash()
           && direct.committedHistoryHash() == retried.committedHistoryHash(),
@@ -756,6 +891,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let retried = try MetalTissueRuntime(
@@ -765,6 +902,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let aborted = try MetalTissueRuntime(
@@ -774,6 +913,8 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let abortBaseline = try MetalTissueRuntime(
@@ -783,23 +924,37 @@ private struct NumiBrainTissueCommand {
         structure: structure,
         delayField: delayField,
         connectome: connectome,
+        eventSchedule: eventSchedule,
+        randomContext: randomContext,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
-      _ = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
+      _ = try direct.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [true]
+      )
       try direct.commitRootTransaction()
-      _ = try retried.runRootTransaction(at: 0, acceptedSubsteps: [false, true])
+      _ = try retried.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [false, true]
+      )
       try retried.commitRootTransaction()
-      _ = try aborted.runRootTransaction(at: 0, acceptedSubsteps: [true])
+      _ = try aborted.runRootTransaction(
+        at: rollbackStartMilliseconds,
+        acceptedSubsteps: [true]
+      )
       try aborted.abortRootTransaction()
       for runtime in [direct, retried] {
         _ = try runtime.runRootTransaction(
-          at: parameters.timestepMilliseconds,
+          at: rollbackFollowUpMilliseconds,
           acceptedSubsteps: followUp
         )
         try runtime.commitRootTransaction()
       }
       for runtime in [aborted, abortBaseline] {
-        _ = try runtime.runRootTransaction(at: 0, acceptedSubsteps: followUp)
+        _ = try runtime.runRootTransaction(
+          at: rollbackStartMilliseconds,
+          acceptedSubsteps: followUp
+        )
         try runtime.commitRootTransaction()
       }
       return (

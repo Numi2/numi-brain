@@ -34,6 +34,13 @@ enum TissueUniformIndex : uint {
     TissueHistoryOwnerMask = 29,
     TissueHistoryWriteSlot = 30,
     TissueHistoryWritePlane = 31,
+    TissueEventCount = 32,
+    TissueRandomSeed = 33,
+    TissueRandomEnvironmentIdentifier = 34,
+    TissueRandomEpisodeIdentifier = 35,
+    TissueRandomModuleIdentifier = 36,
+    TissueAcceptedStepLow = 37,
+    TissueAcceptedStepHigh = 38,
 };
 
 inline float tissue_sigmoid(float value) {
@@ -71,6 +78,64 @@ inline float tissue_relay_at_delay(
     return relayHistory[historyIndex];
 }
 
+inline void tissue_random_combine(thread uint &state, uint value) {
+    state += value * 0x9e3779b9u;
+    state ^= state >> 16;
+    state *= 0x7feb352du;
+    state ^= state >> 15;
+    state *= 0x846ca68bu;
+    state ^= state >> 16;
+}
+
+inline uint tissue_random_bits(
+    uint seed,
+    uint environmentIdentifier,
+    uint episodeIdentifier,
+    uint moduleIdentifier,
+    uint acceptedStepLow,
+    uint acceptedStepHigh,
+    uint eventIdentifier,
+    uint siteIndex,
+    uint sampleIndex
+) {
+    uint state = seed ^ 0xa511e9b3u;
+    tissue_random_combine(state, environmentIdentifier);
+    tissue_random_combine(state, episodeIdentifier);
+    tissue_random_combine(state, moduleIdentifier);
+    tissue_random_combine(state, acceptedStepLow);
+    tissue_random_combine(state, acceptedStepHigh);
+    tissue_random_combine(state, eventIdentifier);
+    tissue_random_combine(state, siteIndex);
+    tissue_random_combine(state, sampleIndex);
+    return state;
+}
+
+inline float tissue_random_symmetric_unit(
+    uint seed,
+    uint environmentIdentifier,
+    uint episodeIdentifier,
+    uint moduleIdentifier,
+    uint acceptedStepLow,
+    uint acceptedStepHigh,
+    uint eventIdentifier,
+    uint siteIndex,
+    uint sampleIndex
+) {
+    const uint bits = tissue_random_bits(
+        seed,
+        environmentIdentifier,
+        episodeIdentifier,
+        moduleIdentifier,
+        acceptedStepLow,
+        acceptedStepHigh,
+        eventIdentifier,
+        siteIndex,
+        sampleIndex
+    );
+    const float uniform = float(bits >> 8) * (1.0f / 16777216.0f);
+    return 2.0f * uniform - 1.0f;
+}
+
 kernel void neural_tissue_step(
     device const float4 *input [[buffer(0)]],
     device float4 *output [[buffer(1)]],
@@ -81,6 +146,7 @@ kernel void neural_tissue_step(
     device float *relayScratch [[buffer(6)]],
     device const uint *projectionOffsets [[buffer(7)]],
     device const uint4 *projectionEdges [[buffer(8)]],
+    device const float4 *receptorEvents [[buffer(9)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -183,18 +249,58 @@ kernel void neural_tissue_step(
     float stimulusE = 0.0f;
     float stimulusI = 0.0f;
     const float time = uniforms[TissueTimeMilliseconds];
-    const float radius = uniforms[TissueStimulusRadius];
-    if (time >= uniforms[TissueStimulusStartMilliseconds]
-        && time < uniforms[TissueStimulusEndMilliseconds]
-        && radius > 0.0f) {
-        const float widthScale = float(max(width - 1, 1u));
-        const float heightScale = float(max(height - 1, 1u));
-        const float dx = float(x) / widthScale - uniforms[TissueStimulusCenterX];
-        const float dy = float(y) / heightScale - uniforms[TissueStimulusCenterY];
-        if (dx * dx + dy * dy <= radius * radius) {
-            stimulusE = uniforms[TissueStimulusExcitatoryDrive];
-            stimulusI = uniforms[TissueStimulusInhibitoryDrive];
+    const float normalizedX = float(x) / float(max(width - 1, 1u));
+    const float normalizedY = float(y) / float(max(height - 1, 1u));
+    const uint eventCount = uint(uniforms[TissueEventCount]);
+    const uint randomSeed = as_type<uint>(uniforms[TissueRandomSeed]);
+    const uint randomEnvironment = as_type<uint>(
+        uniforms[TissueRandomEnvironmentIdentifier]
+    );
+    const uint randomEpisode = as_type<uint>(uniforms[TissueRandomEpisodeIdentifier]);
+    const uint randomModule = as_type<uint>(uniforms[TissueRandomModuleIdentifier]);
+    const uint acceptedStepLow = as_type<uint>(uniforms[TissueAcceptedStepLow]);
+    const uint acceptedStepHigh = as_type<uint>(uniforms[TissueAcceptedStepHigh]);
+    for (uint eventIndex = 0; eventIndex < eventCount; ++eventIndex) {
+        const float4 geometryAndStart = receptorEvents[eventIndex * 3];
+        const float4 endDriveAndNoise = receptorEvents[eventIndex * 3 + 1];
+        const float4 metadata = receptorEvents[eventIndex * 3 + 2];
+        const float radius = geometryAndStart.z;
+        if (time < geometryAndStart.w
+            || time >= endDriveAndNoise.x
+            || radius <= 0.0f) {
+            continue;
         }
+        const float dx = normalizedX - geometryAndStart.x;
+        const float dy = normalizedY - geometryAndStart.y;
+        if (dx * dx + dy * dy > radius * radius) {
+            continue;
+        }
+        const uint eventIdentifier = as_type<uint>(metadata.x);
+        const float noiseAmplitude = endDriveAndNoise.w;
+        const float excitatoryNoise = noiseAmplitude * tissue_random_symmetric_unit(
+            randomSeed,
+            randomEnvironment,
+            randomEpisode,
+            randomModule,
+            acceptedStepLow,
+            acceptedStepHigh,
+            eventIdentifier,
+            index,
+            0u
+        );
+        const float inhibitoryNoise = noiseAmplitude * tissue_random_symmetric_unit(
+            randomSeed,
+            randomEnvironment,
+            randomEpisode,
+            randomModule,
+            acceptedStepLow,
+            acceptedStepHigh,
+            eventIdentifier,
+            index,
+            1u
+        );
+        stimulusE += endDriveAndNoise.y + excitatoryNoise;
+        stimulusI += endDriveAndNoise.z + inhibitoryNoise;
     }
 
     const float targetE = tissue_sigmoid(

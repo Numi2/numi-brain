@@ -37,6 +37,79 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
   }
 
+  func testMetalAgreesWithCPUForNoisyReceptorEvents() throws {
+    try requireMetal4()
+    let width = 24
+    let height = 20
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let delayField = try TissueDelayField.instantaneous(width: width, height: height)
+    let events = try TissueEventSchedule(
+      events: [
+        TissueReceptorEvent(
+          identifier: 41,
+          centerX: 0.35,
+          centerY: 0.5,
+          radius: 0.18,
+          excitatoryDrive: 4,
+          noiseAmplitude: 0.45,
+          startMilliseconds: 2,
+          endMilliseconds: 14
+        ),
+        TissueReceptorEvent(
+          identifier: 7,
+          centerX: 0.65,
+          centerY: 0.5,
+          radius: 0.16,
+          excitatoryDrive: 1,
+          inhibitoryDrive: 2,
+          noiseAmplitude: 0.2,
+          startMilliseconds: 8,
+          endMilliseconds: 18,
+          flags: .emergency
+        ),
+      ]
+    )
+    let randomContext = TissueRandomContext(
+      seed: 0xf00d_beef,
+      environmentIdentifier: 3,
+      episodeIdentifier: 27,
+      moduleIdentifier: 12
+    )
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let acceptance = Array(repeating: true, count: 24)
+    var cpu = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField,
+      eventSchedule: events,
+      randomContext: randomContext
+    )
+    try cpu.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField,
+      eventSchedule: events,
+      randomContext: randomContext,
+      maxEncodedSubsteps: acceptance.count
+    )
+    _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try metal.commitRootTransaction()
+    let gpu = try metal.snapshotCommitted()
+
+    XCTAssertEqual(metal.eventScheduleHash, events.stableHash())
+    XCTAssertEqual(metal.eventByteCount, events.packedByteCount)
+    XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
+  }
+
   func testMetalAgreesWithCPUForLayeredLesionedTissue() throws {
     try requireMetal4()
     var structure = try TissueStructure.layeredCorticalSheetV0(width: 32, height: 24)
@@ -176,12 +249,19 @@ final class MetalTissueRuntimeTests: XCTestCase {
         )
       ]
     )
+    let events = try TissueEventSchedule.singleStimulus(
+      stimulus,
+      noiseAmplitude: 0.4
+    )
+    let randomContext = TissueRandomContext(seed: 91, episodeIdentifier: 6)
     let direct = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
       delayField: delayField,
       connectome: connectome,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 12
     )
     let retried = try MetalTissueRuntime(
@@ -190,6 +270,8 @@ final class MetalTissueRuntimeTests: XCTestCase {
       stimulus: stimulus,
       delayField: delayField,
       connectome: connectome,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 12
     )
 
@@ -213,6 +295,12 @@ final class MetalTissueRuntimeTests: XCTestCase {
 
   func testMetalRootAbortIsBitExact() throws {
     try requireMetal4()
+    let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
+    let events = try TissueEventSchedule.singleStimulus(
+      stimulus,
+      noiseAmplitude: 0.35
+    )
+    let randomContext = TissueRandomContext(seed: 77, episodeIdentifier: 4)
     let initial = try CPUTissueDynamics.makeRestingGrid(
       width: 16,
       height: 16,
@@ -226,15 +314,19 @@ final class MetalTissueRuntimeTests: XCTestCase {
     let baseline = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
-      stimulus: TissueStimulus(startMilliseconds: 0, endMilliseconds: 20),
+      stimulus: stimulus,
       delayField: delayField,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 16
     )
     let runtime = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
-      stimulus: TissueStimulus(startMilliseconds: 0, endMilliseconds: 20),
+      stimulus: stimulus,
       delayField: delayField,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 16
     )
     _ = try runtime.runRootTransaction(
@@ -259,6 +351,11 @@ final class MetalTissueRuntimeTests: XCTestCase {
   func testMetalReplayAndControlIntervalChunkingAreBitExact() throws {
     try requireMetal4()
     let stimulus = TissueStimulus(startMilliseconds: 5, endMilliseconds: 35)
+    let events = try TissueEventSchedule.singleStimulus(
+      stimulus,
+      noiseAmplitude: 0.3
+    )
+    let randomContext = TissueRandomContext(seed: 123, episodeIdentifier: 8)
     let initial = try CPUTissueDynamics.makeRestingGrid(
       width: 16,
       height: 16,
@@ -268,18 +365,24 @@ final class MetalTissueRuntimeTests: XCTestCase {
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 32
     )
     let replay = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 32
     )
     let chunked = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
+      eventSchedule: events,
+      randomContext: randomContext,
       maxEncodedSubsteps: 16
     )
 
