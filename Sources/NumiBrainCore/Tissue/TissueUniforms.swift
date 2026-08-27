@@ -25,10 +25,15 @@ public enum TissueUniformIndex: Int, Sendable {
   case stimulusInhibitoryDrive = 24
   case stimulusStartMilliseconds = 25
   case stimulusEndMilliseconds = 26
+  case historyStep = 27
+  case historyCapacity = 28
+  case historyOwnerMask = 29
+  case historyWriteSlot = 30
+  case historyWritePlane = 31
 }
 
 public enum TissueUniforms {
-  public static let count = 32
+  public static let count = 40
   public static let byteCount = count * MemoryLayout<Float>.stride
 
   public static func encode(
@@ -36,7 +41,11 @@ public enum TissueUniforms {
     height: Int,
     timeMilliseconds: Float,
     parameters: TissueParameters,
-    stimulus: TissueStimulus
+    stimulus: TissueStimulus,
+    historyStep: UInt32 = 0,
+    historyOwnerMask: UInt32 = 0,
+    historyWriteSlot: UInt32 = 0,
+    historyWritePlane: UInt32 = 2
   ) -> [Float] {
     var values = Array(repeating: Float.zero, count: count)
     values[TissueUniformIndex.width.rawValue] = Float(width)
@@ -71,6 +80,11 @@ public enum TissueUniforms {
     values[TissueUniformIndex.stimulusInhibitoryDrive.rawValue] = stimulus.inhibitoryDrive
     values[TissueUniformIndex.stimulusStartMilliseconds.rawValue] = stimulus.startMilliseconds
     values[TissueUniformIndex.stimulusEndMilliseconds.rawValue] = stimulus.endMilliseconds
+    values[TissueUniformIndex.historyStep.rawValue] = Float(historyStep)
+    values[TissueUniformIndex.historyCapacity.rawValue] = Float(TissueDelayField.historyCapacity)
+    values[TissueUniformIndex.historyOwnerMask.rawValue] = Float(bitPattern: historyOwnerMask)
+    values[TissueUniformIndex.historyWriteSlot.rawValue] = Float(historyWriteSlot)
+    values[TissueUniformIndex.historyWritePlane.rawValue] = Float(historyWritePlane)
     return values
   }
 }

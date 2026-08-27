@@ -56,6 +56,117 @@ final class CPUTissueRuntimeTests: XCTestCase {
     XCTAssertGreaterThan(center.w, 0)
   }
 
+  func testExplicitConductionDelayPostponesLateralRecruitment() throws {
+    let width = 31
+    let height = 31
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let stimulus = TissueStimulus(
+      radius: 0.02,
+      excitatoryDrive: 8,
+      startMilliseconds: 0,
+      endMilliseconds: 20
+    )
+    let immediateField = try TissueDelayField(
+      width: width,
+      height: height,
+      repeating: 0
+    )
+    let delayedField = try TissueDelayField(
+      width: width,
+      height: height,
+      repeating: 6
+    )
+    var immediate = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: immediateField
+    )
+    var delayed = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayedField
+    )
+
+    let acceptance = Array(repeating: true, count: 12)
+    try immediate.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try delayed.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+
+    let lateralX = width / 2 + 1
+    let lateralY = height / 2
+    XCTAssertGreaterThan(
+      immediate.committed[lateralX, lateralY].x,
+      delayed.committed[lateralX, lateralY].x + 1e-6
+    )
+    XCTAssertNotEqual(immediate.committedHistoryHash(), delayed.committedHistoryHash())
+  }
+
+  func testDelayedHistoryRollsBackRetriesAndChunksExactly() throws {
+    let width = 20
+    let height = 20
+    let structure = try TissueStructure.layeredCorticalSheetV0(
+      width: width,
+      height: height
+    )
+    let delayField = try TissueDelayField.layeredCorticalSheetV0(
+      width: width,
+      height: height
+    )
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let stimulus = TissueStimulus(startMilliseconds: 5, endMilliseconds: 35)
+    let baseline = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField
+    )
+
+    var aborted = baseline
+    let initialHistoryHash = aborted.committedHistoryHash()
+    try aborted.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: Array(repeating: true, count: 40),
+      commit: false
+    )
+    XCTAssertEqual(aborted.committed, initial)
+    XCTAssertEqual(aborted.committedHistoryHash(), initialHistoryHash)
+
+    var direct = baseline
+    var retried = baseline
+    try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
+    try retried.runRootTransaction(at: 0, acceptedSubsteps: [false, true])
+    XCTAssertEqual(direct.committed, retried.committed)
+    XCTAssertEqual(direct.committedHistoryHash(), retried.committedHistoryHash())
+
+    var single = baseline
+    var chunked = baseline
+    try single.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: Array(repeating: true, count: 40)
+    )
+    try chunked.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: Array(repeating: true, count: 20)
+    )
+    try chunked.runRootTransaction(
+      at: 20,
+      acceptedSubsteps: Array(repeating: true, count: 20)
+    )
+    XCTAssertEqual(single.committed, chunked.committed)
+    XCTAssertEqual(single.committedHistoryHash(), chunked.committedHistoryHash())
+  }
+
   func testLayeredStructureAndLesionAreDeterministicAndSilent() throws {
     var structure = try TissueStructure.layeredCorticalSheetV0(width: 48, height: 32)
     let pristineHash = structure.stableHash()

@@ -118,13 +118,17 @@ public enum CPUTissueDynamics {
     timeMilliseconds: Float,
     parameters: TissueParameters,
     stimulus: TissueStimulus,
-    structure: TissueStructure
+    structure: TissueStructure,
+    delayedRelay: [Float]? = nil
   ) throws -> TissueGrid {
     try parameters.validate()
     try stimulus.validate()
     try structure.validate()
     guard structure.width == input.width, structure.height == input.height else {
       throw TissueError.invalidStructure("structure dimensions must match the state grid")
+    }
+    guard delayedRelay == nil || delayedRelay?.count == input.count else {
+      throw TissueError.invalidConduction("delayed relay count must match the state grid")
     }
     guard timeMilliseconds.isFinite else {
       throw TissueError.invalidParameters("simulation time must be finite")
@@ -156,12 +160,17 @@ public enum CPUTissueDynamics {
         let westSite = structure[left, y]
         let eastSite = structure[right, y]
 
+        let northRelay = delayedRelay?[up * input.width + x] ?? north.w
+        let southRelay = delayedRelay?[down * input.width + x] ?? south.w
+        let westRelay = delayedRelay?[y * input.width + left] ?? west.w
+        let eastRelay = delayedRelay?[y * input.width + right] ?? east.w
+
         let neighborRelay =
           0.25
-          * (north.w * northSite.z * northSite.w
-            + south.w * southSite.z * southSite.w
-            + west.w * westSite.z * westSite.w
-            + east.w * eastSite.z * eastSite.w)
+          * (northRelay * northSite.z * northSite.w
+            + southRelay * southSite.z * southSite.w
+            + westRelay * westSite.z * westSite.w
+            + eastRelay * eastSite.z * eastSite.w)
         let neighborI =
           0.25
           * (north.y * northSite.z * northSite.w
@@ -332,13 +341,19 @@ public enum CPUTissueDynamics {
 /// CPU oracle for the same committed/root-shadow/candidate state machine used by Metal.
 public struct CPUTissueRuntime: Sendable {
   public private(set) var committed: TissueGrid
+  public private(set) var committedStep: UInt64 = 0
   public let parameters: TissueParameters
   public let stimulus: TissueStimulus
   public let structure: TissueStructure
+  public let delayField: TissueDelayField
 
   private var rootShadow: TissueGrid?
   private var candidate: TissueGrid?
+  private var candidateRelay: [Float]?
   private var acceptedTimeMilliseconds: Float?
+  private var rootAcceptedStep: UInt64?
+  private var rootHistoryWrites: [Int: [Float]] = [:]
+  private var committedRelayHistory: [[Float]]
 
   public init(
     initialState: TissueGrid,
@@ -349,11 +364,16 @@ public struct CPUTissueRuntime: Sendable {
       width: initialState.width,
       height: initialState.height
     )
+    let delayField = try TissueDelayField.instantaneous(
+      width: initialState.width,
+      height: initialState.height
+    )
     try self.init(
       initialState: initialState,
       parameters: parameters,
       stimulus: stimulus,
-      structure: structure
+      structure: structure,
+      delayField: delayField
     )
   }
 
@@ -363,16 +383,46 @@ public struct CPUTissueRuntime: Sendable {
     stimulus: TissueStimulus,
     structure: TissueStructure
   ) throws {
+    let delayField = try TissueDelayField.instantaneous(
+      width: initialState.width,
+      height: initialState.height
+    )
+    try self.init(
+      initialState: initialState,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField
+    )
+  }
+
+  public init(
+    initialState: TissueGrid,
+    parameters: TissueParameters,
+    stimulus: TissueStimulus,
+    structure: TissueStructure,
+    delayField: TissueDelayField
+  ) throws {
     try parameters.validate()
     try stimulus.validate()
     try structure.validate()
+    try delayField.validate()
     guard structure.width == initialState.width, structure.height == initialState.height else {
       throw TissueError.invalidStructure("structure dimensions must match the initial state")
+    }
+    guard delayField.width == initialState.width, delayField.height == initialState.height else {
+      throw TissueError.invalidConduction("delay dimensions must match the initial state")
     }
     self.committed = initialState
     self.parameters = parameters
     self.stimulus = stimulus
     self.structure = structure
+    self.delayField = delayField
+    let initialRelay = initialState.cells.map(\.w)
+    self.committedRelayHistory = Array(
+      repeating: initialRelay,
+      count: TissueDelayField.historyCapacity
+    )
   }
 
   public var hasOpenRootTransaction: Bool { rootShadow != nil }
@@ -387,32 +437,48 @@ public struct CPUTissueRuntime: Sendable {
     }
     rootShadow = committed
     candidate = nil
+    candidateRelay = nil
     acceptedTimeMilliseconds = timeMilliseconds
+    rootAcceptedStep = committedStep
+    rootHistoryWrites.removeAll(keepingCapacity: true)
   }
 
   public mutating func advanceCandidateSubstep() throws {
-    guard let rootShadow, let time = acceptedTimeMilliseconds else {
+    guard let rootShadow, let time = acceptedTimeMilliseconds,
+      let rootAcceptedStep
+    else {
       throw TissueError.transaction("begin a root transaction before advancing")
     }
     guard candidate == nil else {
       throw TissueError.transaction("accept or reject the existing candidate first")
     }
-    candidate = try CPUTissueDynamics.advance(
+    let delayedRelay = makeDelayedRelay(at: rootAcceptedStep)
+    let candidate = try CPUTissueDynamics.advance(
       rootShadow,
       timeMilliseconds: time,
       parameters: parameters,
       stimulus: stimulus,
-      structure: structure
+      structure: structure,
+      delayedRelay: delayedRelay
     )
+    self.candidate = candidate
+    candidateRelay = candidate.cells.map(\.w)
   }
 
   public mutating func acceptCandidateSubstep() throws {
-    guard let candidate, let time = acceptedTimeMilliseconds else {
+    guard let candidate, let candidateRelay, let time = acceptedTimeMilliseconds,
+      let rootAcceptedStep
+    else {
       throw TissueError.transaction("there is no candidate substep to accept")
     }
+    let nextStep = rootAcceptedStep + 1
+    let historySlot = Int(nextStep % UInt64(TissueDelayField.historyCapacity))
+    rootHistoryWrites[historySlot] = candidateRelay
     rootShadow = candidate
     self.candidate = nil
+    self.candidateRelay = nil
     acceptedTimeMilliseconds = time + parameters.timestepMilliseconds
+    self.rootAcceptedStep = nextStep
   }
 
   public mutating func rejectCandidateSubstep() throws {
@@ -420,13 +486,18 @@ public struct CPUTissueRuntime: Sendable {
       throw TissueError.transaction("there is no candidate substep to reject")
     }
     candidate = nil
+    candidateRelay = nil
   }
 
   public mutating func commitRootTransaction() throws {
-    guard let rootShadow, candidate == nil else {
+    guard let rootShadow, let rootAcceptedStep, candidate == nil else {
       throw TissueError.transaction("root commit requires a shadow and no pending candidate")
     }
     committed = rootShadow
+    for (slot, relay) in rootHistoryWrites {
+      committedRelayHistory[slot] = relay
+    }
+    committedStep = rootAcceptedStep
     clearTransaction()
   }
 
@@ -461,6 +532,43 @@ public struct CPUTissueRuntime: Sendable {
   private mutating func clearTransaction() {
     rootShadow = nil
     candidate = nil
+    candidateRelay = nil
     acceptedTimeMilliseconds = nil
+    rootAcceptedStep = nil
+    rootHistoryWrites.removeAll(keepingCapacity: true)
+  }
+
+  public func committedHistoryHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ byte: UInt8, into hash: inout UInt64) {
+      hash ^= UInt64(byte)
+      hash &*= 0x100_0000_01b3
+    }
+    var step = committedStep.littleEndian
+    withUnsafeBytes(of: &step) { bytes in
+      for byte in bytes { mix(byte, into: &hash) }
+    }
+    for historySlot in committedRelayHistory {
+      for relay in historySlot {
+        var bits = relay.bitPattern.littleEndian
+        withUnsafeBytes(of: &bits) { bytes in
+          for byte in bytes { mix(byte, into: &hash) }
+        }
+      }
+    }
+    return String(format: "%016llx", hash)
+  }
+
+  private func makeDelayedRelay(at step: UInt64) -> [Float] {
+    let capacity = TissueDelayField.historyCapacity
+    let currentSlot = Int(step % UInt64(capacity))
+    var delayed = Array(repeating: Float.zero, count: committed.count)
+    for index in delayed.indices {
+      let delay = Int(delayField.delaySteps[index])
+      let slot = (currentSlot - delay + capacity) % capacity
+      delayed[index] = rootHistoryWrites[slot]?[index] ?? committedRelayHistory[slot][index]
+    }
+    return delayed
   }
 }

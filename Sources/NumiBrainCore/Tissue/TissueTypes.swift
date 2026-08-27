@@ -28,6 +28,113 @@ public enum TissueSiteLane {
   public static let viability = 3
 }
 
+/// Immutable per-site outgoing conduction delay, expressed in accepted
+/// integration steps. The v0.2 runtime uses a fixed 32-slot history ring so a
+/// delay is always explicit and deterministic across CPU and Metal backends.
+public struct TissueDelayField: Equatable, Sendable {
+  public static let historyCapacity = 32
+  public static let maximumDelaySteps = historyCapacity - 1
+
+  public let width: Int
+  public let height: Int
+  public var delaySteps: [UInt8]
+
+  public init(width: Int, height: Int, repeating delaySteps: UInt8 = 0) throws {
+    guard width > 0, height > 0 else {
+      throw TissueError.invalidConduction("width and height must be positive")
+    }
+    let (count, overflow) = width.multipliedReportingOverflow(by: height)
+    guard !overflow else {
+      throw TissueError.invalidConduction("width × height overflows Int")
+    }
+    guard Int(delaySteps) <= Self.maximumDelaySteps else {
+      throw TissueError.invalidConduction(
+        "delay exceeds the \(Self.maximumDelaySteps)-step history limit"
+      )
+    }
+    self.width = width
+    self.height = height
+    self.delaySteps = Array(repeating: delaySteps, count: count)
+  }
+
+  public init(width: Int, height: Int, delaySteps: [UInt8]) throws {
+    guard width > 0, height > 0 else {
+      throw TissueError.invalidConduction("width and height must be positive")
+    }
+    let (count, overflow) = width.multipliedReportingOverflow(by: height)
+    guard !overflow, delaySteps.count == count else {
+      throw TissueError.invalidConduction("delay count does not match width × height")
+    }
+    self.width = width
+    self.height = height
+    self.delaySteps = delaySteps
+    try validate()
+  }
+
+  public var count: Int { delaySteps.count }
+  public var maximumConfiguredDelaySteps: Int { Int(delaySteps.max() ?? 0) }
+
+  public subscript(x: Int, y: Int) -> UInt8 {
+    get { delaySteps[y * width + x] }
+    set { delaySteps[y * width + x] = newValue }
+  }
+
+  public static func instantaneous(width: Int, height: Int) throws -> TissueDelayField {
+    try TissueDelayField(width: width, height: height)
+  }
+
+  /// Synthetic outgoing delay classes for the four v0 cortical strata.
+  /// Values are integration-step classes, not calibrated conduction velocity.
+  public static func layeredCorticalSheetV0(
+    width: Int,
+    height: Int
+  ) throws -> TissueDelayField {
+    var field = try TissueDelayField(width: width, height: height)
+    let heightScale = Float(max(height - 1, 1))
+    for y in 0..<height {
+      let depth = Float(y) / heightScale
+      let delay: UInt8
+      switch depth {
+      case ..<0.18: delay = 4
+      case ..<0.48: delay = 2
+      case ..<0.78: delay = 3
+      default: delay = 1
+      }
+      for x in 0..<width {
+        field[x, y] = delay
+      }
+    }
+    return field
+  }
+
+  public func validate() throws {
+    guard delaySteps.allSatisfy({ Int($0) <= Self.maximumDelaySteps }) else {
+      throw TissueError.invalidConduction(
+        "delay exceeds the \(Self.maximumDelaySteps)-step history limit"
+      )
+    }
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ byte: UInt8, into hash: inout UInt64) {
+      hash ^= UInt64(byte)
+      hash &*= 0x100_0000_01b3
+    }
+    for byte in withUnsafeBytes(of: UInt32(width).littleEndian, Array.init) {
+      mix(byte, into: &hash)
+    }
+    for byte in withUnsafeBytes(of: UInt32(height).littleEndian, Array.init) {
+      mix(byte, into: &hash)
+    }
+    for delay in delaySteps {
+      mix(delay, into: &hash)
+    }
+    return String(format: "%016llx", hash)
+  }
+}
+
 public struct TissueStructure: Equatable, Sendable {
   public let width: Int
   public let height: Int
@@ -420,6 +527,7 @@ public struct TissueMetrics: Equatable, Sendable, Codable {
 public enum TissueError: Error, Equatable, CustomStringConvertible {
   case invalidGrid(String)
   case invalidStructure(String)
+  case invalidConduction(String)
   case invalidParameters(String)
   case invalidStimulus(String)
   case transaction(String)
@@ -429,6 +537,7 @@ public enum TissueError: Error, Equatable, CustomStringConvertible {
     switch self {
     case .invalidGrid(let message): "invalid grid: \(message)"
     case .invalidStructure(let message): "invalid tissue structure: \(message)"
+    case .invalidConduction(let message): "invalid tissue conduction: \(message)"
     case .invalidParameters(let message): "invalid parameters: \(message)"
     case .invalidStimulus(let message): "invalid stimulus: \(message)"
     case .transaction(let message): "transaction error: \(message)"

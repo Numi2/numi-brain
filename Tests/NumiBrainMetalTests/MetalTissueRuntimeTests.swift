@@ -54,6 +54,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
       startMilliseconds: 0,
       endMilliseconds: 20
     )
+    let delayField = try TissueDelayField.layeredCorticalSheetV0(width: 32, height: 24)
     let initial = try CPUTissueDynamics.makeRestingGrid(
       parameters: parameters,
       structure: structure
@@ -63,7 +64,8 @@ final class MetalTissueRuntimeTests: XCTestCase {
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      structure: structure
+      structure: structure,
+      delayField: delayField
     )
     try cpu.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
 
@@ -72,6 +74,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
+      delayField: delayField,
       maxEncodedSubsteps: acceptance.count
     )
     _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
@@ -79,6 +82,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
     let gpu = try metal.snapshotCommitted()
 
     XCTAssertEqual(metal.structureHash, structure.stableHash())
+    XCTAssertEqual(metal.delayFieldHash, delayField.stableHash())
     XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
     for index in structure.sites.indices where structure.sites[index].w == 0 {
       XCTAssertEqual(gpu.cells[index], .zero)
@@ -93,23 +97,37 @@ final class MetalTissueRuntimeTests: XCTestCase {
       height: 16,
       parameters: parameters
     )
+    let delayField = try TissueDelayField(
+      width: 16,
+      height: 16,
+      repeating: 4
+    )
     let direct = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      maxEncodedSubsteps: 2
+      delayField: delayField,
+      maxEncodedSubsteps: 12
     )
     let retried = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      maxEncodedSubsteps: 2
+      delayField: delayField,
+      maxEncodedSubsteps: 12
     )
 
     _ = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
     try direct.commitRootTransaction()
     _ = try retried.runRootTransaction(at: 0, acceptedSubsteps: [false, true])
     try retried.commitRootTransaction()
+    for runtime in [direct, retried] {
+      _ = try runtime.runRootTransaction(
+        at: 1,
+        acceptedSubsteps: Array(repeating: true, count: 12)
+      )
+      try runtime.commitRootTransaction()
+    }
 
     XCTAssertEqual(
       try direct.snapshotCommitted().stableHash(),
@@ -124,11 +142,24 @@ final class MetalTissueRuntimeTests: XCTestCase {
       height: 16,
       parameters: parameters
     )
+    let delayField = try TissueDelayField(
+      width: 16,
+      height: 16,
+      repeating: 5
+    )
+    let baseline = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: TissueStimulus(startMilliseconds: 0, endMilliseconds: 20),
+      delayField: delayField,
+      maxEncodedSubsteps: 16
+    )
     let runtime = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: TissueStimulus(startMilliseconds: 0, endMilliseconds: 20),
-      maxEncodedSubsteps: 8
+      delayField: delayField,
+      maxEncodedSubsteps: 16
     )
     _ = try runtime.runRootTransaction(
       at: 0,
@@ -136,6 +167,17 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     try runtime.abortRootTransaction()
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), initial.stableHash())
+    for candidate in [baseline, runtime] {
+      _ = try candidate.runRootTransaction(
+        at: 0,
+        acceptedSubsteps: Array(repeating: true, count: 16)
+      )
+      try candidate.commitRootTransaction()
+    }
+    XCTAssertEqual(
+      try runtime.snapshotCommitted().stableHash(),
+      try baseline.snapshotCommitted().stableHash()
+    )
   }
 
   func testMetalReplayAndControlIntervalChunkingAreBitExact() throws {
@@ -150,42 +192,66 @@ final class MetalTissueRuntimeTests: XCTestCase {
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      maxEncodedSubsteps: 40
+      maxEncodedSubsteps: 32
     )
     let replay = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      maxEncodedSubsteps: 40
+      maxEncodedSubsteps: 32
     )
     let chunked = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
-      maxEncodedSubsteps: 20
+      maxEncodedSubsteps: 16
     )
 
     for runtime in [single, replay] {
       _ = try runtime.runRootTransaction(
         at: 0,
-        acceptedSubsteps: Array(repeating: true, count: 40)
+        acceptedSubsteps: Array(repeating: true, count: 32)
       )
       try runtime.commitRootTransaction()
     }
     _ = try chunked.runRootTransaction(
       at: 0,
-      acceptedSubsteps: Array(repeating: true, count: 20)
+      acceptedSubsteps: Array(repeating: true, count: 16)
     )
     try chunked.commitRootTransaction()
     _ = try chunked.runRootTransaction(
-      at: 20,
-      acceptedSubsteps: Array(repeating: true, count: 20)
+      at: 16,
+      acceptedSubsteps: Array(repeating: true, count: 16)
     )
     try chunked.commitRootTransaction()
 
     let singleHash = try single.snapshotCommitted().stableHash()
     XCTAssertEqual(singleHash, try replay.snapshotCommitted().stableHash())
     XCTAssertEqual(singleHash, try chunked.snapshotCommitted().stableHash())
+  }
+
+  func testMetalRejectsHistoryOverwriteBeforeDispatch() throws {
+    try requireMetal4()
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 8,
+      height: 8,
+      parameters: parameters
+    )
+    let runtime = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      maxEncodedSubsteps: 33
+    )
+
+    XCTAssertThrowsError(
+      try runtime.runRootTransaction(
+        at: 0,
+        acceptedSubsteps: Array(repeating: true, count: 33)
+      )
+    )
+    XCTAssertFalse(runtime.hasPendingRootTransaction)
+    XCTAssertEqual(runtime.committedStep, 0)
   }
 
   private func requireMetal4() throws {

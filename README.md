@@ -38,6 +38,7 @@ swift run -c release numi-brain-tissue \
   --duration-ms 40 \
   --control-ms 20 \
   --structure layered \
+  --delays layered \
   --lesion-x 0.62 \
   --lesion-y 0.5 \
   --lesion-radius 0.10 \
@@ -48,7 +49,7 @@ swift run -c release numi-brain-tissue \
   --output artifacts/tissue-evidence.json
 ```
 
-The executable also supports `--backend cpu` as a deterministic FP32 oracle and `--structure homogeneous` as a baseline. Layered structure and lesion controls are synthetic experiment inputs, not anatomical or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state and structure hashes, device, execution path, memory footprint, boundedness, rollback/retry result, replay result, and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
+The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, and `--delays instantaneous` as baselines. Layered structure, delay classes, and lesion controls are synthetic experiment inputs, not anatomical, conduction-velocity, or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state, structure, and conduction hashes; device and execution path; full relay-history memory; boundedness; delayed-future rollback/retry; replay; and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
 A reproducible Apple M4 development run of the layered-lesion path is checked into [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). It is a correctness and visual-inspection artifact, not a production performance qualification.
 
@@ -65,7 +66,7 @@ A reproducible Apple M4 development run of the layered-lesion path is checked in
 
 ## Implementation order
 
-The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, lesionable short-range coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement spiking neurons, distance-indexed delay rings, multi-region routing, sensor transduction, NumanX interop, learning, memory, or motor control.
+The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, explicit per-site conduction-delay history, lesionable short-range coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement spiking neurons, calibrated distance or conduction velocity, long-range multi-region axons, sensor transduction, NumanX interop, learning, memory, or motor control.
 
 The next runtime-foundation work is a stable brain-state ABI, multi-rate scheduler, event queue, immutable parameter versions, counter-based randomness, indirect active-region dispatch, nested NumanX transaction interop, and private-heap state storage. Later phases add causal receptors, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
 

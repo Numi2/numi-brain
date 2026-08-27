@@ -4,10 +4,10 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification plus heterogeneous mesoscale tissue vertical slice v0.1
-- Implemented runtime code: deterministic CPU oracle and Metal 4 structured-sheet runtime
+- Current state: specification plus delayed heterogeneous mesoscale tissue vertical slice v0.2
+- Implemented runtime code: deterministic CPU oracle and Metal 4 structured delayed-sheet runtime
 - Build and test system: Swift Package Manager and XCTest
-- Metal kernels: one FP32 Wilson-Cowan-family tissue step with relay and structure field
+- Metal kernels: one FP32 Wilson-Cowan-family tissue step with relay, structure, delay field, and transactional history ring
 - NumanX interop: none
 - Checkpoint or replay artifacts: none
 - GPU performance evidence: bounded local probe only; remote production-size qualification pending
@@ -16,21 +16,26 @@ The architecture document remains a design contract. Only the tissue behavior ow
 
 ## Implemented tissue evidence
 
-The v0.1 slice currently proves:
+The v0.2 slice currently proves:
 
 - finite, bounded resting-state integration;
 - transient activation from a physically timed localized input;
 - short-range recruitment outside the direct input footprint;
 - a finite-time axonal relay that lags local population recruitment;
+- explicit per-site outgoing delay classes sampled from a 32-step FP32 relay-history ring;
+- delayed lateral recruitment relative to an instantaneous-conduction control;
 - deterministic synthetic tissue strata with per-site excitatory, inhibitory, coupling, and viability coefficients;
 - exact silence and blocked outgoing transmission for zero-viability lesion sites;
 - inhibitory/adaptation-driven recovery;
 - bit-exact CPU replay for a fixed acceptance/rejection schedule;
 - bit-exact root abort and rejected-substep retry;
+- identical delayed future state after root abort or rejected-substep retry;
 - Metal 4 execution through `MTL4CommandQueue`, a reusable `MTL4CommandBuffer`, `MTL4ComputeCommandEncoder`, and `MTL4ArgumentTable`;
 - CPU/Metal agreement within an FP32 tolerance.
 
-The current XCTest suite contains 13 passing tests: eight CPU oracle tests and five Metal 4 tests. One parity test advances a layered, circularly lesioned sheet on both implementations and requires both FP32 agreement and exact zero state at every nonviable site.
+The current XCTest suite contains 16 passing tests: ten CPU oracle tests and six Metal 4 tests. The strongest parity test advances a delayed, layered, circularly lesioned sheet on both implementations and requires both FP32 agreement and exact zero state at every nonviable site. Transaction tests advance beyond the configured delay after abort or retry so corrupted hidden history cannot pass through an unchanged immediate grid.
+
+The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, scratch, uniforms, and inspection staging. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
 The checked Apple M4 development probe on 2026-08-27 used commit `77adca9`, a 256×192 layered sheet, a circular zero-viability lesion, and 100 accepted 1 ms substeps. It reported `1.7881393e-07` maximum CPU/Metal error, exact replay, retry and root abort, finite bounded output, state hash `bf5eecda30bfe9d0`, and structure hash `b6e62daa60fd9c99`. The JSON and inspected PNG are in [`evidence/tissue-v0.1`](evidence/tissue-v0.1/README.md). This is implementation evidence, not a calibrated brain-tissue result or production GPU benchmark.
 

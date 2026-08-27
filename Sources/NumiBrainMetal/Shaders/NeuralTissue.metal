@@ -28,10 +28,31 @@ enum TissueUniformIndex : uint {
     TissueStimulusInhibitoryDrive = 24,
     TissueStimulusStartMilliseconds = 25,
     TissueStimulusEndMilliseconds = 26,
+    TissueHistoryStep = 27,
+    TissueHistoryCapacity = 28,
+    TissueHistoryOwnerMask = 29,
+    TissueHistoryWriteSlot = 30,
+    TissueHistoryWritePlane = 31,
 };
 
 inline float tissue_sigmoid(float value) {
     return 1.0f / (1.0f + exp(-value));
+}
+
+inline float tissue_delayed_relay(
+    device const uchar *delaySteps,
+    device const float *relayHistory,
+    uint siteIndex,
+    uint siteCount,
+    uint historyStep,
+    uint historyCapacity,
+    uint historyOwnerMask
+) {
+    const uint delay = uint(delaySteps[siteIndex]);
+    const uint slot = (historyStep + historyCapacity - delay) % historyCapacity;
+    const uint plane = (historyOwnerMask >> slot) & 1u;
+    const uint historyIndex = (plane * historyCapacity + slot) * siteCount + siteIndex;
+    return relayHistory[historyIndex];
 }
 
 kernel void neural_tissue_step(
@@ -39,6 +60,9 @@ kernel void neural_tissue_step(
     device float4 *output [[buffer(1)]],
     constant float *uniforms [[buffer(2)]],
     device const float4 *structure [[buffer(3)]],
+    device const uchar *delaySteps [[buffer(4)]],
+    device float *relayHistory [[buffer(5)]],
+    device float *relayScratch [[buffer(6)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -54,6 +78,10 @@ kernel void neural_tissue_step(
     const uint up = y == 0 ? 0 : y - 1;
     const uint down = min(y + 1, height - 1);
     const uint index = y * width + x;
+    const uint siteCount = width * height;
+    const uint historyStep = uint(uniforms[TissueHistoryStep]);
+    const uint historyCapacity = uint(uniforms[TissueHistoryCapacity]);
+    const uint historyOwnerMask = as_type<uint>(uniforms[TissueHistoryOwnerMask]);
 
     const float4 center = input[index];
     const float4 north = input[up * width + x];
@@ -65,11 +93,47 @@ kernel void neural_tissue_step(
     const float4 southSite = structure[down * width + x];
     const float4 westSite = structure[y * width + left];
     const float4 eastSite = structure[y * width + right];
+    const float northRelay = tissue_delayed_relay(
+        delaySteps,
+        relayHistory,
+        up * width + x,
+        siteCount,
+        historyStep,
+        historyCapacity,
+        historyOwnerMask
+    );
+    const float southRelay = tissue_delayed_relay(
+        delaySteps,
+        relayHistory,
+        down * width + x,
+        siteCount,
+        historyStep,
+        historyCapacity,
+        historyOwnerMask
+    );
+    const float westRelay = tissue_delayed_relay(
+        delaySteps,
+        relayHistory,
+        y * width + left,
+        siteCount,
+        historyStep,
+        historyCapacity,
+        historyOwnerMask
+    );
+    const float eastRelay = tissue_delayed_relay(
+        delaySteps,
+        relayHistory,
+        y * width + right,
+        siteCount,
+        historyStep,
+        historyCapacity,
+        historyOwnerMask
+    );
     const float neighborRelay = 0.25f * (
-        north.w * northSite.z * northSite.w
-        + south.w * southSite.z * southSite.w
-        + west.w * westSite.z * westSite.w
-        + east.w * eastSite.z * eastSite.w
+        northRelay * northSite.z * northSite.w
+        + southRelay * southSite.z * southSite.w
+        + westRelay * westSite.z * westSite.w
+        + eastRelay * eastSite.z * eastSite.w
     );
     const float neighborI = 0.25f * (
         north.y * northSite.z * northSite.w
@@ -140,4 +204,13 @@ kernel void neural_tissue_step(
         1.0f
     );
     output[index] = float4(nextE, nextI, nextA, nextRelay);
+    const uint historyWriteSlot = uint(uniforms[TissueHistoryWriteSlot]);
+    const uint historyWritePlane = uint(uniforms[TissueHistoryWritePlane]);
+    if (historyWritePlane < 2u) {
+        const uint historyWriteIndex =
+            (historyWritePlane * historyCapacity + historyWriteSlot) * siteCount + index;
+        relayHistory[historyWriteIndex] = nextRelay;
+    } else {
+        relayScratch[index] = nextRelay;
+    }
 }
