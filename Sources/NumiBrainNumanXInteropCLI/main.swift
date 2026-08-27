@@ -6,17 +6,19 @@ import NumiBrainMetal
 
 @available(macOS 26.0, *)
 private final class NumanXMyoSimBridge {
-  private typealias CreateFunction = @convention(c) (
-    UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt32,
-    UnsafeMutablePointer<CChar>?, UInt
-  ) -> UnsafeMutableRawPointer?
+  private typealias CreateFunction =
+    @convention(c) (
+      UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt32,
+      UnsafeMutablePointer<CChar>?, UInt
+    ) -> UnsafeMutableRawPointer?
   private typealias DestroyFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
   private typealias StatusFunction = @convention(c) (UnsafeMutableRawPointer?) -> UInt32
   private typealias VoidFunction = @convention(c) (UnsafeMutableRawPointer?) -> Void
-  private typealias CandidateFunction = @convention(c) (
-    UnsafeMutableRawPointer?, UnsafeRawPointer?, UInt64, UInt32, UInt32,
-    UInt32, UInt64, UInt64
-  ) -> UInt32
+  private typealias CandidateFunction =
+    @convention(c) (
+      UnsafeMutableRawPointer?, UnsafeRawPointer?, UInt64, UInt32, UInt32,
+      UInt32, UInt64, UInt64
+    ) -> UInt32
   private typealias UInt64Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt64
   private typealias FloatFunction = @convention(c) (UnsafeMutableRawPointer?) -> Float
 
@@ -267,9 +269,25 @@ private func run() throws {
     committedTimestamp: BrainTimestamp(microseconds: 0),
     targetTimestamp: BrainTimestamp(microseconds: 3)
   )
+  let rejectedFast = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1)
+  let rejectedPacket = try NumanXMotorCandidate(
+    transaction: token,
+    fastSystems: rejectedFast
+  )
+  let rejectedLease = try runtime.borrowNumanXMotorBuffers(for: rejectedFast)
+  let rejectedPhysical = try bridge.runCandidate(
+    lease: rejectedLease,
+    packet: rejectedPacket,
+    durationMicroseconds: 1
+  )
+  bridge.rejectCandidate()
+  try runtime.rejectPhysicsSubstep(rejectedFast.substep)
+
   var physicalFingerprints = [UInt64]()
   var maximumExcitations = [Float]()
   var maximumForces = [Float]()
+  var retrySubstepFingerprint: UInt64 = 0
+  var retryRandomCounterGeneration: UInt64 = 0
   for candidateIndex in 0..<3 {
     let fast = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1)
     let packet = try NumanXMotorCandidate(transaction: token, fastSystems: fast)
@@ -279,6 +297,26 @@ private func run() throws {
       packet: packet,
       durationMicroseconds: 1
     )
+    if candidateIndex == 0 {
+      retrySubstepFingerprint = packet.substepFingerprint
+      retryRandomCounterGeneration = packet.randomCounterGeneration
+      guard packet.substepFingerprint != rejectedPacket.substepFingerprint,
+        packet.randomCounterGeneration == rejectedPacket.randomCounterGeneration,
+        physical.fingerprint == rejectedPhysical.fingerprint,
+        physical.excitation == rejectedPhysical.excitation,
+        physical.force == rejectedPhysical.force
+      else {
+        bridge.rejectCandidate()
+        throw NSError(
+          domain: "NumiBrainNumanXInterop",
+          code: 7,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "rejected physical candidate did not replay from the same causal state"
+          ]
+        )
+      }
+    }
     physicalFingerprints.append(physical.fingerprint)
     maximumExcitations.append(physical.excitation)
     maximumForces.append(physical.force)
@@ -337,6 +375,12 @@ private func run() throws {
     "candidate_physical_fingerprints": physicalFingerprints,
     "candidate_maximum_excitations": maximumExcitations,
     "candidate_maximum_generalized_forces": maximumForces,
+    "rejected_physical_fingerprint": rejectedPhysical.fingerprint,
+    "rejected_substep_fingerprint": rejectedPacket.substepFingerprint,
+    "retry_substep_fingerprint": retrySubstepFingerprint,
+    "rejected_random_counter_generation": rejectedPacket.randomCounterGeneration,
+    "retry_random_counter_generation": retryRandomCounterGeneration,
+    "rejected_candidate_replayed_exactly": true,
     "actual_borrowed_buffer": true,
     "receptor_interrupt": "loss-of-support",
   ]
