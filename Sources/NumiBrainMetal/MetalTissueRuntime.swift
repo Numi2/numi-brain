@@ -143,6 +143,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var pendingRegionalStateIndex: Int?
   private var pendingSchedulerInitialized = false
   private var hasCommittedSchedulerResult = false
+  private var pendingJointTransaction: BrainJointTransaction?
 
   public init(
     initialState: TissueGrid,
@@ -1271,6 +1272,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRootShadowIndex != nil
   }
 
+  public var hasPendingJointTransaction: Bool {
+    pendingJointTransaction != nil
+  }
+
   public var residencyAllocatedBytes: UInt64 {
     residencySet.allocatedSize
   }
@@ -1289,6 +1294,121 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   public var schedulerResultByteCount: Int {
     MemoryLayout<NBSchedulerResult>.stride
+  }
+
+  /// Creates the stable root identity used by a NumanX shadow transaction.
+  /// Physical state remains external and is represented only by acceptance
+  /// tokens returned through `BrainJointTransaction`.
+  public func beginJointControl(
+    controlStepIdentifier: UInt64,
+    basePhysicsGeneration: UInt64,
+    committedTimestamp: BrainTimestamp,
+    targetTimestamp: BrainTimestamp
+  ) throws -> BrainJointTransaction {
+    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil else {
+      throw TissueError.transaction("commit or abort the pending Metal root first")
+    }
+    guard randomContext.environmentIdentifier == schedulerEnvironmentIdentifier else {
+      throw TissueError.transaction(
+        "joint transaction environment does not match the counter-random context"
+      )
+    }
+    if let committedSchedulerTime, committedSchedulerTime != committedTimestamp {
+      throw TissueError.transaction(
+        "joint root time does not match committed Metal scheduler time"
+      )
+    }
+    let token = try BrainJointTransactionToken(
+      environmentIdentifier: schedulerEnvironmentIdentifier,
+      episodeIdentifier: UInt64(randomContext.episodeIdentifier),
+      controlStepIdentifier: controlStepIdentifier,
+      parameterVersionFingerprint: parameterVersion.fingerprint,
+      baseBrainGeneration: committedSchedulerGeneration,
+      basePhysicsGeneration: basePhysicsGeneration,
+      committedTimestamp: committedTimestamp,
+      targetTimestamp: targetTimestamp,
+      randomCounterGeneration: committedStep
+    )
+    return BrainJointTransaction(token: token)
+  }
+
+  /// Encodes a Metal root from the exact accepted/rejected NumanX ledger. The
+  /// bounded tissue slice currently requires every physical attempt to use its
+  /// fixed integration timestep; corrected variable-duration retry is a later
+  /// interop extension.
+  public func runJointRootTransaction(
+    _ transaction: BrainJointTransaction,
+    schedulerEvents: [BrainInterruptEvent] = []
+  ) throws -> Submission {
+    let token = transaction.token
+    guard transaction.status == .open, transaction.activeSubstep == nil else {
+      throw TissueError.transaction("joint transaction is not ready for Metal encoding")
+    }
+    guard !transaction.resolutions.isEmpty,
+      transaction.acceptedSubstepCount > 0,
+      transaction.acceptedTimestamp == token.targetTimestamp,
+      transaction.lastAcceptedPhysicsState != nil
+    else {
+      throw TissueError.transaction("joint transaction has not accepted the root target")
+    }
+    guard token.environmentIdentifier == schedulerEnvironmentIdentifier,
+      token.parameterVersionFingerprint == parameterVersion.fingerprint,
+      token.baseBrainGeneration == committedSchedulerGeneration,
+      token.randomCounterGeneration == committedStep
+    else {
+      throw TissueError.transaction("joint transaction identity is stale for this Metal runtime")
+    }
+    if let committedSchedulerTime {
+      guard token.committedTimestamp == committedSchedulerTime else {
+        throw TissueError.transaction("joint transaction starts from stale committed time")
+      }
+    }
+    let timestep = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    guard transaction.resolutions.allSatisfy({
+      $0.substep.durationMicroseconds == timestep
+    }) else {
+      throw TissueError.transaction(
+        "joint substep duration does not match the fixed Metal tissue timestep"
+      )
+    }
+    let acceptance = transaction.resolutions.map(\.isAccepted)
+    let acceptedCount = acceptance.lazy.filter({ $0 }).count
+    let rejectedCount = acceptance.count - acceptedCount
+    guard acceptedCount == Int(transaction.acceptedSubstepCount),
+      UInt64(rejectedCount) == transaction.rejectedAttemptCount
+    else {
+      throw TissueError.transaction("joint substep ledger counters do not match")
+    }
+    let (duration, durationOverflow) = UInt64(acceptedCount)
+      .multipliedReportingOverflow(by: timestep)
+    let (expectedTarget, targetOverflow) = token.committedTimestamp.rawValue
+      .addingReportingOverflow(duration)
+    guard !durationOverflow, !targetOverflow,
+      expectedTarget == token.targetTimestamp.rawValue
+    else {
+      throw TissueError.transaction("joint accepted duration does not reach the root target")
+    }
+    let startMilliseconds = Float(
+      Double(token.committedTimestamp.rawValue) / 1_000
+    )
+    guard try schedulerTimestamp(milliseconds: startMilliseconds)
+      == token.committedTimestamp
+    else {
+      throw TissueError.transaction("joint root time is not representable by the tissue runtime")
+    }
+    let submission = try runRootTransaction(
+      at: startMilliseconds,
+      acceptedSubsteps: acceptance,
+      schedulerEvents: schedulerEvents
+    )
+    guard pendingSchedulerTargetTime == token.targetTimestamp else {
+      try abortRootTransaction()
+      throw TissueError.transaction("Metal shadow target diverged from the joint token")
+    }
+    pendingJointTransaction = transaction
+    return submission
   }
 
   public func runRootTransaction(
@@ -1587,6 +1707,25 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public func commitRootTransaction() throws {
+    guard pendingJointTransaction == nil else {
+      throw TissueError.transaction(
+        "joint roots require commitJointRootTransaction with the accepted physics token"
+      )
+    }
+    try publishRootTransaction()
+  }
+
+  public func commitJointRootTransaction() throws -> BrainJointCommitToken {
+    guard var transaction = pendingJointTransaction else {
+      throw TissueError.transaction("there is no joint Metal root to commit")
+    }
+    let receipt = try transaction.commit()
+    try publishRootTransaction()
+    pendingJointTransaction = nil
+    return receipt
+  }
+
+  private func publishRootTransaction() throws {
     guard let pendingRootShadowIndex, let pendingRootShadowOwnerMask,
       let pendingRootShadowStep, let pendingSchedulerClockIndex,
       let pendingSchedulerTargetTime, let pendingRegionalStateIndex
@@ -1622,6 +1761,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public func abortRootTransaction() throws {
+    var jointTransaction = pendingJointTransaction
+    try discardRootTransaction()
+    if jointTransaction != nil {
+      try jointTransaction?.abort()
+      pendingJointTransaction = nil
+    }
+  }
+
+  private func discardRootTransaction() throws {
     guard pendingRootShadowIndex != nil else {
       throw TissueError.transaction("there is no Metal root transaction to abort")
     }

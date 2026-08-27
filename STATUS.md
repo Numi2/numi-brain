@@ -4,11 +4,11 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue source slice v0.14, scheduler CPU oracle v0.1, immutable parameter-manifest/publication boundary v0.12, compiled NumanX joint-transaction contract v0.1, versioned cohort-dispatch boundary v0.20 with parallel GPU environment-major invocation compaction plus per-agent routed token, delayed-history, and routing-state generations, and integrated Metal scheduler/regional path v0.8
+- Current state: specification, GPU-compacted tissue source slice v0.14, scheduler CPU oracle v0.1, immutable parameter-manifest/publication boundary v0.12, compiled NumanX joint-transaction contract v0.2 bound to the Metal tissue root, versioned cohort-dispatch boundary v0.20 with parallel GPU environment-major invocation compaction plus per-agent routed token, delayed-history, and routing-state generations, and integrated Metal scheduler/regional path v0.8
 - Implemented runtime code: deterministic scheduler, immutable shared-parameter registry, compiled versioned cohort plans, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with a compiled 64-byte receptor-event ABI, compiled 32/64-byte parameter manifest records, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, private parameter-version validation, transactional module clocks, due-list compaction and consumption, deterministic multi-agent timestamp/module grouping, private region-major dispatch materialization, GPU-generated work expansion and environment-major invocation compaction, independent compact diagnostic plus 10,752-scalar authoritative routed cohort-token, delayed-history, and dynamic routing-state generations, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, GPU-generated indirect work consumption, environment-major invocation compaction, independent compact cohort diagnostic advance, and timestamp-synchronous routed regional-token integration for both one-agent and cohort execution with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
-- NumanX interop: compiled root, nested-substep, accepted-physics, and joint-commit token ABI plus a deterministic Swift coordinator; no live NumanX adapter or Metal-bound atomic commit yet
+- NumanX interop: compiled root, nested-substep, accepted-physics, and joint-commit token ABI plus a deterministic Swift coordinator and Metal-root publication guard; no live NumanX adapter or cross-runtime atomic pointer publication yet
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU performance evidence: bounded Apple M4 Pro v0.20 and Apple M4 v0.19 routed-cohort correctness, Apple M4 v0.14 lightweight indirect-consumption correctness, and Apple M4 Pro/M4 v0.12 and earlier tissue correctness probes only; production throughput and counter qualification remain pending
 
@@ -16,7 +16,7 @@ The architecture document remains a design contract. Only the tissue, scheduler,
 
 ## Joint transaction foundation
 
-The compiled v0.1 handoff contract currently proves:
+The compiled v0.2 handoff contract currently proves:
 
 - standard-layout 96-byte root, 72-byte substep, 64-byte accepted-physics, and 64-byte commit records;
 - field-wise fingerprints that bind environment, episode, control step, immutable parameters, brain and physical generations, physical timestamps, and root random-counter generation;
@@ -24,9 +24,13 @@ The compiled v0.1 handoff contract currently proves:
 - rejected retries that preserve accepted physical time, accepted-substep index, brain shadow generation, and random-counter generation;
 - accepted physical tokens as the only operation that advances physical time and generation in the coordinator;
 - exact-target commit and abort restoration semantics;
-- rejection of stale substeps, wrong physical generations, early commits, oversized candidates, and post-finish mutation.
+- rejection of stale substeps, wrong physical generations, early commits, oversized candidates, and post-finish mutation;
+- an exact ordered resolution ledger for every rejected and accepted physical candidate;
+- Metal-root validation against environment, immutable parameter, committed brain generation, accepted physical time, and random generation;
+- rejection of ledger-count drift, variable-duration attempts in the fixed-step v0.2 path, and stale Metal generations;
+- a joint-only Metal publication path that blocks brain-only commit, returns the final compiled receipt, and aborts without publishing tissue, scheduler, token, route-history, or routing-state generations.
 
-This is a source and deterministic-test claim. The current Metal runtime does not yet consume the token, and NumanX has not yet returned or atomically published one of these physical-state records.
+This is a source and deterministic-test claim. NumanX has not yet returned or atomically published one of these physical-state records, and the Metal path does not yet ingest per-candidate NumanX event packets or corrected retry durations.
 
 ## Scheduler foundation evidence
 

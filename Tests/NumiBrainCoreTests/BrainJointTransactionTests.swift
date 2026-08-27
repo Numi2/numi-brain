@@ -98,6 +98,7 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(transaction.acceptedTimestamp, BrainTimestamp(microseconds: 85_000))
     XCTAssertEqual(transaction.acceptedSubstepCount, 1)
     XCTAssertEqual(transaction.rejectedAttemptCount, 1)
+    XCTAssertEqual(transaction.resolutions.map(\.isAccepted), [false, true])
 
     let second = try transaction.beginPhysicsSubstep(durationMicroseconds: 15_000)
     XCTAssertEqual(second.substepIndex, 1)
@@ -116,6 +117,7 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(commit.physicsGeneration, 102)
     XCTAssertEqual(commit.committedTimestamp, token.targetTimestamp)
     XCTAssertEqual(commit.acceptedPhysicsTokenFingerprint, secondAccepted.fingerprint)
+    XCTAssertEqual(transaction.resolutions.map(\.isAccepted), [false, true, true])
 
     var root = token.abiRecord
     var accepted = secondAccepted.abiRecord
@@ -163,6 +165,7 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(transaction.acceptedTimestamp, token.committedTimestamp)
     XCTAssertEqual(transaction.acceptedSubstepCount, 0)
     XCTAssertEqual(transaction.rejectedAttemptCount, 0)
+    XCTAssertEqual(transaction.resolutions, [])
     XCTAssertEqual(transaction.physicsGeneration, token.basePhysicsGeneration)
     XCTAssertThrowsError(try transaction.beginPhysicsSubstep(durationMicroseconds: 1))
   }

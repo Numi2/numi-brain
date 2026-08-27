@@ -386,6 +386,22 @@ public enum BrainJointTransactionStatus: Equatable, Sendable {
   case aborted
 }
 
+@frozen
+public struct BrainJointSubstepResolution: Equatable, Hashable, Sendable {
+  public let substep: BrainJointSubstepToken
+  public let acceptedPhysicsState: AcceptedPhysicsStateToken?
+
+  public init(
+    substep: BrainJointSubstepToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken?
+  ) {
+    self.substep = substep
+    self.acceptedPhysicsState = acceptedPhysicsState
+  }
+
+  public var isAccepted: Bool { acceptedPhysicsState != nil }
+}
+
 /// Swift-owned orchestration state for one joint root. It never owns NumanX
 /// physical state; acceptance requires a compiled physical-state token.
 public struct BrainJointTransaction: Sendable {
@@ -397,6 +413,7 @@ public struct BrainJointTransaction: Sendable {
   public private(set) var physicsGeneration: UInt64
   public private(set) var activeSubstep: BrainJointSubstepToken?
   public private(set) var lastAcceptedPhysicsState: AcceptedPhysicsStateToken?
+  public private(set) var resolutions: [BrainJointSubstepResolution] = []
 
   private var attemptIndex: UInt32 = 0
 
@@ -441,6 +458,9 @@ public struct BrainJointTransaction: Sendable {
     }
     attemptIndex = nextAttempt
     rejectedAttemptCount = nextRejectedCount
+    resolutions.append(
+      BrainJointSubstepResolution(substep: substep, acceptedPhysicsState: nil)
+    )
     activeSubstep = nil
   }
 
@@ -472,6 +492,12 @@ public struct BrainJointTransaction: Sendable {
     acceptedSubstepCount = nextCount
     physicsGeneration = accepted.physicsGeneration
     lastAcceptedPhysicsState = accepted
+    resolutions.append(
+      BrainJointSubstepResolution(
+        substep: substep,
+        acceptedPhysicsState: accepted
+      )
+    )
     activeSubstep = nil
     attemptIndex = 0
   }
@@ -504,6 +530,7 @@ public struct BrainJointTransaction: Sendable {
     acceptedSubstepCount = 0
     rejectedAttemptCount = 0
     physicsGeneration = token.basePhysicsGeneration
+    resolutions.removeAll(keepingCapacity: true)
     attemptIndex = 0
     status = .aborted
   }

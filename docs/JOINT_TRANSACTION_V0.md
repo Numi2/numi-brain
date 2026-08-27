@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.1
+# NumanX joint transaction contract v0.2
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -56,11 +56,37 @@ remain unchanged. Random sampling must therefore key from the root identity,
 accepted-substep index, module, and sample index rather than the attempt index
 or substep fingerprint.
 
+## Metal root binding
+
+`MetalTissueRuntime.beginJointControl` creates a root token directly from the
+runtime's committed scheduler generation, committed tissue step, immutable
+parameter version, environment, and counter-random episode. The coordinator
+retains an ordered resolution ledger containing every rejected and accepted
+candidate.
+
+`runJointRootTransaction` validates that:
+
+- the root still matches the Metal environment, parameter version, committed
+  brain generation, physical time, and random generation;
+- the ledger counters exactly match its accepted and rejected records;
+- only accepted records advance the target time;
+- every bounded v0.2 attempt uses the fixed tissue integration timestep;
+- the final accepted NumanX token reaches the root target.
+
+The Metal root then encodes the exact ledger. An ordinary brain-only commit is
+disabled while that root is pending. `commitJointRootTransaction` validates the
+final physical token, publishes the tissue, scheduler, token, route-history,
+and routing-state generations, and returns the compiled joint receipt. Root
+abort publishes none of those neural generations and clears the pending joint
+binding.
+
 ## Current boundary
 
-The compiled ABI, validation, fingerprints, Swift value wrappers, and
-transaction state machine are implemented and covered by deterministic tests.
-The current Metal tissue API is not yet bound to these tokens, and there is no
-live NumanX adapter or demonstrated atomic physical/brain pointer publication.
-Those are the next interop steps; this contract alone is not a claim of working
-NumanX coupling.
+The compiled ABI, validation, fingerprints, Swift value wrappers, transaction
+state machine, exact attempt ledger, and bounded Metal-root binding are
+implemented and covered by deterministic CPU and Metal tests. There is no live
+NumanX adapter or demonstrated atomic physical/brain pointer publication yet.
+The current Metal binding re-encodes a resolved fixed-duration ledger; it does
+not yet ingest NumanX fast-event packets interactively between candidate
+substeps or support corrected retry durations. Those are the next interop
+steps, so this boundary is not yet a claim of working NumanX coupling.
