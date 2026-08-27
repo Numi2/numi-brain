@@ -126,14 +126,13 @@ The isolated NumanX receiver revision recorded in
 `evidence/numanx-myosim-interop-v0.1` consumes a private borrowed excitation
 buffer before MyoSim force evaluation and demonstrates an activation, force,
 and articulated-state consequence on Apple M4 Pro. The later
-`evidence/numanx-joint-root-v0.7` artifact executes the actual 416-channel
+`evidence/numanx-joint-root-v0.8` artifact executes the actual 416-channel
 NumiBrain producer and that receiving path in one Apple M4 process, including
 cross-language attachment identity, tendon-to-endpoint-body localization,
 transaction-owned body-load state, endpoint-sharing candidate selection,
-exact private Metal peak-load materialization, overloaded-source inhibition on
-Metal, and exact physical retry. Tendon `215`
+private Metal peak-load persistence and decay, field-lifetime overloaded-source
+inhibition on Metal, and exact physical retry. Tendon `215`
 has zero fixture neural gain and passive force, so this is command-inhibition
 evidence rather than physical load-reduction evidence. It still uses separate
 command queues, staged diagnostics, CPU articulated integration, and sequential root
-publication. The v0.6 source-inhibition through v0.2 selected-muscle controls
-remain.
+publication. The v0.7 private-field through v0.2 selected-muscle controls remain.
