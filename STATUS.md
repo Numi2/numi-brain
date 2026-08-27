@@ -9,10 +9,10 @@
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, and compiled-ABI multi-rate due selection with private transactional clocks
 - NumanX interop: none
-- Checkpoint or replay artifacts: none
+- Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU performance evidence: bounded local probe only; remote production-size qualification pending
 
-The architecture document remains a design contract. Only the tissue and scheduler-oracle behavior owned by the source and tests in this repository is currently live.
+The architecture document remains a design contract. Only the tissue and scheduler behavior owned by the source and tests in this repository is currently live.
 
 ## Scheduler foundation evidence
 
@@ -29,7 +29,7 @@ The scheduler foundation currently proves:
 - checkpoint schedule-fingerprint, clock-count, and committed-time validation;
 - independent per-agent scheduler snapshots with shared immutable module descriptors;
 - deterministic cohort grouping by timestamp, clock class, module, and environment identifier;
-- validated serialization that recomputes and checks the compiled schedule fingerprint.
+- validated serialization that recomputes and checks the compiled schedule fingerprint;
 - C++/Swift/Metal size parity for descriptors, clocks, interrupts, invocations, scheduler uniforms, and result records;
 - one `schedule_due_modules` dispatch per root inside the tissue command encoder;
 - private committed/shadow clock generations and a private compacted due list;
@@ -43,7 +43,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue evidence
 
-The v0.5 slice currently proves:
+The v0.6 slice currently proves:
 
 - finite, bounded resting-state integration;
 - transient activation from a physically timed localized input;
@@ -74,7 +74,7 @@ The XCTest suite contains 31 passing tests: thirteen tissue CPU tests, eight sch
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable event uses three `float4` records, or 48 bytes. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
-The latest checked Apple M4 development probe on 2026-08-27 used commit `df63ce8`, a 256×192 GPU-compacted noisy-event sparse-projection delayed layered sheet, a circular partial-viability lesion, and 70 accepted 1 ms substeps. It issued 70 event-compaction dispatches, used a 260-byte private active-index buffer, and preserved the v0.4 primary state hash `1d4534c321f98fe7`; matched no-noise and alternate-seed controls produced `3db4f53ab3fd8e42` and `73d0eb346080c5de`. All three runs replayed exactly, preserved noisy delayed retry and root abort, and reported `1.1920929e-07` maximum CPU/Metal error. The JSON controls and inspected PNG are in [`evidence/tissue-v0.5`](evidence/tissue-v0.5/README.md). This is implementation evidence, not calibrated receptor or brain-tissue behavior and not a production GPU benchmark.
+The latest checked Apple M4 development probe on 2026-08-27 used commit `7a287c0`, a 256×192 GPU-compacted noisy-event sparse-projection delayed layered sheet, a circular partial-viability lesion, and 70 accepted 1 ms substeps. It issued 70 event-compaction and four same-encoder scheduler dispatches. The eight-module schedule committed to 70,000 microseconds at generation 4 with clock hash `7f0410c814a02d9c`, zero device status, and exact CPU clock parity. The primary tissue hash remained `1d4534c321f98fe7`; matched no-noise and alternate-seed controls produced `3db4f53ab3fd8e42` and `73d0eb346080c5de`. All three runs replayed exactly, preserved delayed retry and root abort, and reported `1.1920929e-07` maximum tissue CPU/Metal error. The JSON controls and inspected PNG are in [`evidence/tissue-v0.6`](evidence/tissue-v0.6/README.md). This is implementation evidence, not calibrated receptor or brain-tissue behavior and not a production GPU benchmark.
 
 An M4 Pro v0 throughput run was not promoted because a new external Metal training workload began between the idle check and dispatch. The current source is synchronized to `/Users/n/numi-brain` on `macmini` after each committed development slice, but uncontended production-size v0.6 qualification remains pending.
 
