@@ -91,7 +91,7 @@ An exact-source 256-environment Apple M4 Pro correctness artifact for v0.20 is i
 
 Physical-time Metal conduction and accepted fast scheduler/regional prefixes have an exact-source 74-test Apple M4 Pro qualification in [evidence/joint-transaction-v0.6](evidence/joint-transaction-v0.6/README.md). The earlier interactive-lifecycle and CPU-oracle qualification remains in [v0.4](evidence/joint-transaction-v0.4/README.md). These are correctness artifacts, not live NumanX coupling or throughput evidence.
 
-Protective command and compiled muscle-profile output have an exact-source 78-test Apple M4 Pro qualification in [evidence/protective-motor-v0.1](evidence/protective-motor-v0.1/README.md). This proves bounded CPU/Metal and transaction parity only; no NumanX body consumed the GPU output.
+Protective command, compiled muscle output, and the transaction-bound NumanX GPU packet have an exact-source 78-test Apple M4 Pro qualification in [evidence/protective-motor-v0.2](evidence/protective-motor-v0.2/README.md). The preceding command/output-only artifact remains in [v0.1](evidence/protective-motor-v0.1/README.md). These prove bounded CPU/Metal and transaction parity only; no NumanX body consumed the GPU output.
 
 ## Foundational invariants
 
