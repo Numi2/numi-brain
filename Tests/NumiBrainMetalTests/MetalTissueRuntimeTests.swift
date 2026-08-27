@@ -144,6 +144,11 @@ final class MetalTissueRuntimeTests: XCTestCase {
       events: Array(schedulerEvents.reversed())
     )
     try cpu.commit(cpuTransaction)
+    var cpuRegionalStates = try CPURegionalModuleOperator.advance(
+      states: schedule.modules.map { _ in RegionalModuleState() },
+      schedule: schedule,
+      invocations: cpuTransaction.invocations
+    )
 
     let initial = try CPUTissueDynamics.makeRestingGrid(
       width: 12,
@@ -166,14 +171,21 @@ final class MetalTissueRuntimeTests: XCTestCase {
     let inspection = try metal.inspectCommittedScheduler()
 
     XCTAssertEqual(submission.schedulerDispatches, 1)
+    XCTAssertEqual(submission.regionalDispatches, 1)
     XCTAssertEqual(submission.schedulerInputEventCount, schedulerEvents.count)
     XCTAssertEqual(metal.schedulerDescriptorByteCount, 8 * 32)
     XCTAssertEqual(metal.schedulerClockByteCount, 8 * 16)
     XCTAssertEqual(metal.schedulerEventCapacityByteCount, 64 * 24)
     XCTAssertEqual(metal.schedulerInvocationCapacityByteCount, 4_096 * 32)
+    XCTAssertEqual(metal.regionalStateByteCount, 8 * 32)
     XCTAssertEqual(inspection.status, 0)
     XCTAssertEqual(inspection.invocations, cpuTransaction.invocations)
     XCTAssertEqual(inspection.snapshot, cpu.snapshot)
+    try assertRegionalStatesEqual(
+      try metal.snapshotCommittedRegionalState(),
+      cpuStates: cpuRegionalStates,
+      schedulerSnapshot: cpu.snapshot
+    )
 
     let secondEvents = [
       try BrainInterruptEvent(
@@ -187,6 +199,11 @@ final class MetalTissueRuntimeTests: XCTestCase {
       events: secondEvents
     )
     try cpu.commit(secondCPUTransaction)
+    cpuRegionalStates = try CPURegionalModuleOperator.advance(
+      states: cpuRegionalStates,
+      schedule: schedule,
+      invocations: secondCPUTransaction.invocations
+    )
     _ = try metal.runRootTransaction(
       at: 20,
       acceptedSubsteps: Array(repeating: true, count: 20),
@@ -197,6 +214,11 @@ final class MetalTissueRuntimeTests: XCTestCase {
 
     XCTAssertEqual(secondInspection.invocations, secondCPUTransaction.invocations)
     XCTAssertEqual(secondInspection.snapshot, cpu.snapshot)
+    try assertRegionalStatesEqual(
+      try metal.snapshotCommittedRegionalState(),
+      cpuStates: cpuRegionalStates,
+      schedulerSnapshot: cpu.snapshot
+    )
   }
 
   func testMetalSchedulerRetryAndAbortAreTransactional() throws {
@@ -242,8 +264,13 @@ final class MetalTissueRuntimeTests: XCTestCase {
       try direct.inspectCommittedScheduler(),
       try retried.inspectCommittedScheduler()
     )
+    XCTAssertEqual(
+      try direct.snapshotCommittedRegionalState(),
+      try retried.snapshotCommittedRegionalState()
+    )
 
     let beforeScheduler = try retried.snapshotCommittedScheduler()
+    let beforeRegional = try retried.snapshotCommittedRegionalState()
     let beforeTissue = try retried.snapshotCommitted()
     let support = try BrainInterruptEvent(
       timestamp: BrainTimestamp(microseconds: 1_500),
@@ -257,6 +284,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     try retried.abortRootTransaction()
     XCTAssertEqual(try retried.snapshotCommittedScheduler(), beforeScheduler)
+    XCTAssertEqual(try retried.snapshotCommittedRegionalState(), beforeRegional)
     XCTAssertEqual(try retried.snapshotCommitted().stableHash(), beforeTissue.stableHash())
 
     for runtime in [direct, retried] {
@@ -274,6 +302,10 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(
       try direct.snapshotCommitted().stableHash(),
       try retried.snapshotCommitted().stableHash()
+    )
+    XCTAssertEqual(
+      try direct.snapshotCommittedRegionalState(),
+      try retried.snapshotCommittedRegionalState()
     )
   }
 
@@ -579,6 +611,14 @@ final class MetalTissueRuntimeTests: XCTestCase {
     let singleHash = try single.snapshotCommitted().stableHash()
     XCTAssertEqual(singleHash, try replay.snapshotCommitted().stableHash())
     XCTAssertEqual(singleHash, try chunked.snapshotCommitted().stableHash())
+    XCTAssertEqual(
+      try single.snapshotCommittedRegionalState().stableHash(),
+      try replay.snapshotCommittedRegionalState().stableHash()
+    )
+    XCTAssertEqual(
+      try single.snapshotCommittedRegionalState().states,
+      try chunked.snapshotCommittedRegionalState().states
+    )
   }
 
   func testMetalRejectsHistoryOverwriteBeforeDispatch() throws {
@@ -617,6 +657,39 @@ final class MetalTissueRuntimeTests: XCTestCase {
       return max(
         result,
         max(abs(difference.x), abs(difference.y), abs(difference.z), abs(difference.w))
+      )
+    }
+  }
+
+  private func assertRegionalStatesEqual(
+    _ metal: RegionalModuleSnapshot,
+    cpuStates: [RegionalModuleState],
+    schedulerSnapshot: BrainSchedulerSnapshot,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws {
+    XCTAssertEqual(
+      metal.scheduleFingerprint,
+      schedulerSnapshot.scheduleFingerprint,
+      file: file,
+      line: line
+    )
+    XCTAssertEqual(metal.committedTime, schedulerSnapshot.committedTime, file: file, line: line)
+    XCTAssertEqual(metal.generation, schedulerSnapshot.generation, file: file, line: line)
+    XCTAssertEqual(metal.states.count, cpuStates.count, file: file, line: line)
+    for (gpu, cpu) in zip(metal.states, cpuStates) {
+      XCTAssertEqual(gpu.updateCount, cpu.updateCount, file: file, line: line)
+      XCTAssertEqual(gpu.interruptCount, cpu.interruptCount, file: file, line: line)
+      XCTAssertEqual(gpu.lastUpdate, cpu.lastUpdate, file: file, line: line)
+      XCTAssertEqual(gpu.phase, cpu.phase, accuracy: 1e-6, file: file, line: line)
+      XCTAssertEqual(gpu.activation, cpu.activation, accuracy: 2e-6, file: file, line: line)
+      XCTAssertEqual(gpu.integration, cpu.integration, accuracy: 2e-6, file: file, line: line)
+      XCTAssertEqual(
+        gpu.interruptSalience,
+        cpu.interruptSalience,
+        accuracy: 2e-6,
+        file: file,
+        line: line
       )
     }
   }

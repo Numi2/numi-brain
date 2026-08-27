@@ -215,12 +215,23 @@ struct NBSchedulerResultABI {
     ulong target_time_microseconds;
 };
 
+struct NBRegionalModuleStateABI {
+    float activation;
+    float integration;
+    float interrupt_salience;
+    float phase;
+    uint update_count;
+    uint interrupt_count;
+    ulong last_update_microseconds;
+};
+
 static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
 static_assert(sizeof(NBModuleClockStateABI) == 16, "module clock ABI drift");
 static_assert(sizeof(NBInterruptEventABI) == 24, "interrupt event ABI drift");
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 40, "scheduler uniform ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
+static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
 
 constant uint NBSchedulerFlagInitialize = 1u << 0;
 constant uint NBSchedulerReasonPeriodic = 1u << 0;
@@ -364,6 +375,76 @@ kernel void schedule_due_modules(
     }
 
     result->invocation_count = invocationCount;
+}
+
+/// First executable regional population-state primitive. One lane owns one
+/// logical module and consumes its canonical due invocations in timestamp order.
+kernel void advance_due_module_states(
+    device const NBModuleDescriptorABI *modules [[buffer(0)]],
+    device const NBSchedulerResultABI *schedulerResult [[buffer(1)]],
+    device const NBDueInvocationABI *invocations [[buffer(2)]],
+    device const NBRegionalModuleStateABI *inputStates [[buffer(3)]],
+    device NBRegionalModuleStateABI *outputStates [[buffer(4)]],
+    uint moduleIndex [[thread_position_in_grid]]
+) {
+    NBRegionalModuleStateABI state = inputStates[moduleIndex];
+    if (schedulerResult->status != NBSchedulerStatusValid) {
+        outputStates[moduleIndex] = state;
+        return;
+    }
+
+    const NBModuleDescriptorABI module = modules[moduleIndex];
+    const ulong neverUpdated = ~0ul;
+    for (uint invocationIndex = 0u;
+         invocationIndex < schedulerResult->invocation_count;
+         ++invocationIndex) {
+        const NBDueInvocationABI invocation = invocations[invocationIndex];
+        if (invocation.module_id != module.module_id) {
+            continue;
+        }
+        const ulong elapsedMicroseconds = state.last_update_microseconds == neverUpdated
+            ? ulong(module.period_microseconds)
+            : invocation.timestamp_microseconds - state.last_update_microseconds;
+        const float decay = exp(
+            -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
+        );
+        const float blend = 1.0f - decay;
+        const float periodicDrive = (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u
+            ? 0.25f
+            : 0.0f;
+        const float interruptDrive = min(
+            float(popcount(invocation.interrupt_mask)) * 0.125f,
+            1.0f
+        );
+        const float target = min(periodicDrive + interruptDrive, 1.0f);
+        state.activation = clamp(
+            decay * state.activation + blend * target,
+            0.0f,
+            1.0f
+        );
+        state.integration = clamp(
+            decay * state.integration + blend * state.activation,
+            0.0f,
+            1.0f
+        );
+        state.interrupt_salience = clamp(
+            decay * state.interrupt_salience + blend * interruptDrive,
+            0.0f,
+            1.0f
+        );
+        state.phase = float(
+            invocation.timestamp_microseconds % ulong(module.period_microseconds)
+        ) / float(module.period_microseconds);
+        if (state.update_count != ~0u) {
+            state.update_count += 1u;
+        }
+        if ((invocation.reason_flags & NBSchedulerReasonInterrupt) != 0u
+            && state.interrupt_count != ~0u) {
+            state.interrupt_count += 1u;
+        }
+        state.last_update_microseconds = invocation.timestamp_microseconds;
+    }
+    outputStates[moduleIndex] = state;
 }
 
 kernel void neural_tissue_step(

@@ -4,10 +4,10 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue slice v0.6, scheduler CPU oracle v0.1, and integrated Metal scheduler v0.2
-- Implemented runtime code: deterministic scheduler and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with transactional module clocks, due-list compaction, timestamped receptor events, counter randomness, and a destination-major CSR graph
+- Current state: specification, GPU-compacted tissue slice v0.7, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.3
+- Implemented runtime code: deterministic scheduler, regional-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with transactional module clocks, due-list compaction and consumption, compact regional population traces, timestamped receptor events, counter randomness, and a destination-major CSR graph
 - Build and test system: Swift Package Manager and XCTest
-- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, and compiled-ABI multi-rate due selection with private transactional clocks
+- Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, compiled-ABI multi-rate due selection, and schedule-driven regional-state integration with private transactional generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU performance evidence: bounded local probe only; remote production-size qualification pending
@@ -35,15 +35,19 @@ The scheduler foundation currently proves:
 - private committed/shadow clock generations and a private compacted due list;
 - exact CPU/Metal parity for periodic boundaries and fractional-time pain/support interrupts;
 - joint tissue-scheduler retry, abort, commit, and replay behavior;
-- no per-root scheduler readback, with explicit staging only after completion.
+- no per-root scheduler readback, with explicit staging only after completion;
+- an eight-lane `advance_due_module_states` dispatch that consumes the private canonical due list;
+- compact 32-byte module traces with activation, integration, interrupt salience, phase, counters, and last-update time;
+- CPU/Metal regional-state numerical parity plus exact discrete counters and timestamps;
+- regional state replay, retry, abort, and control-interval chunking equivalence.
 
-The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded one-agent Metal kernel now share the compiled ABI and deterministic semantics. GPU cohort prefix sums, indirect regional execution, delay-line delivery, adaptive periods, and the complete 96-module graph remain unimplemented.
+The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded one-agent Metal kernels now share the compiled ABI and deterministic semantics. The regional trace is a compact owning execution primitive, not the final trainable token operator. GPU cohort prefix sums, indirect execution, routed inputs, delay-line delivery, adaptive periods, and the complete 96-module graph remain unimplemented.
 
 The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advanced four independent scheduler states through 200 ms in ten root transactions. It emitted 3,064 invocations, compacted them into 772 canonical groups, and delivered eight module interrupts from three fractional-time source events with zero timestamp latency. Replay, retry, abort, independent-state, and canonical-order checks passed. The exact JSON is in [`evidence/scheduler-v0.1`](evidence/scheduler-v0.1/README.md). This is CPU semantic evidence, not GPU scheduler or throughput qualification.
 
 ## Implemented tissue evidence
 
-The v0.6 slice currently proves:
+The v0.7 slice currently proves:
 
 - finite, bounded resting-state integration;
 - transient activation from a physically timed localized input;
@@ -70,13 +74,13 @@ The v0.6 slice currently proves:
 - tissue-site event work restricted to compacted due indices rather than the full immutable schedule;
 - CPU/Metal agreement within an FP32 tolerance.
 
-The XCTest suite contains 31 passing tests: thirteen tissue CPU tests, eight scheduler CPU tests, and ten Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence and seed-dependent trajectories. Metal scheduler tests require exact CPU invocation parity plus joint retry and abort equivalence.
+The XCTest suite contains 32 passing tests: thirteen tissue CPU tests, nine scheduler/regional CPU tests, and ten Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence and seed-dependent trajectories. Metal tests require exact scheduler invocation parity, regional CPU numerical parity, and joint retry, abort, replay, and chunking equivalence.
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable event uses three `float4` records, or 48 bytes. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
 The latest checked Apple M4 development probe on 2026-08-27 used commit `7a287c0`, a 256×192 GPU-compacted noisy-event sparse-projection delayed layered sheet, a circular partial-viability lesion, and 70 accepted 1 ms substeps. It issued 70 event-compaction and four same-encoder scheduler dispatches. The eight-module schedule committed to 70,000 microseconds at generation 4 with clock hash `7f0410c814a02d9c`, zero device status, and exact CPU clock parity. The primary tissue hash remained `1d4534c321f98fe7`; matched no-noise and alternate-seed controls produced `3db4f53ab3fd8e42` and `73d0eb346080c5de`. All three runs replayed exactly, preserved delayed retry and root abort, and reported `1.1920929e-07` maximum tissue CPU/Metal error. The JSON controls and inspected PNG are in [`evidence/tissue-v0.6`](evidence/tissue-v0.6/README.md). This is implementation evidence, not calibrated receptor or brain-tissue behavior and not a production GPU benchmark.
 
-An M4 Pro v0 throughput run was not promoted because a new external Metal training workload began between the idle check and dispatch. The current source is synchronized to `/Users/n/numi-brain` on `macmini` after each committed development slice, but uncontended production-size v0.6 qualification remains pending.
+An M4 Pro v0 throughput run was not promoted because a new external Metal training workload began between the idle check and dispatch. The current source is synchronized to `/Users/n/numi-brain` on `macmini` after each committed development slice, but uncontended production-size v0.7 qualification remains pending.
 
 ## Local Numi Lab readiness snapshot
 

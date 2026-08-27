@@ -16,6 +16,7 @@ enum {
   NB_DUE_INVOCATION_BYTE_COUNT = 32,
   NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 40,
   NB_SCHEDULER_RESULT_BYTE_COUNT = 16,
+  NB_REGIONAL_MODULE_STATE_BYTE_COUNT = 32,
 };
 
 typedef struct NBModuleDescriptor {
@@ -69,6 +70,16 @@ typedef struct NBSchedulerResult {
   uint64_t target_time_microseconds;
 } NBSchedulerResult;
 
+typedef struct NBRegionalModuleState {
+  float activation;
+  float integration;
+  float interrupt_salience;
+  float phase;
+  uint32_t update_count;
+  uint32_t interrupt_count;
+  uint64_t last_update_microseconds;
+} NBRegionalModuleState;
+
 typedef enum NBSchedulerStatus {
   NB_SCHEDULER_STATUS_VALID = 0,
   NB_SCHEDULER_STATUS_INVOCATION_CAPACITY = 1,
@@ -91,6 +102,7 @@ size_t nb_brain_abi_interrupt_event_size(void);
 size_t nb_brain_abi_due_invocation_size(void);
 size_t nb_brain_abi_scheduler_uniforms_size(void);
 size_t nb_brain_abi_scheduler_result_size(void);
+size_t nb_brain_abi_regional_module_state_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);

@@ -286,6 +286,7 @@ private struct TimingEvidence: Codable {
   let rootTransactions: Int
   let gpuEventCompactionDispatches: Int?
   let gpuSchedulerDispatches: Int?
+  let gpuRegionalDispatches: Int?
   let cellUpdatesPerSecond: Double
   let gpuCellUpdatesPerSecond: Double?
 }
@@ -361,6 +362,19 @@ private struct SchedulerEvidence: Codable {
   let interpretation: String
 }
 
+private struct RegionalExecutionEvidence: Codable {
+  let stateGenerationCount: Int
+  let stateBytes: Int
+  let finalSnapshotHash: String
+  let totalUpdateCount: UInt64
+  let totalInterruptCount: UInt64
+  let cpuReferenceMaximumAbsoluteError: Float
+  let cpuReferenceTolerance: Float
+  let cpuReferencePassed: Bool
+  let execution: String
+  let interpretation: String
+}
+
 private struct RandomEvidence: Codable {
   let generator: String
   let context: TissueRandomContext
@@ -399,6 +413,7 @@ private struct SimulationEvidence: Codable {
   let connectome: ConnectomeEvidence
   let events: EventEvidence
   let scheduler: SchedulerEvidence?
+  let regionalExecution: RegionalExecutionEvidence?
   let random: RandomEvidence
   let timestepMilliseconds: Float
   let acceptedDurationMilliseconds: Float
@@ -522,7 +537,9 @@ private struct NumiBrainTissueCommand {
         residencyAllocatedBytes: UInt64?,
         eventCompactionDispatches: Int?,
         schedulerDispatches: Int?,
-        scheduler: SchedulerEvidence?
+        regionalDispatches: Int?,
+        scheduler: SchedulerEvidence?,
+        regionalExecution: RegionalExecutionEvidence?
       )
     switch options.backend {
     case .cpu:
@@ -594,6 +611,7 @@ private struct NumiBrainTissueCommand {
     if options.verifyReplay {
       let replay: TissueGrid
       var replaySchedulerHash: String?
+      var replayRegionalHash: String?
       switch options.backend {
       case .cpu:
         replay = try runCPU(
@@ -626,10 +644,12 @@ private struct NumiBrainTissueCommand {
         )
         replay = metalReplay.state
         replaySchedulerHash = metalReplay.scheduler?.finalSnapshotHash
+        replayRegionalHash = metalReplay.regionalExecution?.finalSnapshotHash
       }
       replayExact =
         replay.stableHash() == result.state.stableHash()
         && replaySchedulerHash == result.scheduler?.finalSnapshotHash
+        && replayRegionalHash == result.regionalExecution?.finalSnapshotHash
     } else {
       replayExact = nil
     }
@@ -644,13 +664,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v6",
+      schema: "numibrain.tissue-simulation-evidence.v7",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional Metal multi-rate scheduling, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, compact regional population traces, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -702,6 +722,7 @@ private struct NumiBrainTissueCommand {
           "receptor-derived neural input schedule; not raw or privileged simulator state"
       ),
       scheduler: result.scheduler,
+      regionalExecution: result.regionalExecution,
       random: RandomEvidence(
         generator: "NumiBrain counter hash v1 with upper-24-bit FP32 uniform samples",
         context: randomContext,
@@ -720,6 +741,7 @@ private struct NumiBrainTissueCommand {
         rootTransactions: result.rootTransactions,
         gpuEventCompactionDispatches: result.eventCompactionDispatches,
         gpuSchedulerDispatches: result.schedulerDispatches,
+        gpuRegionalDispatches: result.regionalDispatches,
         cellUpdatesPerSecond: wallSeconds > 0 ? cellUpdates / wallSeconds : 0,
         gpuCellUpdatesPerSecond: result.gpuSeconds.flatMap {
           $0 > 0 ? cellUpdates / $0 : nil
@@ -749,7 +771,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU tissue state, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
+          ? "private GPU tissue and regional state, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -763,7 +785,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> device barrier -> schedule_due_modules -> atomic host generation publication"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> advance_due_module_states -> atomic host generation publication"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -787,7 +809,9 @@ private struct NumiBrainTissueCommand {
     residencyAllocatedBytes: UInt64?,
     eventCompactionDispatches: Int?,
     schedulerDispatches: Int?,
-    scheduler: SchedulerEvidence?
+    regionalDispatches: Int?,
+    scheduler: SchedulerEvidence?,
+    regionalExecution: RegionalExecutionEvidence?
   ) {
     var runtime = try CPUTissueRuntime(
       initialState: initialState,
@@ -810,7 +834,7 @@ private struct NumiBrainTissueCommand {
       completed += count
       rootTransactions += 1
     }
-    return (runtime.committed, "CPU reference", nil, rootTransactions, nil, nil, nil, nil)
+    return (runtime.committed, "CPU reference", nil, rootTransactions, nil, nil, nil, nil, nil, nil)
   }
 
   @available(macOS 26.0, *)
@@ -833,7 +857,9 @@ private struct NumiBrainTissueCommand {
     residencyAllocatedBytes: UInt64?,
     eventCompactionDispatches: Int?,
     schedulerDispatches: Int?,
-    scheduler: SchedulerEvidence?
+    regionalDispatches: Int?,
+    scheduler: SchedulerEvidence?,
+    regionalExecution: RegionalExecutionEvidence?
   ) {
     let runtime = try MetalTissueRuntime(
       initialState: initialState,
@@ -851,6 +877,7 @@ private struct NumiBrainTissueCommand {
     var gpuSeconds = 0.0
     var eventCompactionDispatches = 0
     var schedulerDispatches = 0
+    var regionalDispatches = 0
     while completed < totalSubsteps {
       let count = min(substepsPerControl, totalSubsteps - completed)
       let submission = try runtime.runRootTransaction(
@@ -861,11 +888,14 @@ private struct NumiBrainTissueCommand {
       gpuSeconds += submission.gpuDurationSeconds
       eventCompactionDispatches += submission.eventCompactionDispatches
       schedulerDispatches += submission.schedulerDispatches
+      regionalDispatches += submission.regionalDispatches
       completed += count
       rootTransactions += 1
     }
     let schedulerInspection = try runtime.inspectCommittedScheduler()
+    let regionalInspection = try runtime.snapshotCommittedRegionalState()
     var schedulerOracle = CPUMultiRateScheduler(schedule: runtime.brainSchedule)
+    var regionalOracleStates = runtime.brainSchedule.modules.map { _ in RegionalModuleState() }
     var schedulerOracleCompleted = 0
     let schedulerTimestepMicroseconds = UInt64(
       (parameters.timestepMilliseconds * 1_000).rounded()
@@ -876,11 +906,16 @@ private struct NumiBrainTissueCommand {
         totalSubsteps - schedulerOracleCompleted
       )
       schedulerOracleCompleted += count
-      _ = try schedulerOracle.advance(
+      let invocations = try schedulerOracle.advance(
         to: BrainTimestamp(
           microseconds: UInt64(schedulerOracleCompleted)
             * schedulerTimestepMicroseconds
         )
+      )
+      regionalOracleStates = try CPURegionalModuleOperator.advance(
+        states: regionalOracleStates,
+        schedule: runtime.brainSchedule,
+        invocations: invocations
       )
     }
     let schedulerEvidence = SchedulerEvidence(
@@ -905,7 +940,38 @@ private struct NumiBrainTissueCommand {
       execution:
         "one Metal schedule_due_modules dispatch per root on the tissue command encoder; private shadow clocks publish only with tissue commit",
       interpretation:
-        "eight-module runtime-foundation schedule; due selection is live, regional module operators are not yet dispatched"
+        "eight-module runtime-foundation schedule feeding the live compact regional-state operator"
+    )
+    let regionalError = maximumRegionalDifference(
+      regionalInspection.states,
+      regionalOracleStates
+    )
+    let regionalTolerance: Float = 2e-6
+    let regionalDiscreteExact = zip(
+      regionalInspection.states,
+      regionalOracleStates
+    ).allSatisfy { gpu, cpu in
+      gpu.updateCount == cpu.updateCount
+        && gpu.interruptCount == cpu.interruptCount
+        && gpu.lastUpdate == cpu.lastUpdate
+    }
+    let regionalEvidence = RegionalExecutionEvidence(
+      stateGenerationCount: 2,
+      stateBytes: runtime.regionalStateByteCount * 2,
+      finalSnapshotHash: regionalInspection.stableHash(),
+      totalUpdateCount: regionalInspection.states.reduce(0) {
+        $0 + UInt64($1.updateCount)
+      },
+      totalInterruptCount: regionalInspection.states.reduce(0) {
+        $0 + UInt64($1.interruptCount)
+      },
+      cpuReferenceMaximumAbsoluteError: regionalError,
+      cpuReferenceTolerance: regionalTolerance,
+      cpuReferencePassed: regionalDiscreteExact && regionalError <= regionalTolerance,
+      execution:
+        "one advance_due_module_states dispatch per root consumes the private due list and writes a private shadow state generation",
+      interpretation:
+        "deterministic population traces for eight logical modules; not the final trainable regional token operator"
     )
     return (
       try runtime.snapshotCommitted(),
@@ -915,7 +981,9 @@ private struct NumiBrainTissueCommand {
       runtime.residencyAllocatedBytes,
       eventCompactionDispatches,
       schedulerDispatches,
-      schedulerEvidence
+      regionalDispatches,
+      schedulerEvidence,
+      regionalEvidence
     )
   }
 
@@ -1075,11 +1143,15 @@ private struct NumiBrainTissueCommand {
         try direct.snapshotCommitted().stableHash()
           == retried.snapshotCommitted().stableHash()
           && (try direct.snapshotCommittedScheduler())
-            == (try retried.snapshotCommittedScheduler()),
+            == (try retried.snapshotCommittedScheduler())
+          && (try direct.snapshotCommittedRegionalState())
+            == (try retried.snapshotCommittedRegionalState()),
         try aborted.snapshotCommitted().stableHash()
           == abortBaseline.snapshotCommitted().stableHash()
           && (try aborted.snapshotCommittedScheduler())
             == (try abortBaseline.snapshotCommittedScheduler())
+          && (try aborted.snapshotCommittedRegionalState())
+            == (try abortBaseline.snapshotCommittedRegionalState())
       )
     }
   }
@@ -1090,6 +1162,27 @@ private struct NumiBrainTissueCommand {
       return max(
         result,
         max(abs(difference.x), abs(difference.y), abs(difference.z), abs(difference.w))
+      )
+    }
+  }
+
+  private static func maximumRegionalDifference(
+    _ lhs: [RegionalModuleState],
+    _ rhs: [RegionalModuleState]
+  ) -> Float {
+    zip(lhs, rhs).reduce(0) { result, pair in
+      max(
+        result,
+        max(
+          abs(pair.0.activation - pair.1.activation),
+          max(
+            abs(pair.0.integration - pair.1.integration),
+            max(
+              abs(pair.0.interruptSalience - pair.1.interruptSalience),
+              abs(pair.0.phase - pair.1.phase)
+            )
+          )
+        )
       )
     }
   }

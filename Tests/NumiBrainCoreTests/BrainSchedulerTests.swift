@@ -12,6 +12,7 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_due_invocation_size(), 32)
     XCTAssertEqual(nb_brain_abi_scheduler_uniforms_size(), 40)
     XCTAssertEqual(nb_brain_abi_scheduler_result_size(), 16)
+    XCTAssertEqual(nb_brain_abi_regional_module_state_size(), 32)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_module_id(), 0)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_interrupt_mask(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_flags(), 28)
@@ -121,6 +122,63 @@ final class BrainSchedulerTests: XCTestCase {
     )
     XCTAssertEqual(coincident.reasons, [.periodic, .interrupt])
     XCTAssertEqual(coincident.interruptMask, .impact)
+  }
+
+  func testRegionalModuleOperatorConsumesCanonicalDueInvocations() throws {
+    let schedule = try makeSchedule()
+    var scheduler = CPUMultiRateScheduler(schedule: schedule)
+    let pain = try BrainInterruptEvent(
+      timestamp: time(3_500),
+      mask: .pain,
+      identifier: 8
+    )
+    let impact = try BrainInterruptEvent(
+      timestamp: time(4_000),
+      mask: .impact,
+      identifier: 9
+    )
+    let invocations = try scheduler.advance(to: time(4_000), events: [impact, pain])
+    let initial = schedule.modules.map { _ in RegionalModuleState() }
+    let first = try CPURegionalModuleOperator.advance(
+      states: initial,
+      schedule: schedule,
+      invocations: invocations
+    )
+    let replay = try CPURegionalModuleOperator.advance(
+      states: initial,
+      schedule: schedule,
+      invocations: invocations
+    )
+
+    XCTAssertEqual(first, replay)
+    XCTAssertEqual(first.count, schedule.modules.count)
+    let emergencyIndex = try XCTUnwrap(
+      schedule.modules.firstIndex { $0.moduleIdentifier == 12 }
+    )
+    XCTAssertEqual(first[emergencyIndex].updateCount, 6)
+    XCTAssertEqual(first[emergencyIndex].interruptCount, 2)
+    XCTAssertEqual(first[emergencyIndex].lastUpdate, time(4_000))
+    XCTAssertEqual(first[emergencyIndex].phase, 0)
+    XCTAssertGreaterThan(first[emergencyIndex].activation, 0)
+    XCTAssertGreaterThan(first[emergencyIndex].interruptSalience, 0)
+    XCTAssertEqual(
+      RegionalModuleState(abiRecord: first[emergencyIndex].abiRecord),
+      first[emergencyIndex]
+    )
+
+    let snapshot = RegionalModuleSnapshot(
+      scheduleFingerprint: schedule.fingerprint,
+      committedTime: scheduler.snapshot.committedTime,
+      generation: scheduler.snapshot.generation,
+      states: first
+    )
+    let initialSnapshot = RegionalModuleSnapshot(
+      scheduleFingerprint: schedule.fingerprint,
+      committedTime: time(0),
+      generation: 0,
+      states: initial
+    )
+    XCTAssertNotEqual(snapshot.stableHash(), initialSnapshot.stableHash())
   }
 
   func testAbortAndRetryPreserveSchedulerHistoryExactly() throws {

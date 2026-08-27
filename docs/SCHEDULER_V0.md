@@ -1,12 +1,13 @@
-# Multi-rate scheduler and module ABI v0.2
+# Multi-rate scheduler and module ABI v0.3
 
-This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, and Metal due-selection kernel for physical-time module scheduling. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
+This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and compact schedule-driven regional-state operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
 ## Ownership boundary
 
 - `NumiBrainABI` C++ owns fixed record sizes, offsets, validation, and descriptor fingerprints.
 - `NumiBrainCore` Swift owns the deterministic CPU oracle, typed configuration, checkpoint validation, and evidence orchestration.
 - Metal owns due-time advancement, event interruption, invocation compaction, and private shadow clocks in the normal tissue execution path.
+- Metal consumes the resulting private due list through a compact regional population-state kernel.
 - Swift publishes clock-generation ownership only after the shared tissue-scheduler GPU submission completes successfully.
 
 This separation prevents Swift object layout or synthesized serialization from becoming an accidental runtime ABI.
@@ -23,6 +24,7 @@ ABI version 1 compiles the following standard-layout records:
 | `NBDueInvocation` | 32 | Compacted environment/module execution request |
 | `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
+| `NBRegionalModuleState` | 32 | Compact population trace, counters, phase, and last-update time |
 
 The module descriptor layout is:
 
@@ -70,7 +72,7 @@ Interrupt events carry a physical timestamp and a bit mask. An event immediately
 
 If a module is both periodically due and interrupted at the same timestamp, the oracle emits one invocation with both reasons. Multiple matching events at the same module and timestamp merge their masks. Interrupts do not reset the periodic clock.
 
-Events earlier than committed scheduler time or later than the current transaction target are rejected. The v0.2 Metal path consumes a bounded committed input view from shared unified memory. Dynamic NumanX-owned GPU event queues will later replace that upload view and retain future packets; neither the CPU nor Metal path silently accepts and drops one.
+Events earlier than committed scheduler time or later than the current transaction target are rejected. The v0.3 Metal path consumes a bounded committed input view from shared unified memory. Dynamic NumanX-owned GPU event queues will later replace that upload view and retain future packets; neither the CPU nor Metal path silently accepts and drops one.
 
 ## Transactions and checkpointing
 
@@ -89,7 +91,15 @@ A checkpoint restore validates schedule identity, clock count, next-due time, an
 
 The integrated Metal path uses two private clock generations. `schedule_due_modules` reads the committed generation and overwrites the other generation after the accepted tissue candidate sequence on the same compute encoder. A root commit swaps tissue and scheduler generation ownership together. Abort leaves the committed clock pointer, time, and generation unchanged. Rejected physical attempts affect the accepted target time only when simulated time actually advances.
 
-The compacted due-invocation buffer and result header remain private. Explicit inspection stages them only after command completion; the control loop performs no invocation-count readback. Regional neural operators do not consume this list yet.
+The compacted due-invocation buffer and result header remain private. Explicit inspection stages them only after command completion; the control loop performs no invocation-count readback.
+
+## Compact regional execution
+
+After a device barrier, `advance_due_module_states` assigns one Metal lane to each logical module. Each lane scans the canonical private due list, selects its own invocations, and updates a compact 32-byte state containing activation, integrated activation, interrupt salience, within-period phase, update counters, and last-update physical time. The update uses the module descriptor's intrinsic timescale and the invocation's periodic and interrupt fields.
+
+Two private regional-state generations track the scheduler clock generations. Commit publishes the tissue state, scheduler clocks, and regional state together; abort publishes none of them. The operator has a deterministic CPU numerical oracle and performs no hot-path readback.
+
+This trace is the first owning schedule-driven regional computation primitive. It proves that the due list is live input rather than inspection-only output. It is not the final trainable recurrent token state `H_r`, sparse routed input sum, fast-plastic basis, or indirect cohort dispatch.
 
 ## Cohort compaction oracle
 
@@ -117,7 +127,7 @@ The first executable schedule activates eight logical roles:
 | 90 | locomotor CPG | 2 ms |
 | 95 | reflex interneuron network | 1 ms |
 
-These are scheduling roles only. They do not yet execute their regional neural operators.
+These names define scheduling roles. Every role currently executes the common compact population trace, not its final role-specific neural operator.
 
 ## Evidence gates
 
@@ -136,5 +146,10 @@ These are scheduling roles only. They do not yet execute their regional neural o
 13. One scheduler dispatch runs on the same encoder after each accepted tissue root sequence.
 14. Rejected retry and root abort preserve private scheduler clocks together with tissue history.
 15. Schema-v6 inspection reports zero device status, exact CPU scheduler parity, committed time, generation, memory capacity, and snapshot hash without per-root readback.
+16. C++, Swift, and Metal agree on the 32-byte regional-state ABI.
+17. Every accepted root dispatches one regional kernel after due selection on the same encoder.
+18. Regional floating state matches the CPU oracle within FP32 tolerance; counters and timestamps match exactly.
+19. Regional state is bit-exact across replay and rejected retry, unchanged by abort, and state-equivalent across control chunking.
+20. Schema-v7 records regional dispatches, state bytes, update totals, snapshot hash, and CPU parity.
 
-Passing these gates establishes Metal residence for bounded one-agent due selection and the shared transaction boundary. It does not establish regional module execution, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection, compact regional execution, and the shared transaction boundary. It does not establish the final trainable regional token operator, routed inter-region messages, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
