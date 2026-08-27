@@ -1,0 +1,183 @@
+{
+  "acceptedDurationMilliseconds" : 70,
+  "backend" : "metal",
+  "conduction" : {
+    "hash" : "5143e3cd88b1312a",
+    "historyCapacity" : 32,
+    "interpretation" : "synthetic outgoing delay classes; not calibrated conduction velocity",
+    "maximumDelayMilliseconds" : 4,
+    "maximumDelaySteps" : 4,
+    "profile" : "layered"
+  },
+  "connectome" : {
+    "edgeCount" : 4176,
+    "hash" : "b2b475f34837ab8a",
+    "interpretation" : "synthetic destination-major sparse projection graph; not an anatomical connectome",
+    "maximumDelaySteps" : 12,
+    "maximumIncomingProjectionCount" : 1,
+    "profile" : "bilateral"
+  },
+  "controlIntervalMilliseconds" : 20,
+  "device" : "Apple M4",
+  "events" : {
+    "count" : 1,
+    "execution" : "GPU compact_receptor_events dispatch per attempted substep, followed by active-only tissue scan",
+    "flags" : 0,
+    "hash" : "2e903e4c2c0f3def",
+    "interpretation" : "receptor-derived neural input schedule; not raw or privileged simulator state",
+    "maximumScheduleCount" : 64,
+    "maximumSimultaneouslyActiveCount" : 1,
+    "packedBytes" : 48,
+    "stimulusNoiseAmplitude" : 0.35
+  },
+  "executionPath" : "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> advance_due_module_states -> atomic host generation publication",
+  "grid" : {
+    "cells" : 49152,
+    "height" : 192,
+    "width" : 256
+  },
+  "memory" : {
+    "activeEventIndexBytes" : 260,
+    "bytesPerCell" : 16,
+    "delayFieldBytes" : 49152,
+    "eventScheduleBytes" : 48,
+    "projectionEdgeBytes" : 66816,
+    "projectionOffsetBytes" : 196612,
+    "relayHistoryBytes" : 12582912,
+    "relayHistoryPlaneCount" : 2,
+    "relayTransactionBytes" : 196608,
+    "residencyAllocatedBytes" : 17448960,
+    "stateGenerationBytes" : 2359296,
+    "stateGenerationCount" : 3,
+    "storageMode" : "private GPU tissue and regional state, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging",
+    "structureBytes" : 786432,
+    "uniformArenaBytes" : 3200
+  },
+  "metrics" : {
+    "activeFraction" : 0,
+    "bounded" : true,
+    "finite" : true,
+    "maximumExcitatory" : 0.1360456,
+    "maximumExcitatoryOutsideStimulus" : 0.1360456,
+    "meanAdaptation" : 0.055676937,
+    "meanAxonalRelay" : 0.055997178,
+    "meanExcitatory" : 0.054677937,
+    "meanExcitatoryOutsideStimulus" : 0.054520506,
+    "meanInhibitory" : 0.07936621,
+    "minimumExcitatory" : 0.0075505883,
+    "recruitedOutsideStimulusFraction" : 0,
+    "stateHash" : "73d0eb346080c5de",
+    "viableFraction" : 0.9870014
+  },
+  "model" : "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, compact regional population traces, adaptation, local conduction delays, and sparse delayed projections",
+  "numericalScope" : "mesoscale neural population tissue; uncalibrated research scaffold",
+  "operatingSystem" : "Version 26.6 (Build 25G5028f)",
+  "parameters" : {
+    "adaptationStrength" : 2,
+    "adaptationTimeConstantMilliseconds" : 200,
+    "axonalRelayTimeConstantMilliseconds" : 8,
+    "excitatoryBias" : -2.5,
+    "excitatoryGain" : 1,
+    "excitatorySelfWeight" : 10,
+    "excitatorySpatialMix" : 0.75,
+    "excitatoryTimeConstantMilliseconds" : 10,
+    "excitatoryToInhibitoryWeight" : 10,
+    "inhibitoryBias" : -3,
+    "inhibitoryGain" : 1,
+    "inhibitorySelfWeight" : 2,
+    "inhibitorySpatialMix" : 0.15,
+    "inhibitoryTimeConstantMilliseconds" : 20,
+    "inhibitoryToExcitatoryWeight" : 12,
+    "longRangeProjectionGain" : 1,
+    "timestepMilliseconds" : 1
+  },
+  "random" : {
+    "context" : {
+      "environmentIdentifier" : 3,
+      "episodeIdentifier" : 27,
+      "moduleIdentifier" : 12,
+      "seed" : 1314213194
+    },
+    "generator" : "NumiBrain counter hash v1 with upper-24-bit FP32 uniform samples",
+    "key" : "seed, environment, episode, module, accepted step, event identifier, site, sample lane",
+    "mutableStateBytes" : 0
+  },
+  "regionalExecution" : {
+    "cpuReferenceMaximumAbsoluteError" : 1.4901161e-08,
+    "cpuReferencePassed" : true,
+    "cpuReferenceTolerance" : 2e-06,
+    "execution" : "one advance_due_module_states dispatch per root consumes the private due list and writes a private shadow state generation",
+    "finalSnapshotHash" : "d78c1c595e2fe734",
+    "interpretation" : "deterministic population traces for eight logical modules; not the final trainable regional token operator",
+    "stateBytes" : 512,
+    "stateGenerationCount" : 2,
+    "totalInterruptCount" : 0,
+    "totalUpdateCount" : 271
+  },
+  "revision" : "e73bca33a9d171e30161c3689c2b4ce3d2cbcb1e",
+  "rollbackRetryExact" : true,
+  "rootAbortExact" : true,
+  "scheduler" : {
+    "abiVersion" : 1,
+    "clockBytes" : 256,
+    "clockGenerationCount" : 2,
+    "committedGeneration" : 4,
+    "committedTimeMicroseconds" : 70000,
+    "cpuReferenceExact" : true,
+    "descriptorBytes" : 256,
+    "execution" : "one Metal schedule_due_modules dispatch per root on the tissue command encoder; private shadow clocks publish only with tissue commit",
+    "finalRootInvocationCount" : 37,
+    "finalSnapshotHash" : "7f0410c814a02d9c",
+    "interpretation" : "eight-module runtime-foundation schedule feeding the live compact regional-state operator",
+    "maximumInputEvents" : 64,
+    "maximumInvocations" : 4096,
+    "moduleCount" : 8,
+    "privateInvocationCapacityBytes" : 131072,
+    "privateResultBytes" : 16,
+    "scheduleFingerprint" : "c0162952817e2b01",
+    "sharedEventCapacityBytes" : 1536,
+    "sharedUniformBytes" : 40,
+    "status" : 0
+  },
+  "schema" : "numibrain.tissue-simulation-evidence.v7",
+  "stimulus" : {
+    "centerX" : 0.25,
+    "centerY" : 0.5,
+    "endMilliseconds" : 45,
+    "excitatoryDrive" : 7,
+    "inhibitoryDrive" : 0,
+    "radius" : 0.055,
+    "startMilliseconds" : 5
+  },
+  "structure" : {
+    "bytes" : 786432,
+    "hash" : "11bee73e55739745",
+    "interpretation" : "synthetic uncalibrated strata; viability gates activity and coupling",
+    "lesion" : {
+      "centerX" : 0.5,
+      "centerY" : 0.5,
+      "radius" : 0.07,
+      "viability" : 0.15
+    },
+    "profile" : "layered"
+  },
+  "timestepMilliseconds" : 1,
+  "timing" : {
+    "acceptedSubsteps" : 70,
+    "attemptedSubsteps" : 70,
+    "cellUpdatesPerSecond" : 72083466.17758472,
+    "gpuCellUpdatesPerSecond" : 456790345.73682064,
+    "gpuEventCompactionDispatches" : 70,
+    "gpuRegionalDispatches" : 4,
+    "gpuSchedulerDispatches" : 4,
+    "gpuSeconds" : 0.007532208226621151,
+    "rootTransactions" : 4,
+    "wallSeconds" : 0.047731334
+  },
+  "verification" : {
+    "cpuReferenceMaximumAbsoluteError" : 1.1920929e-07,
+    "cpuReferencePassed" : true,
+    "cpuReferenceTolerance" : 3e-05,
+    "replayExact" : true
+  }
+}
