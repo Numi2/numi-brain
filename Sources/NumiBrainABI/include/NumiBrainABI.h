@@ -44,11 +44,13 @@ enum {
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 64,
+  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 96,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 1,
+  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -66,6 +68,7 @@ enum {
   NB_MOTOR_CHANNEL_FLAG_POSTURAL_BRACE = 1 << 2,
   NB_MOTOR_OUTPUT_FLAG_VALID = 1 << 0,
   NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP = 1 << 1,
+  NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID = 1 << 0,
 };
 
 typedef struct NBModuleDescriptor {
@@ -453,6 +456,27 @@ typedef struct NBMotorOutputHeader {
   uint64_t output_fingerprint;
 } NBMotorOutputHeader;
 
+/// Transaction-local GPU handoff for one NumanX physical candidate. GPU
+/// addresses are ephemeral process state and are deliberately not persistent
+/// checkpoint identity.
+typedef struct NBNumanXMotorCandidate {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t transaction_fingerprint;
+  uint64_t substep_fingerprint;
+  uint64_t accepted_brain_timestamp_microseconds;
+  uint64_t brain_generation;
+  uint64_t motor_profile_fingerprint;
+  uint64_t motor_output_header_gpu_address;
+  uint64_t muscle_excitation_gpu_address;
+  uint64_t random_counter_generation;
+  uint32_t motor_output_header_byte_count;
+  uint32_t muscle_excitation_byte_count;
+  uint32_t muscle_count;
+  uint32_t environment_identifier;
+  uint64_t candidate_fingerprint;
+} NBNumanXMotorCandidate;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -597,6 +621,18 @@ typedef enum NBMotorOutputValidation {
   NB_MOTOR_OUTPUT_FINGERPRINT = 9,
 } NBMotorOutputValidation;
 
+typedef enum NBNumanXMotorCandidateValidation {
+  NB_NUMANX_MOTOR_CANDIDATE_VALID = 0,
+  NB_NUMANX_MOTOR_CANDIDATE_NULL = 1,
+  NB_NUMANX_MOTOR_CANDIDATE_FORMAT = 2,
+  NB_NUMANX_MOTOR_CANDIDATE_FLAGS = 3,
+  NB_NUMANX_MOTOR_CANDIDATE_IDENTITY = 4,
+  NB_NUMANX_MOTOR_CANDIDATE_GENERATION = 5,
+  NB_NUMANX_MOTOR_CANDIDATE_ADDRESS = 6,
+  NB_NUMANX_MOTOR_CANDIDATE_SIZE = 7,
+  NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT = 8,
+} NBNumanXMotorCandidateValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -630,6 +666,7 @@ size_t nb_brain_abi_joint_commit_token_size(void);
 size_t nb_brain_abi_protective_command_size(void);
 size_t nb_brain_abi_motor_channel_descriptor_size(void);
 size_t nb_brain_abi_motor_output_header_size(void);
+size_t nb_brain_abi_numanx_motor_candidate_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -827,6 +864,16 @@ uint64_t nb_brain_abi_motor_output_fingerprint(
 uint32_t nb_brain_abi_validate_motor_output(
     const NBMotorOutputHeader *header,
     const float *muscle_excitations
+);
+
+uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
+    const NBNumanXMotorCandidate *candidate
+);
+
+uint32_t nb_brain_abi_validate_numanx_motor_candidate(
+    const NBJointTransactionToken *root,
+    const NBJointSubstepToken *substep,
+    const NBNumanXMotorCandidate *candidate
 );
 
 #ifdef __cplusplus

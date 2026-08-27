@@ -50,6 +50,9 @@ static_assert(
     sizeof(NBMotorChannelDescriptor) == NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT
 );
 static_assert(sizeof(NBMotorOutputHeader) == NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT);
+static_assert(
+    sizeof(NBNumanXMotorCandidate) == NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT
+);
 static_assert(offsetof(NBMotorChannelDescriptor, muscle_id) == 0);
 static_assert(offsetof(NBMotorChannelDescriptor, resting_excitation) == 8);
 static_assert(offsetof(NBMotorChannelDescriptor, maximum_excitation) == 20);
@@ -62,6 +65,21 @@ static_assert(offsetof(NBMotorOutputHeader, protective_command_fingerprint) == 3
 static_assert(offsetof(NBMotorOutputHeader, muscle_count) == 40);
 static_assert(offsetof(NBMotorOutputHeader, motor_inhibition) == 48);
 static_assert(offsetof(NBMotorOutputHeader, output_fingerprint) == 56);
+static_assert(offsetof(NBNumanXMotorCandidate, format_version) == 0);
+static_assert(offsetof(NBNumanXMotorCandidate, transaction_fingerprint) == 8);
+static_assert(offsetof(NBNumanXMotorCandidate, substep_fingerprint) == 16);
+static_assert(
+    offsetof(NBNumanXMotorCandidate, accepted_brain_timestamp_microseconds) == 24
+);
+static_assert(offsetof(NBNumanXMotorCandidate, brain_generation) == 32);
+static_assert(offsetof(NBNumanXMotorCandidate, motor_profile_fingerprint) == 40);
+static_assert(
+    offsetof(NBNumanXMotorCandidate, motor_output_header_gpu_address) == 48
+);
+static_assert(offsetof(NBNumanXMotorCandidate, muscle_excitation_gpu_address) == 56);
+static_assert(offsetof(NBNumanXMotorCandidate, random_counter_generation) == 64);
+static_assert(offsetof(NBNumanXMotorCandidate, motor_output_header_byte_count) == 72);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 88);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -233,6 +251,10 @@ size_t nb_brain_abi_motor_channel_descriptor_size(void) {
 
 size_t nb_brain_abi_motor_output_header_size(void) {
   return sizeof(NBMotorOutputHeader);
+}
+
+size_t nb_brain_abi_numanx_motor_candidate_size(void) {
+  return sizeof(NBNumanXMotorCandidate);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -1567,4 +1589,90 @@ uint32_t nb_brain_abi_validate_motor_output(
     return NB_MOTOR_OUTPUT_FINGERPRINT;
   }
   return NB_MOTOR_OUTPUT_VALID;
+}
+
+uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
+    const NBNumanXMotorCandidate *candidate
+) {
+  if (candidate == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_NUMANX_MOTOR_CANDIDATE_VERSION)
+  );
+  mix_little_endian(hash, candidate->format_version);
+  mix_little_endian(hash, candidate->flags);
+  mix_little_endian(hash, candidate->transaction_fingerprint);
+  mix_little_endian(hash, candidate->substep_fingerprint);
+  mix_little_endian(hash, candidate->accepted_brain_timestamp_microseconds);
+  mix_little_endian(hash, candidate->brain_generation);
+  mix_little_endian(hash, candidate->motor_profile_fingerprint);
+  mix_little_endian(hash, candidate->motor_output_header_gpu_address);
+  mix_little_endian(hash, candidate->muscle_excitation_gpu_address);
+  mix_little_endian(hash, candidate->random_counter_generation);
+  mix_little_endian(hash, candidate->motor_output_header_byte_count);
+  mix_little_endian(hash, candidate->muscle_excitation_byte_count);
+  mix_little_endian(hash, candidate->muscle_count);
+  mix_little_endian(hash, candidate->environment_identifier);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_numanx_motor_candidate(
+    const NBJointTransactionToken *root,
+    const NBJointSubstepToken *substep,
+    const NBNumanXMotorCandidate *candidate
+) {
+  if (root == nullptr || substep == nullptr || candidate == nullptr) {
+    return NB_NUMANX_MOTOR_CANDIDATE_NULL;
+  }
+  if (candidate->format_version != NB_NUMANX_MOTOR_CANDIDATE_VERSION) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FORMAT;
+  }
+  if (candidate->flags != NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FLAGS;
+  }
+  if (nb_brain_abi_validate_joint_substep(root, substep)
+      != NB_JOINT_TRANSACTION_VALID) {
+    return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
+  }
+  if (candidate->transaction_fingerprint != root->transaction_fingerprint
+      || candidate->substep_fingerprint != substep->substep_fingerprint
+      || candidate->accepted_brain_timestamp_microseconds
+          != substep->start_timestamp_microseconds
+      || candidate->random_counter_generation
+          != substep->random_counter_generation
+      || candidate->environment_identifier != root->environment_identifier
+      || candidate->motor_profile_fingerprint == 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
+  }
+  const uint64_t expected_generation =
+      substep->substep_index == 0
+      ? root->base_brain_generation
+      : root->shadow_generation;
+  if (candidate->brain_generation != expected_generation) {
+    return NB_NUMANX_MOTOR_CANDIDATE_GENERATION;
+  }
+  if (candidate->motor_output_header_gpu_address == 0
+      || candidate->muscle_excitation_gpu_address == 0
+      || candidate->motor_output_header_gpu_address % 8 != 0
+      || candidate->muscle_excitation_gpu_address % 4 != 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_ADDRESS;
+  }
+  const uint64_t expected_excitation_bytes =
+      static_cast<uint64_t>(candidate->muscle_count) * sizeof(float);
+  if (candidate->motor_output_header_byte_count
+          != NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT
+      || candidate->muscle_count == 0
+      || expected_excitation_bytes > UINT32_MAX
+      || candidate->muscle_excitation_byte_count != expected_excitation_bytes) {
+    return NB_NUMANX_MOTOR_CANDIDATE_SIZE;
+  }
+  if (candidate->candidate_fingerprint == 0
+      || candidate->candidate_fingerprint
+          != nb_brain_abi_numanx_motor_candidate_fingerprint(candidate)) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT;
+  }
+  return NB_NUMANX_MOTOR_CANDIDATE_VALID;
 }

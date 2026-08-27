@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.8
+# NumanX joint transaction contract v0.9
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -121,7 +121,7 @@ unchanged and the retry recomputes tissue from the previous accepted state.
 Neither path publishes committed state.
 
 Each accepted prefix includes all accepted substep events from the root start,
-so bounded v0.8 execution recomputes a canonical prefix rather than mutating
+so bounded v0.9 execution recomputes a canonical prefix rather than mutating
 the committed generation incrementally. After the final accepted physical
 token reaches the target, `finishInteractiveJointControl` binds that fast
 shadow and the accepted tissue shadow to the joint-only commit guard. A final
@@ -155,6 +155,13 @@ apply to command and excitation generations together.
 The foundation profile has six synthetic channels and a global rather than
 body-local interrupt. It is an executable ABI fixture, not a real species body
 map or a NumanX muscle catalog.
+
+For each candidate, `NBNumanXMotorCandidate` binds the root and substep
+fingerprints to the accepted brain time/generation and the private motor-header
+and excitation GPU addresses. The compiled validator checks environment,
+random-counter generation, expected base-versus-shadow generation, alignment,
+byte counts, muscle count, and the complete transaction-local fingerprint. GPU
+addresses are ephemeral and never become checkpoint or replay identity.
 
 The reference implementation deliberately synchronizes the host after each
 candidate Metal submission so an external physical solver can return its

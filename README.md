@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice with matching physical-time CPU and Metal relay paths, deterministic scheduler oracle, a compiled NumanX joint-transaction contract with accepted-only events and corrected-duration interactive Metal retry, a GPU-resident protective command and compiled muscle-profile mapping for the next physical candidate, and a versioned Metal cohort executor with GPU-generated indirect work, independent authoritative recurrent token state, delayed sparse-route history, and dynamic routing state per agent. The complete NumiBrain runtime is not implemented or qualified yet.
+> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice with matching physical-time CPU and Metal relay paths, deterministic scheduler oracle, a compiled NumanX joint-transaction contract with accepted-only events and corrected-duration interactive Metal retry, a GPU-resident protective command, muscle-profile mapping, and transaction-bound NumanX candidate packet, and a versioned Metal cohort executor with GPU-generated indirect work, independent authoritative recurrent token state, delayed sparse-route history, and dynamic routing state per agent. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 

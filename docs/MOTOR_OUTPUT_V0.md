@@ -1,4 +1,4 @@
-# Protective motor-output boundary v0.1
+# Protective motor-output boundary v0.2
 
 This document defines the first executable mapping from accepted fast neural
 state to per-muscle control values. It is a protective foundation, not the
@@ -75,6 +75,22 @@ generation, and profile fingerprint for the following physical candidate.
 Normal execution does not read the result back; staging copies are explicit
 inspection APIs.
 
+## NumanX candidate packet
+
+`NBNumanXMotorCandidate` is a compiled 96-byte, transaction-local handoff. It
+binds the root and candidate-substep fingerprints to the accepted brain
+timestamp and generation, motor-profile identity, header and excitation GPU
+addresses, byte counts, muscle count, environment, and unchanged random-counter
+generation. Validation cross-checks the complete root/substep relation and
+rejects stale generations, misaligned or null addresses, size/count drift, and
+fingerprint drift.
+
+GPU virtual addresses are intentionally part of this ephemeral packet but not
+of persistent checkpoints or parameter identity. The packet is valid only while
+the owning `MetalTissueRuntime` and residency set remain alive, and only for its
+named physical candidate. Retry produces a new substep fingerprint while
+preserving the same accepted neural output until simulated time advances.
+
 The six-channel runtime-foundation profile is a deterministic synthetic fixture.
 Its identifiers and gains are not anatomy, calibration, a named species, or a
 NumanX muscle catalog. The global command also lacks receptor/body-side
@@ -82,9 +98,10 @@ localization, so it cannot yet express a localized withdrawal reflex.
 
 ## Evidence boundary
 
-Tests establish compiled ABI identity, validation and golden fingerprints,
+Tests establish compiled ABI identity, validation and golden persistent-state fingerprints,
 exact CPU/Metal excitation output, accepted next-candidate mapping, rejected
-event silence, abort restoration, and commit publication. They do not establish
+event silence, abort restoration, commit publication, and transaction-bound
+GPU-address packet validation. They do not establish
 a live NumanX consumer, physical muscle activation, localized reflexes, species
 calibration, voluntary movement, motor learning, autonomic physiology,
 biological behavior, or performance qualification.

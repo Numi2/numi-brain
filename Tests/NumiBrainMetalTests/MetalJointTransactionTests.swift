@@ -403,6 +403,44 @@ final class MetalJointTransactionTests: XCTestCase {
     )
     XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.headerGPUAddress, 0)
     XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress, 0)
+    XCTAssertEqual(nb_brain_abi_numanx_motor_candidate_size(), 96)
+    XCTAssertEqual(MemoryLayout<NBNumanXMotorCandidate>.stride, 96)
+    let firstNumanXMotorCandidate = try NumanXMotorCandidate(
+      transaction: token,
+      fastSystems: firstCandidate
+    )
+    XCTAssertEqual(firstNumanXMotorCandidate.acceptedBrainTimestamp, .init(microseconds: 0))
+    XCTAssertEqual(firstNumanXMotorCandidate.brainGeneration, token.baseBrainGeneration)
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.motorOutputHeaderGPUAddress,
+      firstCandidate.protectiveMotorOutput.headerGPUAddress
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.muscleExcitationGPUAddress,
+      firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate,
+      try NumanXMotorCandidate(
+        validating: firstNumanXMotorCandidate.abiRecord,
+        transaction: token,
+        substep: firstCandidate.substep
+      )
+    )
+    var invalidNumanXMotorCandidate = firstNumanXMotorCandidate.abiRecord
+    invalidNumanXMotorCandidate.muscle_excitation_gpu_address = 0
+    invalidNumanXMotorCandidate.candidate_fingerprint = withUnsafePointer(
+      to: &invalidNumanXMotorCandidate
+    ) {
+      nb_brain_abi_numanx_motor_candidate_fingerprint($0)
+    }
+    XCTAssertThrowsError(
+      try NumanXMotorCandidate(
+        validating: invalidNumanXMotorCandidate,
+        transaction: token,
+        substep: firstCandidate.substep
+      )
+    )
     let firstPhysics = try AcceptedPhysicsStateToken(
       transaction: token,
       substep: firstCandidate.substep,
@@ -499,6 +537,15 @@ final class MetalJointTransactionTests: XCTestCase {
       rejectedCandidate.protectiveMotorOutput.muscleExcitationGPUAddress,
       firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress
     )
+    let nextNumanXMotorCandidate = try NumanXMotorCandidate(
+      transaction: token,
+      fastSystems: rejectedCandidate
+    )
+    XCTAssertEqual(
+      nextNumanXMotorCandidate.acceptedBrainTimestamp,
+      BrainTimestamp(microseconds: 1_000)
+    )
+    XCTAssertEqual(nextNumanXMotorCandidate.brainGeneration, token.shadowGeneration)
     try runtime.rejectPhysicsSubstep(
       rejectedCandidate.substep,
       receptorEvents: [rejectedPain]
