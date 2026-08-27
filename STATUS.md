@@ -10,7 +10,7 @@
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
-- GPU performance evidence: bounded Apple M4 Pro remote and Apple M4 local correctness probes only; production throughput and counter qualification remain pending
+- GPU performance evidence: bounded Apple M4 v0.12 and earlier Apple M4 Pro/M4 v0.11 correctness probes only; v0.12 M4 Pro execution, production throughput, and counter qualification remain pending
 
 The architecture document remains a design contract. Only the tissue and scheduler behavior owned by the source and tests in this repository is currently live.
 
@@ -69,7 +69,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue and regional evidence
 
-The v0.12 source slice retains the v0.11 receptor-interrupt behavior and adds compiled immutable parameter manifests, synchronization-boundary publication, CPU checkpoint/cohort version identity, separate regional shape/content fingerprints, and private Metal version validation. New bounded qualification artifacts are pending; the last checked Apple M4 Pro remote and Apple M4 local artifacts remain in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md).
+The v0.12 source slice retains the v0.11 receptor-interrupt behavior and adds compiled immutable parameter manifests, synchronization-boundary publication, CPU checkpoint/cohort version identity, separate regional shape/content fingerprints, and private Metal version validation. A bounded Apple M4 artifact is checked into [`evidence/tissue-v0.12`](evidence/tissue-v0.12/README.md); v0.12 M4 Pro qualification is deferred while an unrelated crow workload owns that GPU. Earlier M4 Pro/M4 artifacts remain in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md).
 
 The implemented tissue slice currently proves:
 
