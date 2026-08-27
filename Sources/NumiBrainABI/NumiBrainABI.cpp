@@ -28,6 +28,8 @@ static_assert(sizeof(NBRegionalTokenParameters) == NB_REGIONAL_TOKEN_PARAMETERS_
 static_assert(sizeof(NBRegionalProgramHeader) == NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT);
 static_assert(sizeof(NBRegionalRouteHistoryState) == NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT);
 static_assert(sizeof(NBRegionalRouteRuntimeState) == NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT);
+static_assert(sizeof(NBParameterComponent) == NB_PARAMETER_COMPONENT_BYTE_COUNT);
+static_assert(sizeof(NBParameterVersionBinding) == NB_PARAMETER_VERSION_BINDING_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -131,6 +133,14 @@ size_t nb_brain_abi_regional_route_history_state_size(void) {
 
 size_t nb_brain_abi_regional_route_runtime_state_size(void) {
   return sizeof(NBRegionalRouteRuntimeState);
+}
+
+size_t nb_brain_abi_parameter_component_size(void) {
+  return sizeof(NBParameterComponent);
+}
+
+size_t nb_brain_abi_parameter_version_binding_size(void) {
+  return sizeof(NBParameterVersionBinding);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -462,4 +472,148 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     mix_float(hash, value.gate_input_gain);
   }
   return hash;
+}
+
+uint64_t nb_brain_abi_regional_program_shape_fingerprint(
+    const NBRegionalTokenLayout *layouts,
+    uint32_t module_count,
+    const NBRegionalRoute *routes,
+    uint32_t route_count,
+    uint32_t parameter_count
+) {
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_REGIONAL_PROGRAM_VERSION));
+  mix_little_endian(hash, module_count);
+  mix_little_endian(hash, route_count);
+  mix_little_endian(hash, parameter_count);
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_REGIONAL_ROUTE_HISTORY_CAPACITY)
+  );
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS)
+  );
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_REGIONAL_MIN_ROUTE_PERSISTENCE_MICROSECONDS)
+  );
+  for (uint32_t index = 0; index < module_count; ++index) {
+    const NBRegionalTokenLayout &value = layouts[index];
+    mix_little_endian(hash, value.scalar_offset);
+    mix_little_endian(hash, value.scalar_count);
+    mix_little_endian(hash, value.parameter_offset);
+    mix_little_endian(hash, value.incoming_route_offset);
+    mix_little_endian(hash, value.module_id);
+    mix_little_endian(hash, value.token_count);
+    mix_little_endian(hash, value.token_dimension);
+    mix_little_endian(hash, value.incoming_route_count);
+    mix_little_endian(hash, value.flags);
+    mix_little_endian(hash, value.normal_route_budget);
+    mix_little_endian(hash, value.reserved);
+  }
+  for (uint32_t index = 0; index < route_count; ++index) {
+    const NBRegionalRoute &value = routes[index];
+    mix_little_endian(hash, value.sender_module_id);
+    mix_little_endian(hash, value.receiver_module_id);
+    mix_little_endian(hash, value.sender_token);
+    mix_little_endian(hash, value.flags);
+    mix_little_endian(hash, value.delay_microseconds);
+    mix_little_endian(hash, value.history_value_offset);
+    mix_little_endian(hash, value.message_dimension);
+  }
+  return hash;
+}
+
+uint64_t nb_brain_abi_parameter_version_fingerprint(
+    const NBParameterVersionBinding *binding,
+    const NBParameterComponent *components
+) {
+  if (binding == nullptr || (binding->component_count > 0 && components == nullptr)) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, binding->format_version);
+  mix_little_endian(hash, binding->component_count);
+  mix_little_endian(hash, binding->version_sequence);
+  mix_little_endian(hash, binding->parent_version_fingerprint);
+  mix_little_endian(hash, binding->schedule_fingerprint);
+  mix_little_endian(hash, binding->regional_shape_fingerprint);
+  mix_little_endian(hash, binding->regional_program_fingerprint);
+  mix_little_endian(hash, binding->total_parameter_bytes);
+  for (uint32_t index = 0; index < binding->component_count; ++index) {
+    const NBParameterComponent &component = components[index];
+    mix_little_endian(hash, component.component_kind);
+    mix_little_endian(hash, component.element_type);
+    mix_little_endian(hash, component.flags);
+    mix_little_endian(hash, component.element_count);
+    mix_little_endian(hash, component.byte_count);
+    mix_little_endian(hash, component.content_fingerprint);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_parameter_version(
+    const NBParameterVersionBinding *binding,
+    const NBParameterComponent *components
+) {
+  if (binding == nullptr || (binding->component_count > 0 && components == nullptr)) {
+    return NB_PARAMETER_VERSION_NULL;
+  }
+  if (binding->format_version != NB_PARAMETER_MANIFEST_VERSION) {
+    return NB_PARAMETER_VERSION_FORMAT;
+  }
+  if (binding->component_count == 0) {
+    return NB_PARAMETER_VERSION_EMPTY;
+  }
+  if (binding->schedule_fingerprint == 0
+      || binding->regional_shape_fingerprint == 0
+      || binding->regional_program_fingerprint == 0) {
+    return NB_PARAMETER_VERSION_IDENTITY;
+  }
+  if ((binding->version_sequence == 0 && binding->parent_version_fingerprint != 0)
+      || (binding->version_sequence > 0 && binding->parent_version_fingerprint == 0)) {
+    return NB_PARAMETER_VERSION_IDENTITY;
+  }
+  uint16_t previous_kind = 0;
+  uint64_t total_bytes = 0;
+  bool found_regional_operator = false;
+  for (uint32_t index = 0; index < binding->component_count; ++index) {
+    const NBParameterComponent &component = components[index];
+    if (component.component_kind == 0
+        || component.component_kind > NB_PARAMETER_COMPONENT_REGIONAL_OPERATOR
+        || (index > 0 && component.component_kind <= previous_kind)) {
+      return NB_PARAMETER_VERSION_COMPONENT_ORDER;
+    }
+    if (component.element_type < NB_PARAMETER_ELEMENT_FP16
+        || component.element_type > NB_PARAMETER_ELEMENT_OPAQUE
+        || component.element_count == 0
+        || component.byte_count == 0
+        || component.content_fingerprint == 0) {
+      return NB_PARAMETER_VERSION_COMPONENT_VALUE;
+    }
+    if (component.component_kind == NB_PARAMETER_COMPONENT_REGIONAL_OPERATOR
+        && component.content_fingerprint != binding->regional_program_fingerprint) {
+      return NB_PARAMETER_VERSION_IDENTITY;
+    }
+    found_regional_operator = found_regional_operator
+        || component.component_kind == NB_PARAMETER_COMPONENT_REGIONAL_OPERATOR;
+    if (component.byte_count > UINT64_MAX - total_bytes) {
+      return NB_PARAMETER_VERSION_BYTE_COUNT;
+    }
+    total_bytes += component.byte_count;
+    previous_kind = component.component_kind;
+  }
+  if (total_bytes != binding->total_parameter_bytes) {
+    return NB_PARAMETER_VERSION_BYTE_COUNT;
+  }
+  if (!found_regional_operator) {
+    return NB_PARAMETER_VERSION_IDENTITY;
+  }
+  if (binding->version_fingerprint == 0
+      || binding->version_fingerprint
+          != nb_brain_abi_parameter_version_fingerprint(binding, components)) {
+    return NB_PARAMETER_VERSION_FINGERPRINT;
+  }
+  return NB_PARAMETER_VERSION_VALID;
 }

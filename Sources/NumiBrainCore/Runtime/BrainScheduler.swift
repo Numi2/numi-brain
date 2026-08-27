@@ -370,17 +370,20 @@ public struct BrainModuleClockState: Codable, Equatable, Hashable, Sendable {
 @frozen
 public struct BrainSchedulerSnapshot: Codable, Equatable, Sendable {
   public let scheduleFingerprint: UInt64
+  public let parameterVersionFingerprint: UInt64
   public let committedTime: BrainTimestamp
   public let generation: UInt64
   public let moduleClocks: [BrainModuleClockState]
 
   public init(
     scheduleFingerprint: UInt64,
+    parameterVersionFingerprint: UInt64 = 0,
     committedTime: BrainTimestamp,
     generation: UInt64,
     moduleClocks: [BrainModuleClockState]
   ) {
     self.scheduleFingerprint = scheduleFingerprint
+    self.parameterVersionFingerprint = parameterVersionFingerprint
     self.committedTime = committedTime
     self.generation = generation
     self.moduleClocks = moduleClocks
@@ -399,6 +402,7 @@ public struct BrainSchedulerSnapshot: Codable, Equatable, Sendable {
       }
     }
     mix(scheduleFingerprint, into: &hash)
+    mix(parameterVersionFingerprint, into: &hash)
     mix(committedTime.rawValue, into: &hash)
     mix(generation, into: &hash)
     mix(UInt64(moduleClocks.count), into: &hash)
@@ -413,6 +417,7 @@ public struct BrainSchedulerSnapshot: Codable, Equatable, Sendable {
 @frozen
 public struct BrainSchedulerTransaction: Equatable, Sendable {
   public let scheduleFingerprint: UInt64
+  public let parameterVersionFingerprint: UInt64
   public let baseGeneration: UInt64
   public let baseCommittedTime: BrainTimestamp
   public let targetTime: BrainTimestamp
@@ -427,15 +432,19 @@ public struct CPUMultiRateScheduler: Sendable {
   public static let maximumEventsPerTransaction = 65_536
 
   public let schedule: BrainModuleSchedule
+  public let parameterVersionFingerprint: UInt64
   public private(set) var snapshot: BrainSchedulerSnapshot
 
   public init(
     schedule: BrainModuleSchedule,
+    parameterVersionFingerprint: UInt64 = 0,
     initialTime: BrainTimestamp = BrainTimestamp(microseconds: 0)
   ) {
     self.schedule = schedule
+    self.parameterVersionFingerprint = parameterVersionFingerprint
     snapshot = BrainSchedulerSnapshot(
       scheduleFingerprint: schedule.fingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint,
       committedTime: initialTime,
       generation: 0,
       moduleClocks: schedule.modules.map { _ in
@@ -444,7 +453,11 @@ public struct CPUMultiRateScheduler: Sendable {
     )
   }
 
-  public init(schedule: BrainModuleSchedule, restoring snapshot: BrainSchedulerSnapshot) throws {
+  public init(
+    schedule: BrainModuleSchedule,
+    parameterVersionFingerprint: UInt64 = 0,
+    restoring snapshot: BrainSchedulerSnapshot
+  ) throws {
     guard snapshot.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.transaction("checkpoint schedule fingerprint mismatch")
     }
@@ -459,7 +472,11 @@ public struct CPUMultiRateScheduler: Sendable {
     else {
       throw BrainRuntimeError.transaction("checkpoint module clocks violate committed time")
     }
+    guard snapshot.parameterVersionFingerprint == parameterVersionFingerprint else {
+      throw BrainRuntimeError.transaction("checkpoint parameter-version fingerprint mismatch")
+    }
     self.schedule = schedule
+    self.parameterVersionFingerprint = parameterVersionFingerprint
     self.snapshot = snapshot
   }
 
@@ -526,6 +543,7 @@ public struct CPUMultiRateScheduler: Sendable {
     let invocations = invocationMap.values.sorted(by: Self.invocationOrder)
     return BrainSchedulerTransaction(
       scheduleFingerprint: schedule.fingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint,
       baseGeneration: snapshot.generation,
       baseCommittedTime: snapshot.committedTime,
       targetTime: targetTime,
@@ -537,6 +555,11 @@ public struct CPUMultiRateScheduler: Sendable {
   public mutating func commit(_ transaction: BrainSchedulerTransaction) throws {
     guard transaction.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.transaction("transaction schedule fingerprint mismatch")
+    }
+    guard transaction.parameterVersionFingerprint == parameterVersionFingerprint,
+      snapshot.parameterVersionFingerprint == parameterVersionFingerprint
+    else {
+      throw BrainRuntimeError.transaction("transaction parameter-version fingerprint mismatch")
     }
     guard transaction.baseGeneration == snapshot.generation,
       transaction.baseCommittedTime == snapshot.committedTime
@@ -552,6 +575,7 @@ public struct CPUMultiRateScheduler: Sendable {
     }
     snapshot = BrainSchedulerSnapshot(
       scheduleFingerprint: schedule.fingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint,
       committedTime: transaction.targetTime,
       generation: nextGeneration,
       moduleClocks: transaction.proposedModuleClocks
@@ -659,6 +683,16 @@ public enum BrainSchedulerCohort {
     guard environments.allSatisfy({ $0.transaction.scheduleFingerprint == fingerprint }) else {
       throw BrainRuntimeError.invalidSchedule("cohort schedules do not share a fingerprint")
     }
+    guard
+      let parameterFingerprint = environments.first?.transaction.parameterVersionFingerprint,
+      environments.allSatisfy({
+        $0.transaction.parameterVersionFingerprint == parameterFingerprint
+      })
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "cohort transactions do not share a parameter version"
+      )
+    }
     let identifiers = environments.map(\.environmentIdentifier)
     guard Set(identifiers).count == identifiers.count else {
       throw BrainRuntimeError.invalidSchedule("cohort environment identifiers must be unique")
@@ -707,6 +741,7 @@ public enum BrainRuntimeError: Error, Equatable, CustomStringConvertible {
   case invalidEvent(String)
   case transaction(String)
   case capacity(String)
+  case invalidParameterVersion(String)
 
   public var description: String {
     switch self {
@@ -715,6 +750,7 @@ public enum BrainRuntimeError: Error, Equatable, CustomStringConvertible {
     case .invalidEvent(let message): "invalid scheduler event: \(message)"
     case .transaction(let message): "scheduler transaction error: \(message)"
     case .capacity(let message): "scheduler capacity error: \(message)"
+    case .invalidParameterVersion(let message): "invalid parameter version: \(message)"
     }
   }
 }

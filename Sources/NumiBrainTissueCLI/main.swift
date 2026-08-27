@@ -382,6 +382,13 @@ private struct EventEvidence: Codable {
 private struct SchedulerEvidence: Codable {
   let abiVersion: UInt32
   let scheduleFingerprint: String
+  let parameterManifestVersion: UInt32
+  let parameterVersionSequence: UInt64
+  let parameterVersionFingerprint: String
+  let parentParameterVersionFingerprint: String
+  let parameterComponentCount: Int
+  let totalParameterBytes: UInt64
+  let privateParameterVersionBindingBytes: Int
   let moduleCount: Int
   let descriptorBytes: Int
   let clockGenerationCount: Int
@@ -431,6 +438,7 @@ private struct RegionalExecutionEvidence: Codable {
   let selectedRouteCountBytes: Int
   let parameterBytes: Int
   let programFingerprint: String
+  let shapeFingerprint: String
   let finalTokenSnapshotHash: String
   let finalRouteHistorySnapshotHash: String
   let finalRoutingSnapshotHash: String
@@ -764,13 +772,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v11",
+      schema: "numibrain.tissue-simulation-evidence.v12",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, causal GPU receptor-onset interrupt transduction, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with immutable content-addressed parameter generations, GPU-compacted receptor events, causal GPU receptor-onset interrupt transduction, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -878,7 +886,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU tissue, regional token, diagnostic, sparse-route history, dynamic routing-state, transduced interrupt queue, and transduction-result generations; immutable regional parameters and topology; compact selected-route scratch; scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
+          ? "private GPU tissue, regional token, diagnostic, sparse-route history, dynamic routing-state, transduced interrupt queue, transduction-result, and immutable parameter-version binding; immutable regional parameters and topology; compact selected-route scratch; scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -892,7 +900,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> transduce_receptor_interrupts -> schedule_due_modules -> delayed route-message resolution -> deterministic top-k route scoring and compaction -> advance_due_regional_tokens -> atomic host generation publication"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> immutable parameter-version validation -> compact_receptor_events -> neural_tissue_step -> transduce_receptor_interrupts -> schedule_due_modules -> delayed route-message resolution -> deterministic top-k route scoring and compaction -> advance_due_regional_tokens -> atomic host generation publication"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -1016,7 +1024,10 @@ private struct NumiBrainTissueCommand {
       try runtime.snapshotCommittedRegionalRouteHistory()
     let regionalRoutingInspection =
       try runtime.snapshotCommittedRegionalRoutingState()
-    var schedulerOracle = CPUMultiRateScheduler(schedule: runtime.brainSchedule)
+    var schedulerOracle = CPUMultiRateScheduler(
+      schedule: runtime.brainSchedule,
+      parameterVersionFingerprint: runtime.parameterVersion.fingerprint
+    )
     var regionalOracleStates = runtime.brainSchedule.modules.map { _ in RegionalModuleState() }
     var regionalOracleTokens = [Float](
       repeating: 0,
@@ -1074,6 +1085,13 @@ private struct NumiBrainTissueCommand {
     let schedulerEvidence = SchedulerEvidence(
       abiVersion: BrainModuleSchedule.abiVersion,
       scheduleFingerprint: runtime.brainSchedule.fingerprintHex,
+      parameterManifestVersion: BrainParameterVersion.manifestVersion,
+      parameterVersionSequence: runtime.parameterVersion.sequence,
+      parameterVersionFingerprint: runtime.parameterVersion.fingerprintHex,
+      parentParameterVersionFingerprint: runtime.parameterVersion.parentFingerprintHex,
+      parameterComponentCount: runtime.parameterVersion.components.count,
+      totalParameterBytes: runtime.parameterVersion.totalParameterBytes,
+      privateParameterVersionBindingBytes: runtime.parameterVersionBindingByteCount,
       moduleCount: runtime.brainSchedule.modules.count,
       descriptorBytes: runtime.schedulerDescriptorByteCount,
       clockGenerationCount: 2,
@@ -1098,7 +1116,7 @@ private struct NumiBrainTissueCommand {
       status: schedulerInspection.status,
       transductionStatus: schedulerInspection.transductionStatus,
       execution:
-        "one Metal transduce_receptor_interrupts and schedule_due_modules dispatch per root on the tissue command encoder; the compact interrupt queue and shadow clocks stay private and publish neural effects only with tissue commit",
+        "one Metal transduce_receptor_interrupts and schedule_due_modules dispatch per root on the tissue command encoder; scheduler and regional kernels validate one private immutable parameter-version binding while compact interrupts and shadow clocks publish neural effects only with tissue commit",
       interpretation:
         "eight-module runtime-foundation schedule feeding the live recurrent token-state operator"
     )
@@ -1179,6 +1197,7 @@ private struct NumiBrainTissueCommand {
       selectedRouteCountBytes: runtime.regionalSelectedRouteCountByteCount,
       parameterBytes: runtime.regionalParameterByteCount,
       programFingerprint: runtime.regionalTokenProgram.fingerprintHex,
+      shapeFingerprint: runtime.regionalTokenProgram.shapeFingerprintHex,
       finalTokenSnapshotHash: regionalTokenInspection.stableHash(),
       finalRouteHistorySnapshotHash: regionalRouteHistoryInspection.stableHash(),
       finalRoutingSnapshotHash: regionalRoutingInspection.stableHash(),

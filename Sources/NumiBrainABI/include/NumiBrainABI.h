@@ -17,7 +17,7 @@ enum {
   NB_RECEPTOR_EVENT_TRANSDUCTION_UNIFORMS_BYTE_COUNT = 40,
   NB_RECEPTOR_EVENT_TRANSDUCTION_RESULT_BYTE_COUNT = 16,
   NB_DUE_INVOCATION_BYTE_COUNT = 32,
-  NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 40,
+  NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 56,
   NB_SCHEDULER_RESULT_BYTE_COUNT = 16,
   NB_REGIONAL_MODULE_STATE_BYTE_COUNT = 32,
   NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT = 32,
@@ -26,6 +26,9 @@ enum {
   NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT = 48,
   NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT = 16,
   NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT = 32,
+  NB_PARAMETER_COMPONENT_BYTE_COUNT = 32,
+  NB_PARAMETER_VERSION_BINDING_BYTE_COUNT = 64,
+  NB_PARAMETER_MANIFEST_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -108,6 +111,8 @@ typedef struct NBDueInvocation {
 typedef struct NBSchedulerUniforms {
   uint64_t committed_time_microseconds;
   uint64_t target_time_microseconds;
+  uint64_t parameter_version_fingerprint;
+  uint64_t schedule_fingerprint;
   uint32_t module_count;
   uint32_t event_count;
   uint32_t invocation_capacity;
@@ -198,11 +203,62 @@ typedef struct NBRegionalRouteRuntimeState {
   uint32_t reserved;
 } NBRegionalRouteRuntimeState;
 
+/// Canonical identity for one immutable shared-parameter component. Component
+/// records are ordered strictly by `component_kind` before fingerprinting.
+typedef struct NBParameterComponent {
+  uint16_t component_kind;
+  uint16_t element_type;
+  uint32_t flags;
+  uint64_t element_count;
+  uint64_t byte_count;
+  uint64_t content_fingerprint;
+} NBParameterComponent;
+
+/// Immutable rollout binding uploaded once with a parameter generation. The
+/// version fingerprint authenticates this header (except itself) plus its
+/// canonical component records.
+typedef struct NBParameterVersionBinding {
+  uint32_t format_version;
+  uint32_t component_count;
+  uint64_t version_sequence;
+  uint64_t version_fingerprint;
+  uint64_t parent_version_fingerprint;
+  uint64_t schedule_fingerprint;
+  uint64_t regional_shape_fingerprint;
+  uint64_t regional_program_fingerprint;
+  uint64_t total_parameter_bytes;
+} NBParameterVersionBinding;
+
+typedef enum NBParameterComponentKind {
+  NB_PARAMETER_COMPONENT_SENSORY = 1,
+  NB_PARAMETER_COMPONENT_BELIEF = 2,
+  NB_PARAMETER_COMPONENT_WORLD = 3,
+  NB_PARAMETER_COMPONENT_ROUTE = 4,
+  NB_PARAMETER_COMPONENT_MEMORY = 5,
+  NB_PARAMETER_COMPONENT_VALUE = 6,
+  NB_PARAMETER_COMPONENT_POLICY = 7,
+  NB_PARAMETER_COMPONENT_MOTOR = 8,
+  NB_PARAMETER_COMPONENT_CEREBELLAR = 9,
+  NB_PARAMETER_COMPONENT_PLASTICITY = 10,
+  NB_PARAMETER_COMPONENT_TISSUE_DYNAMICS = 11,
+  NB_PARAMETER_COMPONENT_REGIONAL_OPERATOR = 12,
+} NBParameterComponentKind;
+
+typedef enum NBParameterElementType {
+  NB_PARAMETER_ELEMENT_FP16 = 1,
+  NB_PARAMETER_ELEMENT_BF16 = 2,
+  NB_PARAMETER_ELEMENT_FP32 = 3,
+  NB_PARAMETER_ELEMENT_INT8 = 4,
+  NB_PARAMETER_ELEMENT_OPAQUE = 5,
+} NBParameterElementType;
+
 typedef enum NBSchedulerStatus {
   NB_SCHEDULER_STATUS_VALID = 0,
   NB_SCHEDULER_STATUS_INVOCATION_CAPACITY = 1,
   NB_SCHEDULER_STATUS_TIME_OVERFLOW = 2,
   NB_SCHEDULER_STATUS_EVENT_TRANSDUCTION = 3,
+  NB_SCHEDULER_STATUS_PARAMETER_VERSION = 4,
+  NB_SCHEDULER_STATUS_REGIONAL_PROGRAM = 5,
 } NBSchedulerStatus;
 
 typedef enum NBReceptorEventTransductionStatus {
@@ -245,6 +301,18 @@ typedef enum NBRegionalProgramValidation {
   NB_REGIONAL_PROGRAM_HISTORY_LAYOUT = 9,
 } NBRegionalProgramValidation;
 
+typedef enum NBParameterVersionValidation {
+  NB_PARAMETER_VERSION_VALID = 0,
+  NB_PARAMETER_VERSION_NULL = 1,
+  NB_PARAMETER_VERSION_FORMAT = 2,
+  NB_PARAMETER_VERSION_EMPTY = 3,
+  NB_PARAMETER_VERSION_COMPONENT_ORDER = 4,
+  NB_PARAMETER_VERSION_COMPONENT_VALUE = 5,
+  NB_PARAMETER_VERSION_BYTE_COUNT = 6,
+  NB_PARAMETER_VERSION_IDENTITY = 7,
+  NB_PARAMETER_VERSION_FINGERPRINT = 8,
+} NBParameterVersionValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -261,6 +329,8 @@ size_t nb_brain_abi_regional_token_parameters_size(void);
 size_t nb_brain_abi_regional_program_header_size(void);
 size_t nb_brain_abi_regional_route_history_state_size(void);
 size_t nb_brain_abi_regional_route_runtime_state_size(void);
+size_t nb_brain_abi_parameter_component_size(void);
+size_t nb_brain_abi_parameter_version_binding_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -303,6 +373,24 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     uint32_t route_count,
     const NBRegionalTokenParameters *parameters,
     uint32_t parameter_count
+);
+
+uint64_t nb_brain_abi_regional_program_shape_fingerprint(
+    const NBRegionalTokenLayout *layouts,
+    uint32_t module_count,
+    const NBRegionalRoute *routes,
+    uint32_t route_count,
+    uint32_t parameter_count
+);
+
+uint64_t nb_brain_abi_parameter_version_fingerprint(
+    const NBParameterVersionBinding *binding,
+    const NBParameterComponent *components
+);
+
+uint32_t nb_brain_abi_validate_parameter_version(
+    const NBParameterVersionBinding *binding,
+    const NBParameterComponent *components
 );
 
 #ifdef __cplusplus

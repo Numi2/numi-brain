@@ -170,6 +170,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   public let routeMessageDimensions: [UInt32]
   public let routeHistoryScalarCount: Int
   public let parameters: [RegionalTokenParameters]
+  public let shapeFingerprint: UInt64
   public let fingerprint: UInt64
 
   public init(
@@ -335,6 +336,17 @@ public struct RegionalTokenProgram: Equatable, Sendable {
         }
       }
     }
+    let shapeFingerprint = layoutRecords.withUnsafeBufferPointer { layouts in
+      routeRecords.withUnsafeBufferPointer { routes in
+        nb_brain_abi_regional_program_shape_fingerprint(
+          layouts.baseAddress,
+          UInt32(layouts.count),
+          routes.baseAddress,
+          UInt32(routes.count),
+          UInt32(parameterRecords.count)
+        )
+      }
+    }
     self.scheduleFingerprint = schedule.fingerprint
     self.layouts = layouts
     self.routes = canonicalRoutes
@@ -342,6 +354,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     self.routeMessageDimensions = routeMessageDimensions
     self.routeHistoryScalarCount = Int(routeHistoryScalarCount)
     self.parameters = parameters
+    self.shapeFingerprint = shapeFingerprint
     self.fingerprint = fingerprint
   }
 
@@ -351,6 +364,10 @@ public struct RegionalTokenProgram: Equatable, Sendable {
 
   public var fingerprintHex: String {
     String(format: "%016llx", fingerprint)
+  }
+
+  public var shapeFingerprintHex: String {
+    String(format: "%016llx", shapeFingerprint)
   }
 
   public var headerRecord: NBRegionalProgramHeader {

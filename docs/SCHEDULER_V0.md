@@ -1,4 +1,4 @@
-# Multi-rate scheduler and module ABI v0.6
+# Multi-rate scheduler and module ABI v0.7
 
 This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and schedule-driven recurrent regional-token operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
@@ -25,7 +25,7 @@ ABI version 1 compiles the following standard-layout records:
 | `NBReceptorEventTransductionUniforms` | 40 | Root interval and bounded input/output queue counts |
 | `NBReceptorEventTransductionResult` | 16 | Private compacted event counts and typed status |
 | `NBDueInvocation` | 32 | Compacted environment/module execution request |
-| `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
+| `NBSchedulerUniforms` | 56 | Root physical-time window, parameter/schedule identity, capacities, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
 | `NBRegionalModuleState` | 32 | Compact population trace, counters, phase, and last-update time |
 | `NBRegionalTokenLayout` | 32 | Region-major token, incoming-route span, and normal-route budget |
@@ -34,6 +34,8 @@ ABI version 1 compiles the following standard-layout records:
 | `NBRegionalProgramHeader` | 48 | Versioned program counts, routing policy constants, and fingerprint |
 | `NBRegionalRouteHistoryState` | 16 | Timestamped causal-message ring cursor |
 | `NBRegionalRouteRuntimeState` | 32 | Per-agent route score, strength, selection, persistence, and counters |
+| `NBParameterComponent` | 32 | Canonical immutable shared-parameter component identity |
+| `NBParameterVersionBinding` | 64 | Version, parent, schedule, regional shape/content, and total-byte identity |
 
 The module descriptor layout is:
 
@@ -99,6 +101,8 @@ The Metal path dispatches `transduce_receptor_interrupts` after the accepted tis
 Commit succeeds only when the fingerprint, generation, base time, and clock count match the current scheduler. Abort is discarding the value transaction. Repeating a rejected transaction with the same target and events yields the same invocation list.
 
 A checkpoint restore validates schedule identity, clock count, next-due time, and last-update time before accepting state.
+
+Snapshots and transactions also bind a parameter-version fingerprint. Restore, commit, stable snapshot hashing, and cohort compaction reject a different or mixed version. The Metal scheduler validates the same fingerprint and schedule against a private immutable `NBParameterVersionBinding`; the regional kernel separately validates the active regional program. See [PARAMETER_VERSIONING_V0.md](PARAMETER_VERSIONING_V0.md).
 
 The integrated Metal path uses two private clock generations. `schedule_due_modules` reads the committed generation and overwrites the other generation after the accepted tissue candidate sequence on the same compute encoder. A root commit swaps tissue and scheduler generation ownership together. Abort leaves the committed clock pointer, time, and generation unchanged. Rejected physical attempts affect the accepted target time only when simulated time actually advances.
 
@@ -183,5 +187,9 @@ These names define scheduling roles. Every role currently executes the common fa
 37. A committed lower-bound onset is included only for initialization and is not delivered again in the adjacent root.
 38. Rejected candidates and full root abort do not change the derived interrupt, scheduler clocks, or regional effects on retry.
 39. Schema-v11 records receptor ABI size, interrupt class, latency, transduction dispatches, private queue/result memory, event counts, typed status, and CPU parity.
+40. C++, Swift, and Metal agree on the 32-byte parameter component, 64-byte binding, and 56-byte scheduler uniforms.
+41. CPU snapshots, transactions, restore, stable hashes, and cohort compaction bind one parameter fingerprint.
+42. Metal scheduler and regional execution validate one private immutable version binding before publishing neural state.
+43. Schema-v12 records sequence, version, parent, components, parameter bytes, shape/content identity, binding memory, and exact CPU version parity.
 
 Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.

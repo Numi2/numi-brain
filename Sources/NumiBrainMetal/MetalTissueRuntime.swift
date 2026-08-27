@@ -6,6 +6,7 @@ import NumiBrainCore
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
   public struct Submission: Equatable, Sendable, Codable {
+    public let parameterVersionFingerprint: UInt64
     public let attemptedSubsteps: Int
     public let acceptedSubsteps: Int
     public let eventCompactionDispatches: Int
@@ -45,6 +46,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let randomContext: TissueRandomContext
   public let brainSchedule: BrainModuleSchedule
   public let regionalTokenProgram: RegionalTokenProgram
+  public let parameterVersion: BrainParameterVersion
   public let schedulerEnvironmentIdentifier: UInt32
   public let historyCapacity = TissueDelayField.historyCapacity
   public let maxEncodedSubsteps: Int
@@ -86,6 +88,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let schedulerUniformBuffer: any MTLBuffer
   private let schedulerInvocationBuffer: any MTLBuffer
   private let schedulerResultBuffer: any MTLBuffer
+  private let parameterVersionBindingBuffer: any MTLBuffer
   private let regionalStateBuffers: [any MTLBuffer]
   private let regionalProgramHeaderBuffer: any MTLBuffer
   private let regionalLayoutBuffer: any MTLBuffer
@@ -114,6 +117,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let receptorEventTransductionUniformByteCount: Int
   public let receptorEventTransductionResultByteCount: Int
   public let schedulerInvocationCapacityByteCount: Int
+  public let parameterVersionBindingByteCount: Int
   public let regionalStateByteCount: Int
   public let regionalTokenStateByteCount: Int
   public let regionalRouteByteCount: Int
@@ -151,6 +155,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     randomContext: TissueRandomContext = .deterministicDefault,
     brainSchedule requestedBrainSchedule: BrainModuleSchedule? = nil,
     regionalTokenProgram requestedRegionalTokenProgram: RegionalTokenProgram? = nil,
+    parameterVersion requestedParameterVersion: BrainParameterVersion? = nil,
     initialRegionalTokenValues requestedInitialRegionalTokenValues: [Float]? = nil,
     initialRegionalRoutingState requestedInitialRegionalRoutingState: RegionalRoutingState? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
@@ -210,6 +215,37 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ?? RegionalTokenProgram.runtimeFoundationV0(schedule: brainSchedule)
     guard regionalTokenProgram.scheduleFingerprint == brainSchedule.fingerprint else {
       throw TissueError.metal("regional token program does not match the brain schedule")
+    }
+    let parameterVersion = try requestedParameterVersion
+      ?? BrainParameterVersion.runtimeFoundationV0(
+        schedule: brainSchedule,
+        regionalProgram: regionalTokenProgram,
+        tissueParameters: parameters
+      )
+    guard parameterVersion.scheduleFingerprint == brainSchedule.fingerprint,
+      parameterVersion.regionalShapeFingerprint == regionalTokenProgram.shapeFingerprint,
+      parameterVersion.regionalProgramFingerprint == regionalTokenProgram.fingerprint,
+      parameterVersion.components.first(where: { $0.kind == .tissueDynamics })?
+        .contentFingerprint == parameters.parameterFingerprint,
+      parameterVersion.components.first(where: { $0.kind == .regionalOperator })?
+        .contentFingerprint == regionalTokenProgram.fingerprint
+    else {
+      throw TissueError.metal(
+        "parameter version does not match tissue, schedule, or regional program"
+      )
+    }
+    var parameterBindingValidationRecord = parameterVersion.abiBinding
+    let parameterComponentValidationRecords = parameterVersion.components.map(\.abiRecord)
+    let parameterValidation = parameterComponentValidationRecords.withUnsafeBufferPointer {
+      components in
+      withUnsafePointer(to: &parameterBindingValidationRecord) { binding in
+        nb_brain_abi_validate_parameter_version(binding, components.baseAddress)
+      }
+    }
+    guard parameterValidation == UInt32(NB_PARAMETER_VERSION_VALID.rawValue) else {
+      throw TissueError.metal(
+        "compiled parameter manifest validation failed with code \(parameterValidation)"
+      )
     }
     let initialRegionalTokenValues =
       requestedInitialRegionalTokenValues
@@ -369,7 +405,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let schedulerArgumentDescriptor = MTL4ArgumentTableDescriptor()
     schedulerArgumentDescriptor.label = "NumiBrain scheduler arguments"
-    schedulerArgumentDescriptor.maxBufferBindCount = 8
+    schedulerArgumentDescriptor.maxBufferBindCount = 9
     schedulerArgumentDescriptor.initializeBindings = true
     guard
       let schedulerArgumentTable = try? device.makeArgumentTable(
@@ -380,7 +416,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 23
+    regionalArgumentDescriptor.maxBufferBindCount = 24
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -501,7 +537,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<NBRegionalRouteHistoryState>.stride
         == Int(NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT),
       MemoryLayout<NBRegionalRouteRuntimeState>.stride
-        == Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT)
+        == Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT),
+      MemoryLayout<NBParameterComponent>.stride == Int(NB_PARAMETER_COMPONENT_BYTE_COUNT),
+      MemoryLayout<NBParameterVersionBinding>.stride
+        == Int(NB_PARAMETER_VERSION_BINDING_BYTE_COUNT)
     else {
       throw TissueError.metal("Swift imported scheduler ABI does not match NumiBrainABI")
     }
@@ -588,6 +627,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       let schedulerResultBuffer = device.makeBuffer(
         length: MemoryLayout<NBSchedulerResult>.stride,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let parameterVersionBindingBuffer = device.makeBuffer(
+        length: MemoryLayout<NBParameterVersionBinding>.stride,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
       let firstRegionalStateBuffer = device.makeBuffer(
@@ -720,6 +763,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     schedulerUniformBuffer.label = "NumiBrain scheduler uniforms"
     schedulerInvocationBuffer.label = "NumiBrain compacted due-module invocations"
     schedulerResultBuffer.label = "NumiBrain scheduler result"
+    parameterVersionBindingBuffer.label = "NumiBrain immutable parameter-version binding"
     firstRegionalStateBuffer.label = "NumiBrain regional state generation 0"
     secondRegionalStateBuffer.label = "NumiBrain regional state generation 1"
     regionalProgramHeaderBuffer.label = "NumiBrain immutable regional program header"
@@ -802,7 +846,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 40
+    residencyDescriptor.initialCapacity = stateBuffers.count + 41
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -832,6 +876,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(schedulerUniformBuffer)
     residencySet.addAllocation(schedulerInvocationBuffer)
     residencySet.addAllocation(schedulerResultBuffer)
+    residencySet.addAllocation(parameterVersionBindingBuffer)
     for buffer in regionalStateBuffers {
       residencySet.addAllocation(buffer)
     }
@@ -876,6 +921,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.randomContext = randomContext
     self.brainSchedule = brainSchedule
     self.regionalTokenProgram = regionalTokenProgram
+    self.parameterVersion = parameterVersion
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maxEncodedSubsteps = maxEncodedSubsteps
     self.maxSchedulerEvents = maxSchedulerEvents
@@ -913,6 +959,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.schedulerUniformBuffer = schedulerUniformBuffer
     self.schedulerInvocationBuffer = schedulerInvocationBuffer
     self.schedulerResultBuffer = schedulerResultBuffer
+    self.parameterVersionBindingBuffer = parameterVersionBindingBuffer
     self.regionalStateBuffers = regionalStateBuffers
     self.regionalProgramHeaderBuffer = regionalProgramHeaderBuffer
     self.regionalLayoutBuffer = regionalLayoutBuffer
@@ -943,6 +990,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.receptorEventTransductionResultByteCount =
       MemoryLayout<NBReceptorEventTransductionResult>.stride
     self.schedulerInvocationCapacityByteCount = schedulerInvocationCapacityByteCount
+    self.parameterVersionBindingByteCount = MemoryLayout<NBParameterVersionBinding>.stride
     self.regionalStateByteCount = regionalStateByteCount
     self.regionalTokenStateByteCount = regionalTokenStateByteCount
     self.regionalRouteByteCount = regionalRouteByteCount
@@ -1035,6 +1083,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: schedulerDescriptorBuffer,
       size: schedulerDescriptorByteCount,
       label: "NumiBrain module descriptor upload"
+    )
+    var parameterVersionBinding = parameterVersion.abiBinding
+    withUnsafeBytes(of: &parameterVersionBinding) { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<NBParameterVersionBinding>.stride
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: parameterVersionBindingBuffer,
+      size: MemoryLayout<NBParameterVersionBinding>.stride,
+      label: "NumiBrain parameter-version binding upload"
     )
     let initialClockRecords = brainSchedule.modules.map { _ in
       BrainModuleClockState(nextDue: BrainTimestamp(microseconds: 0)).abiRecord
@@ -1411,6 +1473,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         receptorEventTransductionResultBuffer.gpuAddress,
         index: 7
       )
+      schedulerArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 8)
       encoder.setComputePipelineState(schedulerPipeline)
       encoder.setArgumentTable(schedulerArgumentTable)
       encoder.dispatchThreads(
@@ -1490,6 +1553,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         regionalSelectedRouteCountBuffer.gpuAddress,
         index: 22
       )
+      regionalArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 23)
       encoder.setComputePipelineState(regionalPipeline)
       encoder.setArgumentTable(regionalArgumentTable)
       encoder.dispatchThreads(
@@ -1506,6 +1570,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingSchedulerInitialized = schedulerWindow.initialize
     hasCommittedSchedulerResult = false
     return Submission(
+      parameterVersionFingerprint: parameterVersion.fingerprint,
       attemptedSubsteps: acceptedSubsteps.count,
       acceptedSubsteps: acceptedCount,
       eventCompactionDispatches: acceptedSubsteps.count,
@@ -1681,6 +1746,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     return SchedulerInspection(
       snapshot: BrainSchedulerSnapshot(
         scheduleFingerprint: brainSchedule.fingerprint,
+        parameterVersionFingerprint: parameterVersion.fingerprint,
         committedTime: committedSchedulerTime,
         generation: committedSchedulerGeneration,
         moduleClocks: clocks
@@ -1717,6 +1783,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     ).map(BrainModuleClockState.init(abiRecord:))
     return BrainSchedulerSnapshot(
       scheduleFingerprint: brainSchedule.fingerprint,
+      parameterVersionFingerprint: parameterVersion.fingerprint,
       committedTime: committedSchedulerTime,
       generation: committedSchedulerGeneration,
       moduleClocks: clocks
@@ -2021,6 +2088,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     var uniforms = NBSchedulerUniforms()
     uniforms.committed_time_microseconds = startTime.rawValue
     uniforms.target_time_microseconds = targetTime.rawValue
+    uniforms.parameter_version_fingerprint = parameterVersion.fingerprint
+    uniforms.schedule_fingerprint = brainSchedule.fingerprint
     uniforms.module_count = UInt32(brainSchedule.modules.count)
     uniforms.event_count = UInt32(totalEventCount)
     uniforms.invocation_capacity = UInt32(maxSchedulerInvocations)

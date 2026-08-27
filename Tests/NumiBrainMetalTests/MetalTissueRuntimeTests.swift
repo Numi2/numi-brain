@@ -8,6 +8,35 @@ import XCTest
 final class MetalTissueRuntimeTests: XCTestCase {
   private let parameters = TissueParameters.corticalSheetV0
 
+  func testMetalRejectsMismatchedImmutableParameterVersionBeforeDispatch() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let version = try BrainParameterVersion.runtimeFoundationV0(
+      schedule: schedule,
+      regionalProgram: program,
+      tissueParameters: parameters
+    )
+    var changedParameters = parameters
+    changedParameters.excitatorySelfWeight += 0.25
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 8,
+      height: 8,
+      parameters: changedParameters
+    )
+    XCTAssertThrowsError(
+      try MetalTissueRuntime(
+        initialState: initial,
+        parameters: changedParameters,
+        stimulus: .none,
+        brainSchedule: schedule,
+        regionalTokenProgram: program,
+        parameterVersion: version,
+        maxEncodedSubsteps: 1
+      )
+    )
+  }
+
   func testMetalAgreesWithCPUOracle() throws {
     try requireMetal4()
     let stimulus = TissueStimulus(startMilliseconds: 2, endMilliseconds: 12)
@@ -122,6 +151,11 @@ final class MetalTissueRuntimeTests: XCTestCase {
     try requireMetal4()
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
     let regionalProgram = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let parameterVersion = try BrainParameterVersion.runtimeFoundationV0(
+      schedule: schedule,
+      regionalProgram: regionalProgram,
+      tissueParameters: parameters
+    )
     let schedulerEvents = [
       try BrainInterruptEvent(
         timestamp: BrainTimestamp(microseconds: 7_500),
@@ -139,7 +173,10 @@ final class MetalTissueRuntimeTests: XCTestCase {
         identifier: 3
       ),
     ]
-    var cpu = CPUMultiRateScheduler(schedule: schedule)
+    var cpu = CPUMultiRateScheduler(
+      schedule: schedule,
+      parameterVersionFingerprint: parameterVersion.fingerprint
+    )
     let cpuTransaction = try cpu.beginAdvance(
       to: BrainTimestamp(microseconds: 20_000),
       events: Array(schedulerEvents.reversed())
@@ -170,6 +207,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
       stimulus: .none,
       brainSchedule: schedule,
       regionalTokenProgram: regionalProgram,
+      parameterVersion: parameterVersion,
       maxEncodedSubsteps: 20
     )
     let submission = try metal.runRootTransaction(
@@ -186,6 +224,12 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(submission.schedulerHostInputEventCount, schedulerEvents.count)
     XCTAssertEqual(submission.schedulerReceptorInputEventCount, 0)
     XCTAssertEqual(submission.schedulerInputEventCount, schedulerEvents.count)
+    XCTAssertEqual(submission.parameterVersionFingerprint, parameterVersion.fingerprint)
+    XCTAssertEqual(metal.parameterVersionBindingByteCount, 64)
+    XCTAssertEqual(
+      inspection.snapshot.parameterVersionFingerprint,
+      parameterVersion.fingerprint
+    )
     XCTAssertEqual(metal.schedulerDescriptorByteCount, 8 * 32)
     XCTAssertEqual(metal.schedulerClockByteCount, 8 * 16)
     XCTAssertEqual(metal.schedulerEventCapacityByteCount, 64 * 24)
@@ -294,6 +338,12 @@ final class MetalTissueRuntimeTests: XCTestCase {
   func testMetalReceptorOnsetBecomesTransactionalEmergencyInterrupt() throws {
     try requireMetal4()
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let regionalProgram = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let parameterVersion = try BrainParameterVersion.runtimeFoundationV0(
+      schedule: schedule,
+      regionalProgram: regionalProgram,
+      tissueParameters: parameters
+    )
     let receptorSchedule = try TissueEventSchedule(
       events: [
         TissueReceptorEvent(
@@ -317,7 +367,10 @@ final class MetalTissueRuntimeTests: XCTestCase {
       targetTime: BrainTimestamp(microseconds: 5_000),
       includeCommittedBoundary: true
     )
-    var cpu = CPUMultiRateScheduler(schedule: schedule)
+    var cpu = CPUMultiRateScheduler(
+      schedule: schedule,
+      parameterVersionFingerprint: parameterVersion.fingerprint
+    )
     let cpuTransaction = try cpu.beginAdvance(
       to: BrainTimestamp(microseconds: 5_000),
       events: receptorInterrupts
@@ -340,6 +393,8 @@ final class MetalTissueRuntimeTests: XCTestCase {
       stimulus: .none,
       eventSchedule: receptorSchedule,
       brainSchedule: schedule,
+      regionalTokenProgram: regionalProgram,
+      parameterVersion: parameterVersion,
       maxEncodedSubsteps: 8
     )
     let attempts = [true, false, true, true, true, true]

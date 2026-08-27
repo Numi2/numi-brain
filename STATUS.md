@@ -4,8 +4,8 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue source slice v0.11, scheduler CPU oracle v0.1, and integrated Metal scheduler/regional path v0.7
-- Implemented runtime code: deterministic scheduler, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with a compiled 64-byte receptor-event ABI, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
+- Current state: specification, GPU-compacted tissue source slice v0.12, scheduler CPU oracle v0.1, immutable parameter-manifest/publication boundary v0.12, and integrated Metal scheduler/regional path v0.8
+- Implemented runtime code: deterministic scheduler, immutable shared-parameter registry, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with a compiled 64-byte receptor-event ABI, compiled 32/64-byte parameter manifest records, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, private parameter-version validation, transactional module clocks, due-list compaction and consumption, 10,752 region-major token scalars, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, and timestamp-synchronous recurrent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
@@ -56,6 +56,12 @@ The scheduler foundation currently proves:
 - CPU/Metal token, diagnostic, delayed route-history, score, and strength numerical parity plus exact discrete counters, selections, switches, and timestamps;
 - a Metal route-ablation test that changes receiver tokens while preserving tissue and diagnostic state;
 - recurrent token, route-history, and routing-state replay, retry, abort, and control-interval chunking equivalence.
+- compiled canonical component manifests and content fingerprints independent of padding;
+- separate regional shape and content identities so compatible successors can change values without changing token/route ABI;
+- thread-safe rollout cohort leases that prohibit parameter publication before a synchronization boundary;
+- direct-successor, parent, schedule, and shape validation for publication;
+- parameter-version-bound CPU transactions, checkpoints, stable hashes, and cohort compaction;
+- one private 64-byte GPU binding validated by both scheduler and regional kernels.
 
 The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded one-agent Metal kernels share the compiled ABI and deterministic semantics. The token operator is authoritative regional neural state; the compact trace is diagnostic metadata. Learned/context-conditioned route biases, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, GPU cohort prefix sums, indirect execution, adaptive periods, learned production weights, and the complete 96-module graph remain unimplemented.
 
@@ -63,7 +69,7 @@ The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advance
 
 ## Implemented tissue and regional evidence
 
-The v0.11 source slice retains the v0.10 dynamic-routing behavior and additionally proves a compiled receptor-event ABI, GPU-resident onset interrupt transduction, causal latency, boundary deduplication, emergency-module delivery, and shared transaction semantics. Bounded Apple M4 Pro remote and Apple M4 local artifacts are checked into [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md). The Mini qualification began only after the earlier crow evaluation ended.
+The v0.12 source slice retains the v0.11 receptor-interrupt behavior and adds compiled immutable parameter manifests, synchronization-boundary publication, CPU checkpoint/cohort version identity, separate regional shape/content fingerprints, and private Metal version validation. New bounded qualification artifacts are pending; the last checked Apple M4 Pro remote and Apple M4 local artifacts remain in [`evidence/tissue-v0.11`](evidence/tissue-v0.11/README.md).
 
 The implemented tissue slice currently proves:
 
@@ -103,7 +109,7 @@ The implemented tissue slice currently proves:
 - route selection counters, last-selected timestamps, and switch counters agree exactly between CPU and Metal;
 - routing state rolls back, retries, replays, and chunks at the same transaction boundary as tokens and route history.
 
-The XCTest suite contains 42 passing tests: 14 tissue CPU tests, 13 scheduler/regional CPU tests, and 15 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Causality and seed tests require future-event silence, exact receptor latency and boundary semantics, and seed-dependent trajectories. Metal tests require exact receptor-derived and host scheduler invocation parity, recurrent token, route-history, and routing-state CPU numerical parity, dynamic-selection, delayed-message, emergency-bypass and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
+The XCTest suite contains 48 passing tests locally: 14 tissue CPU tests, 18 scheduler/regional/parameter CPU tests, and 16 Metal 4 tests. Golden vectors pin the random and module ABI fingerprints. Parameter tests require canonical compiled fingerprints, serialization tamper rejection, content/shape separation, synchronization-only publication, and stale checkpoint/cohort rejection. Causality and seed tests require future-event silence, exact receptor latency and boundary semantics, and seed-dependent trajectories. Metal tests require exact receptor-derived and host scheduler invocation parity, immutable version identity, mismatched-manifest rejection, recurrent token, route-history, and routing-state CPU numerical parity, dynamic-selection, delayed-message, emergency-bypass and route-ablation causality, and joint retry, abort, replay, and chunking equivalence.
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable receptor event uses one compiled 64-byte record. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. The scheduler owns a 1,536-byte private transduced-interrupt queue and a 16-byte private result in addition to the host event view. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 

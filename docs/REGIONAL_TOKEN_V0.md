@@ -1,4 +1,4 @@
-# Regional recurrent token operator v0.3
+# Regional recurrent token operator v0.4
 
 This document defines the first executable regional `H_r` state in NumiBrain. It replaces the former compact population trace as the authoritative neural regional state while retaining that 32-byte per-module record as scheduler diagnostics and evidence metadata.
 
@@ -20,6 +20,8 @@ It implements a bounded eight-module vertical slice of NumiBrain v1.0 Section 8.
 The validator requires layouts to match the canonical module descriptors, scalar and route spans to be contiguous, every normal-route budget to fit the receiver's non-emergency candidate count, route endpoints and sender tokens to exist, parameters and gains to be finite, history offsets and message dimensions to be canonical, route delays to lie in `0...5000` microseconds, and the parameter count to equal the token-state scalar count. Duplicate route identities, nonzero reserved fields, and budget drift are rejected. A delayed route never silently executes as an undelayed substitute.
 
 The program fingerprint is FNV-1a over explicit little-endian layout and route-budget fields, program version, history capacity, delay and persistence bounds, score constants, route fields, and exact FP32 parameter bit patterns. Padding is excluded. The program is immutable for the lifetime of a rollout runtime.
+
+A second compiled shape fingerprint excludes learned FP32 parameter bits and route gains while retaining layout, route identity, delay, history, and budget structure. Parameter publication requires this shape identity to remain compatible while allowing the content fingerprint to change. The active content fingerprint is included in the immutable parameter version and checked again by the Metal regional kernel.
 
 ## Executable reference state
 

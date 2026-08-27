@@ -236,12 +236,26 @@ struct NBDueInvocationABI {
 struct NBSchedulerUniformsABI {
     ulong committed_time_microseconds;
     ulong target_time_microseconds;
+    ulong parameter_version_fingerprint;
+    ulong schedule_fingerprint;
     uint module_count;
     uint event_count;
     uint invocation_capacity;
     uint environment_identifier;
     uint flags;
     uint reserved;
+};
+
+struct NBParameterVersionBindingABI {
+    uint format_version;
+    uint component_count;
+    ulong version_sequence;
+    ulong version_fingerprint;
+    ulong parent_version_fingerprint;
+    ulong schedule_fingerprint;
+    ulong regional_shape_fingerprint;
+    ulong regional_program_fingerprint;
+    ulong total_parameter_bytes;
 };
 
 struct NBSchedulerResultABI {
@@ -339,7 +353,8 @@ static_assert(
     "receptor transduction result ABI drift"
 );
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
-static_assert(sizeof(NBSchedulerUniformsABI) == 40, "scheduler uniform ABI drift");
+static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
+static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
@@ -356,6 +371,9 @@ constant uint NBSchedulerStatusValid = 0u;
 constant uint NBSchedulerStatusInvocationCapacity = 1u;
 constant uint NBSchedulerStatusTimeOverflow = 2u;
 constant uint NBSchedulerStatusEventTransduction = 3u;
+constant uint NBSchedulerStatusParameterVersion = 4u;
+constant uint NBSchedulerStatusRegionalProgram = 5u;
+constant uint NBParameterManifestVersion = 1u;
 constant uint NBReceptorTransductionStatusValid = 0u;
 constant uint NBReceptorTransductionStatusEventCapacity = 1u;
 constant uint NBReceptorTransductionStatusTimeOverflow = 2u;
@@ -488,6 +506,7 @@ kernel void schedule_due_modules(
     device NBDueInvocationABI *invocations [[buffer(5)]],
     device NBSchedulerResultABI *result [[buffer(6)]],
     device const NBReceptorEventTransductionResultABI *eventResult [[buffer(7)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(8)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -500,6 +519,13 @@ kernel void schedule_due_modules(
     result->invocation_count = 0u;
     result->status = NBSchedulerStatusValid;
     result->target_time_microseconds = uniforms->target_time_microseconds;
+    if (parameterVersion->format_version != NBParameterManifestVersion
+        || parameterVersion->version_fingerprint
+            != uniforms->parameter_version_fingerprint
+        || parameterVersion->schedule_fingerprint != uniforms->schedule_fingerprint) {
+        result->status = NBSchedulerStatusParameterVersion;
+        return;
+    }
     if (eventResult->status != NBReceptorTransductionStatusValid) {
         result->status = NBSchedulerStatusEventTransduction;
         return;
@@ -683,7 +709,7 @@ kernel void advance_due_regional_tokens(
     device const NBRegionalTokenLayoutABI *layouts [[buffer(2)]],
     device const NBRegionalRouteABI *routes [[buffer(3)]],
     device const NBRegionalTokenParametersABI *parameters [[buffer(4)]],
-    device const NBSchedulerResultABI *schedulerResult [[buffer(5)]],
+    device NBSchedulerResultABI *schedulerResult [[buffer(5)]],
     device const NBDueInvocationABI *invocations [[buffer(6)]],
     device const NBRegionalModuleStateABI *inputDiagnostics [[buffer(7)]],
     device NBRegionalModuleStateABI *outputDiagnostics [[buffer(8)]],
@@ -701,10 +727,21 @@ kernel void advance_due_regional_tokens(
     device NBRegionalRouteRuntimeStateABI *outputRouteRuntimeStates [[buffer(20)]],
     device uint *selectedRouteIndices [[buffer(21)]],
     device uint *selectedRouteCounts [[buffer(22)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(23)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
     const uint laneCount = lanesPerThreadgroup.x;
+    if (lane == 0u
+        && (parameterVersion->regional_program_fingerprint
+                != header->program_fingerprint
+            || parameterVersion->schedule_fingerprint == 0ul)) {
+        schedulerResult->status = NBSchedulerStatusRegionalProgram;
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+    if (schedulerResult->status != NBSchedulerStatusValid) {
+        return;
+    }
     for (uint moduleIndex = lane;
          moduleIndex < header->module_count;
          moduleIndex += laneCount) {

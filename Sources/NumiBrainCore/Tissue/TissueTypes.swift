@@ -651,6 +651,50 @@ public struct TissueParameters: Equatable, Sendable, Codable {
 
   public static let corticalSheetV0 = TissueParameters()
 
+  /// Stable field order used by immutable parameter manifests. Runtime time,
+  /// stimulus, state, and random counters are intentionally excluded.
+  public var canonicalValues: [Float] {
+    [
+      timestepMilliseconds,
+      excitatoryTimeConstantMilliseconds,
+      inhibitoryTimeConstantMilliseconds,
+      adaptationTimeConstantMilliseconds,
+      axonalRelayTimeConstantMilliseconds,
+      excitatorySelfWeight,
+      inhibitoryToExcitatoryWeight,
+      excitatoryToInhibitoryWeight,
+      inhibitorySelfWeight,
+      excitatorySpatialMix,
+      inhibitorySpatialMix,
+      adaptationStrength,
+      longRangeProjectionGain,
+      excitatoryBias,
+      inhibitoryBias,
+      excitatoryGain,
+      inhibitoryGain,
+    ]
+  }
+
+  public var parameterFingerprint: UInt64 {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt32, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x100_0000_01b3
+        }
+      }
+    }
+    mix(1, into: &hash)
+    mix(UInt32(canonicalValues.count), into: &hash)
+    for value in canonicalValues {
+      mix(value.bitPattern, into: &hash)
+    }
+    return hash
+  }
+
   public func validate() throws {
     let values = [
       timestepMilliseconds,
