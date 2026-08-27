@@ -1,7 +1,8 @@
 import Foundation
 import NumiBrainABI
-@testable import NumiBrainCore
 import XCTest
+
+@testable import NumiBrainCore
 
 final class BrainDispatchPlanTests: XCTestCase {
   private func makeInputs() throws -> (
@@ -22,7 +23,8 @@ final class BrainDispatchPlanTests: XCTestCase {
         schedule: schedule,
         parameterVersionFingerprint: version.fingerprint
       )
-      let events = index == 1
+      let events =
+        index == 1
         ? [
           try BrainInterruptEvent(
             timestamp: BrainTimestamp(microseconds: 7_500),
@@ -49,6 +51,7 @@ final class BrainDispatchPlanTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_dispatch_plan_header_size(), 48)
     XCTAssertEqual(nb_brain_abi_dispatch_plan_result_size(), 32)
     XCTAssertEqual(nb_brain_abi_dispatch_work_item_size(), 32)
+    XCTAssertEqual(nb_brain_abi_dispatch_cohort_uniforms_size(), 32)
     XCTAssertEqual(MemoryLayout<NBCohortEnvironment>.stride, 40)
     XCTAssertEqual(MemoryLayout<NBDispatchGroup>.stride, 24)
     XCTAssertEqual(MemoryLayout<NBDispatchEntry>.stride, 16)

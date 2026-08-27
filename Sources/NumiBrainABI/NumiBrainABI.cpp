@@ -36,6 +36,7 @@ static_assert(sizeof(NBDispatchEntry) == NB_DISPATCH_ENTRY_BYTE_COUNT);
 static_assert(sizeof(NBDispatchPlanHeader) == NB_DISPATCH_PLAN_HEADER_BYTE_COUNT);
 static_assert(sizeof(NBDispatchPlanResult) == NB_DISPATCH_PLAN_RESULT_BYTE_COUNT);
 static_assert(sizeof(NBDispatchWorkItem) == NB_DISPATCH_WORK_ITEM_BYTE_COUNT);
+static_assert(sizeof(NBDispatchCohortUniforms) == NB_DISPATCH_COHORT_UNIFORMS_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -171,6 +172,10 @@ size_t nb_brain_abi_dispatch_plan_result_size(void) {
 
 size_t nb_brain_abi_dispatch_work_item_size(void) {
   return sizeof(NBDispatchWorkItem);
+}
+
+size_t nb_brain_abi_dispatch_cohort_uniforms_size(void) {
+  return sizeof(NBDispatchCohortUniforms);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -800,6 +805,47 @@ uint64_t nb_brain_abi_dispatch_work_fingerprint(
     mix_little_endian(hash, item.module_id);
     mix_little_endian(hash, item.clock_class);
     mix_little_endian(hash, item.group_index);
+  }
+  return hash;
+}
+
+uint64_t nb_brain_abi_cohort_regional_state_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    uint64_t schedule_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const NBRegionalModuleState *states,
+    uint32_t module_count
+) {
+  if (plan_fingerprint == 0 || parameter_version_fingerprint == 0
+      || schedule_fingerprint == 0 || environment_count == 0 || module_count == 0
+      || environment_identifiers == nullptr || states == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_DISPATCH_PLAN_VERSION));
+  mix_little_endian(hash, plan_fingerprint);
+  mix_little_endian(hash, parameter_version_fingerprint);
+  mix_little_endian(hash, schedule_fingerprint);
+  mix_little_endian(hash, environment_count);
+  mix_little_endian(hash, module_count);
+  for (uint32_t environment_index = 0;
+       environment_index < environment_count;
+       ++environment_index) {
+    mix_little_endian(hash, environment_identifiers[environment_index]);
+    for (uint32_t module_index = 0; module_index < module_count; ++module_index) {
+      const NBRegionalModuleState &state = states[
+          static_cast<uint64_t>(environment_index) * module_count + module_index
+      ];
+      mix_float(hash, state.activation);
+      mix_float(hash, state.integration);
+      mix_float(hash, state.interrupt_salience);
+      mix_float(hash, state.phase);
+      mix_little_endian(hash, state.update_count);
+      mix_little_endian(hash, state.interrupt_count);
+      mix_little_endian(hash, state.last_update_microseconds);
+    }
   }
   return hash;
 }

@@ -44,6 +44,19 @@ public struct BrainDispatchWorkItem: Codable, Equatable, Sendable {
   }
 }
 
+/// Independent environment-major compact recurrent state produced by cohort
+/// execution. It is the existing regional trace primitive, not token state.
+@frozen
+public struct BrainCohortRegionalState: Equatable, Sendable {
+  public let environmentIdentifier: UInt32
+  public let states: [RegionalModuleState]
+
+  public init(environmentIdentifier: UInt32, states: [RegionalModuleState]) {
+    self.environmentIdentifier = environmentIdentifier
+    self.states = states
+  }
+}
+
 /// A compiled, flattened cohort dispatch plan. It preserves independent
 /// environment state while grouping identical module work for later
 /// region-major GPU execution.
@@ -56,6 +69,7 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
   public static let headerByteCount = Int(NB_DISPATCH_PLAN_HEADER_BYTE_COUNT)
   public static let resultByteCount = Int(NB_DISPATCH_PLAN_RESULT_BYTE_COUNT)
   public static let workItemByteCount = Int(NB_DISPATCH_WORK_ITEM_BYTE_COUNT)
+  public static let cohortUniformByteCount = Int(NB_DISPATCH_COHORT_UNIFORMS_BYTE_COUNT)
 
   public let scheduleFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
@@ -82,11 +96,13 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
         "compiled dispatch plans require schedule and parameter identities"
       )
     }
-    guard canonical.allSatisfy({ environment in
-      environment.transaction.scheduleFingerprint == scheduleFingerprint
-        && environment.transaction.parameterVersionFingerprint
-          == parameterVersionFingerprint
-    }) else {
+    guard
+      canonical.allSatisfy({ environment in
+        environment.transaction.scheduleFingerprint == scheduleFingerprint
+          && environment.transaction.parameterVersionFingerprint
+            == parameterVersionFingerprint
+      })
+    else {
       throw BrainRuntimeError.invalidParameterVersion(
         "dispatch-plan environments do not share schedule and parameter identity"
       )
@@ -163,13 +179,14 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
       groupRecord.clock_class = group.clockClass.rawValue
       groupRecord.reserved = 0
       groupRecords.append(groupRecord)
-      entryRecords.append(contentsOf: group.entries.map { entry in
-        var record = NBDispatchEntry()
-        record.interrupt_mask = entry.interruptMask.rawValue
-        record.environment_identifier = entry.environmentIdentifier
-        record.reason_flags = entry.reasons.rawValue
-        return record
-      })
+      entryRecords.append(
+        contentsOf: group.entries.map { entry in
+          var record = NBDispatchEntry()
+          record.interrupt_mask = entry.interruptMask.rawValue
+          record.environment_identifier = entry.environmentIdentifier
+          record.reason_flags = entry.reasons.rawValue
+          return record
+        })
       guard entryRecords.count == Int(nextEntryCount) else {
         throw BrainRuntimeError.capacity("dispatch entry span does not match flattened records")
       }
@@ -250,6 +267,10 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
 
   public var entryCount: Int { groups.reduce(0) { $0 + $1.entries.count } }
 
+  public var activeEnvironmentIdentifiers: [UInt32] {
+    Array(Set(groups.flatMap { $0.entries.map(\.environmentIdentifier) })).sorted()
+  }
+
   public var workItems: [BrainDispatchWorkItem] {
     groups.enumerated().flatMap { groupIndex, group in
       group.entries.map { entry in
@@ -274,6 +295,21 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
         parameterVersionFingerprint,
         records.baseAddress,
         UInt32(records.count)
+      )
+    }
+  }
+
+  public func invocations(
+    for environmentIdentifier: UInt32
+  ) -> [BrainModuleInvocation] {
+    workItems.compactMap { item in
+      guard item.environmentIdentifier == environmentIdentifier else { return nil }
+      return BrainModuleInvocation(
+        timestamp: item.timestamp,
+        moduleIdentifier: item.moduleIdentifier,
+        clockClass: item.clockClass,
+        reasons: item.reasons,
+        interruptMask: item.interruptMask
       )
     }
   }

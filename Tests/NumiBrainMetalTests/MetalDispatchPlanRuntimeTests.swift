@@ -1,4 +1,5 @@
 import Metal
+import NumiBrainABI
 import XCTest
 
 @testable import NumiBrainCore
@@ -6,7 +7,11 @@ import XCTest
 
 @available(macOS 26.0, *)
 final class MetalDispatchPlanRuntimeTests: XCTestCase {
-  private func makePlan() throws -> (BrainDispatchPlan, BrainParameterVersion) {
+  private func makePlan() throws -> (
+    BrainDispatchPlan,
+    BrainModuleSchedule,
+    BrainParameterVersion
+  ) {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
     let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
     let version = try BrainParameterVersion.runtimeFoundationV0(
@@ -20,7 +25,8 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         schedule: schedule,
         parameterVersionFingerprint: version.fingerprint
       )
-      let events = index == 2
+      let events =
+        index == 2
         ? [
           try BrainInterruptEvent(
             timestamp: BrainTimestamp(microseconds: 6_250),
@@ -37,19 +43,36 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         )
       )
     }
-    return (try BrainDispatchPlan(environments: environments), version)
+    return (try BrainDispatchPlan(environments: environments), schedule, version)
   }
 
   func testMetalMaterializesExactVersionedCohortPlanAndReplay() throws {
     try requireMetal4()
-    let (plan, version) = try makePlan()
+    let (plan, schedule, version) = try makePlan()
+    let initialRegionalStates = plan.activeEnvironmentIdentifiers.map { identifier in
+      BrainCohortRegionalState(
+        environmentIdentifier: identifier,
+        states: schedule.modules.enumerated().map { moduleIndex, _ in
+          RegionalModuleState(
+            activation: Float((Int(identifier) + moduleIndex) % 13) / 32,
+            integration: Float((Int(identifier) * 3 + moduleIndex) % 11) / 32,
+            interruptSalience: Float(moduleIndex % 3) / 32,
+            phase: Float(moduleIndex) / Float(schedule.modules.count)
+          )
+        }
+      )
+    }
     let first = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
-      parameterVersion: version
+      schedule: schedule,
+      parameterVersion: version,
+      initialRegionalStates: initialRegionalStates
     )
     let replay = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
-      parameterVersion: version
+      schedule: schedule,
+      parameterVersion: version,
+      initialRegionalStates: initialRegionalStates
     )
 
     XCTAssertEqual(first.status, 0)
@@ -62,31 +85,105 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertEqual(first.groups, replay.groups)
     XCTAssertEqual(first.workItems, replay.workItems)
     XCTAssertEqual(first.workFingerprint, replay.workFingerprint)
+    XCTAssertEqual(first.regionalStates, replay.regionalStates)
+    XCTAssertEqual(first.regionalStateFingerprint, replay.regionalStateFingerprint)
     XCTAssertEqual(first.planFingerprint, replay.planFingerprint)
     XCTAssertEqual(first.parameterVersionFingerprint, replay.parameterVersionFingerprint)
     XCTAssertEqual(first.entryCount, plan.entryCount)
+    XCTAssertEqual(first.regionalStates.map(\.environmentIdentifier), [4, 9, 17, 22])
+    XCTAssertEqual(
+      first.regionalIndirectThreadgroupCount,
+      UInt32((first.regionalStates.count + 63) / 64)
+    )
+    XCTAssertEqual(
+      first.regionalStateByteCount,
+      first.regionalStates.count * schedule.modules.count
+        * RegionalModuleState.abiByteCount
+    )
     XCTAssertFalse(first.deviceName.isEmpty)
     XCTAssertGreaterThanOrEqual(first.gpuDurationSeconds, 0)
+
+    var maximumAbsoluteError: Float = 0
+    for environment in first.regionalStates {
+      let initial = try XCTUnwrap(
+        initialRegionalStates.first {
+          $0.environmentIdentifier == environment.environmentIdentifier
+        }
+      )
+      let expected = try CPURegionalModuleOperator.advance(
+        states: initial.states,
+        schedule: schedule,
+        invocations: plan.invocations(for: environment.environmentIdentifier)
+      )
+      XCTAssertEqual(environment.states.count, expected.count)
+      for (actual, reference) in zip(environment.states, expected) {
+        let errors = [
+          abs(actual.activation - reference.activation),
+          abs(actual.integration - reference.integration),
+          abs(actual.interruptSalience - reference.interruptSalience),
+          abs(actual.phase - reference.phase),
+        ]
+        maximumAbsoluteError = max(maximumAbsoluteError, errors.max() ?? 0)
+        XCTAssertEqual(actual.updateCount, reference.updateCount)
+        XCTAssertEqual(actual.interruptCount, reference.interruptCount)
+        XCTAssertEqual(actual.lastUpdate, reference.lastUpdate)
+      }
+    }
+    XCTAssertLessThanOrEqual(maximumAbsoluteError, 2e-6)
+    let interrupted = try XCTUnwrap(
+      first.regionalStates.first { $0.environmentIdentifier == 17 }
+    )
+    let unaffected = try XCTUnwrap(
+      first.regionalStates.first { $0.environmentIdentifier == 22 }
+    )
+    XCTAssertNotEqual(interrupted.states, unaffected.states)
+    XCTAssertGreaterThan(interrupted.states.map(\.interruptCount).reduce(0, +), 0)
+    XCTAssertEqual(unaffected.states.map(\.interruptCount).reduce(0, +), 0)
+
+    let regionalRecords = first.regionalStates.flatMap { state in
+      state.states.map(\.abiRecord)
+    }
+    let identifiers = first.regionalStates.map(\.environmentIdentifier)
+    let expectedRegionalFingerprint = identifiers.withUnsafeBufferPointer { identifiers in
+      regionalRecords.withUnsafeBufferPointer { states in
+        nb_brain_abi_cohort_regional_state_fingerprint(
+          plan.fingerprint,
+          version.fingerprint,
+          schedule.fingerprint,
+          identifiers.baseAddress,
+          UInt32(identifiers.count),
+          states.baseAddress,
+          UInt32(schedule.modules.count)
+        )
+      }
+    }
+    XCTAssertEqual(first.regionalStateFingerprint, expectedRegionalFingerprint)
+    XCTAssertEqual(BrainDispatchPlan.cohortUniformByteCount, 32)
     XCTAssertEqual(
       first.privateInputByteCount,
       BrainDispatchPlan.headerByteCount
         + plan.groups.count * BrainDispatchPlan.groupByteCount
         + plan.entryCount * BrainDispatchPlan.entryByteCount
         + BrainParameterVersion.bindingByteCount
+        + BrainDispatchPlan.cohortUniformByteCount
+        + first.regionalStates.count * MemoryLayout<UInt32>.stride
+        + schedule.modules.count * BrainModuleSchedule.moduleDescriptorByteCount
+        + first.regionalStateByteCount
     )
     XCTAssertEqual(
       first.privateOutputByteCount,
       plan.groups.count * BrainDispatchPlan.groupByteCount
         + plan.entryCount * BrainDispatchPlan.entryByteCount
         + BrainDispatchPlan.resultByteCount
-        + 16
+        + 32
         + plan.entryCount * BrainDispatchPlan.workItemByteCount
+        + first.regionalStateByteCount
     )
   }
 
   func testMetalRejectsStaleParameterGenerationBeforeUpload() throws {
     try requireMetal4()
-    let (plan, version) = try makePlan()
+    let (plan, schedule, version) = try makePlan()
     let successor = try version.successor(
       regionalProgramFingerprint: version.regionalProgramFingerprint,
       components: version.components
@@ -95,7 +192,31 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertThrowsError(
       try MetalDispatchPlanRuntime.materialize(
         plan: plan,
+        schedule: schedule,
         parameterVersion: successor
+      )
+    )
+
+    let futureState = BrainCohortRegionalState(
+      environmentIdentifier: plan.activeEnvironmentIdentifiers[0],
+      states: schedule.modules.enumerated().map { index, _ in
+        RegionalModuleState(
+          lastUpdate: index == 0 ? BrainTimestamp(microseconds: 30_000) : nil
+        )
+      }
+    )
+    let remainingStates = plan.activeEnvironmentIdentifiers.dropFirst().map { identifier in
+      BrainCohortRegionalState(
+        environmentIdentifier: identifier,
+        states: schedule.modules.map { _ in RegionalModuleState() }
+      )
+    }
+    XCTAssertThrowsError(
+      try MetalDispatchPlanRuntime.materialize(
+        plan: plan,
+        schedule: schedule,
+        parameterVersion: version,
+        initialRegionalStates: [futureState] + remainingStates
       )
     )
   }

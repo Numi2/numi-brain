@@ -6,6 +6,7 @@ import NumiBrainABI
 @frozen
 public struct RegionalModuleState: Equatable, Sendable {
   public static let neverUpdated = UInt64.max
+  public static let abiByteCount = Int(NB_REGIONAL_MODULE_STATE_BYTE_COUNT)
 
   public var activation: Float
   public var integration: Float

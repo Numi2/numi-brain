@@ -303,6 +303,15 @@ struct NBDispatchWorkItemABI {
     uint group_index;
 };
 
+struct NBDispatchCohortUniformsABI {
+    ulong plan_fingerprint;
+    ulong parameter_version_fingerprint;
+    uint environment_count;
+    uint module_count;
+    uint state_count;
+    uint flags;
+};
+
 struct NBDispatchIndirectArgumentsABI {
     uint threadgroups_x;
     uint threadgroups_y;
@@ -411,6 +420,7 @@ static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
 static_assert(sizeof(NBDispatchEntryABI) == 16, "dispatch entry ABI drift");
 static_assert(sizeof(NBDispatchPlanResultABI) == 32, "dispatch result ABI drift");
 static_assert(sizeof(NBDispatchWorkItemABI) == 32, "dispatch work-item ABI drift");
+static_assert(sizeof(NBDispatchCohortUniformsABI) == 32, "cohort uniform ABI drift");
 static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
@@ -469,6 +479,7 @@ kernel void materialize_dispatch_plan(
     device NBDispatchEntryABI *outputEntries [[buffer(5)]],
     device NBDispatchPlanResultABI *result [[buffer(6)]],
     device NBDispatchIndirectArgumentsABI *indirectArguments [[buffer(7)]],
+    device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(8)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint groupIndex = position.y;
@@ -482,9 +493,12 @@ kernel void materialize_dispatch_plan(
         result->reserved = 0u;
         result->plan_fingerprint = header->plan_fingerprint;
         result->parameter_version_fingerprint = header->parameter_version_fingerprint;
-        indirectArguments->threadgroups_x = 0u;
-        indirectArguments->threadgroups_y = 0u;
-        indirectArguments->threadgroups_z = 0u;
+        indirectArguments[0].threadgroups_x = 0u;
+        indirectArguments[0].threadgroups_y = 0u;
+        indirectArguments[0].threadgroups_z = 0u;
+        indirectArguments[1].threadgroups_x = 0u;
+        indirectArguments[1].threadgroups_y = 0u;
+        indirectArguments[1].threadgroups_z = 0u;
         if (header->plan_version != NBDispatchPlanVersion
             || header->flags != 0u
             || header->group_count == 0u
@@ -492,11 +506,22 @@ kernel void materialize_dispatch_plan(
             || header->plan_fingerprint == 0ul
             || header->cohort_fingerprint == 0ul
             || parameterVersion->format_version != NBParameterManifestVersion
+            || cohortUniforms->plan_fingerprint != header->plan_fingerprint
+            || cohortUniforms->parameter_version_fingerprint
+                != header->parameter_version_fingerprint
+            || cohortUniforms->environment_count == 0u
+            || cohortUniforms->module_count == 0u
+            || cohortUniforms->flags != 0u
             || header->parameter_version_fingerprint
                 != parameterVersion->version_fingerprint
             || header->schedule_fingerprint
                 != parameterVersion->schedule_fingerprint) {
             result->status = NBDispatchPlanStatusIdentity;
+        } else if (cohortUniforms->environment_count
+                > ~0u / cohortUniforms->module_count
+            || cohortUniforms->state_count
+                != cohortUniforms->environment_count * cohortUniforms->module_count) {
+            result->status = NBDispatchPlanStatusCapacity;
         } else {
             for (uint index = 0u; index < header->group_count; ++index) {
                 const NBDispatchGroupABI candidate = inputGroups[index];
@@ -509,13 +534,21 @@ kernel void materialize_dispatch_plan(
             }
         }
         if (result->status == NBDispatchPlanStatusValid) {
-            indirectArguments->threadgroups_x =
+            indirectArguments[0].threadgroups_x =
                 header->entry_count / NBDispatchConsumerThreadgroupWidth
                 + (header->entry_count % NBDispatchConsumerThreadgroupWidth == 0u
                     ? 0u
                     : 1u);
-            indirectArguments->threadgroups_y = 1u;
-            indirectArguments->threadgroups_z = 1u;
+            indirectArguments[0].threadgroups_y = 1u;
+            indirectArguments[0].threadgroups_z = 1u;
+            indirectArguments[1].threadgroups_x =
+                cohortUniforms->environment_count / NBDispatchConsumerThreadgroupWidth
+                + (cohortUniforms->environment_count
+                        % NBDispatchConsumerThreadgroupWidth == 0u
+                    ? 0u
+                    : 1u);
+            indirectArguments[1].threadgroups_y = 1u;
+            indirectArguments[1].threadgroups_z = 1u;
         }
     }
     const NBDispatchGroupABI group = inputGroups[groupIndex];
@@ -573,6 +606,110 @@ kernel void consume_dispatch_plan(
     item.clock_class = group.clock_class;
     item.group_index = groupIndex;
     workItems[entryIndex] = item;
+}
+
+/// Advances one independent compact regional-state vector per active
+/// environment. A lane owns one environment and walks canonical groups in
+/// physical-time order, so repeated module updates cannot race.
+kernel void advance_cohort_regional_diagnostics(
+    device const NBDispatchPlanHeaderABI *header [[buffer(0)]],
+    device const NBDispatchCohortUniformsABI *uniforms [[buffer(1)]],
+    device const NBDispatchGroupABI *groups [[buffer(2)]],
+    device const NBDispatchEntryABI *entries [[buffer(3)]],
+    device const uint *environmentIdentifiers [[buffer(4)]],
+    device const NBModuleDescriptorABI *modules [[buffer(5)]],
+    device const NBRegionalModuleStateABI *inputStates [[buffer(6)]],
+    device NBRegionalModuleStateABI *outputStates [[buffer(7)]],
+    uint environmentIndex [[thread_position_in_grid]]
+) {
+    if (environmentIndex >= uniforms->environment_count) {
+        return;
+    }
+    const uint environmentIdentifier = environmentIdentifiers[environmentIndex];
+    const uint stateBase = environmentIndex * uniforms->module_count;
+    for (uint moduleIndex = 0u;
+         moduleIndex < uniforms->module_count;
+         ++moduleIndex) {
+        outputStates[stateBase + moduleIndex] = inputStates[stateBase + moduleIndex];
+    }
+    for (uint groupIndex = 0u; groupIndex < header->group_count; ++groupIndex) {
+        const NBDispatchGroupABI group = groups[groupIndex];
+        uint lower = group.entry_offset;
+        uint upper = group.entry_offset + group.entry_count;
+        uint entryIndex = ~0u;
+        while (lower < upper) {
+            const uint middle = lower + (upper - lower) / 2u;
+            const uint candidate = entries[middle].environment_identifier;
+            if (candidate < environmentIdentifier) {
+                lower = middle + 1u;
+            } else if (candidate > environmentIdentifier) {
+                upper = middle;
+            } else {
+                entryIndex = middle;
+                break;
+            }
+        }
+        if (entryIndex == ~0u) {
+            continue;
+        }
+        uint moduleIndex = ~0u;
+        for (uint candidateIndex = 0u;
+             candidateIndex < uniforms->module_count;
+             ++candidateIndex) {
+            if (modules[candidateIndex].module_id == group.module_id) {
+                moduleIndex = candidateIndex;
+                break;
+            }
+        }
+        if (moduleIndex == ~0u) {
+            continue;
+        }
+        const NBModuleDescriptorABI module = modules[moduleIndex];
+        const NBDispatchEntryABI entry = entries[entryIndex];
+        const uint stateIndex = stateBase + moduleIndex;
+        NBRegionalModuleStateABI state = outputStates[stateIndex];
+        const ulong elapsedMicroseconds = state.last_update_microseconds == ~0ul
+            ? ulong(module.period_microseconds)
+            : group.timestamp_microseconds - state.last_update_microseconds;
+        const float decay = exp(
+            -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
+        );
+        const float blend = 1.0f - decay;
+        const float periodicDrive =
+            (entry.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
+        const float interruptDrive = min(
+            float(popcount(entry.interrupt_mask)) * 0.125f,
+            1.0f
+        );
+        const float target = min(periodicDrive + interruptDrive, 1.0f);
+        state.activation = clamp(
+            decay * state.activation + blend * target,
+            0.0f,
+            1.0f
+        );
+        state.integration = clamp(
+            decay * state.integration + blend * state.activation,
+            0.0f,
+            1.0f
+        );
+        state.interrupt_salience = clamp(
+            decay * state.interrupt_salience + blend * interruptDrive,
+            0.0f,
+            1.0f
+        );
+        state.phase = float(
+            group.timestamp_microseconds % ulong(module.period_microseconds)
+        ) / float(module.period_microseconds);
+        if (state.update_count != ~0u) {
+            state.update_count += 1u;
+        }
+        if ((entry.reason_flags & NBSchedulerReasonInterrupt) != 0u
+            && state.interrupt_count != ~0u) {
+            state.interrupt_count += 1u;
+        }
+        state.last_update_microseconds = group.timestamp_microseconds;
+        outputStates[stateIndex] = state;
+    }
 }
 
 /// Converts immutable receptor-event onsets into the scheduler's compact
