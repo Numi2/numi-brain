@@ -23,6 +23,10 @@ private final class NumanXMyoSimBridge {
   private typealias UInt32Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt32
   private typealias IndexedUInt32Function =
     @convention(c) (UnsafeMutableRawPointer?, UInt32) -> UInt32
+  private typealias IndexedEndpointUInt32Function =
+    @convention(c) (UnsafeMutableRawPointer?, UInt32, UInt32) -> UInt32
+  private typealias IndexedEndpointAxisFloatFunction =
+    @convention(c) (UnsafeMutableRawPointer?, UInt32, UInt32, UInt32) -> Float
   private typealias CStringFunction =
     @convention(c) (UnsafeMutableRawPointer?) -> UnsafePointer<CChar>?
   private typealias FloatFunction = @convention(c) (UnsafeMutableRawPointer?) -> Float
@@ -34,6 +38,11 @@ private final class NumanXMyoSimBridge {
   private let lastErrorFunction: CStringFunction
   private let muscleCountFunction: UInt32Function
   private let muscleIdentifierFunction: IndexedUInt32Function
+  private let bodyCountFunction: UInt32Function
+  private let attachmentRouteNodeCountFunction: IndexedUInt32Function
+  private let attachmentBodyIdentifierFunction: IndexedEndpointUInt32Function
+  private let attachmentLocalCoordinateFunction: IndexedEndpointAxisFloatFunction
+  private let attachmentCatalogFingerprintFunction: UInt64Function
   private let beginRootFunction: StatusFunction
   private let runCandidateFunction: CandidateFunction
   private let acceptCandidateFunction: StatusFunction
@@ -54,6 +63,7 @@ private final class NumanXMyoSimBridge {
   private let committedFingerprintFunction: UInt64Function
   private let committedGenerationFunction: UInt64Function
   let muscleIdentifiers: [UInt32]
+  let attachmentCatalog: NumanXMuscleAttachmentCatalog
 
   init(
     libraryPath: String,
@@ -83,6 +93,21 @@ private final class NumanXMyoSimBridge {
     )
     muscleIdentifierFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_muscle_identifier", from: library
+    )
+    bodyCountFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_body_count", from: library
+    )
+    attachmentRouteNodeCountFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_attachment_route_node_count", from: library
+    )
+    attachmentBodyIdentifierFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_attachment_body_identifier", from: library
+    )
+    attachmentLocalCoordinateFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_attachment_local_coordinate", from: library
+    )
+    attachmentCatalogFingerprintFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_attachment_catalog_fingerprint", from: library
     )
     beginRootFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_begin_root", from: library
@@ -199,6 +224,55 @@ private final class NumanXMyoSimBridge {
       )
     }
     muscleIdentifiers = loadedMuscleIdentifiers
+    do {
+      let bodyCount = bodyCountFunction(created)
+      var attachments = [NumanXMuscleAttachment]()
+      attachments.reserveCapacity(Int(loadedMuscleCount))
+      for muscleIndex in 0..<loadedMuscleCount {
+        let firstPoint = try NumanXBodyLocalPoint(
+          x: attachmentLocalCoordinateFunction(created, muscleIndex, 0, 0),
+          y: attachmentLocalCoordinateFunction(created, muscleIndex, 0, 1),
+          z: attachmentLocalCoordinateFunction(created, muscleIndex, 0, 2)
+        )
+        let terminalPoint = try NumanXBodyLocalPoint(
+          x: attachmentLocalCoordinateFunction(created, muscleIndex, 1, 0),
+          y: attachmentLocalCoordinateFunction(created, muscleIndex, 1, 1),
+          z: attachmentLocalCoordinateFunction(created, muscleIndex, 1, 2)
+        )
+        attachments.append(
+          try NumanXMuscleAttachment(
+            muscleIdentifier: loadedMuscleIdentifiers[Int(muscleIndex)],
+            firstBodyIdentifier: attachmentBodyIdentifierFunction(
+              created, muscleIndex, 0
+            ),
+            terminalBodyIdentifier: attachmentBodyIdentifierFunction(
+              created, muscleIndex, 1
+            ),
+            routeNodeCount: attachmentRouteNodeCountFunction(created, muscleIndex),
+            firstLocalPoint: firstPoint,
+            terminalLocalPoint: terminalPoint
+          )
+        )
+      }
+      let catalog = try NumanXMuscleAttachmentCatalog(
+        bodyCount: bodyCount,
+        attachments: attachments
+      )
+      guard catalog.fingerprint == attachmentCatalogFingerprintFunction(created) else {
+        throw NSError(
+          domain: "NumiBrainNumanXInterop",
+          code: 11,
+          userInfo: [
+            NSLocalizedDescriptionKey: "NumanX muscle attachment catalog identity drift"
+          ]
+        )
+      }
+      attachmentCatalog = catalog
+    } catch {
+      destroyFunction(created)
+      dlclose(library)
+      throw error
+    }
   }
 
   deinit {
@@ -344,6 +418,7 @@ private func run() throws {
   let motorProfile = try ProtectiveMotorProfile.runtimeFoundationFixture(
     muscleIdentifiers: bridge.muscleIdentifiers
   )
+  try bridge.attachmentCatalog.validate(profile: motorProfile)
   let runtime = try MetalTissueRuntime(
     initialState: initial,
     parameters: parameters,
@@ -477,6 +552,14 @@ private func run() throws {
   try bridge.commitRoot()
   completed = true
 
+  let maximumForceAttachments = maximumForceMuscleIdentifiers.compactMap {
+    bridge.attachmentCatalog.attachment(forMuscleIdentifier: $0)
+  }
+  let maximumCommandedForceAttachments =
+    maximumCommandedForceMuscleIdentifiers.compactMap {
+      bridge.attachmentCatalog.attachment(forMuscleIdentifier: $0)
+    }
+
   guard bridge.committedGeneration == 3,
     bridge.committedFingerprint == physicalFingerprints.last,
     transducedMyoSimEventCount == 1,
@@ -489,6 +572,9 @@ private func run() throws {
     maximumForces[2] != maximumForces[0],
     maximumMuscleForces.allSatisfy({ $0 > 0 }),
     maximumForceMuscleIdentifiers.allSatisfy(bridge.muscleIdentifiers.contains),
+    maximumForceAttachments.count == maximumForceMuscleIdentifiers.count,
+    maximumCommandedForceAttachments.count
+      == maximumCommandedForceMuscleIdentifiers.count,
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -516,6 +602,28 @@ private func run() throws {
     "candidate_maximum_generalized_forces": maximumForces,
     "candidate_maximum_muscle_forces": maximumMuscleForces,
     "candidate_maximum_force_muscle_identifiers": maximumForceMuscleIdentifiers,
+    "candidate_maximum_force_first_body_identifiers":
+      maximumForceAttachments.map(\.firstBodyIdentifier),
+    "candidate_maximum_force_terminal_body_identifiers":
+      maximumForceAttachments.map(\.terminalBodyIdentifier),
+    "candidate_maximum_force_route_node_counts":
+      maximumForceAttachments.map(\.routeNodeCount),
+    "candidate_maximum_commanded_force_first_body_identifiers":
+      maximumCommandedForceAttachments.map(\.firstBodyIdentifier),
+    "candidate_maximum_commanded_force_terminal_body_identifiers":
+      maximumCommandedForceAttachments.map(\.terminalBodyIdentifier),
+    "candidate_maximum_commanded_force_route_node_counts":
+      maximumCommandedForceAttachments.map(\.routeNodeCount),
+    "receptor_attachment_first_local_point": [
+      maximumForceAttachments[0].firstLocalPoint.x,
+      maximumForceAttachments[0].firstLocalPoint.y,
+      maximumForceAttachments[0].firstLocalPoint.z,
+    ],
+    "receptor_attachment_terminal_local_point": [
+      maximumForceAttachments[0].terminalLocalPoint.x,
+      maximumForceAttachments[0].terminalLocalPoint.y,
+      maximumForceAttachments[0].terminalLocalPoint.z,
+    ],
     "candidate_maximum_velocity_deltas": maximumVelocityDeltas,
     "candidate_maximum_configuration_deltas": maximumConfigurationDeltas,
     "rejected_physical_fingerprint": rejectedPhysical.fingerprint,
@@ -531,6 +639,8 @@ private func run() throws {
     "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,
+    "numanx_body_count": bridge.attachmentCatalog.bodyCount,
+    "numanx_attachment_catalog_fingerprint": bridge.attachmentCatalog.fingerprint,
   ]
   let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
   print(String(decoding: data, as: UTF8.self))
