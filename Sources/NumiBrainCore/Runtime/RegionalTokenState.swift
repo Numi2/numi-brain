@@ -442,8 +442,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   }
 
   /// Uses the authoritative token shapes and factorized recurrent parameters
-  /// without long-range routes. This is the bounded cohort execution profile;
-  /// routed cohort history is added as an independent transactional boundary.
+  /// without long-range routes. This remains the explicit route-ablation and
+  /// isolated-recurrence profile; production cohort execution uses routed state.
   public static func runtimeFoundationUnroutedV0(
     schedule: BrainModuleSchedule
   ) throws -> RegionalTokenProgram {
@@ -559,7 +559,8 @@ public struct RegionalRouteHistory: Equatable, Sendable {
     guard capacity == program.compiledRouteHistoryCapacity,
       states.count == program.routes.count,
       timestamps.count == program.routes.count * capacity,
-      values.count == program.routeHistoryScalarCount
+      values.count == program.routeHistoryScalarCount,
+      values.allSatisfy(\.isFinite)
     else {
       throw BrainRuntimeError.invalidSchedule("regional route-history shape mismatch")
     }

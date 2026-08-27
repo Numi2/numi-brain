@@ -553,6 +553,21 @@ uint64_t nb_brain_abi_cohort_token_state_fingerprint(
     uint32_t scalar_count_per_environment
 );
 
+uint64_t nb_brain_abi_cohort_routing_state_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    uint64_t regional_program_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const NBRegionalRouteHistoryState *history_states,
+    const uint64_t *history_timestamps,
+    const float *history_values,
+    const NBRegionalRouteRuntimeState *runtime_states,
+    uint32_t route_count,
+    uint32_t history_capacity,
+    uint32_t history_scalar_count
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -70,6 +70,25 @@ public struct BrainCohortTokenState: Equatable, Sendable {
   }
 }
 
+/// Independent per-agent delayed-route and selection state. Shared topology,
+/// route projections, gains, and score constants remain immutable parameters.
+@frozen
+public struct BrainCohortRoutingState: Equatable, Sendable {
+  public let environmentIdentifier: UInt32
+  public let routeHistory: RegionalRouteHistory
+  public let routingState: RegionalRoutingState
+
+  public init(
+    environmentIdentifier: UInt32,
+    routeHistory: RegionalRouteHistory,
+    routingState: RegionalRoutingState
+  ) {
+    self.environmentIdentifier = environmentIdentifier
+    self.routeHistory = routeHistory
+    self.routingState = routingState
+  }
+}
+
 /// A compiled, flattened cohort dispatch plan. It preserves independent
 /// environment state while grouping identical module work for later
 /// region-major GPU execution.

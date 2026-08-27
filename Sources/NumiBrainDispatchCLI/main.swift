@@ -81,6 +81,9 @@ private struct ABIEvidence: Codable {
   let cohortUniformBytes: Int
   let tokenUniformBytes: Int
   let regionalStateBytes: Int
+  let regionalRouteBytes: Int
+  let routeHistoryStateBytes: Int
+  let routeRuntimeStateBytes: Int
   let parameterBindingBytes: Int
 }
 
@@ -93,6 +96,7 @@ private struct IdentityEvidence: Codable {
   let dispatchWorkFingerprint: String
   let regionalStateFingerprint: String
   let tokenStateFingerprint: String
+  let routingStateFingerprint: String
 }
 
 private struct CohortEvidence: Codable {
@@ -104,6 +108,9 @@ private struct CohortEvidence: Codable {
   let dispatchEntryCount: Int
   let maximumEnvironmentCountPerGroup: Int
   let tokenScalarsPerEnvironment: Int
+  let routeCount: Int
+  let routeHistoryCapacity: Int
+  let routeHistoryScalarsPerEnvironment: Int
 }
 
 private struct MetalEvidence: Codable {
@@ -119,6 +126,9 @@ private struct MetalEvidence: Codable {
   let tokenEnvironmentCount: Int
   let tokenStateBytes: Int
   let tokenIndirectThreadgroupCount: UInt32
+  let routingEnvironmentCount: Int
+  let routeHistoryBytes: Int
+  let routeRuntimeStateBytes: Int
   let status: UInt32
   let gpuSeconds: Double
   let execution: String
@@ -140,6 +150,11 @@ private struct VerificationEvidence: Codable {
   let tokenCPUReferenceMaximumAbsoluteError: Double
   let tokenCPUReferenceTolerance: Double
   let tokenCPUReferenceSampleCount: Int
+  let gpuRoutingCPUReferenceWithinTolerance: Bool
+  let gpuRoutingDiscreteStateExact: Bool
+  let gpuRoutingOwnershipExact: Bool
+  let routingCPUReferenceMaximumAbsoluteError: Double
+  let routingCPUReferenceTolerance: Double
   let gpuReplayExact: Bool
   let staleParameterVersionRejected: Bool
 }
@@ -188,8 +203,9 @@ private struct NumiBrainDispatchCommand {
   @available(macOS 26.0, *)
   private static func run(options: Options) throws -> DispatchEvidence {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
-    let program = try RegionalTokenProgram.runtimeFoundationUnroutedV0(
-      schedule: schedule
+    let program = try RegionalTokenProgram.runtimeFoundationV0(
+      schedule: schedule,
+      historyCapacity: 32
     )
     let version = try BrainParameterVersion.runtimeFoundationV0(
       schedule: schedule,
@@ -374,6 +390,9 @@ private struct NumiBrainDispatchCommand {
     ])
     let tokenTolerance: Float = 3e-6
     var tokenMaximumAbsoluteError: Float = 0
+    let routingTolerance: Float = 3e-6
+    var routingMaximumAbsoluteError: Float = 0
+    var routingDiscreteStateExact = true
     for environment in materialized.tokenStates
     where tokenReferenceIdentifiers.contains(environment.environmentIdentifier) {
       guard
@@ -399,6 +418,43 @@ private struct NumiBrainDispatchCommand {
       for (actual, expected) in zip(environment.values, reference.values) {
         tokenMaximumAbsoluteError = max(tokenMaximumAbsoluteError, abs(actual - expected))
       }
+      guard
+        let actualRouting = materialized.routingStates.first(where: {
+          $0.environmentIdentifier == environment.environmentIdentifier
+        })
+      else {
+        throw DispatchCLIError("cohort routing output ownership is incomplete")
+      }
+      routingDiscreteStateExact = routingDiscreteStateExact
+        && actualRouting.routeHistory.states == reference.routeHistory.states
+        && actualRouting.routeHistory.timestamps == reference.routeHistory.timestamps
+        && actualRouting.routingState.states.map(\.isActive)
+          == reference.routingState.states.map(\.isActive)
+        && actualRouting.routingState.states.map(\.selectionCount)
+          == reference.routingState.states.map(\.selectionCount)
+        && actualRouting.routingState.states.map(\.lastSelectedTimestamp)
+          == reference.routingState.states.map(\.lastSelectedTimestamp)
+        && actualRouting.routingState.states.map(\.switchCount)
+          == reference.routingState.states.map(\.switchCount)
+      for (actual, expected) in zip(
+        actualRouting.routeHistory.values,
+        reference.routeHistory.values
+      ) {
+        routingMaximumAbsoluteError = max(
+          routingMaximumAbsoluteError,
+          abs(actual - expected)
+        )
+      }
+      for (actual, expected) in zip(
+        actualRouting.routingState.states,
+        reference.routingState.states
+      ) {
+        routingMaximumAbsoluteError = max(
+          routingMaximumAbsoluteError,
+          abs(actual.score - expected.score),
+          abs(actual.strength - expected.strength)
+        )
+      }
     }
     let tokenCPUReferenceWithinTolerance = tokenMaximumAbsoluteError <= tokenTolerance
     let tokenOwnershipExact =
@@ -409,6 +465,17 @@ private struct NumiBrainDispatchCommand {
       }
       && materialized.tokenIndirectThreadgroupCount
         == UInt32(plan.activeEnvironmentIdentifiers.count)
+    let routingCPUReferenceWithinTolerance =
+      routingMaximumAbsoluteError <= routingTolerance
+    let routingOwnershipExact =
+      materialized.routingStates.map(\.environmentIdentifier)
+        == plan.activeEnvironmentIdentifiers
+      && materialized.routingStates.allSatisfy {
+        $0.routeHistory.states.count == program.routes.count
+          && $0.routeHistory.capacity == program.compiledRouteHistoryCapacity
+          && $0.routeHistory.values.count == program.routeHistoryScalarCount
+          && $0.routingState.states.count == program.routes.count
+      }
     let replayExact =
       replay.groups == materialized.groups
       && replay.workItems == materialized.workItems
@@ -417,6 +484,8 @@ private struct NumiBrainDispatchCommand {
       && replay.regionalStateFingerprint == materialized.regionalStateFingerprint
       && replay.tokenStates == materialized.tokenStates
       && replay.tokenStateFingerprint == materialized.tokenStateFingerprint
+      && replay.routingStates == materialized.routingStates
+      && replay.routingStateFingerprint == materialized.routingStateFingerprint
       && replay.planFingerprint == materialized.planFingerprint
       && replay.parameterVersionFingerprint == materialized.parameterVersionFingerprint
       && replay.status == materialized.status
@@ -424,13 +493,15 @@ private struct NumiBrainDispatchCommand {
       indirectConsumptionExact, regionalCPUReferenceWithinTolerance,
       regionalDiscreteStateExact, regionalOwnershipAndInterruptIsolationExact,
       tokenCPUReferenceWithinTolerance, tokenOwnershipExact, replayExact,
+      routingCPUReferenceWithinTolerance, routingDiscreteStateExact,
+      routingOwnershipExact,
       staleParameterVersionRejected
     else {
       throw DispatchCLIError("cohort materialization verification failed")
     }
 
     return DispatchEvidence(
-      schema: "numibrain.cohort-dispatch-evidence.v4",
+      schema: "numibrain.cohort-dispatch-evidence.v5",
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       abi: ABIEvidence(
@@ -444,6 +515,9 @@ private struct NumiBrainDispatchCommand {
         cohortUniformBytes: BrainDispatchPlan.cohortUniformByteCount,
         tokenUniformBytes: BrainDispatchPlan.tokenUniformByteCount,
         regionalStateBytes: RegionalModuleState.abiByteCount,
+        regionalRouteBytes: Int(NB_REGIONAL_ROUTE_BYTE_COUNT),
+        routeHistoryStateBytes: Int(NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT),
+        routeRuntimeStateBytes: Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT),
         parameterBindingBytes: BrainParameterVersion.bindingByteCount
       ),
       identity: IdentityEvidence(
@@ -460,6 +534,10 @@ private struct NumiBrainDispatchCommand {
         tokenStateFingerprint: String(
           format: "%016llx",
           materialized.tokenStateFingerprint
+        ),
+        routingStateFingerprint: String(
+          format: "%016llx",
+          materialized.routingStateFingerprint
         )
       ),
       cohort: CohortEvidence(
@@ -470,7 +548,10 @@ private struct NumiBrainDispatchCommand {
         dispatchGroupCount: plan.groups.count,
         dispatchEntryCount: plan.entryCount,
         maximumEnvironmentCountPerGroup: plan.groups.map { $0.entries.count }.max() ?? 0,
-        tokenScalarsPerEnvironment: program.scalarCount
+        tokenScalarsPerEnvironment: program.scalarCount,
+        routeCount: program.routes.count,
+        routeHistoryCapacity: program.compiledRouteHistoryCapacity,
+        routeHistoryScalarsPerEnvironment: program.routeHistoryScalarCount
       ),
       metal: MetalEvidence(
         device: materialized.deviceName,
@@ -485,10 +566,13 @@ private struct NumiBrainDispatchCommand {
         tokenEnvironmentCount: materialized.tokenStates.count,
         tokenStateBytes: materialized.tokenStateByteCount,
         tokenIndirectThreadgroupCount: materialized.tokenIndirectThreadgroupCount,
+        routingEnvironmentCount: materialized.routingStates.count,
+        routeHistoryBytes: materialized.routeHistoryByteCount,
+        routeRuntimeStateBytes: materialized.routeRuntimeStateByteCount,
         status: materialized.status,
         gpuSeconds: materialized.gpuDurationSeconds,
         execution:
-          "Metal 4 private immutable plan, parameter, schedule, diagnostic and token inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion, compact diagnostic advance and one-threadgroup-per-agent authoritative unrouted token advance -> private generations -> explicit post-completion inspection"
+          "Metal 4 private immutable plan, parameter, schedule, diagnostic, token, route-history and routing-state inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion, compact diagnostic advance and one-threadgroup-per-agent routed token advance -> private transactional generations -> explicit post-completion inspection"
       ),
       verification: VerificationEvidence(
         retryExact: retryExact,
@@ -507,15 +591,20 @@ private struct NumiBrainDispatchCommand {
         tokenCPUReferenceMaximumAbsoluteError: Double(tokenMaximumAbsoluteError),
         tokenCPUReferenceTolerance: Double(tokenTolerance),
         tokenCPUReferenceSampleCount: tokenReferenceIdentifiers.count,
+        gpuRoutingCPUReferenceWithinTolerance: routingCPUReferenceWithinTolerance,
+        gpuRoutingDiscreteStateExact: routingDiscreteStateExact,
+        gpuRoutingOwnershipExact: routingOwnershipExact,
+        routingCPUReferenceMaximumAbsoluteError: Double(routingMaximumAbsoluteError),
+        routingCPUReferenceTolerance: Double(routingTolerance),
         gpuReplayExact: replayExact,
         staleParameterVersionRejected: staleParameterVersionRejected
       ),
       executionPath:
-        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion -> independent compact diagnostic and authoritative unrouted 10752-scalar recurrent token generations",
+        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion -> independent compact diagnostic plus routed 10752-scalar recurrent token, delayed-history and dynamic route-state generations",
       limitations: [
         "The CPU oracle currently compiles cohort membership before GPU materialization.",
-        "The cohort token kernel advances authoritative regional token values but intentionally disables long-range routes; per-agent route history and routing state are not yet cohort-resident.",
-        "Token CPU parity is sampled across deterministic boundary and interrupt-owning environments; ownership, shape and replay are checked across the full cohort.",
+        "The bounded cohort profile compiles 32 delayed publications per route and rejects a root plan if that capacity cannot preserve every observable delayed value.",
+        "Token and routing CPU parity are sampled across deterministic boundary and interrupt-owning environments; ownership, shape and replay are checked across the full cohort.",
         "GPU seconds are command-feedback telemetry for materialization and three indirect consumers, not a production throughput or counter qualification.",
         "The eight-module runtime-foundation subset is not the complete 96-module graph.",
       ]

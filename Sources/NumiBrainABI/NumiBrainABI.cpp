@@ -901,3 +901,72 @@ uint64_t nb_brain_abi_cohort_token_state_fingerprint(
   }
   return hash;
 }
+
+uint64_t nb_brain_abi_cohort_routing_state_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    uint64_t regional_program_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const NBRegionalRouteHistoryState *history_states,
+    const uint64_t *history_timestamps,
+    const float *history_values,
+    const NBRegionalRouteRuntimeState *runtime_states,
+    uint32_t route_count,
+    uint32_t history_capacity,
+    uint32_t history_scalar_count
+) {
+  if (plan_fingerprint == 0 || parameter_version_fingerprint == 0
+      || regional_program_fingerprint == 0 || environment_count == 0
+      || route_count == 0 || history_capacity == 0 || history_scalar_count == 0
+      || environment_identifiers == nullptr || history_states == nullptr
+      || history_timestamps == nullptr || history_values == nullptr
+      || runtime_states == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_REGIONAL_PROGRAM_VERSION));
+  mix_little_endian(hash, plan_fingerprint);
+  mix_little_endian(hash, parameter_version_fingerprint);
+  mix_little_endian(hash, regional_program_fingerprint);
+  mix_little_endian(hash, environment_count);
+  mix_little_endian(hash, route_count);
+  mix_little_endian(hash, history_capacity);
+  mix_little_endian(hash, history_scalar_count);
+  const uint64_t timestamp_count =
+      static_cast<uint64_t>(route_count) * history_capacity;
+  for (uint32_t environment_index = 0;
+       environment_index < environment_count;
+       ++environment_index) {
+    mix_little_endian(hash, environment_identifiers[environment_index]);
+    const uint64_t route_base =
+        static_cast<uint64_t>(environment_index) * route_count;
+    const uint64_t timestamp_base =
+        static_cast<uint64_t>(environment_index) * timestamp_count;
+    const uint64_t value_base =
+        static_cast<uint64_t>(environment_index) * history_scalar_count;
+    for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+      const NBRegionalRouteHistoryState &history =
+          history_states[route_base + route_index];
+      mix_little_endian(hash, history.next_slot);
+      mix_little_endian(hash, history.count);
+      mix_little_endian(hash, history.latest_timestamp_microseconds);
+      const NBRegionalRouteRuntimeState &runtime =
+          runtime_states[route_base + route_index];
+      mix_float(hash, runtime.score);
+      mix_float(hash, runtime.strength);
+      mix_little_endian(hash, runtime.active);
+      mix_little_endian(hash, runtime.selection_count);
+      mix_little_endian(hash, runtime.last_selected_timestamp_microseconds);
+      mix_little_endian(hash, runtime.switch_count);
+      mix_little_endian(hash, runtime.reserved);
+    }
+    for (uint64_t index = 0; index < timestamp_count; ++index) {
+      mix_little_endian(hash, history_timestamps[timestamp_base + index]);
+    }
+    for (uint32_t index = 0; index < history_scalar_count; ++index) {
+      mix_float(hash, history_values[value_base + index]);
+    }
+  }
+  return hash;
+}

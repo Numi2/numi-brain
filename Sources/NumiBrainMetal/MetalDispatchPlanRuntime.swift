@@ -25,6 +25,10 @@ public enum MetalDispatchPlanRuntime {
     public let tokenStateFingerprint: UInt64
     public let tokenIndirectThreadgroupCount: UInt32
     public let tokenStateByteCount: Int
+    public let routingStates: [BrainCohortRoutingState]
+    public let routingStateFingerprint: UInt64
+    public let routeHistoryByteCount: Int
+    public let routeRuntimeStateByteCount: Int
     public let status: UInt32
     public let privateInputByteCount: Int
     public let privateOutputByteCount: Int
@@ -55,6 +59,95 @@ public enum MetalDispatchPlanRuntime {
     var feedback: (any MTL4CommitFeedback)?
   }
 
+  /// Proves that the program's compiled ring capacity preserves every delayed
+  /// route value that can be observed during this root dispatch. The initial
+  /// checkpoint is already canonical; this simulation checks only publications
+  /// and reads introduced by the candidate root transaction.
+  private static func validateRouteHistoryCapacity(
+    environmentIdentifier: UInt32,
+    program: RegionalTokenProgram,
+    initialHistory: RegionalRouteHistory,
+    invocations: [BrainModuleInvocation]
+  ) throws {
+    guard !invocations.isEmpty else {
+      throw TissueError.metal(
+        "cohort routing state has no work for environment \(environmentIdentifier)"
+      )
+    }
+    var bounded: [[UInt64]] = []
+    bounded.reserveCapacity(program.routes.count)
+    for routeIndex in program.routes.indices {
+      let state = initialHistory.states[routeIndex]
+      var timestamps: [UInt64] = []
+      timestamps.reserveCapacity(Int(state.count))
+      if state.count > 0 {
+        for age in stride(from: Int(state.count) - 1, through: 0, by: -1) {
+          let slot =
+            (Int(state.nextSlot) + initialHistory.capacity - 1 - age)
+            % initialHistory.capacity
+          timestamps.append(
+            initialHistory.timestamps[
+              routeIndex * initialHistory.capacity + slot
+            ]
+          )
+        }
+      }
+      bounded.append(timestamps)
+    }
+    var unbounded = bounded
+    var cursor = 0
+    while cursor < invocations.count {
+      let timestamp = invocations[cursor].timestamp.rawValue
+      var end = cursor + 1
+      while end < invocations.count,
+        invocations[end].timestamp.rawValue == timestamp
+      {
+        end += 1
+      }
+      let dueModules = Set(invocations[cursor..<end].map(\.moduleIdentifier))
+      for routeIndex in program.routes.indices {
+        let route = program.routes[routeIndex]
+        if route.delayMicroseconds > 0,
+          dueModules.contains(route.receiverModuleIdentifier)
+        {
+          let target = timestamp >= UInt64(route.delayMicroseconds)
+            ? timestamp - UInt64(route.delayMicroseconds)
+            : nil
+          let boundedMatch = target.flatMap { target in
+            bounded[routeIndex].last { $0 <= target }
+          }
+          let unboundedMatch = target.flatMap { target in
+            unbounded[routeIndex].last { $0 <= target }
+          }
+          guard boundedMatch == unboundedMatch else {
+            throw TissueError.metal(
+              "route-history capacity \(program.compiledRouteHistoryCapacity) "
+                + "cannot preserve route \(routeIndex) for environment "
+                + "\(environmentIdentifier) at \(timestamp) us"
+            )
+          }
+        }
+      }
+      for routeIndex in program.routes.indices
+      where dueModules.contains(program.routes[routeIndex].senderModuleIdentifier) {
+        guard unbounded[routeIndex].last.map({ $0 < timestamp }) ?? true else {
+          throw TissueError.metal(
+            "route-history publication time did not advance for environment "
+              + "\(environmentIdentifier)"
+          )
+        }
+        unbounded[routeIndex].append(timestamp)
+        bounded[routeIndex].append(timestamp)
+        if bounded[routeIndex].count > program.compiledRouteHistoryCapacity {
+          bounded[routeIndex].removeFirst(
+            bounded[routeIndex].count - program.compiledRouteHistoryCapacity
+          )
+        }
+      }
+      cursor = end
+    }
+  }
+
   public static func materialize(
     plan: BrainDispatchPlan,
     schedule: BrainModuleSchedule,
@@ -62,6 +155,7 @@ public enum MetalDispatchPlanRuntime {
     parameterVersion: BrainParameterVersion,
     initialRegionalStates: [BrainCohortRegionalState]? = nil,
     initialTokenStates: [BrainCohortTokenState]? = nil,
+    initialRoutingStates: [BrainCohortRoutingState]? = nil,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws -> Materialization {
     guard plan.scheduleFingerprint == schedule.fingerprint,
@@ -69,7 +163,7 @@ public enum MetalDispatchPlanRuntime {
       plan.parameterVersionFingerprint == parameterVersion.fingerprint,
       regionalProgram.scheduleFingerprint == schedule.fingerprint,
       regionalProgram.fingerprint == parameterVersion.regionalProgramFingerprint,
-      regionalProgram.routes.isEmpty
+      !regionalProgram.routes.isEmpty
     else {
       throw TissueError.metal(
         "dispatch plan does not match the immutable parameter-version binding"
@@ -92,8 +186,13 @@ public enum MetalDispatchPlanRuntime {
         == Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT),
       MemoryLayout<NBRegionalTokenLayout>.stride
         == Int(NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT),
+      MemoryLayout<NBRegionalRoute>.stride == Int(NB_REGIONAL_ROUTE_BYTE_COUNT),
       MemoryLayout<NBRegionalTokenParameters>.stride
         == Int(NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT),
+      MemoryLayout<NBRegionalRouteHistoryState>.stride
+        == Int(NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT),
+      MemoryLayout<NBRegionalRouteRuntimeState>.stride
+        == Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT),
       MemoryLayout<NBRegionalModuleState>.stride
         == Int(NB_REGIONAL_MODULE_STATE_BYTE_COUNT),
       MemoryLayout<DispatchIndirectArguments>.stride == 12,
@@ -113,6 +212,20 @@ public enum MetalDispatchPlanRuntime {
     else {
       throw TissueError.metal("cohort regional execution has invalid environment counts")
     }
+    let planWorkItems = plan.workItems
+    var invocationsByEnvironment: [UInt32: [BrainModuleInvocation]] = [:]
+    invocationsByEnvironment.reserveCapacity(environmentIdentifiers.count)
+    for item in planWorkItems {
+      invocationsByEnvironment[item.environmentIdentifier, default: []].append(
+        BrainModuleInvocation(
+          timestamp: item.timestamp,
+          moduleIdentifier: item.moduleIdentifier,
+          clockClass: item.clockClass,
+          reasons: item.reasons,
+          interruptMask: item.interruptMask
+        )
+      )
+    }
     let (regionalStateCount, regionalStateCountOverflow) =
       environmentIdentifiers.count.multipliedReportingOverflow(by: schedule.modules.count)
     guard !regionalStateCountOverflow, regionalStateCount <= Int(UInt32.max) else {
@@ -126,6 +239,27 @@ public enum MetalDispatchPlanRuntime {
       tokenStateCount.multipliedReportingOverflow(by: MemoryLayout<Float>.stride)
     guard !tokenStateCountOverflow, !tokenStateByteCountOverflow else {
       throw TissueError.metal("cohort regional-token state exceeds the ABI limit")
+    }
+    let routeCount = regionalProgram.routes.count
+    let routeHistoryCapacity = regionalProgram.compiledRouteHistoryCapacity
+    let routeHistoryScalarCount = regionalProgram.routeHistoryScalarCount
+    let (cohortRouteCount, cohortRouteCountOverflow) =
+      environmentIdentifiers.count.multipliedReportingOverflow(by: routeCount)
+    let (historyTimestampCountPerEnvironment, historyTimestampCountOverflow) =
+      routeCount.multipliedReportingOverflow(by: routeHistoryCapacity)
+    let (cohortHistoryTimestampCount, cohortHistoryTimestampCountOverflow) =
+      environmentIdentifiers.count.multipliedReportingOverflow(
+        by: historyTimestampCountPerEnvironment
+      )
+    let (cohortHistoryScalarCount, cohortHistoryScalarCountOverflow) =
+      environmentIdentifiers.count.multipliedReportingOverflow(
+        by: routeHistoryScalarCount
+      )
+    guard !cohortRouteCountOverflow, !historyTimestampCountOverflow,
+      !cohortHistoryTimestampCountOverflow, !cohortHistoryScalarCountOverflow,
+      cohortRouteCount <= Int(UInt32.max)
+    else {
+      throw TissueError.metal("cohort routing state exceeds the ABI limit")
     }
     let canonicalInitialRegionalStates: [BrainCohortRegionalState]
     if let initialRegionalStates {
@@ -158,7 +292,7 @@ public enum MetalDispatchPlanRuntime {
       }
     }
     var firstInvocationTimestamps: [UInt64: BrainTimestamp] = [:]
-    for item in plan.workItems {
+    for item in planWorkItems {
       let key =
         UInt64(item.environmentIdentifier) << 16
         | UInt64(item.moduleIdentifier)
@@ -216,7 +350,72 @@ public enum MetalDispatchPlanRuntime {
     let moduleRecords = schedule.modules.map(\.abiRecord)
     var programHeader = regionalProgram.headerRecord
     let layoutRecords = regionalProgram.layouts.map(\.abiRecord)
+    let routeRecords = regionalProgram.routeABIRecords
     let parameterRecords = regionalProgram.parameters.map(\.abiRecord)
+    let canonicalInitialRoutingStates: [BrainCohortRoutingState]
+    if let initialRoutingStates {
+      canonicalInitialRoutingStates = initialRoutingStates.sorted {
+        $0.environmentIdentifier < $1.environmentIdentifier
+      }
+      guard
+        canonicalInitialRoutingStates.map(\.environmentIdentifier)
+          == environmentIdentifiers
+      else {
+        throw TissueError.metal(
+          "initial cohort routing state does not match active environments"
+        )
+      }
+      for state in canonicalInitialRoutingStates {
+        try state.routeHistory.validate(program: regionalProgram)
+        try state.routingState.validate(program: regionalProgram)
+        guard let firstInvocation = invocationsByEnvironment[
+          state.environmentIdentifier
+        ]?.first else {
+          throw TissueError.metal("cohort routing state has no scheduled environment")
+        }
+        let firstTimestamp = firstInvocation.timestamp
+        guard
+          state.routeHistory.states.allSatisfy({
+            $0.latestTimestamp.map { $0 < firstTimestamp } ?? true
+          }),
+          state.routingState.states.allSatisfy({
+            $0.lastSelectedTimestamp.map { $0 < firstTimestamp } ?? true
+          })
+        else {
+          throw TissueError.metal(
+            "initial cohort routing state is not older than its first invocation"
+          )
+        }
+      }
+    } else {
+      canonicalInitialRoutingStates = environmentIdentifiers.map { identifier in
+        BrainCohortRoutingState(
+          environmentIdentifier: identifier,
+          routeHistory: RegionalRouteHistory(program: regionalProgram),
+          routingState: RegionalRoutingState(program: regionalProgram)
+        )
+      }
+    }
+    for state in canonicalInitialRoutingStates {
+      try validateRouteHistoryCapacity(
+        environmentIdentifier: state.environmentIdentifier,
+        program: regionalProgram,
+        initialHistory: state.routeHistory,
+        invocations: invocationsByEnvironment[state.environmentIdentifier] ?? []
+      )
+    }
+    let initialRouteHistoryStateRecords = canonicalInitialRoutingStates.flatMap {
+      $0.routeHistory.states.map(\.abiRecord)
+    }
+    let initialRouteHistoryTimestamps = canonicalInitialRoutingStates.flatMap {
+      $0.routeHistory.timestamps
+    }
+    let initialRouteHistoryValues = canonicalInitialRoutingStates.flatMap {
+      $0.routeHistory.values
+    }
+    let initialRouteRuntimeStateRecords = canonicalInitialRoutingStates.flatMap {
+      $0.routingState.states.map(\.abiRecord)
+    }
     var cohortUniforms = NBDispatchCohortUniforms()
     cohortUniforms.plan_fingerprint = plan.fingerprint
     cohortUniforms.parameter_version_fingerprint = parameterVersion.fingerprint
@@ -294,7 +493,7 @@ public enum MetalDispatchPlanRuntime {
         name: "advance_cohort_regional_diagnostics"
       ),
       let tokenFunction = library.makeFunction(
-        name: "advance_cohort_regional_tokens_unrouted"
+        name: "advance_cohort_regional_tokens_routed"
       )
     else {
       throw TissueError.metal("cohort dispatch functions are missing from the Metal library")
@@ -342,7 +541,7 @@ public enum MetalDispatchPlanRuntime {
     }
     let tokenArgumentDescriptor = MTL4ArgumentTableDescriptor()
     tokenArgumentDescriptor.label = "NumiBrain cohort regional-token arguments"
-    tokenArgumentDescriptor.maxBufferBindCount = 16
+    tokenArgumentDescriptor.maxBufferBindCount = 28
     tokenArgumentDescriptor.initializeBindings = true
     guard
       let tokenArgumentTable = try? device.makeArgumentTable(
@@ -370,13 +569,28 @@ public enum MetalDispatchPlanRuntime {
       * MemoryLayout<NBRegionalModuleState>.stride
     let programHeaderByteCount = MemoryLayout<NBRegionalProgramHeader>.stride
     let layoutByteCount = layoutRecords.count * MemoryLayout<NBRegionalTokenLayout>.stride
+    let routeByteCount = routeRecords.count * MemoryLayout<NBRegionalRoute>.stride
     let parameterByteCount =
       parameterRecords.count * MemoryLayout<NBRegionalTokenParameters>.stride
     let tokenLastUpdateByteCount = regionalStateCount * MemoryLayout<UInt64>.stride
+    let routeHistoryStateByteCount =
+      cohortRouteCount * MemoryLayout<NBRegionalRouteHistoryState>.stride
+    let routeHistoryTimestampByteCount =
+      cohortHistoryTimestampCount * MemoryLayout<UInt64>.stride
+    let routeHistoryValueByteCount =
+      cohortHistoryScalarCount * MemoryLayout<Float>.stride
+    let routeHistoryByteCount = routeHistoryStateByteCount
+      + routeHistoryTimestampByteCount + routeHistoryValueByteCount
+    let routeRuntimeStateByteCount =
+      cohortRouteCount * MemoryLayout<NBRegionalRouteRuntimeState>.stride
+    let resolvedRouteSlotByteCount = cohortRouteCount * MemoryLayout<UInt32>.stride
+    let selectedRouteIndexByteCount = cohortRouteCount * MemoryLayout<UInt32>.stride
+    let selectedRouteCountByteCount = regionalStateCount * MemoryLayout<UInt32>.stride
     let inspectionByteCount =
       resultByteCount + groupByteCount + entryByteCount
       + indirectStorageByteCount + workItemByteCount + regionalStateByteCount
-      + tokenStateByteCount + tokenLastUpdateByteCount
+      + tokenStateByteCount + tokenLastUpdateByteCount + routeHistoryByteCount
+      + routeRuntimeStateByteCount
     let stagingByteCount = max(
       inspectionByteCount,
       max(
@@ -391,8 +605,14 @@ public enum MetalDispatchPlanRuntime {
             max(
               max(moduleByteCount, regionalStateByteCount),
               max(
-                max(layoutByteCount, parameterByteCount),
-                max(tokenStateByteCount, tokenLastUpdateByteCount)
+                max(max(layoutByteCount, routeByteCount), parameterByteCount),
+                max(
+                  max(tokenStateByteCount, tokenLastUpdateByteCount),
+                  max(
+                    max(routeHistoryStateByteCount, routeHistoryTimestampByteCount),
+                    max(routeHistoryValueByteCount, routeRuntimeStateByteCount)
+                  )
+                )
               )
             )
           )
@@ -472,6 +692,10 @@ public enum MetalDispatchPlanRuntime {
       length: layoutByteCount,
       label: "NumiBrain immutable cohort regional-token layouts"
     )
+    let routeBuffer = try privateBuffer(
+      length: routeByteCount,
+      label: "NumiBrain immutable cohort regional-token routes"
+    )
     let parameterBuffer = try privateBuffer(
       length: parameterByteCount,
       label: "NumiBrain immutable cohort regional-token parameters"
@@ -500,6 +724,50 @@ public enum MetalDispatchPlanRuntime {
       length: tokenLastUpdateByteCount,
       label: "NumiBrain private cohort regional-token last-update state"
     )
+    let inputRouteHistoryStateBuffer = try privateBuffer(
+      length: routeHistoryStateByteCount,
+      label: "NumiBrain private cohort route-history input states"
+    )
+    let outputRouteHistoryStateBuffer = try privateBuffer(
+      length: routeHistoryStateByteCount,
+      label: "NumiBrain private cohort route-history output states"
+    )
+    let inputRouteHistoryTimestampBuffer = try privateBuffer(
+      length: routeHistoryTimestampByteCount,
+      label: "NumiBrain private cohort route-history input timestamps"
+    )
+    let outputRouteHistoryTimestampBuffer = try privateBuffer(
+      length: routeHistoryTimestampByteCount,
+      label: "NumiBrain private cohort route-history output timestamps"
+    )
+    let inputRouteHistoryValueBuffer = try privateBuffer(
+      length: routeHistoryValueByteCount,
+      label: "NumiBrain private cohort route-history input values"
+    )
+    let outputRouteHistoryValueBuffer = try privateBuffer(
+      length: routeHistoryValueByteCount,
+      label: "NumiBrain private cohort route-history output values"
+    )
+    let resolvedRouteSlotBuffer = try privateBuffer(
+      length: resolvedRouteSlotByteCount,
+      label: "NumiBrain private cohort resolved route-history slots"
+    )
+    let inputRouteRuntimeStateBuffer = try privateBuffer(
+      length: routeRuntimeStateByteCount,
+      label: "NumiBrain private cohort route-runtime input states"
+    )
+    let outputRouteRuntimeStateBuffer = try privateBuffer(
+      length: routeRuntimeStateByteCount,
+      label: "NumiBrain private cohort route-runtime output states"
+    )
+    let selectedRouteIndexBuffer = try privateBuffer(
+      length: selectedRouteIndexByteCount,
+      label: "NumiBrain private cohort selected route indices"
+    )
+    let selectedRouteCountBuffer = try privateBuffer(
+      length: selectedRouteCountByteCount,
+      label: "NumiBrain private cohort selected route counts"
+    )
     guard
       let stagingBuffer = device.makeBuffer(
         length: stagingByteCount,
@@ -512,7 +780,7 @@ public enum MetalDispatchPlanRuntime {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
-    residencyDescriptor.initialCapacity = 23
+    residencyDescriptor.initialCapacity = 35
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -535,6 +803,7 @@ public enum MetalDispatchPlanRuntime {
       moduleBuffer,
       programHeaderBuffer,
       layoutBuffer,
+      routeBuffer,
       parameterBuffer,
       inputRegionalStateBuffer,
       outputRegionalStateBuffer,
@@ -542,6 +811,17 @@ public enum MetalDispatchPlanRuntime {
       outputTokenBuffer,
       candidateTokenBuffer,
       tokenLastUpdateBuffer,
+      inputRouteHistoryStateBuffer,
+      outputRouteHistoryStateBuffer,
+      inputRouteHistoryTimestampBuffer,
+      outputRouteHistoryTimestampBuffer,
+      inputRouteHistoryValueBuffer,
+      outputRouteHistoryValueBuffer,
+      resolvedRouteSlotBuffer,
+      inputRouteRuntimeStateBuffer,
+      outputRouteRuntimeStateBuffer,
+      selectedRouteIndexBuffer,
+      selectedRouteCountBuffer,
       stagingBuffer,
     ]
     for buffer in buffers {
@@ -702,6 +982,16 @@ public enum MetalDispatchPlanRuntime {
       }
     }
     try upload(
+      to: routeBuffer,
+      byteCount: routeByteCount,
+      label: "cohort regional-token route upload"
+    ) { destination in
+      routeRecords.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: routeByteCount)
+      }
+    }
+    try upload(
       to: parameterBuffer,
       byteCount: parameterByteCount,
       label: "cohort regional-token parameter upload"
@@ -729,6 +1019,46 @@ public enum MetalDispatchPlanRuntime {
       initialTokenValues.withUnsafeBytes { bytes in
         guard let source = bytes.baseAddress else { return }
         destination.copyMemory(from: source, byteCount: tokenStateByteCount)
+      }
+    }
+    try upload(
+      to: inputRouteHistoryStateBuffer,
+      byteCount: routeHistoryStateByteCount,
+      label: "cohort route-history state upload"
+    ) { destination in
+      initialRouteHistoryStateRecords.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: routeHistoryStateByteCount)
+      }
+    }
+    try upload(
+      to: inputRouteHistoryTimestampBuffer,
+      byteCount: routeHistoryTimestampByteCount,
+      label: "cohort route-history timestamp upload"
+    ) { destination in
+      initialRouteHistoryTimestamps.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: routeHistoryTimestampByteCount)
+      }
+    }
+    try upload(
+      to: inputRouteHistoryValueBuffer,
+      byteCount: routeHistoryValueByteCount,
+      label: "cohort route-history value upload"
+    ) { destination in
+      initialRouteHistoryValues.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: routeHistoryValueByteCount)
+      }
+    }
+    try upload(
+      to: inputRouteRuntimeStateBuffer,
+      byteCount: routeRuntimeStateByteCount,
+      label: "cohort route-runtime state upload"
+    ) { destination in
+      initialRouteRuntimeStateRecords.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: routeRuntimeStateByteCount)
       }
     }
 
@@ -770,6 +1100,18 @@ public enum MetalDispatchPlanRuntime {
     tokenArgumentTable.setAddress(outputTokenBuffer.gpuAddress, index: 13)
     tokenArgumentTable.setAddress(candidateTokenBuffer.gpuAddress, index: 14)
     tokenArgumentTable.setAddress(tokenLastUpdateBuffer.gpuAddress, index: 15)
+    tokenArgumentTable.setAddress(routeBuffer.gpuAddress, index: 16)
+    tokenArgumentTable.setAddress(inputRouteHistoryStateBuffer.gpuAddress, index: 17)
+    tokenArgumentTable.setAddress(outputRouteHistoryStateBuffer.gpuAddress, index: 18)
+    tokenArgumentTable.setAddress(inputRouteHistoryTimestampBuffer.gpuAddress, index: 19)
+    tokenArgumentTable.setAddress(outputRouteHistoryTimestampBuffer.gpuAddress, index: 20)
+    tokenArgumentTable.setAddress(inputRouteHistoryValueBuffer.gpuAddress, index: 21)
+    tokenArgumentTable.setAddress(outputRouteHistoryValueBuffer.gpuAddress, index: 22)
+    tokenArgumentTable.setAddress(resolvedRouteSlotBuffer.gpuAddress, index: 23)
+    tokenArgumentTable.setAddress(inputRouteRuntimeStateBuffer.gpuAddress, index: 24)
+    tokenArgumentTable.setAddress(outputRouteRuntimeStateBuffer.gpuAddress, index: 25)
+    tokenArgumentTable.setAddress(selectedRouteIndexBuffer.gpuAddress, index: 26)
+    tokenArgumentTable.setAddress(selectedRouteCountBuffer.gpuAddress, index: 27)
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
     let consumerThreadgroupWidth = 64
@@ -894,6 +1236,42 @@ public enum MetalDispatchPlanRuntime {
         destinationOffset: tokenOffset + tokenStateByteCount,
         size: tokenLastUpdateByteCount
       )
+      let routeHistoryStateOffset = tokenOffset + tokenStateByteCount
+        + tokenLastUpdateByteCount
+      let routeHistoryTimestampOffset = routeHistoryStateOffset
+        + routeHistoryStateByteCount
+      let routeHistoryValueOffset = routeHistoryTimestampOffset
+        + routeHistoryTimestampByteCount
+      let routeRuntimeStateOffset = routeHistoryValueOffset
+        + routeHistoryValueByteCount
+      encoder.copy(
+        sourceBuffer: outputRouteHistoryStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: routeHistoryStateOffset,
+        size: routeHistoryStateByteCount
+      )
+      encoder.copy(
+        sourceBuffer: outputRouteHistoryTimestampBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: routeHistoryTimestampOffset,
+        size: routeHistoryTimestampByteCount
+      )
+      encoder.copy(
+        sourceBuffer: outputRouteHistoryValueBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: routeHistoryValueOffset,
+        size: routeHistoryValueByteCount
+      )
+      encoder.copy(
+        sourceBuffer: outputRouteRuntimeStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: routeRuntimeStateOffset,
+        size: routeRuntimeStateByteCount
+      )
     }
 
     let inspection = stagingBuffer.contents()
@@ -962,6 +1340,42 @@ public enum MetalDispatchPlanRuntime {
         count: regionalStateCount
       )
     )
+    let routeHistoryStateOffset = tokenOffset + tokenStateByteCount
+      + tokenLastUpdateByteCount
+    let routeHistoryTimestampOffset = routeHistoryStateOffset
+      + routeHistoryStateByteCount
+    let routeHistoryValueOffset = routeHistoryTimestampOffset
+      + routeHistoryTimestampByteCount
+    let routeRuntimeStateOffset = routeHistoryValueOffset
+      + routeHistoryValueByteCount
+    let outputRouteHistoryStateRecords = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: routeHistoryStateOffset)
+          .assumingMemoryBound(to: NBRegionalRouteHistoryState.self),
+        count: cohortRouteCount
+      )
+    )
+    let outputRouteHistoryTimestamps = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: routeHistoryTimestampOffset)
+          .assumingMemoryBound(to: UInt64.self),
+        count: cohortHistoryTimestampCount
+      )
+    )
+    let outputRouteHistoryValues = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: routeHistoryValueOffset)
+          .assumingMemoryBound(to: Float.self),
+        count: cohortHistoryScalarCount
+      )
+    )
+    let outputRouteRuntimeStateRecords = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: routeRuntimeStateOffset)
+          .assumingMemoryBound(to: NBRegionalRouteRuntimeState.self),
+        count: cohortRouteCount
+      )
+    )
     let groups = try outputGroups.map { record -> BrainDispatchGroup in
       guard record.entry_offset <= UInt32(outputEntries.count),
         record.entry_count <= UInt32(outputEntries.count) - record.entry_offset,
@@ -1019,7 +1433,7 @@ public enum MetalDispatchPlanRuntime {
       (environmentIdentifiers.count + consumerThreadgroupWidth - 1)
         / consumerThreadgroupWidth
     )
-    guard workItems == plan.workItems,
+    guard workItems == planWorkItems,
       workFingerprint == plan.workFingerprint,
       indirectArguments[0].threadgroupsX == expectedIndirectThreadgroups,
       indirectArguments[0].threadgroupsY == 1,
@@ -1095,6 +1509,60 @@ public enum MetalDispatchPlanRuntime {
     guard tokenStateFingerprint > 0 else {
       throw TissueError.metal("GPU cohort regional-token state has no compiled identity")
     }
+    let routingStates = try environmentIdentifiers.enumerated().map {
+      environmentIndex, environmentIdentifier in
+      let routeLower = environmentIndex * routeCount
+      let routeUpper = routeLower + routeCount
+      let timestampLower = environmentIndex * historyTimestampCountPerEnvironment
+      let timestampUpper = timestampLower + historyTimestampCountPerEnvironment
+      let valueLower = environmentIndex * routeHistoryScalarCount
+      let valueUpper = valueLower + routeHistoryScalarCount
+      return BrainCohortRoutingState(
+        environmentIdentifier: environmentIdentifier,
+        routeHistory: try RegionalRouteHistory(
+          program: regionalProgram,
+          states: outputRouteHistoryStateRecords[routeLower..<routeUpper].map {
+            RegionalRouteHistoryState(abiRecord: $0)
+          },
+          timestamps: Array(outputRouteHistoryTimestamps[timestampLower..<timestampUpper]),
+          values: Array(outputRouteHistoryValues[valueLower..<valueUpper])
+        ),
+        routingState: try RegionalRoutingState(
+          program: regionalProgram,
+          states: outputRouteRuntimeStateRecords[routeLower..<routeUpper].map {
+            RegionalRouteRuntimeState(abiRecord: $0)
+          }
+        )
+      )
+    }
+    let routingStateFingerprint = environmentIdentifiers.withUnsafeBufferPointer {
+      identifiers in
+      outputRouteHistoryStateRecords.withUnsafeBufferPointer { historyStates in
+        outputRouteHistoryTimestamps.withUnsafeBufferPointer { timestamps in
+          outputRouteHistoryValues.withUnsafeBufferPointer { values in
+            outputRouteRuntimeStateRecords.withUnsafeBufferPointer { runtimeStates in
+              nb_brain_abi_cohort_routing_state_fingerprint(
+                plan.fingerprint,
+                parameterVersion.fingerprint,
+                regionalProgram.fingerprint,
+                identifiers.baseAddress,
+                UInt32(identifiers.count),
+                historyStates.baseAddress,
+                timestamps.baseAddress,
+                values.baseAddress,
+                runtimeStates.baseAddress,
+                UInt32(routeCount),
+                UInt32(routeHistoryCapacity),
+                UInt32(routeHistoryScalarCount)
+              )
+            }
+          }
+        }
+      }
+    }
+    guard routingStateFingerprint > 0 else {
+      throw TissueError.metal("GPU cohort routing state has no compiled identity")
+    }
     return Materialization(
       deviceName: device.name,
       planFingerprint: result.plan_fingerprint,
@@ -1111,15 +1579,23 @@ public enum MetalDispatchPlanRuntime {
       tokenStateFingerprint: tokenStateFingerprint,
       tokenIndirectThreadgroupCount: indirectArguments[2].threadgroupsX,
       tokenStateByteCount: tokenStateByteCount,
+      routingStates: routingStates,
+      routingStateFingerprint: routingStateFingerprint,
+      routeHistoryByteCount: routeHistoryByteCount,
+      routeRuntimeStateByteCount: routeRuntimeStateByteCount,
       status: result.status,
       privateInputByteCount: headerByteCount + groupByteCount + entryByteCount
         + bindingByteCount + cohortUniformByteCount + environmentIdentifierByteCount
         + moduleByteCount + regionalStateByteCount + tokenUniformByteCount
-        + programHeaderByteCount + layoutByteCount + parameterByteCount
-        + tokenStateByteCount,
+        + programHeaderByteCount + layoutByteCount + routeByteCount
+        + parameterByteCount + tokenStateByteCount + routeHistoryByteCount
+        + routeRuntimeStateByteCount,
       privateOutputByteCount: groupByteCount + entryByteCount + resultByteCount
         + indirectStorageByteCount + workItemByteCount + regionalStateByteCount
-        + tokenStateByteCount * 2 + tokenLastUpdateByteCount,
+        + tokenStateByteCount * 2 + tokenLastUpdateByteCount
+        + routeHistoryByteCount + routeRuntimeStateByteCount
+        + resolvedRouteSlotByteCount + selectedRouteIndexByteCount
+        + selectedRouteCountByteCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )

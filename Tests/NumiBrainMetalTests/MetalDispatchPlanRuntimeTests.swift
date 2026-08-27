@@ -14,8 +14,9 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     BrainParameterVersion
   ) {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
-    let program = try RegionalTokenProgram.runtimeFoundationUnroutedV0(
-      schedule: schedule
+    let program = try RegionalTokenProgram.runtimeFoundationV0(
+      schedule: schedule,
+      historyCapacity: 32
     )
     let version = try BrainParameterVersion.runtimeFoundationV0(
       schedule: schedule,
@@ -24,15 +25,20 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     )
     let identifiers: [UInt32] = [22, 4, 17, 9]
     let environments = try identifiers.enumerated().map { index, identifier in
-      let scheduler = CPUMultiRateScheduler(
+      var scheduler = CPUMultiRateScheduler(
         schedule: schedule,
         parameterVersionFingerprint: version.fingerprint
       )
+      let warmup = try scheduler.beginAdvance(
+        to: BrainTimestamp(microseconds: 20_000),
+        events: []
+      )
+      try scheduler.commit(warmup)
       let events =
         index == 2
         ? [
           try BrainInterruptEvent(
-            timestamp: BrainTimestamp(microseconds: 6_250),
+            timestamp: BrainTimestamp(microseconds: 26_250),
             mask: [.pain, .lossOfSupport],
             identifier: 700
           )
@@ -41,7 +47,7 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       return BrainScheduledEnvironment(
         environmentIdentifier: identifier,
         transaction: try scheduler.beginAdvance(
-          to: BrainTimestamp(microseconds: 20_000),
+          to: BrainTimestamp(microseconds: 40_000),
           events: events
         )
       )
@@ -73,13 +79,36 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         }
       )
     }
+    let initialRoutingStates = plan.activeEnvironmentIdentifiers.map { identifier in
+      var history = RegionalRouteHistory(program: program)
+      for routeIndex in program.routes.indices {
+        history.states[routeIndex] = RegionalRouteHistoryState(
+          nextSlot: 1,
+          count: 1,
+          latestTimestamp: BrainTimestamp(microseconds: 0)
+        )
+        history.timestamps[routeIndex * history.capacity] = 0
+        let valueOffset = Int(program.routeHistoryValueOffsets[routeIndex])
+        let dimension = Int(program.routeMessageDimensions[routeIndex])
+        for feature in 0..<dimension {
+          history.values[valueOffset + feature] =
+            Float((Int(identifier) + routeIndex + feature) % 31) / 64
+        }
+      }
+      return BrainCohortRoutingState(
+        environmentIdentifier: identifier,
+        routeHistory: history,
+        routingState: RegionalRoutingState(program: program)
+      )
+    }
     let first = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
       schedule: schedule,
       regionalProgram: program,
       parameterVersion: version,
       initialRegionalStates: initialRegionalStates,
-      initialTokenStates: initialTokenStates
+      initialTokenStates: initialTokenStates,
+      initialRoutingStates: initialRoutingStates
     )
     let replay = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
@@ -87,7 +116,8 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       regionalProgram: program,
       parameterVersion: version,
       initialRegionalStates: initialRegionalStates,
-      initialTokenStates: initialTokenStates
+      initialTokenStates: initialTokenStates,
+      initialRoutingStates: initialRoutingStates
     )
 
     XCTAssertEqual(first.status, 0)
@@ -104,6 +134,8 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertEqual(first.regionalStateFingerprint, replay.regionalStateFingerprint)
     XCTAssertEqual(first.tokenStates, replay.tokenStates)
     XCTAssertEqual(first.tokenStateFingerprint, replay.tokenStateFingerprint)
+    XCTAssertEqual(first.routingStates, replay.routingStates)
+    XCTAssertEqual(first.routingStateFingerprint, replay.routingStateFingerprint)
     XCTAssertEqual(first.planFingerprint, replay.planFingerprint)
     XCTAssertEqual(first.parameterVersionFingerprint, replay.parameterVersionFingerprint)
     XCTAssertEqual(first.entryCount, plan.entryCount)
@@ -164,6 +196,7 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertEqual(unaffected.states.map(\.interruptCount).reduce(0, +), 0)
 
     var tokenMaximumAbsoluteError: Float = 0
+    var routeMaximumAbsoluteError: Float = 0
     for environment in first.tokenStates {
       let initialTokens = try XCTUnwrap(
         initialTokenStates.first {
@@ -180,14 +213,61 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         diagnostics: initialDiagnostics.states,
         schedule: schedule,
         program: program,
-        invocations: plan.invocations(for: environment.environmentIdentifier)
+        invocations: plan.invocations(for: environment.environmentIdentifier),
+        routeHistory: try XCTUnwrap(
+          initialRoutingStates.first {
+            $0.environmentIdentifier == environment.environmentIdentifier
+          }
+        ).routeHistory,
+        routingState: try XCTUnwrap(
+          initialRoutingStates.first {
+            $0.environmentIdentifier == environment.environmentIdentifier
+          }
+        ).routingState
       )
       XCTAssertEqual(environment.values.count, reference.values.count)
       for (actual, expected) in zip(environment.values, reference.values) {
         tokenMaximumAbsoluteError = max(tokenMaximumAbsoluteError, abs(actual - expected))
       }
+      let actualRouting = try XCTUnwrap(
+        first.routingStates.first {
+          $0.environmentIdentifier == environment.environmentIdentifier
+        }
+      )
+      XCTAssertEqual(actualRouting.routeHistory.states, reference.routeHistory.states)
+      XCTAssertEqual(actualRouting.routeHistory.timestamps, reference.routeHistory.timestamps)
+      XCTAssertEqual(actualRouting.routingState.states.map(\.isActive),
+        reference.routingState.states.map(\.isActive))
+      XCTAssertEqual(actualRouting.routingState.states.map(\.selectionCount),
+        reference.routingState.states.map(\.selectionCount))
+      XCTAssertEqual(actualRouting.routingState.states.map(\.lastSelectedTimestamp),
+        reference.routingState.states.map(\.lastSelectedTimestamp))
+      XCTAssertEqual(actualRouting.routingState.states.map(\.switchCount),
+        reference.routingState.states.map(\.switchCount))
+      for (actual, expected) in zip(
+        actualRouting.routeHistory.values,
+        reference.routeHistory.values
+      ) {
+        routeMaximumAbsoluteError = max(routeMaximumAbsoluteError, abs(actual - expected))
+      }
+      for (actual, expected) in zip(
+        actualRouting.routingState.states,
+        reference.routingState.states
+      ) {
+        routeMaximumAbsoluteError = max(
+          routeMaximumAbsoluteError,
+          abs(actual.score - expected.score),
+          abs(actual.strength - expected.strength)
+        )
+      }
     }
     XCTAssertLessThanOrEqual(tokenMaximumAbsoluteError, 3e-6)
+    XCTAssertLessThanOrEqual(routeMaximumAbsoluteError, 3e-6)
+    XCTAssertTrue(
+      first.routingStates.contains { state in
+        state.routingState.states.contains { $0.isActive }
+      }
+    )
 
     let regionalRecords = first.regionalStates.flatMap { state in
       state.states.map(\.abiRecord)
@@ -222,6 +302,39 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       }
     }
     XCTAssertEqual(first.tokenStateFingerprint, expectedTokenFingerprint)
+    let historyStateRecords = first.routingStates.flatMap {
+      $0.routeHistory.states.map(\.abiRecord)
+    }
+    let historyTimestamps = first.routingStates.flatMap(\.routeHistory.timestamps)
+    let historyValues = first.routingStates.flatMap(\.routeHistory.values)
+    let runtimeStateRecords = first.routingStates.flatMap {
+      $0.routingState.states.map(\.abiRecord)
+    }
+    let expectedRoutingFingerprint = identifiers.withUnsafeBufferPointer { identifiers in
+      historyStateRecords.withUnsafeBufferPointer { historyStates in
+        historyTimestamps.withUnsafeBufferPointer { timestamps in
+          historyValues.withUnsafeBufferPointer { values in
+            runtimeStateRecords.withUnsafeBufferPointer { runtimeStates in
+              nb_brain_abi_cohort_routing_state_fingerprint(
+                plan.fingerprint,
+                version.fingerprint,
+                program.fingerprint,
+                identifiers.baseAddress,
+                UInt32(identifiers.count),
+                historyStates.baseAddress,
+                timestamps.baseAddress,
+                values.baseAddress,
+                runtimeStates.baseAddress,
+                UInt32(program.routes.count),
+                UInt32(program.compiledRouteHistoryCapacity),
+                UInt32(program.routeHistoryScalarCount)
+              )
+            }
+          }
+        }
+      }
+    }
+    XCTAssertEqual(first.routingStateFingerprint, expectedRoutingFingerprint)
     XCTAssertEqual(BrainDispatchPlan.cohortUniformByteCount, 32)
     XCTAssertEqual(BrainDispatchPlan.tokenUniformByteCount, 32)
     XCTAssertEqual(
@@ -237,8 +350,11 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         + BrainDispatchPlan.tokenUniformByteCount
         + Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT)
         + program.layouts.count * Int(NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT)
+        + program.routes.count * Int(NB_REGIONAL_ROUTE_BYTE_COUNT)
         + program.parameters.count * Int(NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT)
         + first.tokenStateByteCount
+        + first.routeHistoryByteCount
+        + first.routeRuntimeStateByteCount
     )
     XCTAssertEqual(
       first.privateOutputByteCount,
@@ -251,6 +367,12 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         + first.tokenStateByteCount * 2
         + first.regionalStates.count * schedule.modules.count
         * MemoryLayout<UInt64>.stride
+        + first.routeHistoryByteCount
+        + first.routeRuntimeStateByteCount
+        + first.routingStates.count * program.routes.count
+        * MemoryLayout<UInt32>.stride * 2
+        + first.routingStates.count * schedule.modules.count
+        * MemoryLayout<UInt32>.stride
     )
   }
 
@@ -295,14 +417,14 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       )
     )
 
-    let routedProgram = try RegionalTokenProgram.runtimeFoundationV0(
+    let unroutedProgram = try RegionalTokenProgram.runtimeFoundationUnroutedV0(
       schedule: schedule
     )
     XCTAssertThrowsError(
       try MetalDispatchPlanRuntime.materialize(
         plan: plan,
         schedule: schedule,
-        regionalProgram: routedProgram,
+        regionalProgram: unroutedProgram,
         parameterVersion: version
       )
     )
@@ -327,6 +449,55 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         initialTokenStates: malformedTokenStates
       )
     )
+  }
+
+  func testMetalRejectsUnsafeCohortRouteHistoryBeforeUpload() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let route = try RegionalTokenRoute(
+      senderModuleIdentifier: 95,
+      receiverModuleIdentifier: 83,
+      senderToken: 0,
+      delayMicroseconds: 5_000,
+      gain: 0.75,
+      flags: [.persistent]
+    )
+    let program = try RegionalTokenProgram(
+      schedule: schedule,
+      routes: [route],
+      historyCapacity: 1
+    )
+    let version = try BrainParameterVersion.runtimeFoundationV0(
+      schedule: schedule,
+      regionalProgram: program,
+      tissueParameters: .corticalSheetV0
+    )
+    let scheduler = CPUMultiRateScheduler(
+      schedule: schedule,
+      parameterVersionFingerprint: version.fingerprint
+    )
+    let transaction = try scheduler.beginAdvance(
+      to: BrainTimestamp(microseconds: 20_000),
+      events: []
+    )
+    let plan = try BrainDispatchPlan(
+      environments: [
+        BrainScheduledEnvironment(
+          environmentIdentifier: 7,
+          transaction: transaction
+        )
+      ]
+    )
+    XCTAssertThrowsError(
+      try MetalDispatchPlanRuntime.materialize(
+        plan: plan,
+        schedule: schedule,
+        regionalProgram: program,
+        parameterVersion: version
+      )
+    ) { error in
+      XCTAssertTrue(String(describing: error).contains("cannot preserve route"))
+    }
   }
 
   private func requireMetal4() throws {

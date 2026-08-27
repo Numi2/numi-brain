@@ -1214,6 +1214,82 @@ inline float regional_route_message_value(
     ];
 }
 
+inline bool cohort_regional_invocation_for_module(
+    device const NBDispatchGroupABI *groups,
+    device const NBDispatchEntryABI *entries,
+    uint groupBegin,
+    uint groupEnd,
+    uint environmentIdentifier,
+    ushort moduleID,
+    thread NBDispatchEntryABI &result
+) {
+    for (uint groupIndex = groupBegin; groupIndex < groupEnd; ++groupIndex) {
+        const NBDispatchGroupABI group = groups[groupIndex];
+        if (group.module_id != moduleID) {
+            continue;
+        }
+        uint lower = group.entry_offset;
+        uint upper = group.entry_offset + group.entry_count;
+        while (lower < upper) {
+            const uint middle = lower + (upper - lower) / 2u;
+            const uint candidate = entries[middle].environment_identifier;
+            if (candidate < environmentIdentifier) {
+                lower = middle + 1u;
+            } else if (candidate > environmentIdentifier) {
+                upper = middle;
+            } else {
+                result = entries[middle];
+                return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
+inline float cohort_regional_route_message_value(
+    uint routeIndex,
+    ulong timestamp,
+    uint feature,
+    device const NBRegionalProgramHeaderABI *header,
+    device const NBRegionalTokenLayoutABI *layouts,
+    device const NBRegionalRouteABI *routes,
+    device const float *tokens,
+    ulong tokenBase,
+    device const float *routeHistoryValues,
+    ulong historyValueBase,
+    device const uint *resolvedRouteHistorySlots,
+    uint routeBase
+) {
+    const NBRegionalRouteABI route = routes[routeIndex];
+    if (route.delay_microseconds == 0u) {
+        const uint senderIndex = regional_module_index(
+            layouts,
+            header->module_count,
+            route.sender_module_id
+        );
+        const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
+        const uint senderFeature = feature % uint(sender.token_dimension);
+        return tokens[
+            tokenBase + ulong(sender.scalar_offset)
+            + ulong(route.sender_token) * ulong(sender.token_dimension)
+            + ulong(senderFeature)
+        ];
+    }
+    if (timestamp < ulong(route.delay_microseconds)) {
+        return 0.0f;
+    }
+    const uint resolvedSlot = resolvedRouteHistorySlots[routeBase + routeIndex];
+    if (resolvedSlot == ~0u) {
+        return 0.0f;
+    }
+    return routeHistoryValues[
+        historyValueBase + ulong(route.history_value_offset)
+        + ulong(resolvedSlot) * ulong(route.message_dimension)
+        + ulong(feature % route.message_dimension)
+    ];
+}
+
 /// Executable factorized recurrent token operator. Exactly one threadgroup owns
 /// an agent. All due modules at one timestamp read the same pre-timestamp state,
 /// then publish together, preventing route cycles from observing partial peers.
@@ -1733,6 +1809,557 @@ kernel void advance_due_regional_tokens(
             history.count = min(history.count + 1u, header->history_capacity);
             history.latest_timestamp_microseconds = timestamp;
             outputRouteHistoryStates[routeIndex] = history;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        cursor = groupEnd;
+    }
+}
+
+/// Routed cohort token operator. One 64-lane threadgroup owns every recurrent,
+/// history, and routing-state write for one environment. Modules sharing a
+/// physical timestamp read one pre-timestamp generation and publish together.
+kernel void advance_cohort_regional_tokens_routed(
+    device const NBDispatchPlanHeaderABI *planHeader [[buffer(0)]],
+    device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(1)]],
+    device const NBDispatchTokenUniformsABI *tokenUniforms [[buffer(2)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(3)]],
+    device const NBDispatchGroupABI *groups [[buffer(4)]],
+    device const NBDispatchEntryABI *entries [[buffer(5)]],
+    device const uint *environmentIdentifiers [[buffer(6)]],
+    device const NBModuleDescriptorABI *modules [[buffer(7)]],
+    device const NBRegionalProgramHeaderABI *header [[buffer(8)]],
+    device const NBRegionalTokenLayoutABI *layouts [[buffer(9)]],
+    device const NBRegionalTokenParametersABI *parameters [[buffer(10)]],
+    device const NBRegionalModuleStateABI *inputDiagnostics [[buffer(11)]],
+    device const float *inputTokens [[buffer(12)]],
+    device float *outputTokens [[buffer(13)]],
+    device float *candidateTokens [[buffer(14)]],
+    device ulong *tokenLastUpdates [[buffer(15)]],
+    device const NBRegionalRouteABI *routes [[buffer(16)]],
+    device const NBRegionalRouteHistoryStateABI *inputRouteHistoryStates [[buffer(17)]],
+    device NBRegionalRouteHistoryStateABI *outputRouteHistoryStates [[buffer(18)]],
+    device const ulong *inputRouteHistoryTimestamps [[buffer(19)]],
+    device ulong *outputRouteHistoryTimestamps [[buffer(20)]],
+    device const float *inputRouteHistoryValues [[buffer(21)]],
+    device float *outputRouteHistoryValues [[buffer(22)]],
+    device uint *resolvedRouteHistorySlots [[buffer(23)]],
+    device const NBRegionalRouteRuntimeStateABI *inputRouteRuntimeStates [[buffer(24)]],
+    device NBRegionalRouteRuntimeStateABI *outputRouteRuntimeStates [[buffer(25)]],
+    device uint *selectedRouteIndices [[buffer(26)]],
+    device uint *selectedRouteCounts [[buffer(27)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
+    uint3 threadgroupPosition [[threadgroup_position_in_grid]]
+) {
+    const uint environmentIndex = threadgroupPosition.x;
+    if (environmentIndex >= cohortUniforms->environment_count
+        || header->route_count == 0u
+        || header->module_count != cohortUniforms->module_count
+        || header->token_scalar_count
+            != tokenUniforms->scalar_count_per_environment
+        || header->parameter_count != header->token_scalar_count
+        || header->program_fingerprint
+            != tokenUniforms->regional_program_fingerprint
+        || header->program_fingerprint
+            != parameterVersion->regional_program_fingerprint
+        || tokenUniforms->schedule_fingerprint
+            != parameterVersion->schedule_fingerprint) {
+        return;
+    }
+    const uint laneCount = lanesPerThreadgroup.x;
+    const uint environmentIdentifier = environmentIdentifiers[environmentIndex];
+    const ulong tokenBase = ulong(environmentIndex)
+        * ulong(header->token_scalar_count);
+    const uint diagnosticBase = environmentIndex * header->module_count;
+    const uint routeBase = environmentIndex * header->route_count;
+    const ulong historyTimestampBase = ulong(environmentIndex)
+        * ulong(header->route_count) * ulong(header->history_capacity);
+    const ulong historyValueBase = ulong(environmentIndex)
+        * ulong(header->history_scalar_count);
+
+    for (uint scalarIndex = lane;
+         scalarIndex < header->token_scalar_count;
+         scalarIndex += laneCount) {
+        outputTokens[tokenBase + ulong(scalarIndex)] =
+            inputTokens[tokenBase + ulong(scalarIndex)];
+    }
+    for (uint moduleIndex = lane;
+         moduleIndex < header->module_count;
+         moduleIndex += laneCount) {
+        tokenLastUpdates[diagnosticBase + moduleIndex] =
+            inputDiagnostics[diagnosticBase + moduleIndex].last_update_microseconds;
+    }
+    for (uint routeIndex = lane;
+         routeIndex < header->route_count;
+         routeIndex += laneCount) {
+        outputRouteHistoryStates[routeBase + routeIndex] =
+            inputRouteHistoryStates[routeBase + routeIndex];
+        outputRouteRuntimeStates[routeBase + routeIndex] =
+            inputRouteRuntimeStates[routeBase + routeIndex];
+    }
+    const uint historyTimestampCount =
+        header->route_count * header->history_capacity;
+    for (uint timestampIndex = lane;
+         timestampIndex < historyTimestampCount;
+         timestampIndex += laneCount) {
+        outputRouteHistoryTimestamps[historyTimestampBase + ulong(timestampIndex)] =
+            inputRouteHistoryTimestamps[historyTimestampBase + ulong(timestampIndex)];
+    }
+    for (uint historyScalarIndex = lane;
+         historyScalarIndex < header->history_scalar_count;
+         historyScalarIndex += laneCount) {
+        outputRouteHistoryValues[historyValueBase + ulong(historyScalarIndex)] =
+            inputRouteHistoryValues[historyValueBase + ulong(historyScalarIndex)];
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    const ulong neverUpdated = ~0ul;
+    uint cursor = 0u;
+    while (cursor < planHeader->group_count) {
+        const ulong timestamp = groups[cursor].timestamp_microseconds;
+        uint groupEnd = cursor + 1u;
+        while (groupEnd < planHeader->group_count
+               && groups[groupEnd].timestamp_microseconds == timestamp) {
+            groupEnd += 1u;
+        }
+
+        for (uint routeIndex = lane;
+             routeIndex < header->route_count;
+             routeIndex += laneCount) {
+            const NBRegionalRouteABI route = routes[routeIndex];
+            uint resolvedSlot = ~0u;
+            if (route.delay_microseconds > 0u
+                && timestamp >= ulong(route.delay_microseconds)) {
+                const ulong targetTimestamp =
+                    timestamp - ulong(route.delay_microseconds);
+                const NBRegionalRouteHistoryStateABI history =
+                    outputRouteHistoryStates[routeBase + routeIndex];
+                for (uint age = 0u; age < history.count; ++age) {
+                    const uint slot = (
+                        history.next_slot + header->history_capacity - 1u - age
+                    ) % header->history_capacity;
+                    const ulong messageTimestamp = outputRouteHistoryTimestamps[
+                        historyTimestampBase
+                        + ulong(routeIndex * header->history_capacity + slot)
+                    ];
+                    if (messageTimestamp <= targetTimestamp) {
+                        resolvedSlot = slot;
+                        break;
+                    }
+                }
+            }
+            resolvedRouteHistorySlots[routeBase + routeIndex] = resolvedSlot;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint moduleIndex = lane;
+             moduleIndex < header->module_count;
+             moduleIndex += laneCount) {
+            selectedRouteCounts[diagnosticBase + moduleIndex] = 0u;
+            const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
+            NBDispatchEntryABI receiverInvocation;
+            if (!cohort_regional_invocation_for_module(
+                    groups,
+                    entries,
+                    cursor,
+                    groupEnd,
+                    environmentIdentifier,
+                    receiver.module_id,
+                    receiverInvocation)) {
+                continue;
+            }
+            const uint routeBegin = receiver.incoming_route_offset;
+            const uint routeEnd = routeBegin + uint(receiver.incoming_route_count);
+            if (routeBegin == routeEnd) {
+                continue;
+            }
+            const uint queryDimension = uint(receiver.token_dimension);
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                float dot = 0.0f;
+                float salience = 0.0f;
+                for (uint feature = 0u; feature < queryDimension; ++feature) {
+                    const float message = cohort_regional_route_message_value(
+                        routeIndex,
+                        timestamp,
+                        feature,
+                        header,
+                        layouts,
+                        routes,
+                        outputTokens,
+                        tokenBase,
+                        outputRouteHistoryValues,
+                        historyValueBase,
+                        resolvedRouteHistorySlots,
+                        routeBase
+                    );
+                    dot += outputTokens[
+                        tokenBase + ulong(receiver.scalar_offset + feature)
+                    ] * message;
+                    salience += abs(message);
+                }
+                NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeBase + routeIndex];
+                state.score = dot / sqrt(float(queryDimension))
+                    + header->salience_gain * salience / float(queryDimension);
+                if (state.active != 0u) {
+                    state.score += header->persistence_bonus;
+                }
+                outputRouteRuntimeStates[routeBase + routeIndex] = state;
+            }
+
+            uint selectedCount = 0u;
+            uint normalSelected = 0u;
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                if ((routes[routeIndex].flags & 1u) != 0u) {
+                    selectedRouteIndices[routeBase + routeBegin + selectedCount] =
+                        routeIndex;
+                    selectedCount += 1u;
+                }
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd
+                     && normalSelected < uint(receiver.normal_route_budget);
+                 ++routeIndex) {
+                const NBRegionalRouteABI route = routes[routeIndex];
+                const NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeBase + routeIndex];
+                if ((route.flags & 1u) != 0u
+                    || state.active == 0u
+                    || state.last_selected_timestamp_microseconds == ~0ul
+                    || timestamp < state.last_selected_timestamp_microseconds) {
+                    continue;
+                }
+                if (timestamp - state.last_selected_timestamp_microseconds
+                    < ulong(header->minimum_route_persistence_microseconds)) {
+                    selectedRouteIndices[routeBase + routeBegin + selectedCount] =
+                        routeIndex;
+                    selectedCount += 1u;
+                    normalSelected += 1u;
+                }
+            }
+            while (normalSelected < uint(receiver.normal_route_budget)) {
+                uint bestRoute = ~0u;
+                float bestScore = -INFINITY;
+                for (uint routeIndex = routeBegin;
+                     routeIndex < routeEnd;
+                     ++routeIndex) {
+                    if ((routes[routeIndex].flags & 1u) != 0u) {
+                        continue;
+                    }
+                    bool alreadySelected = false;
+                    for (uint selectedIndex = 0u;
+                         selectedIndex < selectedCount;
+                         ++selectedIndex) {
+                        if (selectedRouteIndices[
+                                routeBase + routeBegin + selectedIndex
+                            ] == routeIndex) {
+                            alreadySelected = true;
+                            break;
+                        }
+                    }
+                    if (alreadySelected) {
+                        continue;
+                    }
+                    const float score = outputRouteRuntimeStates[
+                        routeBase + routeIndex
+                    ].score;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestRoute = routeIndex;
+                    }
+                }
+                if (bestRoute == ~0u) {
+                    break;
+                }
+                selectedRouteIndices[routeBase + routeBegin + selectedCount] =
+                    bestRoute;
+                selectedCount += 1u;
+                normalSelected += 1u;
+            }
+
+            float maximumScore = 0.0f;
+            if (selectedCount > 0u) {
+                maximumScore = outputRouteRuntimeStates[
+                    routeBase + selectedRouteIndices[routeBase + routeBegin]
+                ].score;
+                for (uint selectedIndex = 1u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    maximumScore = max(
+                        maximumScore,
+                        outputRouteRuntimeStates[
+                            routeBase + selectedRouteIndices[
+                                routeBase + routeBegin + selectedIndex
+                            ]
+                        ].score
+                    );
+                }
+            }
+            float strengthDenominator = 0.0f;
+            for (uint selectedIndex = 0u;
+                 selectedIndex < selectedCount;
+                 ++selectedIndex) {
+                strengthDenominator += exp(
+                    outputRouteRuntimeStates[
+                        routeBase + selectedRouteIndices[
+                            routeBase + routeBegin + selectedIndex
+                        ]
+                    ].score - maximumScore
+                );
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                NBRegionalRouteRuntimeStateABI state =
+                    outputRouteRuntimeStates[routeBase + routeIndex];
+                const bool wasActive = state.active != 0u;
+                bool isActive = false;
+                for (uint selectedIndex = 0u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    if (selectedRouteIndices[
+                            routeBase + routeBegin + selectedIndex
+                        ] == routeIndex) {
+                        isActive = true;
+                        break;
+                    }
+                }
+                state.active = isActive ? 1u : 0u;
+                state.strength = isActive && strengthDenominator > 0.0f
+                    ? exp(state.score - maximumScore) / strengthDenominator
+                    : 0.0f;
+                if (isActive) {
+                    if (state.selection_count != ~0u) {
+                        state.selection_count += 1u;
+                    }
+                    state.last_selected_timestamp_microseconds = timestamp;
+                }
+                if (isActive != wasActive && state.switch_count != ~0u) {
+                    state.switch_count += 1u;
+                }
+                outputRouteRuntimeStates[routeBase + routeIndex] = state;
+            }
+            selectedRouteCounts[diagnosticBase + moduleIndex] = selectedCount;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint scalarIndex = lane;
+             scalarIndex < header->token_scalar_count;
+             scalarIndex += laneCount) {
+            uint moduleIndex = 0u;
+            for (; moduleIndex < header->module_count; ++moduleIndex) {
+                const NBRegionalTokenLayoutABI candidateLayout = layouts[moduleIndex];
+                if (scalarIndex >= candidateLayout.scalar_offset
+                    && scalarIndex < candidateLayout.scalar_offset
+                        + candidateLayout.scalar_count) {
+                    break;
+                }
+            }
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+            NBDispatchEntryABI invocation;
+            const bool due = cohort_regional_invocation_for_module(
+                groups,
+                entries,
+                cursor,
+                groupEnd,
+                environmentIdentifier,
+                layout.module_id,
+                invocation
+            );
+            const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
+            if (!due) {
+                candidateTokens[absoluteScalar] = outputTokens[absoluteScalar];
+                continue;
+            }
+
+            const NBModuleDescriptorABI module = modules[moduleIndex];
+            const ulong lastUpdate = tokenLastUpdates[diagnosticBase + moduleIndex];
+            const ulong elapsedMicroseconds = lastUpdate == neverUpdated
+                ? ulong(module.period_microseconds)
+                : timestamp - lastUpdate;
+            const float alpha = 1.0f - exp(
+                -float(elapsedMicroseconds)
+                    / float(module.intrinsic_timescale_microseconds)
+            );
+            const float periodicDrive =
+                (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u
+                ? 0.25f
+                : 0.0f;
+            const float interruptDrive = min(
+                float(popcount(invocation.interrupt_mask)) * 0.125f,
+                1.0f
+            );
+            const float drive = periodicDrive + interruptDrive;
+            const uint localScalar = scalarIndex - layout.scalar_offset;
+            const uint dimension = uint(layout.token_dimension);
+            const uint tokenStart = layout.scalar_offset
+                + (localScalar / dimension) * dimension;
+            const uint feature = localScalar % dimension;
+            float localSum = 0.0f;
+            for (uint localFeature = 0u;
+                 localFeature < dimension;
+                 ++localFeature) {
+                localSum += outputTokens[
+                    tokenBase + ulong(tokenStart + localFeature)
+                ];
+            }
+            const float localMean = localSum / float(dimension);
+            float routedInput = 0.0f;
+            const uint selectedCount =
+                selectedRouteCounts[diagnosticBase + moduleIndex];
+            for (uint selectedIndex = 0u;
+                 selectedIndex < selectedCount;
+                 ++selectedIndex) {
+                const uint routeIndex = selectedRouteIndices[
+                    routeBase + layout.incoming_route_offset + selectedIndex
+                ];
+                const NBRegionalRouteABI route = routes[routeIndex];
+                routedInput += route.gain
+                    * outputRouteRuntimeStates[routeBase + routeIndex].strength
+                    * cohort_regional_route_message_value(
+                        routeIndex,
+                        timestamp,
+                        feature,
+                        header,
+                        layouts,
+                        routes,
+                        outputTokens,
+                        tokenBase,
+                        outputRouteHistoryValues,
+                        historyValueBase,
+                        resolvedRouteHistorySlots,
+                        routeBase
+                    );
+            }
+            const NBRegionalTokenParametersABI parameter =
+                parameters[layout.parameter_offset + localScalar];
+            const float current = outputTokens[absoluteScalar];
+            const float candidate = tanh(
+                parameter.recurrent_gain * current
+                + parameter.local_gain * localMean
+                + parameter.route_gain * routedInput
+                + parameter.drive_gain * drive
+                + parameter.bias
+            );
+            const float gateInput = parameter.gate_bias
+                + parameter.gate_recurrent_gain * current
+                + parameter.gate_input_gain * (routedInput + drive);
+            const float gate = 1.0f / (1.0f + exp(-gateInput));
+            candidateTokens[absoluteScalar] = current
+                + alpha * gate * (candidate - current);
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint scalarIndex = lane;
+             scalarIndex < header->token_scalar_count;
+             scalarIndex += laneCount) {
+            uint moduleIndex = 0u;
+            for (; moduleIndex < header->module_count; ++moduleIndex) {
+                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+                if (scalarIndex >= layout.scalar_offset
+                    && scalarIndex < layout.scalar_offset + layout.scalar_count) {
+                    break;
+                }
+            }
+            NBDispatchEntryABI invocation;
+            if (cohort_regional_invocation_for_module(
+                    groups,
+                    entries,
+                    cursor,
+                    groupEnd,
+                    environmentIdentifier,
+                    layouts[moduleIndex].module_id,
+                    invocation)) {
+                const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
+                outputTokens[absoluteScalar] = candidateTokens[absoluteScalar];
+            }
+        }
+        for (uint moduleIndex = lane;
+             moduleIndex < header->module_count;
+             moduleIndex += laneCount) {
+            NBDispatchEntryABI invocation;
+            if (cohort_regional_invocation_for_module(
+                    groups,
+                    entries,
+                    cursor,
+                    groupEnd,
+                    environmentIdentifier,
+                    layouts[moduleIndex].module_id,
+                    invocation)) {
+                tokenLastUpdates[diagnosticBase + moduleIndex] = timestamp;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint routeIndex = 0u;
+             routeIndex < header->route_count;
+             ++routeIndex) {
+            const NBRegionalRouteABI route = routes[routeIndex];
+            NBDispatchEntryABI senderInvocation;
+            if (!cohort_regional_invocation_for_module(
+                    groups,
+                    entries,
+                    cursor,
+                    groupEnd,
+                    environmentIdentifier,
+                    route.sender_module_id,
+                    senderInvocation)) {
+                continue;
+            }
+            const uint senderIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                route.sender_module_id
+            );
+            const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
+            const uint senderTokenBase = sender.scalar_offset
+                + uint(route.sender_token) * uint(sender.token_dimension);
+            const uint writeSlot =
+                outputRouteHistoryStates[routeBase + routeIndex].next_slot;
+            const ulong destinationBase = historyValueBase
+                + ulong(route.history_value_offset)
+                + ulong(writeSlot) * ulong(route.message_dimension);
+            for (uint feature = lane;
+                 feature < route.message_dimension;
+                 feature += laneCount) {
+                outputRouteHistoryValues[destinationBase + ulong(feature)] =
+                    outputTokens[
+                        tokenBase + ulong(senderTokenBase + feature)
+                    ];
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint routeIndex = lane;
+             routeIndex < header->route_count;
+             routeIndex += laneCount) {
+            const NBRegionalRouteABI route = routes[routeIndex];
+            NBDispatchEntryABI senderInvocation;
+            if (!cohort_regional_invocation_for_module(
+                    groups,
+                    entries,
+                    cursor,
+                    groupEnd,
+                    environmentIdentifier,
+                    route.sender_module_id,
+                    senderInvocation)) {
+                continue;
+            }
+            NBRegionalRouteHistoryStateABI history =
+                outputRouteHistoryStates[routeBase + routeIndex];
+            const uint writeSlot = history.next_slot;
+            outputRouteHistoryTimestamps[
+                historyTimestampBase
+                + ulong(routeIndex * header->history_capacity + writeSlot)
+            ] = timestamp;
+            history.next_slot = (writeSlot + 1u) % header->history_capacity;
+            history.count = min(history.count + 1u, header->history_capacity);
+            history.latest_timestamp_microseconds = timestamp;
+            outputRouteHistoryStates[routeBase + routeIndex] = history;
         }
         threadgroup_barrier(mem_flags::mem_device);
         cursor = groupEnd;
