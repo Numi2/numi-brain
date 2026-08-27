@@ -572,6 +572,7 @@ private func run() throws {
     maximumCommandedForceMuscleIdentifiers.compactMap {
       bridge.attachmentCatalog.attachment(forMuscleIdentifier: $0)
     }
+  let committedMetalBodyLoadField = try runtime.snapshotCommittedBodyLoadField()
 
   guard let localizedSourceInhibitionOutput,
     let overloadedMotorChannelIndex = motorProfile.channels.firstIndex(where: {
@@ -616,6 +617,7 @@ private func run() throws {
         ),
       ],
     committedBodyLoadFrame.maximumAbsoluteMuscleForce == maximumMuscleForces[0],
+    committedMetalBodyLoadField == committedBodyLoadFrame.peakBodyLoadCells,
     committedProtectiveSelection.bodyLoadFrameFingerprint
       == committedBodyLoadFrame.fingerprint,
     committedProtectiveSelection.overloadedSourceMuscleIdentifiers
@@ -692,6 +694,9 @@ private func run() throws {
     "committed_body_load_sample_count": committedBodyLoadFrame.samples.count,
     "committed_body_load_body_identifiers": committedBodyLoadFrame.affectedBodyIdentifiers,
     "committed_body_load_maximum_force": committedBodyLoadFrame.maximumAbsoluteMuscleForce,
+    "committed_metal_body_load_body_identifiers":
+      committedMetalBodyLoadField.map(\.bodyIdentifier),
+    "committed_metal_body_load_count": committedMetalBodyLoadField.count,
     "committed_protective_selection_fingerprint": committedProtectiveSelection.fingerprint,
     "committed_protective_selection_count": committedProtectiveSelection.candidates.count,
     "committed_protective_source_muscle_identifiers":

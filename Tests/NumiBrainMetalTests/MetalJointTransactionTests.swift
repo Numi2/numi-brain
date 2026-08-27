@@ -84,6 +84,10 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(committedBodyLoad.jointCommitFingerprint, commit.fingerprint)
     XCTAssertEqual(committedBodyLoad.affectedBodyIdentifiers, [2, 5])
     XCTAssertEqual(committedBodyLoad.samples.count, 2)
+    XCTAssertEqual(
+      try runtime.snapshotCommittedBodyLoadField(),
+      committedBodyLoad.peakBodyLoadCells
+    )
     let localizedSelection = try XCTUnwrap(
       runtime.latestCommittedProtectiveMuscleSelection
     )
@@ -124,6 +128,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertEqual(runtime.latestCommittedBodyLoadFrame?.samples, [])
     XCTAssertEqual(runtime.latestCommittedProtectiveMuscleSelection?.candidates, [])
+    XCTAssertEqual(try runtime.snapshotCommittedBodyLoadField(), [])
   }
 
   func testJointMetalAbortPublishesNoBrainHistory() throws {
@@ -132,6 +137,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let before = try runtime.snapshotCommitted().stableHash()
     let beforeProtective = try runtime.snapshotCommittedProtectiveCommand()
     let beforeProtectiveMotor = try runtime.snapshotCommittedProtectiveMotorOutput()
+    let beforeBodyLoadField = try runtime.snapshotCommittedBodyLoadField()
     var joint = try runtime.beginJointControl(
       controlStepIdentifier: 4,
       basePhysicsGeneration: 100,
@@ -202,6 +208,9 @@ final class MetalJointTransactionTests: XCTestCase {
         sourceInhibitedMuscleIdentifiers: [101]
       )
     )
+    let shadowBodyLoadField = try runtime.snapshotInteractiveBodyLoadField()
+    XCTAssertEqual(shadowBodyLoadField.map(\.bodyIdentifier), [2, 5])
+    XCTAssertEqual(shadowBodyLoadField.map(\.sourceMuscleIdentifier), [101, 101])
     XCTAssertNotEqual(shadowProtective, beforeProtective)
     XCTAssertNotEqual(shadowProtectiveMotor, beforeProtectiveMotor)
     try runtime.abortInteractiveJointControl()
@@ -213,6 +222,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertNil(runtime.latestCommittedBodyLoadFrame)
     XCTAssertNil(runtime.latestCommittedProtectiveMuscleSelection)
+    XCTAssertEqual(try runtime.snapshotCommittedBodyLoadField(), beforeBodyLoadField)
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
     XCTAssertEqual(try runtime.snapshotCommittedProtectiveCommand(), beforeProtective)
     XCTAssertEqual(

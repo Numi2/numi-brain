@@ -440,6 +440,23 @@ struct NBMotorOutputHeaderABI {
     ulong output_fingerprint;
 };
 
+struct NBBodyLoadFieldUniformsABI {
+    ulong attachment_catalog_fingerprint;
+    uint body_count;
+    uint update_count;
+    ulong reserved0;
+    ulong reserved1;
+};
+
+struct NBBodyLoadFieldRecordABI {
+    uint body_identifier;
+    uint endpoint_role;
+    uint source_muscle_identifier;
+    float maximum_absolute_muscle_force;
+    ulong accepted_timestamp_microseconds;
+    ulong accepted_physics_state_fingerprint;
+};
+
 struct NBRegionalTokenLayoutABI {
     uint scalar_offset;
     uint scalar_count;
@@ -535,6 +552,8 @@ static_assert(sizeof(NBProtectiveCommandUniformsABI) == 32, "protective uniforms
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
+static_assert(sizeof(NBBodyLoadFieldUniformsABI) == 32, "body-load uniforms drift");
+static_assert(sizeof(NBBodyLoadFieldRecordABI) == 32, "body-load record drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
@@ -2735,6 +2754,74 @@ kernel void map_protective_motor_output(
     header.autonomic_arousal = command.autonomic_arousal;
     header.output_fingerprint = motor_output_fingerprint(header, muscleExcitations);
     outputHeader[0] = header;
+}
+
+inline bool body_load_same_source(
+    const NBBodyLoadFieldRecordABI lhs,
+    const NBBodyLoadFieldRecordABI rhs
+) {
+    return lhs.body_identifier == rhs.body_identifier &&
+        lhs.source_muscle_identifier == rhs.source_muscle_identifier &&
+        lhs.maximum_absolute_muscle_force == rhs.maximum_absolute_muscle_force &&
+        lhs.accepted_timestamp_microseconds == rhs.accepted_timestamp_microseconds &&
+        lhs.accepted_physics_state_fingerprint ==
+            rhs.accepted_physics_state_fingerprint;
+}
+
+inline bool body_load_is_stronger(
+    const NBBodyLoadFieldRecordABI candidate,
+    const NBBodyLoadFieldRecordABI current
+) {
+    if (current.endpoint_role == 0u) {
+        return true;
+    }
+    if (candidate.maximum_absolute_muscle_force !=
+        current.maximum_absolute_muscle_force) {
+        return candidate.maximum_absolute_muscle_force >
+            current.maximum_absolute_muscle_force;
+    }
+    if (candidate.accepted_timestamp_microseconds !=
+        current.accepted_timestamp_microseconds) {
+        return candidate.accepted_timestamp_microseconds >
+            current.accepted_timestamp_microseconds;
+    }
+    if (candidate.source_muscle_identifier != current.source_muscle_identifier) {
+        return candidate.source_muscle_identifier < current.source_muscle_identifier;
+    }
+    return candidate.accepted_physics_state_fingerprint <
+        current.accepted_physics_state_fingerprint;
+}
+
+/// Materializes one sparse peak-load cell per Core body. The field is rebuilt
+/// from the accepted root-local update list, so an empty committed root clears
+/// prior loads and a rejected physical candidate never enters device history.
+kernel void materialize_body_load_field(
+    constant NBBodyLoadFieldUniformsABI *uniforms [[buffer(0)]],
+    device const NBBodyLoadFieldRecordABI *updates [[buffer(1)]],
+    device NBBodyLoadFieldRecordABI *output [[buffer(2)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+    for (uint bodyIndex = 0u; bodyIndex < uniforms->body_count; ++bodyIndex) {
+        NBBodyLoadFieldRecordABI selected{};
+        selected.body_identifier = bodyIndex;
+        for (uint updateIndex = 0u;
+             updateIndex < uniforms->update_count;
+             ++updateIndex) {
+            const NBBodyLoadFieldRecordABI candidate = updates[updateIndex];
+            if (candidate.body_identifier != bodyIndex) {
+                continue;
+            }
+            if (body_load_same_source(candidate, selected)) {
+                selected.endpoint_role |= candidate.endpoint_role;
+            } else if (body_load_is_stronger(candidate, selected)) {
+                selected = candidate;
+            }
+        }
+        output[bodyIndex] = selected;
+    }
 }
 
 kernel void neural_tissue_step(

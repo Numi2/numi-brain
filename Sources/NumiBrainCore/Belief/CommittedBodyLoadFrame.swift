@@ -35,6 +35,58 @@ public struct CommittedBodyLoadSample: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+@frozen
+public struct BodyLoadFieldCell: Codable, Equatable, Hashable, Sendable {
+  public let bodyIdentifier: UInt32
+  public let endpointRole: BodyLoadEndpointRole
+  public let sourceMuscleIdentifier: UInt32
+  public let maximumAbsoluteMuscleForce: Float
+  public let acceptedTimestamp: BrainTimestamp
+  public let acceptedPhysicsStateFingerprint: UInt64
+
+  public init(
+    bodyIdentifier: UInt32,
+    endpointRole: BodyLoadEndpointRole,
+    sourceMuscleIdentifier: UInt32,
+    maximumAbsoluteMuscleForce: Float,
+    acceptedTimestamp: BrainTimestamp,
+    acceptedPhysicsStateFingerprint: UInt64
+  ) throws {
+    guard !endpointRole.isEmpty, maximumAbsoluteMuscleForce.isFinite,
+      maximumAbsoluteMuscleForce >= 0, acceptedPhysicsStateFingerprint != 0
+    else {
+      throw BrainRuntimeError.transaction("body-load field cell is invalid")
+    }
+    self.bodyIdentifier = bodyIdentifier
+    self.endpointRole = endpointRole
+    self.sourceMuscleIdentifier = sourceMuscleIdentifier
+    self.maximumAbsoluteMuscleForce = maximumAbsoluteMuscleForce
+    self.acceptedTimestamp = acceptedTimestamp
+    self.acceptedPhysicsStateFingerprint = acceptedPhysicsStateFingerprint
+  }
+
+  fileprivate init(sample: CommittedBodyLoadSample) {
+    bodyIdentifier = sample.bodyIdentifier
+    endpointRole = sample.endpointRole
+    sourceMuscleIdentifier = sample.sourceMuscleIdentifier
+    maximumAbsoluteMuscleForce = sample.maximumAbsoluteMuscleForce
+    acceptedTimestamp = sample.acceptedTimestamp
+    acceptedPhysicsStateFingerprint = sample.acceptedPhysicsStateFingerprint
+  }
+
+  fileprivate init(
+    mergingEndpointRole endpointRole: BodyLoadEndpointRole,
+    from cell: BodyLoadFieldCell
+  ) {
+    bodyIdentifier = cell.bodyIdentifier
+    self.endpointRole = endpointRole
+    sourceMuscleIdentifier = cell.sourceMuscleIdentifier
+    maximumAbsoluteMuscleForce = cell.maximumAbsoluteMuscleForce
+    acceptedTimestamp = cell.acceptedTimestamp
+    acceptedPhysicsStateFingerprint = cell.acceptedPhysicsStateFingerprint
+  }
+}
+
 /// Sparse accepted-load view over one immutable NumanX body catalog. It is a
 /// transaction-owned precursor to the learned body schema, not authoritative
 /// physical state. Every sample retains the causal receptor and physical-token
@@ -121,6 +173,29 @@ public struct CommittedBodyLoadFrame: Codable, Equatable, Hashable, Sendable {
 
   public var maximumAbsoluteMuscleForce: Float {
     samples.lazy.map(\.maximumAbsoluteMuscleForce).max() ?? 0
+  }
+
+  /// One deterministic peak accepted load per affected body. Equal observations
+  /// merge endpoint roles; otherwise force, recency, and source identity define
+  /// the canonical winner in that order.
+  public var peakBodyLoadCells: [BodyLoadFieldCell] {
+    var cells: [BodyLoadFieldCell] = []
+    for sample in samples {
+      let candidate = BodyLoadFieldCell(sample: sample)
+      guard let last = cells.last, last.bodyIdentifier == candidate.bodyIdentifier else {
+        cells.append(candidate)
+        continue
+      }
+      if Self.sameLoad(last, candidate) {
+        cells[cells.count - 1] = BodyLoadFieldCell(
+          mergingEndpointRole: last.endpointRole.union(candidate.endpointRole),
+          from: last
+        )
+      } else if Self.stronger(candidate, than: last) {
+        cells[cells.count - 1] = candidate
+      }
+    }
+    return cells
   }
 
   public func samples(forBodyIdentifier bodyIdentifier: UInt32)
@@ -222,6 +297,30 @@ public struct CommittedBodyLoadFrame: Codable, Equatable, Hashable, Sendable {
     }
     return lhs.maximumAbsoluteMuscleForce.bitPattern
       < rhs.maximumAbsoluteMuscleForce.bitPattern
+  }
+
+  private static func sameLoad(_ lhs: BodyLoadFieldCell, _ rhs: BodyLoadFieldCell) -> Bool {
+    lhs.bodyIdentifier == rhs.bodyIdentifier
+      && lhs.sourceMuscleIdentifier == rhs.sourceMuscleIdentifier
+      && lhs.maximumAbsoluteMuscleForce == rhs.maximumAbsoluteMuscleForce
+      && lhs.acceptedTimestamp == rhs.acceptedTimestamp
+      && lhs.acceptedPhysicsStateFingerprint == rhs.acceptedPhysicsStateFingerprint
+  }
+
+  private static func stronger(
+    _ lhs: BodyLoadFieldCell,
+    than rhs: BodyLoadFieldCell
+  ) -> Bool {
+    if lhs.maximumAbsoluteMuscleForce != rhs.maximumAbsoluteMuscleForce {
+      return lhs.maximumAbsoluteMuscleForce > rhs.maximumAbsoluteMuscleForce
+    }
+    if lhs.acceptedTimestamp != rhs.acceptedTimestamp {
+      return lhs.acceptedTimestamp > rhs.acceptedTimestamp
+    }
+    if lhs.sourceMuscleIdentifier != rhs.sourceMuscleIdentifier {
+      return lhs.sourceMuscleIdentifier < rhs.sourceMuscleIdentifier
+    }
+    return lhs.acceptedPhysicsStateFingerprint < rhs.acceptedPhysicsStateFingerprint
   }
 
   private static func computeFingerprint(

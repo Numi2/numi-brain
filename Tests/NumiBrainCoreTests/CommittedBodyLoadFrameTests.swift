@@ -95,6 +95,12 @@ final class CommittedBodyLoadFrameTests: XCTestCase {
     )
     XCTAssertEqual(frame.samples(forBodyIdentifier: 2).count, 2)
     XCTAssertTrue(frame.samples(forBodyIdentifier: 3).isEmpty)
+    XCTAssertEqual(frame.peakBodyLoadCells.map(\.bodyIdentifier), [2, 4])
+    XCTAssertEqual(frame.peakBodyLoadCells.map(\.sourceMuscleIdentifier), [10, 10])
+    XCTAssertEqual(
+      frame.peakBodyLoadCells.map(\.endpointRole),
+      [.terminalRouteEndpoint, .firstRouteEndpoint]
+    )
     XCTAssertEqual(
       try JSONDecoder().decode(
         CommittedBodyLoadFrame.self,
