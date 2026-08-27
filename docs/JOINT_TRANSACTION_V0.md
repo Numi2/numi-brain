@@ -189,11 +189,13 @@ covered by deterministic CPU and Metal tests. The interactive and batched
 paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
-The attachment-localized joint-root executable at NumiBrain `c0f2bf8` and
+The committed-localization joint-root executable at NumiBrain `be07275` and
 isolated NumanX `5cdee51` passes the actual ordered 416-channel private excitation
 allocation to MyoSim, advances an
 articulated Core candidate, transduces the accepted peak actuator force with
-its source-tendon and endpoint-body identity, grows commanded activation from a
+its source-tendon and endpoint-body identity, binds that observation to the
+accepted-physics and attachment-catalog fingerprints, publishes it only after
+root commit, grows commanded activation from a
 zero-activation start, changes the next neural output, rejects and exactly
 replays one physical candidate, and publishes both roots. Accepted receptor
 events reach the fast scheduler/regional shadow only after physical acceptance
@@ -207,5 +209,6 @@ NumanX synchronize separate Metal queues, the MyoSim result is staged for
 diagnostics, Core articulated integration is CPU-side, and root publication is
 sequential rather than one atomic GPU pointer swap. Anatomical/body-side
 semantics, intermediate route-body export, a body-schema receptor field,
-NumanX-generated adaptive substep rejection, shared GPU timeline, and
-composition with voluntary control remain required.
+NumanX-generated adaptive substep rejection, shared GPU timeline, GPU body-load
+state, localized protective selection, and composition with voluntary control
+remain required.
