@@ -351,6 +351,107 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
   }
 
+  func testAcceptedSubstepInterruptAdvancesFastRegionalShadowBeforeRootFinish() throws {
+    try requireMetal4()
+    let runtime = try makeRuntime(maxEncodedSubsteps: 3)
+    let token = try runtime.beginInteractiveJointControl(
+      controlStepIdentifier: 8,
+      basePhysicsGeneration: 100,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 2_000)
+    )
+    let supportLoss = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 750),
+      mask: .lossOfSupport,
+      identifier: 930,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    let firstCandidate = try runtime.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    let firstPhysics = try AcceptedPhysicsStateToken(
+      transaction: token,
+      substep: firstCandidate.substep,
+      physicsStateFingerprint: 0xf001,
+      physicsGeneration: 101
+    )
+    try runtime.acceptPhysicsSubstep(
+      firstPhysics,
+      for: firstCandidate.substep,
+      receptorEvents: [supportLoss]
+    )
+
+    let firstFastScheduler = try runtime.inspectInteractiveFastScheduler()
+    let firstFastRegional = try runtime.snapshotInteractiveFastRegionalState()
+    XCTAssertEqual(
+      firstFastScheduler.snapshot.committedTime,
+      BrainTimestamp(microseconds: 1_000)
+    )
+    XCTAssertEqual(firstFastScheduler.snapshot.generation, token.shadowGeneration)
+    XCTAssertTrue(
+      firstFastScheduler.invocations.contains(where: {
+        $0.timestamp == supportLoss.timestamp
+          && $0.moduleIdentifier == 26
+          && $0.reasons.contains(.interrupt)
+          && $0.interruptMask == .lossOfSupport
+      })
+    )
+    let emergencyBusIndex = try XCTUnwrap(
+      runtime.brainSchedule.modules.firstIndex(where: { $0.moduleIdentifier == 26 })
+    )
+    XCTAssertEqual(firstFastRegional.states[emergencyBusIndex].interruptCount, 1)
+
+    let rejectedPain = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 1_500),
+      mask: .pain,
+      identifier: 931,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    let rejectedCandidate = try runtime.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    try runtime.rejectPhysicsSubstep(
+      rejectedCandidate.substep,
+      receptorEvents: [rejectedPain]
+    )
+    XCTAssertEqual(try runtime.inspectInteractiveFastScheduler(), firstFastScheduler)
+    XCTAssertEqual(
+      try runtime.snapshotInteractiveFastRegionalState(),
+      firstFastRegional
+    )
+
+    let retryCandidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_000)
+    let secondPhysics = try AcceptedPhysicsStateToken(
+      transaction: token,
+      substep: retryCandidate.substep,
+      physicsStateFingerprint: 0xf002,
+      physicsGeneration: 102
+    )
+    try runtime.acceptPhysicsSubstep(secondPhysics, for: retryCandidate.substep)
+    let finalFastScheduler = try runtime.inspectInteractiveFastScheduler()
+    let finalFastRegional = try runtime.snapshotInteractiveFastRegionalState()
+    XCTAssertEqual(
+      finalFastScheduler.snapshot.committedTime,
+      BrainTimestamp(microseconds: 2_000)
+    )
+    XCTAssertTrue(
+      finalFastScheduler.invocations.contains(where: {
+        $0.interruptMask.contains(.lossOfSupport)
+      })
+    )
+    XCTAssertFalse(
+      finalFastScheduler.invocations.contains(where: { $0.interruptMask.contains(.pain) })
+    )
+    XCTAssertEqual(finalFastRegional.states[emergencyBusIndex].interruptCount, 1)
+
+    let submission = try runtime.finishInteractiveJointControl()
+    XCTAssertEqual(submission.schedulerDispatches, 2)
+    XCTAssertEqual(submission.regionalDispatches, 2)
+    _ = try runtime.commitJointRootTransaction()
+    XCTAssertEqual(try runtime.inspectCommittedScheduler(), finalFastScheduler)
+    XCTAssertEqual(try runtime.snapshotCommittedRegionalState(), finalFastRegional)
+  }
+
   func testJointMetalBindingAcceptsCorrectedDurationAndRejectsStaleGeneration() throws {
     try requireMetal4()
     let runtime = try makeRuntime(maxEncodedSubsteps: 2)

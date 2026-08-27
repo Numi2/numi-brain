@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.5
+# NumanX joint transaction contract v0.6
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -107,19 +107,25 @@ tissue generation and the inactive owner of its conduction-history value and
 timestamp slot. Corrected durations may shrink from the nominal timestep; the
 shader resolves configured delay classes against physical microseconds and
 interpolates accepted timestamp brackets.
-Acceptance advances only the root-shadow state pointer, history-owner bit,
-accepted time, and joint ledger. Rejection drops the candidate identity and
-leaves those authoritative shadow values unchanged, so the retry recomputes
-from the previous accepted state and overwrites scratch output. Neither path
-publishes committed state.
+Acceptance advances the root-shadow state pointer, history-owner bit, accepted
+time, and joint ledger, then dispatches one canonical scheduler/regional prefix
+from the untouched committed generation through the accepted timestamp. This
+makes accepted receptor interrupts available before the next candidate while
+preserving a bit-exact abort source. Rejection drops the candidate identity and
+dispatches no scheduler/regional prefix, so the latest accepted fast shadow is
+unchanged and the retry recomputes tissue from the previous accepted state.
+Neither path publishes committed state.
 
-After the final accepted physical token reaches the target,
-`finishInteractiveJointControl` transduces only accepted receptor events and
-executes the scheduler and regional-token pass. It binds those shadows and the
-accepted tissue shadow to the existing joint-only commit guard. The resulting
-commit receipt is therefore still the only publication point. Interactive
-abort, including abort with an active GPU candidate, publishes no tissue,
-scheduler, token, delayed-route, routing, time, or random-counter history.
+Each accepted prefix includes all accepted substep events from the root start,
+so bounded v0.6 execution recomputes a canonical prefix rather than mutating
+the committed generation incrementally. After the final accepted physical
+token reaches the target, `finishInteractiveJointControl` binds that fast
+shadow and the accepted tissue shadow to the joint-only commit guard. A final
+prefix is recomputed only when the caller supplies additional host-only events
+at finish. The resulting commit receipt remains the only publication point.
+Interactive abort, including abort with an active GPU candidate, publishes no
+tissue, scheduler, token, delayed-route, routing, time, or random-counter
+history.
 
 The reference implementation deliberately synchronizes the host after each
 candidate Metal submission so an external physical solver can return its
@@ -136,10 +142,11 @@ paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
 There is no live NumanX adapter or demonstrated atomic physical/brain pointer
-publication yet. Fast receptor events are retained on accepted substep records
-but reach the scheduler/regional path only during root finalization, not during
-the candidate. The timestamped Metal history is bounded to 32 accepted samples;
-a corrected-duration candidate fails before dispatch if accepting it would
-erase the only bracket required by the maximum configured delay. Cross-runtime
-command coordination and substep-time protective response remain required
+publication yet. Accepted receptor events reach a fast scheduler/regional
+shadow after physical acceptance and before the next candidate; they cannot
+alter the physical candidate that has already been accepted, and no protective
+motor-output adapter exists yet. The timestamped Metal history is bounded to 32
+accepted samples; a corrected-duration candidate fails before dispatch if
+accepting it would erase the only bracket required by the maximum configured
+delay. Cross-runtime command coordination and protective output remain required
 before this boundary can claim working NumanX coupling.

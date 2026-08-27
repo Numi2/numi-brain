@@ -178,7 +178,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     var relayHistoryTimestamps: [UInt64]
     var acceptedTimestamp: BrainTimestamp
     var candidate: InteractiveCandidate?
+    var fastSchedulerWindow: PreparedSchedulerWindow?
     var firstGPUStartSeconds: Double?
+    var lastGPUEndSeconds: Double?
   }
 
   private var interactiveJointRoot: InteractiveJointRoot?
@@ -1438,7 +1440,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       relayHistoryTimestamps: committedRelayHistoryTimestamps,
       acceptedTimestamp: committedTimestamp,
       candidate: nil,
-      firstGPUStartSeconds: nil
+      fastSchedulerWindow: nil,
+      firstGPUStartSeconds: nil,
+      lastGPUEndSeconds: nil
     )
     return transaction.token
   }
@@ -1583,6 +1587,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       for: substep,
       receptorEvents: receptorEvents
     )
+    let acceptedEvents = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.receptorEvents)
+    let schedulerWindow = try prepareSchedulerWindow(
+      startTime: transaction.token.committedTimestamp,
+      targetTime: accepted.acceptedTimestamp,
+      events: Array(acceptedEvents)
+    )
+    guard committedRegionalStateIndex == schedulerWindow.inputClockIndex else {
+      throw TissueError.transaction("interactive regional and scheduler generations diverged")
+    }
+    let feedback = try submit(label: "NumiBrain accepted fast regional prefix") { encoder in
+      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    }
     root.transaction = transaction
     root.rootShadowIndex = candidate.destinationIndex
     root.historyOwnerMask = settingHistoryOwner(
@@ -1595,6 +1613,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       accepted.acceptedTimestamp.rawValue
     root.acceptedTimestamp = accepted.acceptedTimestamp
     root.candidate = nil
+    root.fastSchedulerWindow = schedulerWindow
+    root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartTime
+    root.lastGPUEndSeconds = feedback.gpuEndTime
+    hasCommittedSchedulerResult = false
     interactiveJointRoot = root
   }
 
@@ -1658,23 +1680,39 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("interactive tissue shadow diverged from the joint ledger")
     }
 
-    let acceptedEvents = transaction.resolutions.lazy
-      .filter(\.isAccepted)
-      .flatMap(\.receptorEvents)
-    let schedulerWindow = try prepareSchedulerWindow(
-      startTime: token.committedTimestamp,
-      targetTime: token.targetTimestamp,
-      events: schedulerEvents + acceptedEvents
-    )
+    guard var schedulerWindow = root.fastSchedulerWindow,
+      schedulerWindow.targetTime == token.targetTimestamp
+    else {
+      throw TissueError.transaction("interactive fast scheduler did not reach the root target")
+    }
     guard schedulerWindow.targetTime == token.targetTimestamp,
       committedRegionalStateIndex == schedulerWindow.inputClockIndex
     else {
       throw TissueError.transaction("interactive scheduler shadow diverged from the joint token")
     }
 
-    let feedback = try submit(label: "NumiBrain interactive joint root finalization") {
-      encoder in
-      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    var finalGPUStart = root.firstGPUStartSeconds
+    var finalGPUEnd = root.lastGPUEndSeconds
+    var finalizationDispatches = 0
+    if !schedulerEvents.isEmpty {
+      let acceptedEvents = transaction.resolutions.lazy
+        .filter(\.isAccepted)
+        .flatMap(\.receptorEvents)
+      schedulerWindow = try prepareSchedulerWindow(
+        startTime: token.committedTimestamp,
+        targetTime: token.targetTimestamp,
+        events: schedulerEvents + acceptedEvents
+      )
+      let feedback = try submit(label: "NumiBrain interactive joint root finalization") {
+        encoder in
+        encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+      }
+      finalGPUStart = finalGPUStart ?? feedback.gpuStartTime
+      finalGPUEnd = feedback.gpuEndTime
+      finalizationDispatches = 1
+    }
+    guard let finalGPUStart, let finalGPUEnd else {
+      throw TissueError.transaction("interactive GPU timing did not cover the accepted root")
     }
     pendingRootShadowIndex = root.rootShadowIndex
     pendingRootShadowOwnerMask = root.historyOwnerMask
@@ -1693,14 +1731,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       attemptedSubsteps: transaction.resolutions.count,
       acceptedSubsteps: Int(transaction.acceptedSubstepCount),
       eventCompactionDispatches: transaction.resolutions.count,
-      receptorInterruptTransductionDispatches: 1,
-      schedulerDispatches: 1,
-      regionalDispatches: 1,
+      receptorInterruptTransductionDispatches: Int(transaction.acceptedSubstepCount)
+        + finalizationDispatches,
+      schedulerDispatches: Int(transaction.acceptedSubstepCount) + finalizationDispatches,
+      regionalDispatches: Int(transaction.acceptedSubstepCount) + finalizationDispatches,
       schedulerHostInputEventCount: schedulerWindow.hostEventCount,
       schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
       schedulerInputEventCount: schedulerWindow.eventCount,
-      gpuStartSeconds: root.firstGPUStartSeconds ?? feedback.gpuStartTime,
-      gpuEndSeconds: feedback.gpuEndTime
+      gpuStartSeconds: finalGPUStart,
+      gpuEndSeconds: finalGPUEnd
     )
   }
 
@@ -1709,6 +1748,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("there is no interactive joint root to abort")
     }
     try root.transaction.abort()
+    if root.fastSchedulerWindow != nil {
+      hasCommittedSchedulerResult = false
+    }
     interactiveJointRoot = nil
   }
 
@@ -2159,17 +2201,48 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public func inspectCommittedScheduler() throws -> SchedulerInspection {
-    guard pendingRootShadowIndex == nil else {
+    guard pendingRootShadowIndex == nil, interactiveJointRoot == nil else {
       throw TissueError.transaction("commit or abort before inspecting scheduler state")
     }
     guard let committedSchedulerTime, hasCommittedSchedulerResult else {
       throw TissueError.transaction("there is no committed scheduler result to inspect")
     }
+    return try inspectSchedulerState(
+      clockIndex: committedSchedulerClockIndex,
+      timestamp: committedSchedulerTime,
+      generation: committedSchedulerGeneration,
+      label: "NumiBrain committed scheduler inspection"
+    )
+  }
+
+  /// Explicit inspection readback for the latest accepted physical prefix.
+  /// It is unavailable while a tissue candidate is unresolved and is not part
+  /// of the GPU-resident control hot path.
+  public func inspectInteractiveFastScheduler() throws -> SchedulerInspection {
+    guard let root = interactiveJointRoot, root.candidate == nil,
+      let window = root.fastSchedulerWindow
+    else {
+      throw TissueError.transaction("there is no accepted fast scheduler prefix to inspect")
+    }
+    return try inspectSchedulerState(
+      clockIndex: window.outputClockIndex,
+      timestamp: root.acceptedTimestamp,
+      generation: root.transaction.token.shadowGeneration,
+      label: "NumiBrain interactive fast scheduler inspection"
+    )
+  }
+
+  private func inspectSchedulerState(
+    clockIndex: Int,
+    timestamp: BrainTimestamp,
+    generation: UInt64,
+    label: String
+  ) throws -> SchedulerInspection {
     let transductionResultOffset = 0
     let resultOffset = MemoryLayout<NBReceptorEventTransductionResult>.stride
     let clockOffset = resultOffset + MemoryLayout<NBSchedulerResult>.stride
     let invocationOffset = clockOffset + schedulerClockByteCount
-    _ = try submit(label: "NumiBrain committed scheduler inspection") { encoder in
+    _ = try submit(label: label) { encoder in
       encoder.copy(
         sourceBuffer: receptorEventTransductionResultBuffer,
         sourceOffset: 0,
@@ -2185,7 +2258,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         size: MemoryLayout<NBSchedulerResult>.stride
       )
       encoder.copy(
-        sourceBuffer: schedulerClockBuffers[committedSchedulerClockIndex],
+        sourceBuffer: schedulerClockBuffers[clockIndex],
         sourceOffset: 0,
         destinationBuffer: stagingBuffer,
         destinationOffset: clockOffset,
@@ -2221,8 +2294,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard result.status == UInt32(NB_SCHEDULER_STATUS_VALID.rawValue) else {
       throw TissueError.metal("scheduler kernel reported status \(result.status)")
     }
-    guard result.target_time_microseconds == committedSchedulerTime.rawValue else {
-      throw TissueError.metal("scheduler result target does not match committed time")
+    guard result.target_time_microseconds == timestamp.rawValue else {
+      throw TissueError.metal("scheduler result target does not match inspected time")
     }
     guard result.invocation_count <= UInt32(maxSchedulerInvocations) else {
       throw TissueError.metal("scheduler result invocation count exceeds capacity")
@@ -2256,8 +2329,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       snapshot: BrainSchedulerSnapshot(
         scheduleFingerprint: brainSchedule.fingerprint,
         parameterVersionFingerprint: parameterVersion.fingerprint,
-        committedTime: committedSchedulerTime,
-        generation: committedSchedulerGeneration,
+        committedTime: timestamp,
+        generation: generation,
         moduleClocks: clocks
       ),
       invocations: invocations,
@@ -2306,11 +2379,41 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let committedSchedulerTime else {
       throw TissueError.transaction("there is no committed regional state to read")
     }
+    return try snapshotRegionalState(
+      stateIndex: committedRegionalStateIndex,
+      timestamp: committedSchedulerTime,
+      generation: committedSchedulerGeneration,
+      label: "NumiBrain committed regional-state inspection"
+    )
+  }
+
+  /// Explicit inspection readback of the regional shadow produced after the
+  /// latest accepted physical substep. It never publishes that shadow.
+  public func snapshotInteractiveFastRegionalState() throws -> RegionalModuleSnapshot {
+    guard let root = interactiveJointRoot, root.candidate == nil,
+      let window = root.fastSchedulerWindow
+    else {
+      throw TissueError.transaction("there is no accepted fast regional prefix to inspect")
+    }
+    return try snapshotRegionalState(
+      stateIndex: window.outputClockIndex,
+      timestamp: root.acceptedTimestamp,
+      generation: root.transaction.token.shadowGeneration,
+      label: "NumiBrain interactive fast regional-state inspection"
+    )
+  }
+
+  private func snapshotRegionalState(
+    stateIndex: Int,
+    timestamp: BrainTimestamp,
+    generation: UInt64,
+    label: String
+  ) throws -> RegionalModuleSnapshot {
     try copy(
-      source: regionalStateBuffers[committedRegionalStateIndex],
+      source: regionalStateBuffers[stateIndex],
       destination: stagingBuffer,
       size: regionalStateByteCount,
-      label: "NumiBrain committed regional-state inspection"
+      label: label
     )
     let statePointer = stagingBuffer.contents()
       .bindMemory(
@@ -2323,8 +2426,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     ).map(RegionalModuleState.init(abiRecord:))
     return RegionalModuleSnapshot(
       scheduleFingerprint: brainSchedule.fingerprint,
-      committedTime: committedSchedulerTime,
-      generation: committedSchedulerGeneration,
+      committedTime: timestamp,
+      generation: generation,
       states: states
     )
   }
