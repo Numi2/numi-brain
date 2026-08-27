@@ -4,15 +4,34 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification plus GPU-compacted noisy-event sparse-projection delayed heterogeneous mesoscale tissue vertical slice v0.5
-- Implemented runtime code: deterministic CPU oracle and Metal 4 structured delayed-sheet runtime with timestamped receptor events, counter randomness, and a destination-major CSR graph
+- Current state: specification, GPU-compacted tissue slice v0.5, and compiled-ABI multi-rate scheduler CPU oracle v0.1
+- Implemented runtime code: deterministic scheduler and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with timestamped receptor events, counter randomness, and a destination-major CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction plus one FP32 Wilson-Cowan-family tissue step with active timestamped noisy events, relay, structure, local delay field, sparse delayed projections, and transactional history ring
 - NumanX interop: none
 - Checkpoint or replay artifacts: none
 - GPU performance evidence: bounded local probe only; remote production-size qualification pending
 
-The architecture document remains a design contract. Only the tissue behavior owned by the source and tests in this repository is currently live.
+The architecture document remains a design contract. Only the tissue and scheduler-oracle behavior owned by the source and tests in this repository is currently live.
+
+## Scheduler foundation evidence
+
+The scheduler v0.1 foundation currently proves:
+
+- a C++-compiled standard-layout ABI with 32-byte module descriptors, 16-byte module clocks, 24-byte interrupt events, and 32-byte due invocations;
+- explicit ABI offsets, compile-time size assertions, validation codes, and field-wise fingerprints independent of struct padding;
+- integer physical-microsecond timestamps without wall-clock scheduling or floating-point due-time drift;
+- explicit per-module period, conduction delay, intrinsic timescale, interrupt mask, token shape, clock class, and logical identifier;
+- deterministic periodic boundaries with no duplicate update when adjacent control transactions share a timestamp;
+- event-time pain, damaging-contact, support-loss, impact, physiological-critical, joint-limit, overload, and rescue interruption independent of the normal period;
+- merging of a periodic due time and one or more interrupts into one causally timestamped invocation;
+- shadow transactions whose abort changes no committed clock and whose retry reproduces the same invocation list;
+- checkpoint schedule-fingerprint, clock-count, and committed-time validation;
+- independent per-agent scheduler snapshots with shared immutable module descriptors;
+- deterministic cohort grouping by timestamp, clock class, module, and environment identifier;
+- validated serialization that recomputes and checks the compiled schedule fingerprint.
+
+The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. It is a Swift CPU oracle over the compiled C++ ABI, not the production GPU scheduler. Device-resident due selection, GPU cohort prefix sums, indirect module dispatch, delay-line delivery, adaptive periods, and integration into the tissue command timeline remain unimplemented.
 
 ## Implemented tissue evidence
 
@@ -43,7 +62,7 @@ The v0.5 slice currently proves:
 - tissue-site event work restricted to compacted due indices rather than the full immutable schedule;
 - CPU/Metal agreement within an FP32 tolerance.
 
-The current XCTest suite contains 21 passing tests: thirteen CPU oracle tests and eight Metal 4 tests. Golden counter vectors pin the shared random ABI. Causality and seed tests require future-event silence and seed-dependent trajectories. A two-event noisy CPU/Metal test validates event packing and stochastic numerical parity. Dedicated tests still require distant target recruitment, exact nonviable-site silence, and transaction equivalence beyond the sparse projection delay.
+The tissue XCTest suite contains 21 passing tests: thirteen CPU oracle tests and eight Metal 4 tests. Eight additional scheduler tests bring the repository total to 29. Golden counter vectors pin the shared random ABI. Causality and seed tests require future-event silence and seed-dependent trajectories. A two-event noisy CPU/Metal test validates event packing and stochastic numerical parity. Dedicated tests still require distant target recruitment, exact nonviable-site silence, and transaction equivalence beyond the sparse projection delay.
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable event uses three `float4` records, or 48 bytes. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 

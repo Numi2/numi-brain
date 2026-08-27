@@ -8,16 +8,29 @@ let package = Package(
     .macOS("26.0")
   ],
   products: [
+    .library(name: "NumiBrainABI", targets: ["NumiBrainABI"]),
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
+    .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
   ],
   targets: [
-    .target(name: "NumiBrainCore"),
+    .target(
+      name: "NumiBrainABI",
+      publicHeadersPath: "include"
+    ),
+    .target(
+      name: "NumiBrainCore",
+      dependencies: ["NumiBrainABI"]
+    ),
     .target(
       name: "NumiBrainMetal",
       dependencies: ["NumiBrainCore"],
       resources: [.process("Shaders")]
+    ),
+    .executableTarget(
+      name: "NumiBrainSchedulerCLI",
+      dependencies: ["NumiBrainABI", "NumiBrainCore"]
     ),
     .executableTarget(
       name: "NumiBrainTissueCLI",
@@ -25,11 +38,12 @@ let package = Package(
     ),
     .testTarget(
       name: "NumiBrainCoreTests",
-      dependencies: ["NumiBrainCore"]
+      dependencies: ["NumiBrainABI", "NumiBrainCore"]
     ),
     .testTarget(
       name: "NumiBrainMetalTests",
       dependencies: ["NumiBrainCore", "NumiBrainMetal"]
     ),
-  ]
+  ],
+  cxxLanguageStandard: .cxx20
 )
