@@ -527,20 +527,27 @@ private func run() throws {
       physicsStateFingerprint: physical.fingerprint,
       physicsGeneration: 101 + UInt64(candidateIndex)
     )
-    let events: [BrainInterruptEvent]
+    let localizedObservations: [LocalizedMuscleLoadReceptorObservation]
     if candidateIndex == 0 {
-      events =
-        try muscleLoadTransducer.transduce(
+      localizedObservations =
+        try muscleLoadTransducer.transduceLocalized(
           maximumAbsoluteMuscleForce: physical.muscleForce,
           acceptedPhysicsState: accepted,
-          receptorIdentifier: physical.muscleIdentifier
+          muscleIdentifier: physical.muscleIdentifier,
+          attachmentCatalog: bridge.attachmentCatalog
         ).map { [$0] } ?? []
-      transducedMyoSimEventCount += events.count
+      transducedMyoSimEventCount += localizedObservations.count
     } else {
-      events = []
+      localizedObservations = []
     }
+    let events = localizedObservations.map(\.event)
     do {
-      try runtime.acceptPhysicsSubstep(accepted, for: fast.substep, receptorEvents: events)
+      try runtime.acceptPhysicsSubstep(
+        accepted,
+        for: fast.substep,
+        receptorEvents: events,
+        localizedMuscleLoadObservations: localizedObservations
+      )
       try bridge.acceptCandidate()
     } catch {
       bridge.rejectCandidate()
@@ -575,6 +582,11 @@ private func run() throws {
     maximumForceAttachments.count == maximumForceMuscleIdentifiers.count,
     maximumCommandedForceAttachments.count
       == maximumCommandedForceMuscleIdentifiers.count,
+    runtime.latestCommittedMuscleLoadObservations.count == 1,
+    runtime.latestCommittedMuscleLoadObservations[0].attachment
+      == maximumForceAttachments[0],
+    runtime.latestCommittedMuscleLoadObservations[0].maximumAbsoluteMuscleForce
+      == maximumMuscleForces[0],
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -636,6 +648,10 @@ private func run() throws {
     "receptor_interrupt": "muscle-overload",
     "receptor_event_source": "accepted-numanx-myosim-muscle-force",
     "receptor_event_threshold": 1,
+    "committed_localized_muscle_load_count":
+      runtime.latestCommittedMuscleLoadObservations.count,
+    "committed_localized_muscle_load_catalog_fingerprint":
+      runtime.latestCommittedMuscleLoadObservations[0].attachmentCatalogFingerprint,
     "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,

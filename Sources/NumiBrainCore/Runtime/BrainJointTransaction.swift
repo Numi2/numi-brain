@@ -391,15 +391,18 @@ public struct BrainJointSubstepResolution: Equatable, Hashable, Sendable {
   public let substep: BrainJointSubstepToken
   public let acceptedPhysicsState: AcceptedPhysicsStateToken?
   public let receptorEvents: [BrainInterruptEvent]
+  public let localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation]
 
   public init(
     substep: BrainJointSubstepToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken?,
-    receptorEvents: [BrainInterruptEvent] = []
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
   ) {
     self.substep = substep
     self.acceptedPhysicsState = acceptedPhysicsState
     self.receptorEvents = receptorEvents
+    self.localizedMuscleLoadObservations = localizedMuscleLoadObservations
   }
 
   public var isAccepted: Bool { acceptedPhysicsState != nil }
@@ -476,10 +479,16 @@ public struct BrainJointTransaction: Sendable {
   public mutating func acceptPhysicsSubstep(
     _ accepted: AcceptedPhysicsStateToken,
     for substep: BrainJointSubstepToken,
-    receptorEvents: [BrainInterruptEvent] = []
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
   ) throws {
     try requireActive(substep)
     let canonicalEvents = try canonicalReceptorEvents(receptorEvents, for: substep)
+    let canonicalLocalizedObservations = try canonicalMuscleLoadObservations(
+      localizedMuscleLoadObservations,
+      acceptedPhysicsState: accepted,
+      canonicalEvents: canonicalEvents
+    )
     var rootRecord = token.abiRecord
     var substepRecord = substep.abiRecord
     var acceptedRecord = accepted.abiRecord
@@ -507,7 +516,8 @@ public struct BrainJointTransaction: Sendable {
       BrainJointSubstepResolution(
         substep: substep,
         acceptedPhysicsState: accepted,
-        receptorEvents: canonicalEvents
+        receptorEvents: canonicalEvents,
+        localizedMuscleLoadObservations: canonicalLocalizedObservations
       )
     )
     activeSubstep = nil
@@ -565,11 +575,13 @@ public struct BrainJointTransaction: Sendable {
     for substep: BrainJointSubstepToken
   ) throws -> [BrainInterruptEvent] {
     let receptorDerived = UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
-    guard events.allSatisfy({ event in
-      event.timestamp > substep.startTimestamp
-        && event.timestamp <= substep.candidateTimestamp
-        && event.flags & receptorDerived != 0
-    }) else {
+    guard
+      events.allSatisfy({ event in
+        event.timestamp > substep.startTimestamp
+          && event.timestamp <= substep.candidateTimestamp
+          && event.flags & receptorDerived != 0
+      })
+    else {
       throw BrainRuntimeError.transaction(
         "substep events must be receptor-derived and lie after start through candidate time"
       )
@@ -581,6 +593,36 @@ public struct BrainJointTransaction: Sendable {
         return lhs.mask.rawValue < rhs.mask.rawValue
       }
       return lhs.flags < rhs.flags
+    }
+  }
+
+  private func canonicalMuscleLoadObservations(
+    _ observations: [LocalizedMuscleLoadReceptorObservation],
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    canonicalEvents: [BrainInterruptEvent]
+  ) throws -> [LocalizedMuscleLoadReceptorObservation] {
+    guard
+      observations.allSatisfy({ observation in
+        observation.acceptedPhysicsStateFingerprint == acceptedPhysicsState.fingerprint
+          && canonicalEvents.contains(observation.event)
+      })
+    else {
+      throw BrainRuntimeError.transaction(
+        "localized muscle-load observations must match accepted physics and events"
+      )
+    }
+    return observations.sorted { lhs, rhs in
+      if lhs.event.timestamp != rhs.event.timestamp {
+        return lhs.event.timestamp < rhs.event.timestamp
+      }
+      if lhs.event.identifier != rhs.event.identifier {
+        return lhs.event.identifier < rhs.event.identifier
+      }
+      if lhs.attachmentCatalogFingerprint != rhs.attachmentCatalogFingerprint {
+        return lhs.attachmentCatalogFingerprint < rhs.attachmentCatalogFingerprint
+      }
+      return lhs.maximumAbsoluteMuscleForce.bitPattern
+        < rhs.maximumAbsoluteMuscleForce.bitPattern
     }
   }
 }

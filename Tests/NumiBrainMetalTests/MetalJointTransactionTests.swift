@@ -40,10 +40,15 @@ final class MetalJointTransactionTests: XCTestCase {
       identifier: 901,
       flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
     )
+    let localizedMuscleLoad = try makeLocalizedMuscleLoad(
+      acceptedPhysicsState: firstPhysics,
+      muscleIdentifier: 902
+    )
     try joint.acceptPhysicsSubstep(
       firstPhysics,
       for: retry,
-      receptorEvents: [acceptedSupportLoss]
+      receptorEvents: [acceptedSupportLoss, localizedMuscleLoad.event],
+      localizedMuscleLoadObservations: [localizedMuscleLoad]
     )
     let second = try joint.beginPhysicsSubstep(durationMicroseconds: 1_000)
     let secondPhysics = try AcceptedPhysicsStateToken(
@@ -57,7 +62,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let submission = try runtime.runJointRootTransaction(joint)
     XCTAssertEqual(submission.attemptedSubsteps, 3)
     XCTAssertEqual(submission.acceptedSubsteps, 2)
-    XCTAssertEqual(submission.schedulerHostInputEventCount, 1)
+    XCTAssertEqual(submission.schedulerHostInputEventCount, 2)
     XCTAssertTrue(runtime.hasPendingRootTransaction)
     XCTAssertTrue(runtime.hasPendingJointTransaction)
     XCTAssertThrowsError(try runtime.commitRootTransaction())
@@ -73,6 +78,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.schedulerCommittedGeneration, commit.brainGeneration)
     XCTAssertEqual(runtime.schedulerCommittedTimestamp, commit.committedTimestamp)
     XCTAssertEqual(runtime.committedStep, 2)
+    XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [localizedMuscleLoad])
     let scheduler = try runtime.inspectCommittedScheduler()
     XCTAssertTrue(
       scheduler.invocations.contains(where: {
@@ -105,6 +111,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(nextCommit.physicsGeneration, 103)
     XCTAssertEqual(runtime.schedulerCommittedGeneration, 2)
     XCTAssertEqual(runtime.committedStep, 3)
+    XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
   }
 
   func testJointMetalAbortPublishesNoBrainHistory() throws {
@@ -158,10 +165,15 @@ final class MetalJointTransactionTests: XCTestCase {
       identifier: 929,
       flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
     )
+    let acceptedMuscleLoad = try makeLocalizedMuscleLoad(
+      acceptedPhysicsState: acceptedPhysics,
+      muscleIdentifier: 930
+    )
     try runtime.acceptPhysicsSubstep(
       acceptedPhysics,
       for: acceptedCandidate.substep,
-      receptorEvents: [acceptedPain]
+      receptorEvents: [acceptedPain, acceptedMuscleLoad.event],
+      localizedMuscleLoadObservations: [acceptedMuscleLoad]
     )
     let shadowProtective = try runtime.snapshotInteractiveProtectiveCommand()
     let shadowProtectiveMotor = try runtime.snapshotInteractiveProtectiveMotorOutput()
@@ -175,6 +187,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.committedStep, 0)
     XCTAssertEqual(runtime.schedulerCommittedGeneration, 0)
     XCTAssertNil(runtime.schedulerCommittedTimestamp)
+    XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
     XCTAssertEqual(try runtime.snapshotCommittedProtectiveCommand(), beforeProtective)
     XCTAssertEqual(
@@ -883,5 +896,31 @@ final class MetalJointTransactionTests: XCTestCase {
     guard MTLCreateSystemDefaultDevice() != nil else {
       throw XCTSkip("Metal device unavailable")
     }
+  }
+
+  private func makeLocalizedMuscleLoad(
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    muscleIdentifier: UInt32
+  ) throws -> LocalizedMuscleLoadReceptorObservation {
+    let attachment = try NumanXMuscleAttachment(
+      muscleIdentifier: muscleIdentifier,
+      firstBodyIdentifier: 2,
+      terminalBodyIdentifier: 5,
+      routeNodeCount: 3,
+      firstLocalPoint: try NumanXBodyLocalPoint(x: 0.1, y: 0.2, z: 0.3),
+      terminalLocalPoint: try NumanXBodyLocalPoint(x: 0.4, y: 0.5, z: 0.6)
+    )
+    let catalog = try NumanXMuscleAttachmentCatalog(
+      bodyCount: 6,
+      attachments: [attachment]
+    )
+    return try XCTUnwrap(
+      MuscleLoadReceptorTransducer(overloadThreshold: 1).transduceLocalized(
+        maximumAbsoluteMuscleForce: 5,
+        acceptedPhysicsState: acceptedPhysicsState,
+        muscleIdentifier: muscleIdentifier,
+        attachmentCatalog: catalog
+      )
+    )
   }
 }

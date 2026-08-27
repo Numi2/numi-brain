@@ -124,6 +124,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let maxSchedulerEvents: Int
   public let maxSchedulerInvocations: Int
   public private(set) var committedStep: UInt64 = 0
+  public private(set) var latestCommittedMuscleLoadObservations:
+    [LocalizedMuscleLoadReceptorObservation] = []
 
   private let device: any MTLDevice
   private let commandQueue: any MTL4CommandQueue
@@ -1886,7 +1888,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public func acceptPhysicsSubstep(
     _ accepted: AcceptedPhysicsStateToken,
     for substep: BrainJointSubstepToken,
-    receptorEvents: [BrainInterruptEvent] = []
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
   ) throws {
     guard var root = interactiveJointRoot, let candidate = root.candidate,
       candidate.substep == substep
@@ -1897,7 +1900,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     try transaction.acceptPhysicsSubstep(
       accepted,
       for: substep,
-      receptorEvents: receptorEvents
+      receptorEvents: receptorEvents,
+      localizedMuscleLoadObservations: localizedMuscleLoadObservations
     )
     let acceptedEvents = transaction.resolutions.lazy
       .filter(\.isAccepted)
@@ -2450,7 +2454,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("there is no joint Metal root to commit")
     }
     let receipt = try transaction.commit()
+    let localizedMuscleLoadObservations = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.localizedMuscleLoadObservations)
     try publishRootTransaction()
+    latestCommittedMuscleLoadObservations = Array(localizedMuscleLoadObservations)
     pendingJointTransaction = nil
     return receipt
   }

@@ -235,6 +235,45 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(event.mask, .muscleOverload)
     XCTAssertEqual(event.identifier, 77)
     XCTAssertEqual(event.flags, UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED))
+    let attachment = try NumanXMuscleAttachment(
+      muscleIdentifier: 77,
+      firstBodyIdentifier: 2,
+      terminalBodyIdentifier: 5,
+      routeNodeCount: 3,
+      firstLocalPoint: try NumanXBodyLocalPoint(x: 0.1, y: 0.2, z: 0.3),
+      terminalLocalPoint: try NumanXBodyLocalPoint(x: 0.4, y: 0.5, z: 0.6)
+    )
+    let catalog = try NumanXMuscleAttachmentCatalog(
+      bodyCount: 6,
+      attachments: [attachment]
+    )
+    let localized = try XCTUnwrap(
+      transducer.transduceLocalized(
+        maximumAbsoluteMuscleForce: 10.25,
+        acceptedPhysicsState: accepted,
+        muscleIdentifier: 77,
+        attachmentCatalog: catalog
+      )
+    )
+    XCTAssertEqual(localized.event, event)
+    XCTAssertEqual(localized.attachment, attachment)
+    XCTAssertEqual(localized.attachmentCatalogFingerprint, catalog.fingerprint)
+
+    var transaction = BrainJointTransaction(token: token)
+    XCTAssertEqual(
+      try transaction.beginPhysicsSubstep(durationMicroseconds: 5_000),
+      substep
+    )
+    try transaction.acceptPhysicsSubstep(
+      accepted,
+      for: substep,
+      receptorEvents: [event],
+      localizedMuscleLoadObservations: [localized]
+    )
+    XCTAssertEqual(
+      transaction.resolutions[0].localizedMuscleLoadObservations,
+      [localized]
+    )
     XCTAssertThrowsError(
       try transducer.transduce(
         maximumAbsoluteMuscleForce: -.infinity,
@@ -251,6 +290,14 @@ final class BrainJointTransactionTests: XCTestCase {
     )
     XCTAssertEqual(zeroIdentifierEvent.identifier, 0)
     XCTAssertEqual(zeroIdentifierEvent.mask, .muscleOverload)
+    XCTAssertThrowsError(
+      try transducer.transduceLocalized(
+        maximumAbsoluteMuscleForce: 11,
+        acceptedPhysicsState: accepted,
+        muscleIdentifier: 0,
+        attachmentCatalog: catalog
+      )
+    )
     XCTAssertThrowsError(try MuscleLoadReceptorTransducer(overloadThreshold: .nan))
   }
 }
