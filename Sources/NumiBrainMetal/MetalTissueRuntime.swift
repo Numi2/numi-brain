@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import Metal
+import NumiBrainABI
 import NumiBrainCore
 
 @available(macOS 26.0, *)
@@ -8,12 +9,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let attemptedSubsteps: Int
     public let acceptedSubsteps: Int
     public let eventCompactionDispatches: Int
+    public let schedulerDispatches: Int
+    public let schedulerInputEventCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
     public var gpuDurationSeconds: Double {
       max(gpuEndSeconds - gpuStartSeconds, 0)
     }
+  }
+
+  public struct SchedulerInspection: Equatable, Sendable {
+    public let snapshot: BrainSchedulerSnapshot
+    public let invocations: [BrainModuleInvocation]
+    public let status: UInt32
   }
 
   public let deviceName: String
@@ -27,8 +36,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let eventScheduleHash: String
   public let eventSchedule: TissueEventSchedule
   public let randomContext: TissueRandomContext
+  public let brainSchedule: BrainModuleSchedule
+  public let schedulerEnvironmentIdentifier: UInt32
   public let historyCapacity = TissueDelayField.historyCapacity
   public let maxEncodedSubsteps: Int
+  public let maxSchedulerEvents: Int
+  public let maxSchedulerInvocations: Int
   public private(set) var committedStep: UInt64 = 0
 
   private let device: any MTLDevice
@@ -37,8 +50,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let commandBuffer: any MTL4CommandBuffer
   private let tissuePipeline: any MTLComputePipelineState
   private let eventCompactionPipeline: any MTLComputePipelineState
+  private let schedulerPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let eventArgumentTable: any MTL4ArgumentTable
+  private let schedulerArgumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let structureBuffer: any MTLBuffer
@@ -50,6 +65,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let eventBuffer: any MTLBuffer
   private let activeEventIndexBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
+  private let schedulerDescriptorBuffer: any MTLBuffer
+  private let schedulerClockBuffers: [any MTLBuffer]
+  private let schedulerEventUploadBuffer: any MTLBuffer
+  private let schedulerUniformBuffer: any MTLBuffer
+  private let schedulerInvocationBuffer: any MTLBuffer
+  private let schedulerResultBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
   private let relayByteCount: Int
@@ -58,12 +79,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let projectionEdgeByteCount: Int
   public let eventByteCount: Int
   public let activeEventIndexByteCount: Int
+  public let schedulerDescriptorByteCount: Int
+  public let schedulerClockByteCount: Int
+  public let schedulerEventCapacityByteCount: Int
+  public let schedulerInvocationCapacityByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
   private var pendingRootShadowIndex: Int?
   private var pendingRootShadowOwnerMask: UInt32?
   private var pendingRootShadowStep: UInt64?
+  private var committedSchedulerClockIndex = 0
+  private var committedSchedulerTime: BrainTimestamp?
+  private var committedSchedulerGeneration: UInt64 = 0
+  private var pendingSchedulerClockIndex: Int?
+  private var pendingSchedulerTargetTime: BrainTimestamp?
+  private var pendingSchedulerInitialized = false
+  private var hasCommittedSchedulerResult = false
 
   public init(
     initialState: TissueGrid,
@@ -74,6 +106,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     connectome requestedConnectome: TissueConnectome? = nil,
     eventSchedule requestedEventSchedule: TissueEventSchedule? = nil,
     randomContext: TissueRandomContext = .deterministicDefault,
+    brainSchedule requestedBrainSchedule: BrainModuleSchedule? = nil,
+    schedulerEnvironmentIdentifier: UInt32 = 0,
+    maxSchedulerEvents: Int = 64,
+    maxSchedulerInvocations: Int = 4_096,
     maxEncodedSubsteps: Int = 4_096,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws {
@@ -120,8 +156,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let eventSchedule =
       try requestedEventSchedule
       ?? TissueEventSchedule.singleStimulus(stimulus)
+    let brainSchedule =
+      try requestedBrainSchedule
+      ?? ReferenceBrainSchedule.runtimeFoundationSubset()
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
+    }
+    guard maxSchedulerEvents > 0, maxSchedulerEvents <= 65_536 else {
+      throw TissueError.metal("maxSchedulerEvents must be in 1...65536")
+    }
+    guard maxSchedulerInvocations > 0, maxSchedulerInvocations <= Int(UInt32.max) else {
+      throw TissueError.metal("maxSchedulerInvocations must be in 1...UInt32.max")
     }
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
       throw TissueError.metal("no Metal device is available")
@@ -162,15 +207,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let eventCompactionFunction = library.makeFunction(name: "compact_receptor_events") else {
       throw TissueError.metal("compact_receptor_events is missing from the Metal library")
     }
+    guard let schedulerFunction = library.makeFunction(name: "schedule_due_modules") else {
+      throw TissueError.metal("schedule_due_modules is missing from the Metal library")
+    }
     let tissuePipeline: any MTLComputePipelineState
     let eventCompactionPipeline: any MTLComputePipelineState
+    let schedulerPipeline: any MTLComputePipelineState
     do {
       tissuePipeline = try device.makeComputePipelineState(function: tissueFunction)
       eventCompactionPipeline = try device.makeComputePipelineState(
         function: eventCompactionFunction
       )
+      schedulerPipeline = try device.makeComputePipelineState(function: schedulerFunction)
     } catch {
-      throw TissueError.metal("tissue or event-compaction pipeline creation failed: \(error)")
+      throw TissueError.metal(
+        "tissue, event-compaction, or scheduler pipeline creation failed: \(error)"
+      )
     }
 
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
@@ -190,6 +242,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     else {
       throw TissueError.metal("failed to create the event-compaction argument table")
+    }
+    let schedulerArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    schedulerArgumentDescriptor.label = "NumiBrain scheduler arguments"
+    schedulerArgumentDescriptor.maxBufferBindCount = 7
+    schedulerArgumentDescriptor.initializeBindings = true
+    guard
+      let schedulerArgumentTable = try? device.makeArgumentTable(
+        descriptor: schedulerArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the scheduler argument table")
     }
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
@@ -281,6 +344,71 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     eventBuffer.label = "NumiBrain immutable receptor-event schedule"
     activeEventIndexBuffer.label = "NumiBrain compacted active-event indices"
+    guard
+      MemoryLayout<NBModuleDescriptor>.stride == Int(NB_MODULE_DESCRIPTOR_BYTE_COUNT),
+      MemoryLayout<NBModuleClockState>.stride == Int(NB_MODULE_CLOCK_STATE_BYTE_COUNT),
+      MemoryLayout<NBInterruptEvent>.stride == Int(NB_INTERRUPT_EVENT_BYTE_COUNT),
+      MemoryLayout<NBDueInvocation>.stride == Int(NB_DUE_INVOCATION_BYTE_COUNT),
+      MemoryLayout<NBSchedulerUniforms>.stride == Int(NB_SCHEDULER_UNIFORMS_BYTE_COUNT),
+      MemoryLayout<NBSchedulerResult>.stride == Int(NB_SCHEDULER_RESULT_BYTE_COUNT)
+    else {
+      throw TissueError.metal("Swift imported scheduler ABI does not match NumiBrainABI")
+    }
+    let schedulerDescriptorByteCount =
+      brainSchedule.modules.count
+      * MemoryLayout<NBModuleDescriptor>.stride
+    let schedulerClockByteCount =
+      brainSchedule.modules.count
+      * MemoryLayout<NBModuleClockState>.stride
+    let schedulerEventCapacityByteCount =
+      maxSchedulerEvents
+      * MemoryLayout<NBInterruptEvent>.stride
+    let schedulerInvocationCapacityByteCount =
+      maxSchedulerInvocations
+      * MemoryLayout<NBDueInvocation>.stride
+    guard
+      let schedulerDescriptorBuffer = device.makeBuffer(
+        length: schedulerDescriptorByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let firstSchedulerClockBuffer = device.makeBuffer(
+        length: schedulerClockByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondSchedulerClockBuffer = device.makeBuffer(
+        length: schedulerClockByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let schedulerEventUploadBuffer = device.makeBuffer(
+        length: schedulerEventCapacityByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let schedulerUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<NBSchedulerUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let schedulerInvocationBuffer = device.makeBuffer(
+        length: schedulerInvocationCapacityByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let schedulerResultBuffer = device.makeBuffer(
+        length: MemoryLayout<NBSchedulerResult>.stride,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate scheduler ABI buffers")
+    }
+    let schedulerClockBuffers: [any MTLBuffer] = [
+      firstSchedulerClockBuffer,
+      secondSchedulerClockBuffer,
+    ]
+    schedulerDescriptorBuffer.label = "NumiBrain immutable module descriptors"
+    firstSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 0"
+    secondSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 1"
+    schedulerEventUploadBuffer.label = "NumiBrain committed scheduler event upload"
+    schedulerUniformBuffer.label = "NumiBrain scheduler uniforms"
+    schedulerInvocationBuffer.label = "NumiBrain compacted due-module invocations"
+    schedulerResultBuffer.label = "NumiBrain scheduler result"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -291,13 +419,19 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to allocate the substep uniform arena")
     }
     uniformBuffer.label = "NumiBrain tissue substep uniforms"
+    let schedulerInspectionByteCount =
+      MemoryLayout<NBSchedulerResult>.stride
+      + schedulerClockByteCount + schedulerInvocationCapacityByteCount
     guard
       let stagingBuffer = device.makeBuffer(
         length: max(
-          stateByteCount,
+          max(stateByteCount, schedulerInspectionByteCount),
           max(
-            eventByteCount,
-            max(projectionOffsetByteCount, projectionEdgeByteCount)
+            max(eventByteCount, schedulerDescriptorByteCount),
+            max(
+              schedulerClockByteCount,
+              max(projectionOffsetByteCount, projectionEdgeByteCount)
+            )
           )
         ),
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -309,7 +443,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 10
+    residencyDescriptor.initialCapacity = stateBuffers.count + 17
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -328,6 +462,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(eventBuffer)
     residencySet.addAllocation(activeEventIndexBuffer)
     residencySet.addAllocation(uniformBuffer)
+    residencySet.addAllocation(schedulerDescriptorBuffer)
+    for buffer in schedulerClockBuffers {
+      residencySet.addAllocation(buffer)
+    }
+    residencySet.addAllocation(schedulerEventUploadBuffer)
+    residencySet.addAllocation(schedulerUniformBuffer)
+    residencySet.addAllocation(schedulerInvocationBuffer)
+    residencySet.addAllocation(schedulerResultBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
@@ -344,14 +486,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.eventScheduleHash = eventSchedule.stableHash()
     self.eventSchedule = eventSchedule
     self.randomContext = randomContext
+    self.brainSchedule = brainSchedule
+    self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maxEncodedSubsteps = maxEncodedSubsteps
+    self.maxSchedulerEvents = maxSchedulerEvents
+    self.maxSchedulerInvocations = maxSchedulerInvocations
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
     self.tissuePipeline = tissuePipeline
     self.eventCompactionPipeline = eventCompactionPipeline
+    self.schedulerPipeline = schedulerPipeline
     self.argumentTable = argumentTable
     self.eventArgumentTable = eventArgumentTable
+    self.schedulerArgumentTable = schedulerArgumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.structureBuffer = structureBuffer
@@ -363,6 +511,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.eventBuffer = eventBuffer
     self.activeEventIndexBuffer = activeEventIndexBuffer
     self.uniformBuffer = uniformBuffer
+    self.schedulerDescriptorBuffer = schedulerDescriptorBuffer
+    self.schedulerClockBuffers = schedulerClockBuffers
+    self.schedulerEventUploadBuffer = schedulerEventUploadBuffer
+    self.schedulerUniformBuffer = schedulerUniformBuffer
+    self.schedulerInvocationBuffer = schedulerInvocationBuffer
+    self.schedulerResultBuffer = schedulerResultBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
@@ -371,6 +525,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.projectionEdgeByteCount = projectionEdgeByteCount
     self.eventByteCount = eventByteCount
     self.activeEventIndexByteCount = activeEventIndexByteCount
+    self.schedulerDescriptorByteCount = schedulerDescriptorByteCount
+    self.schedulerClockByteCount = schedulerClockByteCount
+    self.schedulerEventCapacityByteCount = schedulerEventCapacityByteCount
+    self.schedulerInvocationCapacityByteCount = schedulerInvocationCapacityByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -440,6 +598,35 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         label: "NumiBrain receptor-event upload"
       )
     }
+    let descriptorRecords = brainSchedule.modules.map(\.abiRecord)
+    descriptorRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: schedulerDescriptorByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: schedulerDescriptorBuffer,
+      size: schedulerDescriptorByteCount,
+      label: "NumiBrain module descriptor upload"
+    )
+    let initialClockRecords = brainSchedule.modules.map { _ in
+      BrainModuleClockState(nextDue: BrainTimestamp(microseconds: 0)).abiRecord
+    }
+    initialClockRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: schedulerClockByteCount)
+    }
+    for (index, buffer) in schedulerClockBuffers.enumerated() {
+      try copy(
+        source: stagingBuffer,
+        destination: buffer,
+        size: schedulerClockByteCount,
+        label: "NumiBrain scheduler clock generation \(index) upload"
+      )
+    }
   }
 
   deinit {
@@ -454,9 +641,26 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.allocatedSize
   }
 
+  public var schedulerCommittedTimestamp: BrainTimestamp? {
+    committedSchedulerTime
+  }
+
+  public var schedulerCommittedGeneration: UInt64 {
+    committedSchedulerGeneration
+  }
+
+  public var schedulerUniformByteCount: Int {
+    MemoryLayout<NBSchedulerUniforms>.stride
+  }
+
+  public var schedulerResultByteCount: Int {
+    MemoryLayout<NBSchedulerResult>.stride
+  }
+
   public func runRootTransaction(
     at timeMilliseconds: Float,
-    acceptedSubsteps: [Bool]
+    acceptedSubsteps: [Bool],
+    schedulerEvents: [BrainInterruptEvent] = []
   ) throws -> Submission {
     guard pendingRootShadowIndex == nil else {
       throw TissueError.transaction("commit or abort the pending Metal root transaction first")
@@ -473,11 +677,19 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     }
     let acceptedCount = acceptedSubsteps.lazy.filter({ $0 }).count
+    guard acceptedCount > 0 else {
+      throw TissueError.transaction("a root transaction must accept simulated time")
+    }
     guard acceptedCount <= TissueDelayField.historyCapacity else {
       throw TissueError.transaction(
         "a Metal root transaction cannot accept more than \(TissueDelayField.historyCapacity) delayed substeps"
       )
     }
+    let schedulerWindow = try prepareSchedulerWindow(
+      timeMilliseconds: timeMilliseconds,
+      acceptedSubstepCount: acceptedCount,
+      events: schedulerEvents
+    )
 
     var rootShadowIndex = committedIndex
     var acceptedTime = timeMilliseconds
@@ -575,14 +787,44 @@ public final class MetalTissueRuntime: @unchecked Sendable {
           rootShadowIndex = destination
         }
       }
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
+      schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
+      schedulerArgumentTable.setAddress(
+        schedulerClockBuffers[schedulerWindow.inputClockIndex].gpuAddress,
+        index: 2
+      )
+      schedulerArgumentTable.setAddress(
+        schedulerClockBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+        index: 3
+      )
+      schedulerArgumentTable.setAddress(schedulerEventUploadBuffer.gpuAddress, index: 4)
+      schedulerArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 5)
+      schedulerArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 6)
+      encoder.setComputePipelineState(schedulerPipeline)
+      encoder.setArgumentTable(schedulerArgumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      )
     }
     pendingRootShadowIndex = finalRootShadowIndex
     pendingRootShadowOwnerMask = finalHistoryOwnerMask
     pendingRootShadowStep = finalHistoryStep
+    pendingSchedulerClockIndex = schedulerWindow.outputClockIndex
+    pendingSchedulerTargetTime = schedulerWindow.targetTime
+    pendingSchedulerInitialized = schedulerWindow.initialize
+    hasCommittedSchedulerResult = false
     return Submission(
       attemptedSubsteps: acceptedSubsteps.count,
       acceptedSubsteps: acceptedCount,
       eventCompactionDispatches: acceptedSubsteps.count,
+      schedulerDispatches: 1,
+      schedulerInputEventCount: schedulerWindow.eventCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )
@@ -590,16 +832,32 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   public func commitRootTransaction() throws {
     guard let pendingRootShadowIndex, let pendingRootShadowOwnerMask,
-      let pendingRootShadowStep
+      let pendingRootShadowStep, let pendingSchedulerClockIndex,
+      let pendingSchedulerTargetTime
     else {
       throw TissueError.transaction("there is no Metal root transaction to commit")
+    }
+    guard pendingSchedulerInitialized == (committedSchedulerTime == nil) else {
+      throw TissueError.transaction("scheduler initialization generation mismatch")
+    }
+    let (nextSchedulerGeneration, schedulerGenerationOverflow) =
+      committedSchedulerGeneration.addingReportingOverflow(1)
+    guard !schedulerGenerationOverflow else {
+      throw TissueError.transaction("scheduler generation overflow")
     }
     committedIndex = pendingRootShadowIndex
     committedHistoryOwnerMask = pendingRootShadowOwnerMask
     committedStep = pendingRootShadowStep
+    committedSchedulerClockIndex = pendingSchedulerClockIndex
+    committedSchedulerTime = pendingSchedulerTargetTime
+    committedSchedulerGeneration = nextSchedulerGeneration
+    hasCommittedSchedulerResult = true
     self.pendingRootShadowIndex = nil
     self.pendingRootShadowOwnerMask = nil
     self.pendingRootShadowStep = nil
+    self.pendingSchedulerClockIndex = nil
+    self.pendingSchedulerTargetTime = nil
+    self.pendingSchedulerInitialized = false
   }
 
   public func abortRootTransaction() throws {
@@ -609,6 +867,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRootShadowIndex = nil
     pendingRootShadowOwnerMask = nil
     pendingRootShadowStep = nil
+    pendingSchedulerClockIndex = nil
+    pendingSchedulerTargetTime = nil
+    pendingSchedulerInitialized = false
+    hasCommittedSchedulerResult = false
   }
 
   public func snapshotCommitted() throws -> TissueGrid {
@@ -624,6 +886,240 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       .bindMemory(to: TissueCell.self, capacity: width * height)
     let cells = Array(UnsafeBufferPointer(start: pointer, count: width * height))
     return try TissueGrid(width: width, height: height, cells: cells)
+  }
+
+  public func inspectCommittedScheduler() throws -> SchedulerInspection {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before inspecting scheduler state")
+    }
+    guard let committedSchedulerTime, hasCommittedSchedulerResult else {
+      throw TissueError.transaction("there is no committed scheduler result to inspect")
+    }
+    let resultOffset = 0
+    let clockOffset = MemoryLayout<NBSchedulerResult>.stride
+    let invocationOffset = clockOffset + schedulerClockByteCount
+    _ = try submit(label: "NumiBrain committed scheduler inspection") { encoder in
+      encoder.copy(
+        sourceBuffer: schedulerResultBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: resultOffset,
+        size: MemoryLayout<NBSchedulerResult>.stride
+      )
+      encoder.copy(
+        sourceBuffer: schedulerClockBuffers[committedSchedulerClockIndex],
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: clockOffset,
+        size: schedulerClockByteCount
+      )
+      encoder.copy(
+        sourceBuffer: schedulerInvocationBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: invocationOffset,
+        size: schedulerInvocationCapacityByteCount
+      )
+    }
+    let result = stagingBuffer.contents()
+      .advanced(by: resultOffset)
+      .load(as: NBSchedulerResult.self)
+    guard result.status == UInt32(NB_SCHEDULER_STATUS_VALID.rawValue) else {
+      throw TissueError.metal("scheduler kernel reported status \(result.status)")
+    }
+    guard result.target_time_microseconds == committedSchedulerTime.rawValue else {
+      throw TissueError.metal("scheduler result target does not match committed time")
+    }
+    guard result.invocation_count <= UInt32(maxSchedulerInvocations) else {
+      throw TissueError.metal("scheduler result invocation count exceeds capacity")
+    }
+    let clockPointer = stagingBuffer.contents()
+      .advanced(by: clockOffset)
+      .bindMemory(
+        to: NBModuleClockState.self,
+        capacity: brainSchedule.modules.count
+      )
+    let clocks = UnsafeBufferPointer(
+      start: clockPointer,
+      count: brainSchedule.modules.count
+    ).map(BrainModuleClockState.init(abiRecord:))
+    let invocationPointer = stagingBuffer.contents()
+      .advanced(by: invocationOffset)
+      .bindMemory(
+        to: NBDueInvocation.self,
+        capacity: Int(result.invocation_count)
+      )
+    let invocations = try UnsafeBufferPointer(
+      start: invocationPointer,
+      count: Int(result.invocation_count)
+    ).map { record in
+      guard record.environment_identifier == schedulerEnvironmentIdentifier else {
+        throw TissueError.metal("scheduler invocation environment identity drift")
+      }
+      return try BrainModuleInvocation(abiRecord: record)
+    }
+    return SchedulerInspection(
+      snapshot: BrainSchedulerSnapshot(
+        scheduleFingerprint: brainSchedule.fingerprint,
+        committedTime: committedSchedulerTime,
+        generation: committedSchedulerGeneration,
+        moduleClocks: clocks
+      ),
+      invocations: invocations,
+      status: result.status
+    )
+  }
+
+  public func snapshotCommittedScheduler() throws -> BrainSchedulerSnapshot {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading scheduler clocks")
+    }
+    guard let committedSchedulerTime else {
+      throw TissueError.transaction("there is no committed scheduler state to read")
+    }
+    try copy(
+      source: schedulerClockBuffers[committedSchedulerClockIndex],
+      destination: stagingBuffer,
+      size: schedulerClockByteCount,
+      label: "NumiBrain committed scheduler clock inspection"
+    )
+    let clockPointer = stagingBuffer.contents()
+      .bindMemory(
+        to: NBModuleClockState.self,
+        capacity: brainSchedule.modules.count
+      )
+    let clocks = UnsafeBufferPointer(
+      start: clockPointer,
+      count: brainSchedule.modules.count
+    ).map(BrainModuleClockState.init(abiRecord:))
+    return BrainSchedulerSnapshot(
+      scheduleFingerprint: brainSchedule.fingerprint,
+      committedTime: committedSchedulerTime,
+      generation: committedSchedulerGeneration,
+      moduleClocks: clocks
+    )
+  }
+
+  private struct PreparedSchedulerWindow {
+    let targetTime: BrainTimestamp
+    let inputClockIndex: Int
+    let outputClockIndex: Int
+    let eventCount: Int
+    let initialize: Bool
+  }
+
+  private func prepareSchedulerWindow(
+    timeMilliseconds: Float,
+    acceptedSubstepCount: Int,
+    events: [BrainInterruptEvent]
+  ) throws -> PreparedSchedulerWindow {
+    guard events.count <= maxSchedulerEvents else {
+      throw TissueError.transaction(
+        "\(events.count) scheduler events exceed capacity \(maxSchedulerEvents)"
+      )
+    }
+    let startTime = try schedulerTimestamp(milliseconds: timeMilliseconds)
+    if let committedSchedulerTime, startTime != committedSchedulerTime {
+      throw TissueError.transaction(
+        "root time does not match committed scheduler time \(committedSchedulerTime.rawValue) us"
+      )
+    }
+    let timestep = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    let (duration, durationOverflow) = UInt64(acceptedSubstepCount)
+      .multipliedReportingOverflow(by: timestep)
+    let (targetMicroseconds, targetOverflow) = startTime.rawValue
+      .addingReportingOverflow(duration)
+    guard !durationOverflow, !targetOverflow else {
+      throw TissueError.transaction("scheduler target time overflows UInt64")
+    }
+    let targetTime = BrainTimestamp(microseconds: targetMicroseconds)
+    let canonicalEvents = events.sorted { lhs, rhs in
+      if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+      if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
+      if lhs.mask.rawValue != rhs.mask.rawValue {
+        return lhs.mask.rawValue < rhs.mask.rawValue
+      }
+      return lhs.flags < rhs.flags
+    }
+    guard
+      canonicalEvents.allSatisfy({
+        $0.timestamp >= startTime && $0.timestamp <= targetTime
+      })
+    else {
+      throw TissueError.transaction("scheduler event lies outside the root time window")
+    }
+
+    var invocationUpperBound: UInt64 = 0
+    for module in brainSchedule.modules {
+      guard targetMicroseconds <= UInt64.max - UInt64(module.periodMicroseconds) else {
+        throw TissueError.transaction("scheduler next-due time would overflow UInt64")
+      }
+      let periodic = duration / UInt64(module.periodMicroseconds) + 2
+      let (next, overflow) = invocationUpperBound.addingReportingOverflow(periodic)
+      guard !overflow else {
+        throw TissueError.transaction("scheduler invocation bound overflows UInt64")
+      }
+      invocationUpperBound = next
+    }
+    let (interruptBound, interruptOverflow) = UInt64(canonicalEvents.count)
+      .multipliedReportingOverflow(by: UInt64(brainSchedule.modules.count))
+    let (totalBound, totalOverflow) =
+      invocationUpperBound
+      .addingReportingOverflow(interruptBound)
+    guard !interruptOverflow, !totalOverflow,
+      totalBound <= UInt64(maxSchedulerInvocations)
+    else {
+      throw TissueError.transaction(
+        "scheduler window may exceed invocation capacity \(maxSchedulerInvocations)"
+      )
+    }
+
+    let eventRecords = canonicalEvents.map(\.abiRecord)
+    eventRecords.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      schedulerEventUploadBuffer.contents().copyMemory(
+        from: source,
+        byteCount: bytes.count
+      )
+    }
+    var uniforms = NBSchedulerUniforms()
+    uniforms.committed_time_microseconds = startTime.rawValue
+    uniforms.target_time_microseconds = targetTime.rawValue
+    uniforms.module_count = UInt32(brainSchedule.modules.count)
+    uniforms.event_count = UInt32(eventRecords.count)
+    uniforms.invocation_capacity = UInt32(maxSchedulerInvocations)
+    uniforms.environment_identifier = schedulerEnvironmentIdentifier
+    uniforms.flags = committedSchedulerTime == nil ? 1 : 0
+    uniforms.reserved = 0
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      schedulerUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<NBSchedulerUniforms>.stride
+      )
+    }
+    let outputClockIndex = 1 - committedSchedulerClockIndex
+    return PreparedSchedulerWindow(
+      targetTime: targetTime,
+      inputClockIndex: committedSchedulerClockIndex,
+      outputClockIndex: outputClockIndex,
+      eventCount: canonicalEvents.count,
+      initialize: committedSchedulerTime == nil
+    )
+  }
+
+  private func schedulerTimestamp(milliseconds: Float) throws -> BrainTimestamp {
+    guard milliseconds.isFinite, milliseconds >= 0 else {
+      throw TissueError.transaction("scheduler time must be finite and nonnegative")
+    }
+    let scaled = Double(milliseconds) * 1_000
+    let rounded = scaled.rounded()
+    guard rounded < Double(UInt64.max), abs(scaled - rounded) <= 0.01 else {
+      throw TissueError.transaction("scheduler time is not representable in integer microseconds")
+    }
+    return BrainTimestamp(microseconds: UInt64(rounded))
   }
 
   private func destinationIndex(rootShadowIndex: Int) -> Int {

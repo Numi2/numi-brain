@@ -8,6 +8,8 @@ static_assert(sizeof(NBModuleDescriptor) == NB_MODULE_DESCRIPTOR_BYTE_COUNT);
 static_assert(sizeof(NBModuleClockState) == NB_MODULE_CLOCK_STATE_BYTE_COUNT);
 static_assert(sizeof(NBInterruptEvent) == NB_INTERRUPT_EVENT_BYTE_COUNT);
 static_assert(sizeof(NBDueInvocation) == NB_DUE_INVOCATION_BYTE_COUNT);
+static_assert(sizeof(NBSchedulerUniforms) == NB_SCHEDULER_UNIFORMS_BYTE_COUNT);
+static_assert(sizeof(NBSchedulerResult) == NB_SCHEDULER_RESULT_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -46,6 +48,14 @@ size_t nb_brain_abi_interrupt_event_size(void) {
 
 size_t nb_brain_abi_due_invocation_size(void) {
   return sizeof(NBDueInvocation);
+}
+
+size_t nb_brain_abi_scheduler_uniforms_size(void) {
+  return sizeof(NBSchedulerUniforms);
+}
+
+size_t nb_brain_abi_scheduler_result_size(void) {
+  return sizeof(NBSchedulerResult);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {

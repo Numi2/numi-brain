@@ -25,7 +25,7 @@ let package = Package(
     ),
     .target(
       name: "NumiBrainMetal",
-      dependencies: ["NumiBrainCore"],
+      dependencies: ["NumiBrainABI", "NumiBrainCore"],
       resources: [.process("Shaders")]
     ),
     .executableTarget(

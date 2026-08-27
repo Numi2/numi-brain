@@ -14,6 +14,8 @@ enum {
   NB_MODULE_CLOCK_STATE_BYTE_COUNT = 16,
   NB_INTERRUPT_EVENT_BYTE_COUNT = 24,
   NB_DUE_INVOCATION_BYTE_COUNT = 32,
+  NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 40,
+  NB_SCHEDULER_RESULT_BYTE_COUNT = 16,
 };
 
 typedef struct NBModuleDescriptor {
@@ -50,6 +52,29 @@ typedef struct NBDueInvocation {
   uint32_t reserved;
 } NBDueInvocation;
 
+typedef struct NBSchedulerUniforms {
+  uint64_t committed_time_microseconds;
+  uint64_t target_time_microseconds;
+  uint32_t module_count;
+  uint32_t event_count;
+  uint32_t invocation_capacity;
+  uint32_t environment_identifier;
+  uint32_t flags;
+  uint32_t reserved;
+} NBSchedulerUniforms;
+
+typedef struct NBSchedulerResult {
+  uint32_t invocation_count;
+  uint32_t status;
+  uint64_t target_time_microseconds;
+} NBSchedulerResult;
+
+typedef enum NBSchedulerStatus {
+  NB_SCHEDULER_STATUS_VALID = 0,
+  NB_SCHEDULER_STATUS_INVOCATION_CAPACITY = 1,
+  NB_SCHEDULER_STATUS_TIME_OVERFLOW = 2,
+} NBSchedulerStatus;
+
 typedef enum NBModuleDescriptorValidation {
   NB_MODULE_DESCRIPTOR_VALID = 0,
   NB_MODULE_DESCRIPTOR_NULL = 1,
@@ -64,6 +89,8 @@ size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_interrupt_event_size(void);
 size_t nb_brain_abi_due_invocation_size(void);
+size_t nb_brain_abi_scheduler_uniforms_size(void);
+size_t nb_brain_abi_scheduler_result_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);

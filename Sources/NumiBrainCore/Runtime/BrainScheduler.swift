@@ -166,7 +166,7 @@ public struct BrainModuleDescriptor: Codable, Equatable, Hashable, Sendable {
     try values.encode(flags, forKey: .flags)
   }
 
-  fileprivate var abiRecord: NBModuleDescriptor {
+  public var abiRecord: NBModuleDescriptor {
     var record = NBModuleDescriptor()
     record.module_id = moduleIdentifier
     record.clock_class = clockClass.rawValue
@@ -291,6 +291,15 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
     try values.encode(identifier, forKey: .identifier)
     try values.encode(flags, forKey: .flags)
   }
+
+  public var abiRecord: NBInterruptEvent {
+    var record = NBInterruptEvent()
+    record.timestamp_microseconds = timestamp.rawValue
+    record.interrupt_mask = mask.rawValue
+    record.identifier = identifier
+    record.flags = flags
+    return record
+  }
 }
 
 @frozen
@@ -300,6 +309,33 @@ public struct BrainModuleInvocation: Codable, Equatable, Hashable, Sendable {
   public let clockClass: BrainClockClass
   public let reasons: BrainInvocationReason
   public let interruptMask: BrainInterruptMask
+
+  public init(
+    timestamp: BrainTimestamp,
+    moduleIdentifier: UInt16,
+    clockClass: BrainClockClass,
+    reasons: BrainInvocationReason,
+    interruptMask: BrainInterruptMask
+  ) {
+    self.timestamp = timestamp
+    self.moduleIdentifier = moduleIdentifier
+    self.clockClass = clockClass
+    self.reasons = reasons
+    self.interruptMask = interruptMask
+  }
+
+  public init(abiRecord: NBDueInvocation) throws {
+    guard let clockClass = BrainClockClass(rawValue: abiRecord.clock_class) else {
+      throw BrainRuntimeError.invalidSchedule("invocation contains an unknown clock class")
+    }
+    self.init(
+      timestamp: BrainTimestamp(microseconds: abiRecord.timestamp_microseconds),
+      moduleIdentifier: abiRecord.module_id,
+      clockClass: clockClass,
+      reasons: BrainInvocationReason(rawValue: abiRecord.reason_flags),
+      interruptMask: BrainInterruptMask(rawValue: abiRecord.interrupt_mask)
+    )
+  }
 }
 
 @frozen
@@ -313,6 +349,22 @@ public struct BrainModuleClockState: Codable, Equatable, Hashable, Sendable {
     self.nextDue = nextDue
     self.lastUpdate = lastUpdate
   }
+
+  public var abiRecord: NBModuleClockState {
+    var record = NBModuleClockState()
+    record.next_due_microseconds = nextDue.rawValue
+    record.last_update_microseconds = lastUpdate?.rawValue ?? Self.neverUpdated
+    return record
+  }
+
+  public init(abiRecord: NBModuleClockState) {
+    self.init(
+      nextDue: BrainTimestamp(microseconds: abiRecord.next_due_microseconds),
+      lastUpdate: abiRecord.last_update_microseconds == Self.neverUpdated
+        ? nil
+        : BrainTimestamp(microseconds: abiRecord.last_update_microseconds)
+    )
+  }
 }
 
 @frozen
@@ -321,6 +373,18 @@ public struct BrainSchedulerSnapshot: Codable, Equatable, Sendable {
   public let committedTime: BrainTimestamp
   public let generation: UInt64
   public let moduleClocks: [BrainModuleClockState]
+
+  public init(
+    scheduleFingerprint: UInt64,
+    committedTime: BrainTimestamp,
+    generation: UInt64,
+    moduleClocks: [BrainModuleClockState]
+  ) {
+    self.scheduleFingerprint = scheduleFingerprint
+    self.committedTime = committedTime
+    self.generation = generation
+    self.moduleClocks = moduleClocks
+  }
 
   public func stableHash() -> String {
     var hash: UInt64 = 0xcbf2_9ce4_8422_2325

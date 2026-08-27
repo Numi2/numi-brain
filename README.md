@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue vertical slice and deterministic multi-rate scheduler oracle. The complete NumiBrain runtime is not implemented or qualified yet.
+> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue vertical slice, deterministic scheduler oracle, and integrated Metal due-selection path. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 
@@ -52,7 +52,7 @@ swift run -c release numi-brain-tissue \
   --output artifacts/tissue-evidence.json
 ```
 
-The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, `--delays instantaneous`, and `--connectome none` as baselines. Its runtime input is now an immutable schedule of timestamped receptor events rather than a shader-special-cased stimulus. `--stimulus-noise`, `--seed`, `--environment-id`, and `--episode-id` address bounded counter-random samples without mutable RNG state. Layered structure, delay classes, the bilateral sparse graph, event noise, and lesion controls are synthetic experiment inputs, not anatomical, conduction-velocity, receptor, or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records all state and input hashes, random identity, graph and memory sizes, device and execution path, boundedness, delayed-future rollback/retry, replay, and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
+The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, `--delays instantaneous`, and `--connectome none` as baselines. Its runtime input is now an immutable schedule of timestamped receptor events rather than a shader-special-cased stimulus. `--stimulus-noise`, `--seed`, `--environment-id`, and `--episode-id` address bounded counter-random samples without mutable RNG state. The Metal path also advances the compiled eight-module schedule once per root transaction on the same encoder, using private shadow clocks and a private due list. Layered structure, delay classes, the bilateral sparse graph, event noise, lesion controls, and scheduler roles are synthetic experiment inputs, not anatomical, conduction-velocity, receptor, injury, or biological-timing calibration. Schema-v6 JSON evidence records device scheduler dispatches, ABI memory, committed scheduler time and generation, CPU scheduler parity, replay, rollback, and tissue CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
 A reproducible Apple M4 development run of the GPU-compacted noisy-event, sparse-projection, delayed, layered-lesion path is checked into [evidence/tissue-v0.5](evidence/tissue-v0.5/README.md). Earlier artifacts remain in [evidence/tissue-v0.4](evidence/tissue-v0.4/README.md), [evidence/tissue-v0.3](evidence/tissue-v0.3/README.md), [evidence/tissue-v0.2](evidence/tissue-v0.2/README.md), and [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). These are correctness and visual-inspection artifacts, not production performance qualifications.
 
@@ -68,7 +68,7 @@ swift run -c release numi-brain-scheduler \
   --output artifacts/scheduler-evidence.json
 ```
 
-This executable is deliberately a CPU oracle. It validates the stable record layout and causal scheduling rules before the hot scheduler moves into the single Metal command timeline. It is not GPU-resident scheduler evidence or full 96-module execution.
+This executable remains the standalone CPU oracle for multi-agent semantic checks. The tissue executable now runs bounded one-agent due selection inside its Metal command timeline. Neither path is full 96-module regional execution or large-cohort scheduler qualification.
 
 The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler-v0.1](evidence/scheduler-v0.1/README.md).
 
@@ -87,6 +87,6 @@ The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler
 
 The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, explicit conduction history, lesionable short-range coupling, destination-major sparse delayed projections, timestamped noisy receptor events, bounded GPU event compaction, counter-based randomness, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. Each attempted substep compacts due event indices into a private GPU buffer before tissue sites scan only that active set. It does not yet implement spiking neurons, calibrated receptors or conduction velocity, parallel cohort-scale event compaction, an anatomical multi-region graph, NumanX interop, learning, memory, or motor control.
 
-The next runtime-foundation work is a Metal-resident multi-rate scheduler using the compiled module ABI, immutable parameter versions, parallel prefix-sum event compaction for large cohorts, indirect active-region dispatch, nested NumanX transaction interop, and private-heap state storage. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
+The next runtime-foundation work is consuming the private due list through indirect regional dispatch, parallel prefix-sum event and module compaction for large cohorts, immutable parameter versions, nested NumanX transaction interop, and private-heap state storage. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
 
 No phase is intended as a throwaway implementation.

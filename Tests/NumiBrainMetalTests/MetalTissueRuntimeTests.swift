@@ -118,6 +118,165 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
   }
 
+  func testMetalSchedulerMatchesCPUForPeriodicAndInterruptDueList() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let schedulerEvents = [
+      try BrainInterruptEvent(
+        timestamp: BrainTimestamp(microseconds: 7_500),
+        mask: .pain,
+        identifier: 1
+      ),
+      try BrainInterruptEvent(
+        timestamp: BrainTimestamp(microseconds: 12_750),
+        mask: .lossOfSupport,
+        identifier: 2
+      ),
+      try BrainInterruptEvent(
+        timestamp: BrainTimestamp(microseconds: 20_000),
+        mask: .pain,
+        identifier: 3
+      ),
+    ]
+    var cpu = CPUMultiRateScheduler(schedule: schedule)
+    let cpuTransaction = try cpu.beginAdvance(
+      to: BrainTimestamp(microseconds: 20_000),
+      events: Array(schedulerEvents.reversed())
+    )
+    try cpu.commit(cpuTransaction)
+
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 12,
+      height: 8,
+      parameters: parameters
+    )
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      brainSchedule: schedule,
+      maxEncodedSubsteps: 20
+    )
+    let submission = try metal.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: Array(repeating: true, count: 20),
+      schedulerEvents: schedulerEvents
+    )
+    try metal.commitRootTransaction()
+    let inspection = try metal.inspectCommittedScheduler()
+
+    XCTAssertEqual(submission.schedulerDispatches, 1)
+    XCTAssertEqual(submission.schedulerInputEventCount, schedulerEvents.count)
+    XCTAssertEqual(metal.schedulerDescriptorByteCount, 8 * 32)
+    XCTAssertEqual(metal.schedulerClockByteCount, 8 * 16)
+    XCTAssertEqual(metal.schedulerEventCapacityByteCount, 64 * 24)
+    XCTAssertEqual(metal.schedulerInvocationCapacityByteCount, 4_096 * 32)
+    XCTAssertEqual(inspection.status, 0)
+    XCTAssertEqual(inspection.invocations, cpuTransaction.invocations)
+    XCTAssertEqual(inspection.snapshot, cpu.snapshot)
+
+    let secondEvents = [
+      try BrainInterruptEvent(
+        timestamp: BrainTimestamp(microseconds: 27_500),
+        mask: .lossOfSupport,
+        identifier: 4
+      )
+    ]
+    let secondCPUTransaction = try cpu.beginAdvance(
+      to: BrainTimestamp(microseconds: 40_000),
+      events: secondEvents
+    )
+    try cpu.commit(secondCPUTransaction)
+    _ = try metal.runRootTransaction(
+      at: 20,
+      acceptedSubsteps: Array(repeating: true, count: 20),
+      schedulerEvents: secondEvents
+    )
+    try metal.commitRootTransaction()
+    let secondInspection = try metal.inspectCommittedScheduler()
+
+    XCTAssertEqual(secondInspection.invocations, secondCPUTransaction.invocations)
+    XCTAssertEqual(secondInspection.snapshot, cpu.snapshot)
+  }
+
+  func testMetalSchedulerRetryAndAbortAreTransactional() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 10,
+      height: 8,
+      parameters: parameters
+    )
+    let direct = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      brainSchedule: schedule,
+      maxEncodedSubsteps: 2
+    )
+    let retried = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      brainSchedule: schedule,
+      maxEncodedSubsteps: 2
+    )
+    let pain = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 500),
+      mask: .pain,
+      identifier: 7
+    )
+    _ = try direct.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: [true],
+      schedulerEvents: [pain]
+    )
+    try direct.commitRootTransaction()
+    _ = try retried.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: [false, true],
+      schedulerEvents: [pain]
+    )
+    try retried.commitRootTransaction()
+    XCTAssertEqual(
+      try direct.inspectCommittedScheduler(),
+      try retried.inspectCommittedScheduler()
+    )
+
+    let beforeScheduler = try retried.snapshotCommittedScheduler()
+    let beforeTissue = try retried.snapshotCommitted()
+    let support = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 1_500),
+      mask: .lossOfSupport,
+      identifier: 8
+    )
+    _ = try retried.runRootTransaction(
+      at: 1,
+      acceptedSubsteps: [true],
+      schedulerEvents: [support]
+    )
+    try retried.abortRootTransaction()
+    XCTAssertEqual(try retried.snapshotCommittedScheduler(), beforeScheduler)
+    XCTAssertEqual(try retried.snapshotCommitted().stableHash(), beforeTissue.stableHash())
+
+    for runtime in [direct, retried] {
+      _ = try runtime.runRootTransaction(
+        at: 1,
+        acceptedSubsteps: [true],
+        schedulerEvents: [support]
+      )
+      try runtime.commitRootTransaction()
+    }
+    XCTAssertEqual(
+      try direct.inspectCommittedScheduler(),
+      try retried.inspectCommittedScheduler()
+    )
+    XCTAssertEqual(
+      try direct.snapshotCommitted().stableHash(),
+      try retried.snapshotCommitted().stableHash()
+    )
+  }
+
   func testMetalAgreesWithCPUForLayeredLesionedTissue() throws {
     try requireMetal4()
     var structure = try TissueStructure.layeredCorticalSheetV0(width: 32, height: 24)

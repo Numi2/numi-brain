@@ -10,6 +10,8 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_module_clock_state_size(), 16)
     XCTAssertEqual(nb_brain_abi_interrupt_event_size(), 24)
     XCTAssertEqual(nb_brain_abi_due_invocation_size(), 32)
+    XCTAssertEqual(nb_brain_abi_scheduler_uniforms_size(), 40)
+    XCTAssertEqual(nb_brain_abi_scheduler_result_size(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_module_id(), 0)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_interrupt_mask(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_flags(), 28)

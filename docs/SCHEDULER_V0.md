@@ -1,12 +1,13 @@
-# Multi-rate scheduler and module ABI v0.1
+# Multi-rate scheduler and module ABI v0.2
 
-This document defines the first executable runtime-foundation scheduler slice. It establishes a compiled binary contract and deterministic CPU oracle for physical-time module selection. It does not claim that the production brain scheduler is GPU resident yet.
+This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, and Metal due-selection kernel for physical-time module scheduling. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
 ## Ownership boundary
 
 - `NumiBrainABI` C++ owns fixed record sizes, offsets, validation, and descriptor fingerprints.
 - `NumiBrainCore` Swift owns the deterministic CPU oracle, typed configuration, checkpoint validation, and evidence orchestration.
-- Metal does not yet execute this scheduler. The production implementation must consume the same ABI inside NumiBrain's single GPU command timeline.
+- Metal owns due-time advancement, event interruption, invocation compaction, and private shadow clocks in the normal tissue execution path.
+- Swift publishes clock-generation ownership only after the shared tissue-scheduler GPU submission completes successfully.
 
 This separation prevents Swift object layout or synthesized serialization from becoming an accidental runtime ABI.
 
@@ -20,6 +21,8 @@ ABI version 1 compiles the following standard-layout records:
 | `NBModuleClockState` | 16 | Per-agent next-due and last-update physical time |
 | `NBInterruptEvent` | 24 | Timestamped receptor-derived interrupt class |
 | `NBDueInvocation` | 32 | Compacted environment/module execution request |
+| `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
+| `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
 
 The module descriptor layout is:
 
@@ -67,7 +70,7 @@ Interrupt events carry a physical timestamp and a bit mask. An event immediately
 
 If a module is both periodically due and interrupted at the same timestamp, the oracle emits one invocation with both reasons. Multiple matching events at the same module and timestamp merge their masks. Interrupts do not reset the periodic clock.
 
-Events earlier than committed scheduler time or later than the current transaction target are rejected. The later GPU event queue will retain future packets; the v0.1 oracle never silently accepts and drops one.
+Events earlier than committed scheduler time or later than the current transaction target are rejected. The v0.2 Metal path consumes a bounded committed input view from shared unified memory. Dynamic NumanX-owned GPU event queues will later replace that upload view and retain future packets; neither the CPU nor Metal path silently accepts and drops one.
 
 ## Transactions and checkpointing
 
@@ -84,6 +87,10 @@ Commit succeeds only when the fingerprint, generation, base time, and clock coun
 
 A checkpoint restore validates schedule identity, clock count, next-due time, and last-update time before accepting state.
 
+The integrated Metal path uses two private clock generations. `schedule_due_modules` reads the committed generation and overwrites the other generation after the accepted tissue candidate sequence on the same compute encoder. A root commit swaps tissue and scheduler generation ownership together. Abort leaves the committed clock pointer, time, and generation unchanged. Rejected physical attempts affect the accepted target time only when simulated time actually advances.
+
+The compacted due-invocation buffer and result header remain private. Explicit inspection stages them only after command completion; the control loop performs no invocation-count readback. Regional neural operators do not consume this list yet.
+
 ## Cohort compaction oracle
 
 Independent agent transactions share immutable descriptors but retain separate clocks. The CPU reference compacts their invocations into groups ordered by:
@@ -93,7 +100,7 @@ Independent agent transactions share immutable descriptors but retain separate c
 3. module identifier;
 4. environment identifier within the group.
 
-This is the semantic oracle for later GPU prefix-sum and indirect-dispatch kernels. The host implementation is not the production cohort path.
+This remains the semantic oracle for later GPU prefix-sum and indirect-dispatch kernels. The current Metal kernel deterministically schedules one agent with one lane inside the integrated runtime. It proves device ownership and transaction semantics, not large-cohort compaction or throughput.
 
 ## Executable reference subset
 
@@ -124,5 +131,10 @@ These are scheduling roles only. They do not yet execute their regional neural o
 8. Restored checkpoints reproduce the same future schedule.
 9. Stale transactions, stale events, and corrupted serialized fingerprints fail closed.
 10. Cohort groups retain canonical environment order and independent per-agent state.
+11. C++, Swift, and Metal agree on all six ABI record sizes.
+12. Metal periodic and fractional-time interrupt invocations exactly equal the CPU oracle.
+13. One scheduler dispatch runs on the same encoder after each accepted tissue root sequence.
+14. Rejected retry and root abort preserve private scheduler clocks together with tissue history.
+15. Schema-v6 inspection reports zero device status, exact CPU scheduler parity, committed time, generation, memory capacity, and snapshot hash without per-root readback.
 
-Passing these gates establishes the ABI and scheduling semantics. It does not establish Metal residence, throughput, module computation, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection and the shared transaction boundary. It does not establish regional module execution, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.

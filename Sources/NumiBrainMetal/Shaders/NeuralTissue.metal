@@ -164,6 +164,208 @@ kernel void compact_receptor_events(
     activeEventIndices[0] = activeCount;
 }
 
+struct NBModuleDescriptorABI {
+    ushort module_id;
+    ushort clock_class;
+    uint period_microseconds;
+    uint conduction_delay_microseconds;
+    uint intrinsic_timescale_microseconds;
+    ulong interrupt_mask;
+    ushort token_count;
+    ushort token_dimension;
+    uint flags;
+};
+
+struct NBModuleClockStateABI {
+    ulong next_due_microseconds;
+    ulong last_update_microseconds;
+};
+
+struct NBInterruptEventABI {
+    ulong timestamp_microseconds;
+    ulong interrupt_mask;
+    uint identifier;
+    uint flags;
+};
+
+struct NBDueInvocationABI {
+    ulong timestamp_microseconds;
+    ulong interrupt_mask;
+    uint environment_identifier;
+    ushort module_id;
+    ushort clock_class;
+    uint reason_flags;
+    uint reserved;
+};
+
+struct NBSchedulerUniformsABI {
+    ulong committed_time_microseconds;
+    ulong target_time_microseconds;
+    uint module_count;
+    uint event_count;
+    uint invocation_capacity;
+    uint environment_identifier;
+    uint flags;
+    uint reserved;
+};
+
+struct NBSchedulerResultABI {
+    uint invocation_count;
+    uint status;
+    ulong target_time_microseconds;
+};
+
+static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
+static_assert(sizeof(NBModuleClockStateABI) == 16, "module clock ABI drift");
+static_assert(sizeof(NBInterruptEventABI) == 24, "interrupt event ABI drift");
+static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
+static_assert(sizeof(NBSchedulerUniformsABI) == 40, "scheduler uniform ABI drift");
+static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
+
+constant uint NBSchedulerFlagInitialize = 1u << 0;
+constant uint NBSchedulerReasonPeriodic = 1u << 0;
+constant uint NBSchedulerReasonInterrupt = 1u << 1;
+constant uint NBSchedulerStatusValid = 0u;
+constant uint NBSchedulerStatusInvocationCapacity = 1u;
+constant uint NBSchedulerStatusTimeOverflow = 2u;
+
+inline bool scheduler_invocation_less(
+    thread const NBDueInvocationABI &lhs,
+    thread const NBDueInvocationABI &rhs
+) {
+    if (lhs.timestamp_microseconds != rhs.timestamp_microseconds) {
+        return lhs.timestamp_microseconds < rhs.timestamp_microseconds;
+    }
+    if (lhs.clock_class != rhs.clock_class) {
+        return lhs.clock_class < rhs.clock_class;
+    }
+    return lhs.module_id < rhs.module_id;
+}
+
+/// Deterministic one-agent reference kernel. It consumes the compiled v1 ABI,
+/// advances private shadow clocks, and compacts periodic/event invocations.
+/// Later cohort kernels will assign one lane per agent and prefix-sum groups.
+kernel void schedule_due_modules(
+    constant NBSchedulerUniformsABI *uniforms [[buffer(0)]],
+    device const NBModuleDescriptorABI *modules [[buffer(1)]],
+    device const NBModuleClockStateABI *inputClocks [[buffer(2)]],
+    device NBModuleClockStateABI *outputClocks [[buffer(3)]],
+    device const NBInterruptEventABI *events [[buffer(4)]],
+    device NBDueInvocationABI *invocations [[buffer(5)]],
+    device NBSchedulerResultABI *result [[buffer(6)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+
+    const ulong neverUpdated = ~0ul;
+    const bool initialize = (uniforms->flags & NBSchedulerFlagInitialize) != 0u;
+    uint invocationCount = 0u;
+    result->invocation_count = 0u;
+    result->status = NBSchedulerStatusValid;
+    result->target_time_microseconds = uniforms->target_time_microseconds;
+
+    for (uint moduleIndex = 0u; moduleIndex < uniforms->module_count; ++moduleIndex) {
+        const NBModuleDescriptorABI module = modules[moduleIndex];
+        NBModuleClockStateABI clock = inputClocks[moduleIndex];
+        if (initialize) {
+            clock.next_due_microseconds = uniforms->committed_time_microseconds;
+            clock.last_update_microseconds = neverUpdated;
+        }
+        ulong nextDue = clock.next_due_microseconds;
+        while (nextDue <= uniforms->target_time_microseconds) {
+            if (invocationCount >= uniforms->invocation_capacity) {
+                result->invocation_count = invocationCount;
+                result->status = NBSchedulerStatusInvocationCapacity;
+                return;
+            }
+            NBDueInvocationABI invocation;
+            invocation.timestamp_microseconds = nextDue;
+            invocation.interrupt_mask = 0ul;
+            invocation.environment_identifier = uniforms->environment_identifier;
+            invocation.module_id = module.module_id;
+            invocation.clock_class = module.clock_class;
+            invocation.reason_flags = NBSchedulerReasonPeriodic;
+            invocation.reserved = 0u;
+            invocations[invocationCount++] = invocation;
+            clock.last_update_microseconds = nextDue;
+            const ulong period = ulong(module.period_microseconds);
+            if (nextDue > (~0ul) - period) {
+                result->invocation_count = invocationCount;
+                result->status = NBSchedulerStatusTimeOverflow;
+                return;
+            }
+            nextDue += period;
+        }
+        clock.next_due_microseconds = nextDue;
+        outputClocks[moduleIndex] = clock;
+    }
+
+    for (uint eventIndex = 0u; eventIndex < uniforms->event_count; ++eventIndex) {
+        const NBInterruptEventABI event = events[eventIndex];
+        for (uint moduleIndex = 0u; moduleIndex < uniforms->module_count; ++moduleIndex) {
+            const NBModuleDescriptorABI module = modules[moduleIndex];
+            const ulong deliveredMask = module.interrupt_mask & event.interrupt_mask;
+            if (deliveredMask == 0ul) {
+                continue;
+            }
+            bool merged = false;
+            for (uint invocationIndex = 0u;
+                 invocationIndex < invocationCount;
+                 ++invocationIndex) {
+                NBDueInvocationABI existing = invocations[invocationIndex];
+                if (existing.timestamp_microseconds == event.timestamp_microseconds
+                    && existing.module_id == module.module_id) {
+                    existing.reason_flags |= NBSchedulerReasonInterrupt;
+                    existing.interrupt_mask |= deliveredMask;
+                    invocations[invocationIndex] = existing;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged) {
+                if (invocationCount >= uniforms->invocation_capacity) {
+                    result->invocation_count = invocationCount;
+                    result->status = NBSchedulerStatusInvocationCapacity;
+                    return;
+                }
+                NBDueInvocationABI invocation;
+                invocation.timestamp_microseconds = event.timestamp_microseconds;
+                invocation.interrupt_mask = deliveredMask;
+                invocation.environment_identifier = uniforms->environment_identifier;
+                invocation.module_id = module.module_id;
+                invocation.clock_class = module.clock_class;
+                invocation.reason_flags = NBSchedulerReasonInterrupt;
+                invocation.reserved = 0u;
+                invocations[invocationCount++] = invocation;
+            }
+            NBModuleClockStateABI clock = outputClocks[moduleIndex];
+            if (clock.last_update_microseconds == neverUpdated
+                || clock.last_update_microseconds < event.timestamp_microseconds) {
+                clock.last_update_microseconds = event.timestamp_microseconds;
+                outputClocks[moduleIndex] = clock;
+            }
+        }
+    }
+
+    for (uint index = 1u; index < invocationCount; ++index) {
+        const NBDueInvocationABI key = invocations[index];
+        uint destination = index;
+        while (destination > 0u) {
+            const NBDueInvocationABI previous = invocations[destination - 1u];
+            if (!scheduler_invocation_less(key, previous)) {
+                break;
+            }
+            invocations[destination] = previous;
+            destination -= 1u;
+        }
+        invocations[destination] = key;
+    }
+
+    result->invocation_count = invocationCount;
+}
+
 kernel void neural_tissue_step(
     device const float4 *input [[buffer(0)]],
     device float4 *output [[buffer(1)]],
