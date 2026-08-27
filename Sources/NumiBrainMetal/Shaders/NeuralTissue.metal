@@ -225,6 +225,51 @@ struct NBRegionalModuleStateABI {
     ulong last_update_microseconds;
 };
 
+struct NBRegionalTokenLayoutABI {
+    uint scalar_offset;
+    uint scalar_count;
+    uint parameter_offset;
+    uint incoming_route_offset;
+    ushort module_id;
+    ushort token_count;
+    ushort token_dimension;
+    ushort incoming_route_count;
+    uint flags;
+    uint reserved;
+};
+
+struct NBRegionalRouteABI {
+    ushort sender_module_id;
+    ushort receiver_module_id;
+    ushort sender_token;
+    ushort flags;
+    uint delay_microseconds;
+    float gain;
+    uint reserved0;
+    uint reserved1;
+};
+
+struct NBRegionalTokenParametersABI {
+    float recurrent_gain;
+    float local_gain;
+    float route_gain;
+    float drive_gain;
+    float bias;
+    float gate_bias;
+    float gate_recurrent_gain;
+    float gate_input_gain;
+};
+
+struct NBRegionalProgramHeaderABI {
+    uint module_count;
+    uint token_scalar_count;
+    uint route_count;
+    uint parameter_count;
+    ulong program_fingerprint;
+    uint flags;
+    uint reserved;
+};
+
 static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
 static_assert(sizeof(NBModuleClockStateABI) == 16, "module clock ABI drift");
 static_assert(sizeof(NBInterruptEventABI) == 24, "interrupt event ABI drift");
@@ -232,6 +277,10 @@ static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 40, "scheduler uniform ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
+static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
+static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
+static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
+static_assert(sizeof(NBRegionalProgramHeaderABI) == 32, "regional header ABI drift");
 
 constant uint NBSchedulerFlagInitialize = 1u << 0;
 constant uint NBSchedulerReasonPeriodic = 1u << 0;
@@ -377,74 +426,248 @@ kernel void schedule_due_modules(
     result->invocation_count = invocationCount;
 }
 
-/// First executable regional population-state primitive. One lane owns one
-/// logical module and consumes its canonical due invocations in timestamp order.
-kernel void advance_due_module_states(
-    device const NBModuleDescriptorABI *modules [[buffer(0)]],
-    device const NBSchedulerResultABI *schedulerResult [[buffer(1)]],
-    device const NBDueInvocationABI *invocations [[buffer(2)]],
-    device const NBRegionalModuleStateABI *inputStates [[buffer(3)]],
-    device NBRegionalModuleStateABI *outputStates [[buffer(4)]],
-    uint moduleIndex [[thread_position_in_grid]]
+inline uint regional_module_index(
+    device const NBRegionalTokenLayoutABI *layouts,
+    uint moduleCount,
+    ushort moduleID
 ) {
-    NBRegionalModuleStateABI state = inputStates[moduleIndex];
+    for (uint moduleIndex = 0u; moduleIndex < moduleCount; ++moduleIndex) {
+        if (layouts[moduleIndex].module_id == moduleID) {
+            return moduleIndex;
+        }
+    }
+    return ~0u;
+}
+
+inline bool regional_invocation_for_module(
+    device const NBDueInvocationABI *invocations,
+    uint begin,
+    uint end,
+    ushort moduleID,
+    thread NBDueInvocationABI &result
+) {
+    for (uint index = begin; index < end; ++index) {
+        if (invocations[index].module_id == moduleID) {
+            result = invocations[index];
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Executable factorized recurrent token operator. Exactly one threadgroup owns
+/// an agent. All due modules at one timestamp read the same pre-timestamp state,
+/// then publish together, preventing route cycles from observing partial peers.
+kernel void advance_due_regional_tokens(
+    device const NBRegionalProgramHeaderABI *header [[buffer(0)]],
+    device const NBModuleDescriptorABI *modules [[buffer(1)]],
+    device const NBRegionalTokenLayoutABI *layouts [[buffer(2)]],
+    device const NBRegionalRouteABI *routes [[buffer(3)]],
+    device const NBRegionalTokenParametersABI *parameters [[buffer(4)]],
+    device const NBSchedulerResultABI *schedulerResult [[buffer(5)]],
+    device const NBDueInvocationABI *invocations [[buffer(6)]],
+    device const NBRegionalModuleStateABI *inputDiagnostics [[buffer(7)]],
+    device NBRegionalModuleStateABI *outputDiagnostics [[buffer(8)]],
+    device const float *inputTokens [[buffer(9)]],
+    device float *outputTokens [[buffer(10)]],
+    device float *candidateTokens [[buffer(11)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
+) {
+    const uint laneCount = lanesPerThreadgroup.x;
+    for (uint moduleIndex = lane;
+         moduleIndex < header->module_count;
+         moduleIndex += laneCount) {
+        outputDiagnostics[moduleIndex] = inputDiagnostics[moduleIndex];
+    }
+    for (uint scalarIndex = lane;
+         scalarIndex < header->token_scalar_count;
+         scalarIndex += laneCount) {
+        outputTokens[scalarIndex] = inputTokens[scalarIndex];
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
     if (schedulerResult->status != NBSchedulerStatusValid) {
-        outputStates[moduleIndex] = state;
         return;
     }
 
-    const NBModuleDescriptorABI module = modules[moduleIndex];
     const ulong neverUpdated = ~0ul;
-    for (uint invocationIndex = 0u;
-         invocationIndex < schedulerResult->invocation_count;
-         ++invocationIndex) {
-        const NBDueInvocationABI invocation = invocations[invocationIndex];
-        if (invocation.module_id != module.module_id) {
-            continue;
+    uint cursor = 0u;
+    while (cursor < schedulerResult->invocation_count) {
+        const ulong timestamp = invocations[cursor].timestamp_microseconds;
+        uint groupEnd = cursor + 1u;
+        while (groupEnd < schedulerResult->invocation_count
+               && invocations[groupEnd].timestamp_microseconds == timestamp) {
+            groupEnd += 1u;
         }
-        const ulong elapsedMicroseconds = state.last_update_microseconds == neverUpdated
-            ? ulong(module.period_microseconds)
-            : invocation.timestamp_microseconds - state.last_update_microseconds;
-        const float decay = exp(
-            -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
-        );
-        const float blend = 1.0f - decay;
-        const float periodicDrive = (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u
-            ? 0.25f
-            : 0.0f;
-        const float interruptDrive = min(
-            float(popcount(invocation.interrupt_mask)) * 0.125f,
-            1.0f
-        );
-        const float target = min(periodicDrive + interruptDrive, 1.0f);
-        state.activation = clamp(
-            decay * state.activation + blend * target,
-            0.0f,
-            1.0f
-        );
-        state.integration = clamp(
-            decay * state.integration + blend * state.activation,
-            0.0f,
-            1.0f
-        );
-        state.interrupt_salience = clamp(
-            decay * state.interrupt_salience + blend * interruptDrive,
-            0.0f,
-            1.0f
-        );
-        state.phase = float(
-            invocation.timestamp_microseconds % ulong(module.period_microseconds)
-        ) / float(module.period_microseconds);
-        if (state.update_count != ~0u) {
-            state.update_count += 1u;
+
+        for (uint scalarIndex = lane;
+             scalarIndex < header->token_scalar_count;
+             scalarIndex += laneCount) {
+            uint moduleIndex = 0u;
+            for (; moduleIndex < header->module_count; ++moduleIndex) {
+                const NBRegionalTokenLayoutABI candidateLayout = layouts[moduleIndex];
+                if (scalarIndex >= candidateLayout.scalar_offset
+                    && scalarIndex < candidateLayout.scalar_offset + candidateLayout.scalar_count) {
+                    break;
+                }
+            }
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+            NBDueInvocationABI invocation;
+            const bool due = regional_invocation_for_module(
+                invocations,
+                cursor,
+                groupEnd,
+                layout.module_id,
+                invocation
+            );
+            if (!due) {
+                candidateTokens[scalarIndex] = outputTokens[scalarIndex];
+                continue;
+            }
+
+            const NBModuleDescriptorABI module = modules[moduleIndex];
+            const NBRegionalModuleStateABI diagnostic = outputDiagnostics[moduleIndex];
+            const ulong elapsedMicroseconds = diagnostic.last_update_microseconds == neverUpdated
+                ? ulong(module.period_microseconds)
+                : invocation.timestamp_microseconds - diagnostic.last_update_microseconds;
+            const float alpha = 1.0f - exp(
+                -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
+            );
+            const float periodicDrive =
+                (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
+            const float interruptDrive = min(
+                float(popcount(invocation.interrupt_mask)) * 0.125f,
+                1.0f
+            );
+            const float drive = periodicDrive + interruptDrive;
+            const uint localScalar = scalarIndex - layout.scalar_offset;
+            const uint dimension = uint(layout.token_dimension);
+            const uint tokenStart = layout.scalar_offset + (localScalar / dimension) * dimension;
+            const uint feature = localScalar % dimension;
+            float localSum = 0.0f;
+            for (uint localFeature = 0u; localFeature < dimension; ++localFeature) {
+                localSum += outputTokens[tokenStart + localFeature];
+            }
+            const float localMean = localSum / float(dimension);
+            float routedInput = 0.0f;
+            const uint routeEnd = layout.incoming_route_offset
+                + uint(layout.incoming_route_count);
+            for (uint routeIndex = layout.incoming_route_offset;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                const NBRegionalRouteABI route = routes[routeIndex];
+                const uint senderIndex = regional_module_index(
+                    layouts,
+                    header->module_count,
+                    route.sender_module_id
+                );
+                const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
+                const uint senderFeature = feature % uint(sender.token_dimension);
+                const uint senderScalar = sender.scalar_offset
+                    + uint(route.sender_token) * uint(sender.token_dimension)
+                    + senderFeature;
+                routedInput += route.gain * outputTokens[senderScalar];
+            }
+            const NBRegionalTokenParametersABI parameter =
+                parameters[layout.parameter_offset + localScalar];
+            const float current = outputTokens[scalarIndex];
+            const float candidate = tanh(
+                parameter.recurrent_gain * current
+                + parameter.local_gain * localMean
+                + parameter.route_gain * routedInput
+                + parameter.drive_gain * drive
+                + parameter.bias
+            );
+            const float gateInput = parameter.gate_bias
+                + parameter.gate_recurrent_gain * current
+                + parameter.gate_input_gain * (routedInput + drive);
+            const float gate = 1.0f / (1.0f + exp(-gateInput));
+            candidateTokens[scalarIndex] = current
+                + alpha * gate * (candidate - current);
         }
-        if ((invocation.reason_flags & NBSchedulerReasonInterrupt) != 0u
-            && state.interrupt_count != ~0u) {
-            state.interrupt_count += 1u;
+        threadgroup_barrier(mem_flags::mem_device);
+
+        for (uint scalarIndex = lane;
+             scalarIndex < header->token_scalar_count;
+             scalarIndex += laneCount) {
+            uint moduleIndex = 0u;
+            for (; moduleIndex < header->module_count; ++moduleIndex) {
+                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+                if (scalarIndex >= layout.scalar_offset
+                    && scalarIndex < layout.scalar_offset + layout.scalar_count) {
+                    break;
+                }
+            }
+            NBDueInvocationABI invocation;
+            if (regional_invocation_for_module(
+                    invocations,
+                    cursor,
+                    groupEnd,
+                    layouts[moduleIndex].module_id,
+                    invocation)) {
+                outputTokens[scalarIndex] = candidateTokens[scalarIndex];
+            }
         }
-        state.last_update_microseconds = invocation.timestamp_microseconds;
+        for (uint moduleIndex = lane;
+             moduleIndex < header->module_count;
+             moduleIndex += laneCount) {
+            const NBModuleDescriptorABI module = modules[moduleIndex];
+            NBDueInvocationABI invocation;
+            if (!regional_invocation_for_module(
+                    invocations,
+                    cursor,
+                    groupEnd,
+                    module.module_id,
+                    invocation)) {
+                continue;
+            }
+            NBRegionalModuleStateABI state = outputDiagnostics[moduleIndex];
+            const ulong elapsedMicroseconds = state.last_update_microseconds == neverUpdated
+                ? ulong(module.period_microseconds)
+                : invocation.timestamp_microseconds - state.last_update_microseconds;
+            const float decay = exp(
+                -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
+            );
+            const float blend = 1.0f - decay;
+            const float periodicDrive =
+                (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
+            const float interruptDrive = min(
+                float(popcount(invocation.interrupt_mask)) * 0.125f,
+                1.0f
+            );
+            const float target = min(periodicDrive + interruptDrive, 1.0f);
+            state.activation = clamp(
+                decay * state.activation + blend * target,
+                0.0f,
+                1.0f
+            );
+            state.integration = clamp(
+                decay * state.integration + blend * state.activation,
+                0.0f,
+                1.0f
+            );
+            state.interrupt_salience = clamp(
+                decay * state.interrupt_salience + blend * interruptDrive,
+                0.0f,
+                1.0f
+            );
+            state.phase = float(
+                invocation.timestamp_microseconds % ulong(module.period_microseconds)
+            ) / float(module.period_microseconds);
+            if (state.update_count != ~0u) {
+                state.update_count += 1u;
+            }
+            if ((invocation.reason_flags & NBSchedulerReasonInterrupt) != 0u
+                && state.interrupt_count != ~0u) {
+                state.interrupt_count += 1u;
+            }
+            state.last_update_microseconds = invocation.timestamp_microseconds;
+            outputDiagnostics[moduleIndex] = state;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        cursor = groupEnd;
     }
-    outputStates[moduleIndex] = state;
 }
 
 kernel void neural_tissue_step(

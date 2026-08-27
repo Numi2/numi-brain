@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.7
+# Mesoscale neural tissue model v0.8
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -22,7 +22,7 @@ S=(s_E,s_I,s_C,V),
 
 where `sE` and `sI` scale local excitatory and inhibitory response, `sC` scales outgoing short-range coupling, and viability `V` lies in `[0, 1]`. The default layered profile is a deterministic synthetic test morphology with four depth strata and slight lateral modulation. It is not a histological fit to a named cortical area.
 
-An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. V0.7 supports integer delays from 0 through 31 accepted integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. V0.8 supports integer delays from 0 through 31 accepted integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
 
 Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own 0–31 step delay. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
@@ -75,7 +75,7 @@ K=(\text{seed},\text{environment},\text{episode},\text{module},
 
 There is no mutable random-generator state. A rejected candidate addresses the same key on retry; only accepting simulated time advances the step component.
 
-`R-bar` and `I-bar` blend the local site with its four clamped boundary neighbors. Neighbor contributions are weighted by their outgoing coupling and viability. The relay time constant and explicit history delay model different effects: `R` is local axonal filtering, while `d` selects a committed past relay generation. Sparse projections read the same authoritative history with their edge-specific delay, so local and long-range paths share one causal transaction boundary. The finite stencil is the v0.7 numerical approximation to short-range lateral interaction. The implementation uses forward Euler with explicit clamping to the normalized state interval.
+`R-bar` and `I-bar` blend the local site with its four clamped boundary neighbors. Neighbor contributions are weighted by their outgoing coupling and viability. The relay time constant and explicit history delay model different effects: `R` is local axonal filtering, while `d` selects a committed past relay generation. Sparse projections read the same authoritative history with their edge-specific delay, so local and long-range paths share one causal transaction boundary. The finite stencil is the v0.8 numerical approximation to short-range lateral interaction. The implementation uses forward Euler with explicit clamping to the normalized state interval.
 
 A circular lesion lowers `V` inside its normalized footprint. With `V = 0`, a site initializes and remains exactly silent, and its outgoing contribution is zero. Partial viability is an abstract response/transmission attenuation coefficient, not a tissue-damage law.
 
@@ -100,7 +100,7 @@ The uncalibrated v0 parameter set is:
 | Inhibitory bias | -3.0 |
 | Sigmoid gains | 1, 1 |
 
-Grid coordinates are normalized, not millimetres. Event noise is a bounded numerical receptor-drive perturbation, not a fit to receptor or neural noise statistics. V0.7 therefore establishes causal GPU-compacted noisy-event, delayed structured neural-field computation with transactional Metal due selection and compact regional traces, not measured sensing, conduction velocity, cortical thickness, anatomical connectivity, lesion pathology, or tissue scale.
+Grid coordinates are normalized, not millimetres. Event noise is a bounded numerical receptor-drive perturbation, not a fit to receptor or neural noise statistics. V0.8 therefore establishes causal GPU-compacted noisy-event and delayed structured neural-field computation integrated transactionally with scheduler-driven recurrent regional tokens. It does not establish measured sensing, conduction velocity, cortical thickness, anatomical connectivity, learned regional dynamics, lesion pathology, or tissue scale.
 
 Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in 1972 and extended the theory to two-dimensional cortical and thalamic sheets with recurrent lateral connections in 1973. Those papers establish the model class, not this repository's chosen parameters or biological calibration:
 
@@ -148,10 +148,12 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 24. Metal due-module and interrupt invocations exactly match the CPU scheduler oracle.
 25. Scheduler clocks retry, abort, and commit atomically with tissue state and relay history.
 26. Schema-v6 reports the scheduler fingerprint, memory, dispatch count, status, committed generation, snapshot hash, and CPU parity.
-27. The private scheduler due list is consumed by `advance_due_module_states` without host inspection.
-28. Compact regional floating state matches the CPU numerical oracle and retains exact discrete counters and timestamps.
-29. Regional state retries, aborts, replays, and chunks with the same causal transaction semantics as tissue and scheduler clocks.
-30. Schema-v7 reports regional dispatches, state generations, update totals, snapshot hash, and CPU parity.
+27. The private scheduler due list is consumed by `advance_due_regional_tokens` without host inspection.
+28. Regional diagnostic state matches the CPU numerical oracle and retains exact discrete counters and timestamps.
+29. The 10,752-scalar recurrent token state matches its CPU numerical oracle and consumes seven compiled sparse routes.
+30. Regional token and diagnostic state retry, abort, replay, and chunk with the same causal transaction semantics as tissue and scheduler clocks.
+31. Route ablation changes the receiver token state without changing tissue or diagnostic scheduler state.
+32. Schema-v8 reports program identity, token and route memory, token and diagnostic snapshot hashes, dispatches, update totals, and CPU parity.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -163,7 +165,7 @@ Three private state generations preserve transactionality: committed, root shado
 
 After the accepted tissue candidate sequence, the same encoder dispatches `schedule_due_modules`. It reads private immutable module descriptors and the committed private clock generation, then writes the other clock generation plus a private due-invocation list. Root commit publishes tissue, relay, and scheduler ownership together. Abort publishes none of them. Scheduler inspection is an explicit post-completion staging operation and never occurs between control roots.
 
-After another device barrier, `advance_due_module_states` consumes the private result and due list with one lane per reference module. It writes the other of two private 32-byte-per-module state generations. Regional ownership is published with the scheduler clock and tissue generations. The compact state is an executable population trace, not the final trainable regional token matrix.
+After another device barrier, `advance_due_regional_tokens` consumes the private result and due list with one 256-lane threadgroup. Lanes stride across 10,752 FP32 region-major token scalars, gathering seven compiled sparse routes and publishing each physical timestamp synchronously. It writes the other private token and diagnostic generations. Regional ownership is published with scheduler clock and tissue generations. The factorized parameter fixture has learned-model form but is not a trained production model; dynamic top-k and regional route-delay history remain absent.
 
 The history allocation is
 
@@ -185,6 +187,6 @@ before allocator alignment. Every event adds another 48 immutable bytes. The fix
 4(1+64)=260\text{ bytes},
 \]
 
-holding one 32-bit count and up to 64 32-bit schedule indices. The default scheduler adds 256 descriptor bytes, two 128-byte private clock generations, a 1,536-byte shared interrupt capacity, 40 shared uniform bytes, a 131,072-byte private invocation capacity, and a 16-byte private result. The reference regional operator adds two 256-byte private state generations. Graph, event, scheduler, regional, memory, transaction, and input identities are explicit schema-v7 evidence fields.
+holding one 32-bit count and up to 64 32-bit schedule indices. The default scheduler adds 256 descriptor bytes, two 128-byte private clock generations, a 1,536-byte shared interrupt capacity, 40 shared uniform bytes, a 131,072-byte private invocation capacity, and a 16-byte private result. Regional execution adds two 256-byte diagnostic generations, two 43,008-byte token generations, one 43,008-byte candidate buffer, 344,064 immutable parameter bytes, 256 layout bytes, 168 route bytes, and a 32-byte program header before allocator alignment. Graph, event, scheduler, regional, memory, transaction, and input identities are explicit schema-v8 evidence fields.
 
 The bounded one-lane GPU compactor removes inactive schedule entries from per-site work, but it is not the final large-cohort event path. Dynamic NumanX event packets, parallel prefix-sum cohort compaction, event-specific indirect dispatch, and queue-capacity pressure handling remain Phase 1/2 work before production-scale claims.

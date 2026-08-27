@@ -366,11 +366,21 @@ private struct RegionalExecutionEvidence: Codable {
   let stateGenerationCount: Int
   let stateBytes: Int
   let finalSnapshotHash: String
+  let tokenScalarCount: Int
+  let tokenStateBytes: Int
+  let routeCount: Int
+  let routeBytes: Int
+  let parameterBytes: Int
+  let programFingerprint: String
+  let finalTokenSnapshotHash: String
   let totalUpdateCount: UInt64
   let totalInterruptCount: UInt64
   let cpuReferenceMaximumAbsoluteError: Float
   let cpuReferenceTolerance: Float
   let cpuReferencePassed: Bool
+  let tokenCPUReferenceMaximumAbsoluteError: Float
+  let tokenCPUReferenceTolerance: Float
+  let tokenCPUReferencePassed: Bool
   let execution: String
   let interpretation: String
 }
@@ -612,6 +622,7 @@ private struct NumiBrainTissueCommand {
       let replay: TissueGrid
       var replaySchedulerHash: String?
       var replayRegionalHash: String?
+      var replayRegionalTokenHash: String?
       switch options.backend {
       case .cpu:
         replay = try runCPU(
@@ -645,11 +656,13 @@ private struct NumiBrainTissueCommand {
         replay = metalReplay.state
         replaySchedulerHash = metalReplay.scheduler?.finalSnapshotHash
         replayRegionalHash = metalReplay.regionalExecution?.finalSnapshotHash
+        replayRegionalTokenHash = metalReplay.regionalExecution?.finalTokenSnapshotHash
       }
       replayExact =
         replay.stableHash() == result.state.stableHash()
         && replaySchedulerHash == result.scheduler?.finalSnapshotHash
         && replayRegionalHash == result.regionalExecution?.finalSnapshotHash
+        && replayRegionalTokenHash == result.regionalExecution?.finalTokenSnapshotHash
     } else {
       replayExact = nil
     }
@@ -664,13 +677,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v7",
+      schema: "numibrain.tissue-simulation-evidence.v8",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, compact regional population traces, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with GPU-compacted receptor events, transactional multi-rate scheduling, factorized recurrent regional token state, compiled sparse routes, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -771,7 +784,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU tissue and regional state, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
+          ? "private GPU tissue, regional token and diagnostic generations, immutable regional parameters and routes, scheduler clocks, descriptors, due invocations, relay history, connectome, receptor events, and active indices plus shared committed inputs and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -785,7 +798,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> advance_due_module_states -> atomic host generation publication"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> neural_tissue_step -> schedule_due_modules -> advance_due_regional_tokens -> atomic host generation publication"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -894,8 +907,13 @@ private struct NumiBrainTissueCommand {
     }
     let schedulerInspection = try runtime.inspectCommittedScheduler()
     let regionalInspection = try runtime.snapshotCommittedRegionalState()
+    let regionalTokenInspection = try runtime.snapshotCommittedRegionalTokens()
     var schedulerOracle = CPUMultiRateScheduler(schedule: runtime.brainSchedule)
     var regionalOracleStates = runtime.brainSchedule.modules.map { _ in RegionalModuleState() }
+    var regionalOracleTokens = [Float](
+      repeating: 0,
+      count: runtime.regionalTokenProgram.scalarCount
+    )
     var schedulerOracleCompleted = 0
     let schedulerTimestepMicroseconds = UInt64(
       (parameters.timestepMilliseconds * 1_000).rounded()
@@ -911,6 +929,13 @@ private struct NumiBrainTissueCommand {
           microseconds: UInt64(schedulerOracleCompleted)
             * schedulerTimestepMicroseconds
         )
+      )
+      regionalOracleTokens = try CPURegionalTokenOperator.advance(
+        state: regionalOracleTokens,
+        diagnostics: regionalOracleStates,
+        schedule: runtime.brainSchedule,
+        program: runtime.regionalTokenProgram,
+        invocations: invocations
       )
       regionalOracleStates = try CPURegionalModuleOperator.advance(
         states: regionalOracleStates,
@@ -940,7 +965,7 @@ private struct NumiBrainTissueCommand {
       execution:
         "one Metal schedule_due_modules dispatch per root on the tissue command encoder; private shadow clocks publish only with tissue commit",
       interpretation:
-        "eight-module runtime-foundation schedule feeding the live compact regional-state operator"
+        "eight-module runtime-foundation schedule feeding the live recurrent token-state operator"
     )
     let regionalError = maximumRegionalDifference(
       regionalInspection.states,
@@ -955,10 +980,22 @@ private struct NumiBrainTissueCommand {
         && gpu.interruptCount == cpu.interruptCount
         && gpu.lastUpdate == cpu.lastUpdate
     }
+    let regionalTokenError = maximumScalarDifference(
+      regionalTokenInspection.values,
+      regionalOracleTokens
+    )
+    let regionalTokenTolerance: Float = 3e-6
     let regionalEvidence = RegionalExecutionEvidence(
       stateGenerationCount: 2,
       stateBytes: runtime.regionalStateByteCount * 2,
       finalSnapshotHash: regionalInspection.stableHash(),
+      tokenScalarCount: runtime.regionalTokenProgram.scalarCount,
+      tokenStateBytes: runtime.regionalTokenStateByteCount * 2,
+      routeCount: runtime.regionalTokenProgram.routes.count,
+      routeBytes: runtime.regionalRouteByteCount,
+      parameterBytes: runtime.regionalParameterByteCount,
+      programFingerprint: runtime.regionalTokenProgram.fingerprintHex,
+      finalTokenSnapshotHash: regionalTokenInspection.stableHash(),
       totalUpdateCount: regionalInspection.states.reduce(0) {
         $0 + UInt64($1.updateCount)
       },
@@ -968,10 +1005,13 @@ private struct NumiBrainTissueCommand {
       cpuReferenceMaximumAbsoluteError: regionalError,
       cpuReferenceTolerance: regionalTolerance,
       cpuReferencePassed: regionalDiscreteExact && regionalError <= regionalTolerance,
+      tokenCPUReferenceMaximumAbsoluteError: regionalTokenError,
+      tokenCPUReferenceTolerance: regionalTokenTolerance,
+      tokenCPUReferencePassed: regionalTokenError <= regionalTokenTolerance,
       execution:
-        "one advance_due_module_states dispatch per root consumes the private due list and writes a private shadow state generation",
+        "one advance_due_regional_tokens threadgroup per root consumes the private due list, synchronizes modules by timestamp, gathers compiled sparse routes, and writes private token and diagnostic shadow generations",
       interpretation:
-        "deterministic population traces for eight logical modules; not the final trainable regional token operator"
+        "10,752 FP32 recurrent token scalars over eight logical modules with immutable factorized slow parameters and seven fixed sparse routes; dynamic top-k, delayed route history, dense tiled matrices, fast-plastic bases, and cohort compaction remain unimplemented"
     )
     return (
       try runtime.snapshotCommitted(),
@@ -1145,13 +1185,17 @@ private struct NumiBrainTissueCommand {
           && (try direct.snapshotCommittedScheduler())
             == (try retried.snapshotCommittedScheduler())
           && (try direct.snapshotCommittedRegionalState())
-            == (try retried.snapshotCommittedRegionalState()),
+            == (try retried.snapshotCommittedRegionalState())
+          && (try direct.snapshotCommittedRegionalTokens())
+            == (try retried.snapshotCommittedRegionalTokens()),
         try aborted.snapshotCommitted().stableHash()
           == abortBaseline.snapshotCommitted().stableHash()
           && (try aborted.snapshotCommittedScheduler())
             == (try abortBaseline.snapshotCommittedScheduler())
           && (try aborted.snapshotCommittedRegionalState())
             == (try abortBaseline.snapshotCommittedRegionalState())
+          && (try aborted.snapshotCommittedRegionalTokens())
+            == (try abortBaseline.snapshotCommittedRegionalTokens())
       )
     }
   }
@@ -1184,6 +1228,12 @@ private struct NumiBrainTissueCommand {
           )
         )
       )
+    }
+  }
+
+  private static func maximumScalarDifference(_ lhs: [Float], _ rhs: [Float]) -> Float {
+    zip(lhs, rhs).reduce(0) { result, pair in
+      max(result, abs(pair.0 - pair.1))
     }
   }
 

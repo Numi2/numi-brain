@@ -38,6 +38,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let eventSchedule: TissueEventSchedule
   public let randomContext: TissueRandomContext
   public let brainSchedule: BrainModuleSchedule
+  public let regionalTokenProgram: RegionalTokenProgram
   public let schedulerEnvironmentIdentifier: UInt32
   public let historyCapacity = TissueDelayField.historyCapacity
   public let maxEncodedSubsteps: Int
@@ -75,6 +76,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let schedulerInvocationBuffer: any MTLBuffer
   private let schedulerResultBuffer: any MTLBuffer
   private let regionalStateBuffers: [any MTLBuffer]
+  private let regionalProgramHeaderBuffer: any MTLBuffer
+  private let regionalLayoutBuffer: any MTLBuffer
+  private let regionalRouteBuffer: any MTLBuffer
+  private let regionalParameterBuffer: any MTLBuffer
+  private let regionalTokenStateBuffers: [any MTLBuffer]
+  private let regionalTokenCandidateBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
   private let relayByteCount: Int
@@ -88,6 +95,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let schedulerEventCapacityByteCount: Int
   public let schedulerInvocationCapacityByteCount: Int
   public let regionalStateByteCount: Int
+  public let regionalTokenStateByteCount: Int
+  public let regionalRouteByteCount: Int
+  public let regionalParameterByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -114,6 +124,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     eventSchedule requestedEventSchedule: TissueEventSchedule? = nil,
     randomContext: TissueRandomContext = .deterministicDefault,
     brainSchedule requestedBrainSchedule: BrainModuleSchedule? = nil,
+    regionalTokenProgram requestedRegionalTokenProgram: RegionalTokenProgram? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -166,6 +177,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let brainSchedule =
       try requestedBrainSchedule
       ?? ReferenceBrainSchedule.runtimeFoundationSubset()
+    let regionalTokenProgram =
+      try requestedRegionalTokenProgram
+      ?? RegionalTokenProgram.runtimeFoundationV0(schedule: brainSchedule)
+    guard regionalTokenProgram.scheduleFingerprint == brainSchedule.fingerprint else {
+      throw TissueError.metal("regional token program does not match the brain schedule")
+    }
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
     }
@@ -217,8 +234,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let schedulerFunction = library.makeFunction(name: "schedule_due_modules") else {
       throw TissueError.metal("schedule_due_modules is missing from the Metal library")
     }
-    guard let regionalFunction = library.makeFunction(name: "advance_due_module_states") else {
-      throw TissueError.metal("advance_due_module_states is missing from the Metal library")
+    guard let regionalFunction = library.makeFunction(name: "advance_due_regional_tokens") else {
+      throw TissueError.metal("advance_due_regional_tokens is missing from the Metal library")
     }
     let tissuePipeline: any MTLComputePipelineState
     let eventCompactionPipeline: any MTLComputePipelineState
@@ -267,8 +284,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to create the scheduler argument table")
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
-    regionalArgumentDescriptor.label = "NumiBrain regional-state arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 5
+    regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
+    regionalArgumentDescriptor.maxBufferBindCount = 12
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -374,7 +391,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<NBDueInvocation>.stride == Int(NB_DUE_INVOCATION_BYTE_COUNT),
       MemoryLayout<NBSchedulerUniforms>.stride == Int(NB_SCHEDULER_UNIFORMS_BYTE_COUNT),
       MemoryLayout<NBSchedulerResult>.stride == Int(NB_SCHEDULER_RESULT_BYTE_COUNT),
-      MemoryLayout<NBRegionalModuleState>.stride == Int(NB_REGIONAL_MODULE_STATE_BYTE_COUNT)
+      MemoryLayout<NBRegionalModuleState>.stride == Int(NB_REGIONAL_MODULE_STATE_BYTE_COUNT),
+      MemoryLayout<NBRegionalTokenLayout>.stride == Int(NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT),
+      MemoryLayout<NBRegionalRoute>.stride == Int(NB_REGIONAL_ROUTE_BYTE_COUNT),
+      MemoryLayout<NBRegionalTokenParameters>.stride
+        == Int(NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT),
+      MemoryLayout<NBRegionalProgramHeader>.stride
+        == Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT)
     else {
       throw TissueError.metal("Swift imported scheduler ABI does not match NumiBrainABI")
     }
@@ -393,6 +416,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let regionalStateByteCount =
       brainSchedule.modules.count
       * MemoryLayout<NBRegionalModuleState>.stride
+    let regionalLayoutByteCount =
+      regionalTokenProgram.layouts.count
+      * MemoryLayout<NBRegionalTokenLayout>.stride
+    let regionalRouteByteCount =
+      regionalTokenProgram.routes.count
+      * MemoryLayout<NBRegionalRoute>.stride
+    let regionalParameterByteCount =
+      regionalTokenProgram.parameters.count
+      * MemoryLayout<NBRegionalTokenParameters>.stride
+    let regionalTokenStateByteCount =
+      regionalTokenProgram.scalarCount * MemoryLayout<Float>.stride
     guard
       let schedulerDescriptorBuffer = device.makeBuffer(
         length: schedulerDescriptorByteCount,
@@ -429,6 +463,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       let secondRegionalStateBuffer = device.makeBuffer(
         length: regionalStateByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalProgramHeaderBuffer = device.makeBuffer(
+        length: MemoryLayout<NBRegionalProgramHeader>.stride,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalLayoutBuffer = device.makeBuffer(
+        length: regionalLayoutByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalRouteBuffer = device.makeBuffer(
+        length: max(regionalRouteByteCount, MemoryLayout<NBRegionalRoute>.stride),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalParameterBuffer = device.makeBuffer(
+        length: regionalParameterByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let firstRegionalTokenStateBuffer = device.makeBuffer(
+        length: regionalTokenStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondRegionalTokenStateBuffer = device.makeBuffer(
+        length: regionalTokenStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalTokenCandidateBuffer = device.makeBuffer(
+        length: regionalTokenStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate scheduler ABI buffers")
@@ -441,6 +503,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       firstRegionalStateBuffer,
       secondRegionalStateBuffer,
     ]
+    let regionalTokenStateBuffers: [any MTLBuffer] = [
+      firstRegionalTokenStateBuffer,
+      secondRegionalTokenStateBuffer,
+    ]
     schedulerDescriptorBuffer.label = "NumiBrain immutable module descriptors"
     firstSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 0"
     secondSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 1"
@@ -450,6 +516,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     schedulerResultBuffer.label = "NumiBrain scheduler result"
     firstRegionalStateBuffer.label = "NumiBrain regional state generation 0"
     secondRegionalStateBuffer.label = "NumiBrain regional state generation 1"
+    regionalProgramHeaderBuffer.label = "NumiBrain immutable regional program header"
+    regionalLayoutBuffer.label = "NumiBrain immutable region-major token layouts"
+    regionalRouteBuffer.label = "NumiBrain immutable sparse regional routes"
+    regionalParameterBuffer.label = "NumiBrain immutable regional slow parameters"
+    firstRegionalTokenStateBuffer.label = "NumiBrain regional token state generation 0"
+    secondRegionalTokenStateBuffer.label = "NumiBrain regional token state generation 1"
+    regionalTokenCandidateBuffer.label = "NumiBrain regional token timestamp candidates"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -463,6 +536,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let schedulerInspectionByteCount =
       MemoryLayout<NBSchedulerResult>.stride
       + schedulerClockByteCount + schedulerInvocationCapacityByteCount
+    let regionalUploadByteCount = max(
+      regionalParameterByteCount,
+      max(
+        regionalTokenStateByteCount,
+        max(regionalLayoutByteCount, regionalRouteByteCount)
+      )
+    )
     guard
       let stagingBuffer = device.makeBuffer(
         length: max(
@@ -471,7 +551,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
             max(eventByteCount, schedulerDescriptorByteCount),
             max(
               schedulerClockByteCount,
-              max(projectionOffsetByteCount, projectionEdgeByteCount)
+              max(
+                max(projectionOffsetByteCount, projectionEdgeByteCount),
+                regionalUploadByteCount
+              )
             )
           )
         ),
@@ -484,7 +567,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 19
+    residencyDescriptor.initialCapacity = stateBuffers.count + 26
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -514,6 +597,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for buffer in regionalStateBuffers {
       residencySet.addAllocation(buffer)
     }
+    residencySet.addAllocation(regionalProgramHeaderBuffer)
+    residencySet.addAllocation(regionalLayoutBuffer)
+    residencySet.addAllocation(regionalRouteBuffer)
+    residencySet.addAllocation(regionalParameterBuffer)
+    for buffer in regionalTokenStateBuffers {
+      residencySet.addAllocation(buffer)
+    }
+    residencySet.addAllocation(regionalTokenCandidateBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
@@ -531,6 +622,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.eventSchedule = eventSchedule
     self.randomContext = randomContext
     self.brainSchedule = brainSchedule
+    self.regionalTokenProgram = regionalTokenProgram
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maxEncodedSubsteps = maxEncodedSubsteps
     self.maxSchedulerEvents = maxSchedulerEvents
@@ -564,6 +656,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.schedulerInvocationBuffer = schedulerInvocationBuffer
     self.schedulerResultBuffer = schedulerResultBuffer
     self.regionalStateBuffers = regionalStateBuffers
+    self.regionalProgramHeaderBuffer = regionalProgramHeaderBuffer
+    self.regionalLayoutBuffer = regionalLayoutBuffer
+    self.regionalRouteBuffer = regionalRouteBuffer
+    self.regionalParameterBuffer = regionalParameterBuffer
+    self.regionalTokenStateBuffers = regionalTokenStateBuffers
+    self.regionalTokenCandidateBuffer = regionalTokenCandidateBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
@@ -577,6 +675,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.schedulerEventCapacityByteCount = schedulerEventCapacityByteCount
     self.schedulerInvocationCapacityByteCount = schedulerInvocationCapacityByteCount
     self.regionalStateByteCount = regionalStateByteCount
+    self.regionalTokenStateByteCount = regionalTokenStateByteCount
+    self.regionalRouteByteCount = regionalRouteByteCount
+    self.regionalParameterByteCount = regionalParameterByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -688,6 +789,71 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destination: buffer,
         size: regionalStateByteCount,
         label: "NumiBrain regional state generation \(index) upload"
+      )
+    }
+    var regionalHeader = regionalTokenProgram.headerRecord
+    withUnsafeBytes(of: &regionalHeader) { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<NBRegionalProgramHeader>.stride
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: regionalProgramHeaderBuffer,
+      size: MemoryLayout<NBRegionalProgramHeader>.stride,
+      label: "NumiBrain regional program-header upload"
+    )
+    let regionalLayoutRecords = regionalTokenProgram.layouts.map(\.abiRecord)
+    regionalLayoutRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: regionalLayoutByteCount)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: regionalLayoutBuffer,
+      size: regionalLayoutByteCount,
+      label: "NumiBrain regional token-layout upload"
+    )
+    if regionalRouteByteCount > 0 {
+      let regionalRouteRecords = regionalTokenProgram.routes.map(\.abiRecord)
+      regionalRouteRecords.withUnsafeBytes { sourceBytes in
+        guard let source = sourceBytes.baseAddress else { return }
+        stagingBuffer.contents().copyMemory(from: source, byteCount: regionalRouteByteCount)
+      }
+      try copy(
+        source: stagingBuffer,
+        destination: regionalRouteBuffer,
+        size: regionalRouteByteCount,
+        label: "NumiBrain sparse regional-route upload"
+      )
+    }
+    let regionalParameterRecords = regionalTokenProgram.parameters.map(\.abiRecord)
+    regionalParameterRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: regionalParameterByteCount)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: regionalParameterBuffer,
+      size: regionalParameterByteCount,
+      label: "NumiBrain regional slow-parameter upload"
+    )
+    let initialRegionalTokens = [Float](
+      repeating: 0,
+      count: regionalTokenProgram.scalarCount
+    )
+    initialRegionalTokens.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: regionalTokenStateByteCount)
+    }
+    for (index, buffer) in regionalTokenStateBuffers.enumerated() {
+      try copy(
+        source: stagingBuffer,
+        destination: buffer,
+        size: regionalTokenStateByteCount,
+        label: "NumiBrain regional token generation \(index) upload"
       )
     }
   }
@@ -882,21 +1048,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
-      regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 0)
-      regionalArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 1)
-      regionalArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 2)
+      regionalArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
+      regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
+      regionalArgumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 2)
+      regionalArgumentTable.setAddress(regionalRouteBuffer.gpuAddress, index: 3)
+      regionalArgumentTable.setAddress(regionalParameterBuffer.gpuAddress, index: 4)
+      regionalArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 5)
+      regionalArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 6)
       regionalArgumentTable.setAddress(
         regionalStateBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 3
+        index: 7
       )
       regionalArgumentTable.setAddress(
         regionalStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 4
+        index: 8
       )
+      regionalArgumentTable.setAddress(
+        regionalTokenStateBuffers[committedRegionalStateIndex].gpuAddress,
+        index: 9
+      )
+      regionalArgumentTable.setAddress(
+        regionalTokenStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+        index: 10
+      )
+      regionalArgumentTable.setAddress(regionalTokenCandidateBuffer.gpuAddress, index: 11)
       encoder.setComputePipelineState(regionalPipeline)
       encoder.setArgumentTable(regionalArgumentTable)
       encoder.dispatchThreads(
-        threadsPerGrid: MTLSize(width: brainSchedule.modules.count, height: 1, depth: 1),
+        threadsPerGrid: regionalThreadgroupSize(),
         threadsPerThreadgroup: regionalThreadgroupSize()
       )
     }
@@ -1123,6 +1302,37 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       committedTime: committedSchedulerTime,
       generation: committedSchedulerGeneration,
       states: states
+    )
+  }
+
+  public func snapshotCommittedRegionalTokens() throws -> RegionalTokenSnapshot {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading regional tokens")
+    }
+    guard let committedSchedulerTime else {
+      throw TissueError.transaction("there is no committed regional token state to read")
+    }
+    try copy(
+      source: regionalTokenStateBuffers[committedRegionalStateIndex],
+      destination: stagingBuffer,
+      size: regionalTokenStateByteCount,
+      label: "NumiBrain committed regional-token inspection"
+    )
+    let values = Array(
+      UnsafeBufferPointer(
+        start: stagingBuffer.contents().bindMemory(
+          to: Float.self,
+          capacity: regionalTokenProgram.scalarCount
+        ),
+        count: regionalTokenProgram.scalarCount
+      )
+    )
+    return RegionalTokenSnapshot(
+      scheduleFingerprint: brainSchedule.fingerprint,
+      programFingerprint: regionalTokenProgram.fingerprint,
+      committedTime: committedSchedulerTime,
+      generation: committedSchedulerGeneration,
+      values: values
     )
   }
 
@@ -1360,7 +1570,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   private func regionalThreadgroupSize() -> MTLSize {
     MTLSize(
-      width: min(brainSchedule.modules.count, regionalPipeline.maxTotalThreadsPerThreadgroup),
+      width: min(256, regionalPipeline.maxTotalThreadsPerThreadgroup),
       height: 1,
       depth: 1
     )

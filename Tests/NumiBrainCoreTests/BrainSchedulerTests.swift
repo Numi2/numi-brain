@@ -13,6 +13,10 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_scheduler_uniforms_size(), 40)
     XCTAssertEqual(nb_brain_abi_scheduler_result_size(), 16)
     XCTAssertEqual(nb_brain_abi_regional_module_state_size(), 32)
+    XCTAssertEqual(nb_brain_abi_regional_token_layout_size(), 32)
+    XCTAssertEqual(nb_brain_abi_regional_route_size(), 24)
+    XCTAssertEqual(nb_brain_abi_regional_token_parameters_size(), 32)
+    XCTAssertEqual(nb_brain_abi_regional_program_header_size(), 32)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_module_id(), 0)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_interrupt_mask(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_flags(), 28)
@@ -181,6 +185,113 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertNotEqual(snapshot.stableHash(), initialSnapshot.stableHash())
   }
 
+  func testRegionalTokenProgramIsCompiledCanonicalAndRouted() throws {
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+
+    XCTAssertEqual(program.layouts.count, 8)
+    XCTAssertEqual(program.scalarCount, 10_752)
+    XCTAssertEqual(program.parameters.count, program.scalarCount)
+    XCTAssertEqual(program.routes.count, 7)
+    XCTAssertEqual(program.headerRecord.module_count, 8)
+    XCTAssertEqual(program.headerRecord.token_scalar_count, 10_752)
+    XCTAssertEqual(program.headerRecord.route_count, 7)
+    XCTAssertEqual(program.headerRecord.parameter_count, 10_752)
+    XCTAssertEqual(program.headerRecord.program_fingerprint, program.fingerprint)
+    XCTAssertEqual(
+      program.layouts.map(\.scalarOffset), [0, 256, 4_352, 4_864, 6_912, 8_960, 9_984, 10_240])
+    XCTAssertEqual(
+      program.routes.map { [$0.senderModuleIdentifier, $0.receiverModuleIdentifier] },
+      [[37, 25], [12, 26], [25, 77], [95, 83], [26, 95], [83, 95], [90, 95]]
+    )
+    XCTAssertNotEqual(program.fingerprint, 0)
+  }
+
+  func testRegionalTokenOperatorRoutesCausallyAndPreservesChunking() throws {
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let routedProgram = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let isolatedProgram = try RegionalTokenProgram(
+      schedule: schedule,
+      routes: [],
+      parameters: routedProgram.parameters
+    )
+    let initialTokens = [Float](repeating: 0, count: routedProgram.scalarCount)
+    let initialDiagnostics = schedule.modules.map { _ in RegionalModuleState() }
+    let pain = try BrainInterruptEvent(
+      timestamp: time(7_500),
+      mask: [.pain, .impact],
+      identifier: 91
+    )
+
+    var fullScheduler = CPUMultiRateScheduler(schedule: schedule)
+    let fullInvocations = try fullScheduler.advance(to: time(20_000), events: [pain])
+    let routed = try CPURegionalTokenOperator.advance(
+      state: initialTokens,
+      diagnostics: initialDiagnostics,
+      schedule: schedule,
+      program: routedProgram,
+      invocations: fullInvocations
+    )
+    let replay = try CPURegionalTokenOperator.advance(
+      state: initialTokens,
+      diagnostics: initialDiagnostics,
+      schedule: schedule,
+      program: routedProgram,
+      invocations: fullInvocations
+    )
+    let isolated = try CPURegionalTokenOperator.advance(
+      state: initialTokens,
+      diagnostics: initialDiagnostics,
+      schedule: schedule,
+      program: isolatedProgram,
+      invocations: fullInvocations
+    )
+    XCTAssertEqual(routed, replay)
+    let emergencyBus = try XCTUnwrap(
+      routedProgram.layouts.first { $0.moduleIdentifier == 26 }
+    )
+    XCTAssertGreaterThan(
+      maximumDifference(
+        Array(routed[emergencyBus.scalarRange]),
+        Array(isolated[emergencyBus.scalarRange])
+      ),
+      1e-5
+    )
+
+    var chunkedScheduler = CPUMultiRateScheduler(schedule: schedule)
+    let firstInvocations = try chunkedScheduler.advance(to: time(10_000), events: [pain])
+    let firstTokens = try CPURegionalTokenOperator.advance(
+      state: initialTokens,
+      diagnostics: initialDiagnostics,
+      schedule: schedule,
+      program: routedProgram,
+      invocations: firstInvocations
+    )
+    let firstDiagnostics = try CPURegionalModuleOperator.advance(
+      states: initialDiagnostics,
+      schedule: schedule,
+      invocations: firstInvocations
+    )
+    let secondInvocations = try chunkedScheduler.advance(to: time(20_000))
+    let chunked = try CPURegionalTokenOperator.advance(
+      state: firstTokens,
+      diagnostics: firstDiagnostics,
+      schedule: schedule,
+      program: routedProgram,
+      invocations: secondInvocations
+    )
+    XCTAssertEqual(routed, chunked)
+
+    let snapshot = RegionalTokenSnapshot(
+      scheduleFingerprint: schedule.fingerprint,
+      programFingerprint: routedProgram.fingerprint,
+      committedTime: time(20_000),
+      generation: 1,
+      values: routed
+    )
+    XCTAssertNotEqual(snapshot.stableHash(), String(repeating: "0", count: 16))
+  }
+
   func testAbortAndRetryPreserveSchedulerHistoryExactly() throws {
     let schedule = try makeSchedule()
     var retried = CPUMultiRateScheduler(schedule: schedule)
@@ -345,5 +456,11 @@ final class BrainSchedulerTests: XCTestCase {
 
   private func time(_ microseconds: UInt64) -> BrainTimestamp {
     BrainTimestamp(microseconds: microseconds)
+  }
+
+  private func maximumDifference(_ lhs: [Float], _ rhs: [Float]) -> Float {
+    zip(lhs, rhs).reduce(0) { maximum, pair in
+      max(maximum, abs(pair.0 - pair.1))
+    }
   }
 }

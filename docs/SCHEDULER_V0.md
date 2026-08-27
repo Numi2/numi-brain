@@ -1,13 +1,13 @@
-# Multi-rate scheduler and module ABI v0.3
+# Multi-rate scheduler and module ABI v0.4
 
-This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and compact schedule-driven regional-state operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
+This document defines the executable runtime-foundation scheduler slice. It establishes a compiled binary contract, deterministic CPU oracle, Metal due-selection kernel, and schedule-driven recurrent regional-token operator. The Metal path shares the tissue runtime's command queue, reusable command buffer, encoder, residency set, and root transaction.
 
 ## Ownership boundary
 
 - `NumiBrainABI` C++ owns fixed record sizes, offsets, validation, and descriptor fingerprints.
 - `NumiBrainCore` Swift owns the deterministic CPU oracle, typed configuration, checkpoint validation, and evidence orchestration.
 - Metal owns due-time advancement, event interruption, invocation compaction, and private shadow clocks in the normal tissue execution path.
-- Metal consumes the resulting private due list through a compact regional population-state kernel.
+- Metal consumes the resulting private due list through the recurrent regional-token kernel.
 - Swift publishes clock-generation ownership only after the shared tissue-scheduler GPU submission completes successfully.
 
 This separation prevents Swift object layout or synthesized serialization from becoming an accidental runtime ABI.
@@ -25,6 +25,10 @@ ABI version 1 compiles the following standard-layout records:
 | `NBSchedulerUniforms` | 40 | Root physical-time window, capacities, identity, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
 | `NBRegionalModuleState` | 32 | Compact population trace, counters, phase, and last-update time |
+| `NBRegionalTokenLayout` | 32 | Region-major token and incoming-route spans |
+| `NBRegionalRoute` | 24 | Compiled sparse message edge |
+| `NBRegionalTokenParameters` | 32 | Immutable factorized recurrence and gate coefficients per scalar |
+| `NBRegionalProgramHeader` | 32 | Program counts, version flags, and fingerprint |
 
 The module descriptor layout is:
 
@@ -93,13 +97,13 @@ The integrated Metal path uses two private clock generations. `schedule_due_modu
 
 The compacted due-invocation buffer and result header remain private. Explicit inspection stages them only after command completion; the control loop performs no invocation-count readback.
 
-## Compact regional execution
+## Recurrent regional execution
 
-After a device barrier, `advance_due_module_states` assigns one Metal lane to each logical module. Each lane scans the canonical private due list, selects its own invocations, and updates a compact 32-byte state containing activation, integrated activation, interrupt salience, within-period phase, update counters, and last-update physical time. The update uses the module descriptor's intrinsic timescale and the invocation's periodic and interrupt fields.
+After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal threadgroup to the agent. Its lanes stride across 10,752 region-major FP32 scalars. For each due timestamp, they evaluate local token means, compiled sparse routed input, immutable factorized recurrence, periodic or interrupt drive, and a learned-form update gate. All modules at that timestamp read the same pre-timestamp state and publish after a device barrier.
 
-Two private regional-state generations track the scheduler clock generations. Commit publishes the tissue state, scheduler clocks, and regional state together; abort publishes none of them. The operator has a deterministic CPU numerical oracle and performs no hot-path readback.
+Two private token generations and two private diagnostic generations track the scheduler clock generations. Commit publishes tissue, scheduler clocks, token state, and diagnostics together; abort publishes none. The 32-byte diagnostic record retains update counts, interrupt counts, phase, salience, and last-update time, but is no longer the authoritative regional neural state. The token operator has a deterministic CPU numerical oracle and performs no hot-path readback.
 
-This trace is the first owning schedule-driven regional computation primitive. It proves that the due list is live input rather than inspection-only output. It is not the final trainable recurrent token state `H_r`, sparse routed input sum, fast-plastic basis, or indirect cohort dispatch.
+The executable token program is fingerprinted and immutable during rollout. Seven fixed sparse routes provide the first live routed input sum. Dynamic top-k selection, nonzero route-delay history, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
 
 ## Cohort compaction oracle
 
@@ -127,7 +131,7 @@ The first executable schedule activates eight logical roles:
 | 90 | locomotor CPG | 2 ms |
 | 95 | reflex interneuron network | 1 ms |
 
-These names define scheduling roles. Every role currently executes the common compact population trace, not its final role-specific neural operator.
+These names define scheduling roles. Every role currently executes the common factorized recurrent operator with its own shape and parameter span, not its final role-specific learned model.
 
 ## Evidence gates
 
@@ -141,7 +145,7 @@ These names define scheduling roles. Every role currently executes the common co
 8. Restored checkpoints reproduce the same future schedule.
 9. Stale transactions, stale events, and corrupted serialized fingerprints fail closed.
 10. Cohort groups retain canonical environment order and independent per-agent state.
-11. C++, Swift, and Metal agree on all six ABI record sizes.
+11. C++, Swift, and Metal agree on all scheduler and regional ABI record sizes.
 12. Metal periodic and fractional-time interrupt invocations exactly equal the CPU oracle.
 13. One scheduler dispatch runs on the same encoder after each accepted tissue root sequence.
 14. Rejected retry and root abort preserve private scheduler clocks together with tissue history.
@@ -150,6 +154,12 @@ These names define scheduling roles. Every role currently executes the common co
 17. Every accepted root dispatches one regional kernel after due selection on the same encoder.
 18. Regional floating state matches the CPU oracle within FP32 tolerance; counters and timestamps match exactly.
 19. Regional state is bit-exact across replay and rejected retry, unchanged by abort, and state-equivalent across control chunking.
-20. Schema-v7 records regional dispatches, state bytes, update totals, snapshot hash, and CPU parity.
+20. Schema-v7 records regional diagnostic dispatches, state bytes, update totals, snapshot hash, and CPU parity.
+21. The compiled token layouts cover 10,752 contiguous region-major FP32 scalars and exactly seven canonical incoming routes.
+22. C++ validation rejects layout, route, token-range, nonfinite-parameter, and unsupported-delay drift.
+23. CPU and Metal token states agree within declared FP32 tolerance across consecutive roots.
+24. A Metal route ablation changes the compiled receiver token state while tissue and scheduler diagnostics remain identical.
+25. Token generations are exact across replay and rejected retry, unchanged by abort, and state-equivalent across control-window chunking.
+26. Schema-v8 records program fingerprint, token snapshot hash, token and parameter memory, sparse-route memory, and CPU parity.
 
-Passing these gates establishes Metal residence for bounded one-agent due selection, compact regional execution, and the shared transaction boundary. It does not establish the final trainable regional token operator, routed inter-region messages, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, fixed sparse routed messages, and the shared transaction boundary. It does not establish learned production weights, dynamic top-k routing, regional route delays, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
