@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
     .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
+    .executable(name: "numi-brain-dispatch", targets: ["NumiBrainDispatchCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
   ],
   targets: [
@@ -31,6 +32,10 @@ let package = Package(
     .executableTarget(
       name: "NumiBrainSchedulerCLI",
       dependencies: ["NumiBrainABI", "NumiBrainCore"]
+    ),
+    .executableTarget(
+      name: "NumiBrainDispatchCLI",
+      dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainMetal"]
     ),
     .executableTarget(
       name: "NumiBrainTissueCLI",

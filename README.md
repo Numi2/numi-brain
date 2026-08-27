@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice, deterministic scheduler oracle, and integrated Metal recurrent regional-token path with compiled delayed sparse routes. The complete NumiBrain runtime is not implemented or qualified yet.
+> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice, deterministic scheduler oracle, versioned cohort-dispatch compiler, and integrated Metal recurrent regional-token path with compiled delayed sparse routes. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 
@@ -23,7 +23,7 @@ NumanX owns body, material, contact, muscle, organ, and environment physics. Num
 
 The system is a mesoscale hierarchical recurrent latent-state architecture: dense local computation, sparse long-range routing, event interrupts, explicit memory, multi-timescale plasticity, world-model planning, and structured motor control. Detailed spiking or compartmental neurons are optional local modules, not the default whole-brain representation.
 
-The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). The implemented tissue model and its scientific limits are defined in [TISSUE_MODEL_V0.md](docs/TISSUE_MODEL_V0.md). The compiled module ABI and deterministic scheduler semantics are defined in [SCHEDULER_V0.md](docs/SCHEDULER_V0.md). The executable region-major recurrent state and routing boundary are defined in [REGIONAL_TOKEN_V0.md](docs/REGIONAL_TOKEN_V0.md). Immutable slow-parameter identity and publication are defined in [PARAMETER_VERSIONING_V0.md](docs/PARAMETER_VERSIONING_V0.md). Implementation claims and current readiness are tracked in [STATUS.md](STATUS.md).
+The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). The implemented tissue model and its scientific limits are defined in [TISSUE_MODEL_V0.md](docs/TISSUE_MODEL_V0.md). The compiled module ABI and deterministic scheduler semantics are defined in [SCHEDULER_V0.md](docs/SCHEDULER_V0.md). The executable region-major recurrent state and routing boundary are defined in [REGIONAL_TOKEN_V0.md](docs/REGIONAL_TOKEN_V0.md). Immutable slow-parameter identity and publication are defined in [PARAMETER_VERSIONING_V0.md](docs/PARAMETER_VERSIONING_V0.md). Deterministic multi-agent plan compilation and private Metal materialization are defined in [COHORT_DISPATCH_V0.md](docs/COHORT_DISPATCH_V0.md). Implementation claims and current readiness are tracked in [STATUS.md](STATUS.md).
 
 ## Run the tissue slice
 
@@ -74,6 +74,19 @@ This executable remains the standalone CPU oracle for multi-agent scheduler sema
 
 The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler-v0.1](evidence/scheduler-v0.1/README.md).
 
+## Run cohort dispatch materialization
+
+The v0.13 dispatch executable preserves independent version-bound scheduler shadows, compiles their active module work into canonical timestamp/module groups, and materializes the flattened plan into private Metal 4 buffers:
+
+```sh
+swift run -c release numi-brain-dispatch \
+  --environments 8192 \
+  --control-ms 20 \
+  --output artifacts/cohort-dispatch-evidence.json
+```
+
+The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU output and replay, and stale-parameter rejection. The CPU currently owns plan construction; the GPU kernel owns private region-major materialization. This is not yet GPU prefix-sum grouping, indirect regional execution, or cohort throughput qualification.
+
 ## Foundational invariants
 
 - Normal observations are causal receptor signals, never perfect or future simulator state.
@@ -87,8 +100,8 @@ The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler
 
 ## Implementation order
 
-The first executable vertical slice now establishes an FP32 excitatory/inhibitory tissue field plus a schedule-driven recurrent regional primitive: synthetic per-site heterogeneity, finite-time axonal relay and conduction history, lesionable short-range coupling, destination-major sparse delayed tissue projections, timestamped noisy receptor events, a compiled 64-byte receptor-event ABI, GPU event and interrupt compaction, counter-based randomness, private scheduler clocks, 10,752 region-major token scalars, immutable factorized slow parameters, seven candidate regional routes with transaction-owned timestamped delivery rings, deterministic content-scored top-k selection, emergency bypass, normalized strengths, compact selected-route gathering, matching CPU oracles, Metal 4 dispatch, and committed/root-shadow/candidate transactions. Each attempted substep compacts due receptor events before tissue execution; each accepted root transduces receptor onsets and compacts due modules before timestamp-synchronous regional token execution. The bridge preserves event timestamps and transaction semantics but does not yet interrupt NumanX within a candidate physical substep. It does not yet implement calibrated receptors or conduction velocity, learned/context-conditioned routing, differentiable training routing, dense tiled regional matrices, parallel cohort compaction, the complete 96-module graph, NumanX interop, learning, memory, or motor control.
+The first executable vertical slice now establishes an FP32 excitatory/inhibitory tissue field plus a schedule-driven recurrent regional primitive: synthetic per-site heterogeneity, finite-time axonal relay and conduction history, lesionable short-range coupling, destination-major sparse delayed tissue projections, timestamped noisy receptor events, a compiled 64-byte receptor-event ABI, GPU event and interrupt compaction, counter-based randomness, private scheduler clocks, 10,752 region-major token scalars, immutable factorized slow parameters, seven candidate regional routes with transaction-owned timestamped delivery rings, deterministic content-scored top-k selection, emergency bypass, normalized strengths, compact selected-route gathering, matching CPU oracles, versioned multi-agent dispatch plans, private Metal cohort materialization, Metal 4 dispatch, and committed/root-shadow/candidate transactions. Each attempted substep compacts due receptor events before tissue execution; each accepted root transduces receptor onsets and compacts due modules before timestamp-synchronous regional token execution. The bridge preserves event timestamps and transaction semantics but does not yet interrupt NumanX within a candidate physical substep. It does not yet implement calibrated receptors or conduction velocity, learned/context-conditioned routing, differentiable training routing, dense tiled regional matrices, GPU prefix-sum plan construction, indirect cohort execution, the complete 96-module graph, NumanX interop, learning, memory, or motor control.
 
-The next runtime-foundation work is indirect active-region dispatch and parallel prefix-sum event/module compaction for cohorts, followed by nested NumanX transaction interop, immutable successor-buffer activation across runtimes, persistent checkpoints, and private-heap state storage. Routing still needs learned/context-conditioned biases, capacity balancing, and its differentiable training form. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, motivation, skills and planning, memory, development, communication, and persistent life mode.
+The next runtime-foundation work is connecting materialized cohorts to indirect active-region execution, then moving plan construction to parallel GPU prefix sums. Nested NumanX transaction interop, immutable successor-buffer activation across runtimes, persistent checkpoints, and private-heap state storage follow. Routing still needs learned/context-conditioned biases, capacity balancing, and its differentiable training form. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, motivation, skills and planning, memory, development, communication, and persistent life mode.
 
 No phase is intended as a throwaway implementation.
