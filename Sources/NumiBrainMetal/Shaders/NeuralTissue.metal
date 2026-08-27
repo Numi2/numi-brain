@@ -1782,9 +1782,30 @@ kernel void advance_due_regional_tokens(
     }
 }
 
+inline uint cohort_entry_index(
+    NBDispatchGroupABI group,
+    device const NBDispatchEntryABI *entries,
+    uint environmentIdentifier
+) {
+    uint lower = group.entry_offset;
+    uint upper = group.entry_offset + group.entry_count;
+    while (lower < upper) {
+        const uint middle = lower + (upper - lower) / 2u;
+        const uint candidate = entries[middle].environment_identifier;
+        if (candidate < environmentIdentifier) {
+            lower = middle + 1u;
+        } else if (candidate > environmentIdentifier) {
+            upper = middle;
+        } else {
+            return middle;
+        }
+    }
+    return ~0u;
+}
+
 /// Converts the group-major dispatch plan into one fixed-capacity canonical
-/// invocation span per environment. Lane zero owns each environment's ordered
-/// write; the next kernel consumes these private spans without plan rescans.
+/// invocation span per environment. Lanes own contiguous group ranges, perform
+/// a deterministic inclusive scan of match counts, and scatter in group order.
 kernel void compact_cohort_invocations(
     device const NBDispatchPlanHeaderABI *planHeader [[buffer(0)]],
     device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(1)]],
@@ -1794,45 +1815,67 @@ kernel void compact_cohort_invocations(
     device NBDueInvocationABI *outputInvocations [[buffer(5)]],
     device uint *outputCounts [[buffer(6)]],
     uint lane [[thread_index_in_threadgroup]],
+    uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
     uint3 threadgroupPosition [[threadgroup_position_in_grid]]
 ) {
     const uint environmentIndex = threadgroupPosition.x;
-    if (lane != 0u || environmentIndex >= cohortUniforms->environment_count) {
+    const uint laneCount = lanesPerThreadgroup.x;
+    if (environmentIndex >= cohortUniforms->environment_count
+        || laneCount == 0u
+        || laneCount > 64u) {
         return;
     }
     const uint environmentIdentifier = environmentIdentifiers[environmentIndex];
     const ulong outputBase =
         ulong(environmentIndex) * ulong(planHeader->group_count);
-    uint outputCount = 0u;
-    for (uint groupIndex = 0u;
-         groupIndex < planHeader->group_count;
-         ++groupIndex) {
+    const uint groupsPerLane =
+        (planHeader->group_count + laneCount - 1u) / laneCount;
+    const uint groupBegin = min(lane * groupsPerLane, planHeader->group_count);
+    const uint groupEnd = min(groupBegin + groupsPerLane, planHeader->group_count);
+    uint localCount = 0u;
+    for (uint groupIndex = groupBegin; groupIndex < groupEnd; ++groupIndex) {
         const NBDispatchGroupABI group = groups[groupIndex];
-        uint lower = group.entry_offset;
-        uint upper = group.entry_offset + group.entry_count;
-        while (lower < upper) {
-            const uint middle = lower + (upper - lower) / 2u;
-            const NBDispatchEntryABI entry = entries[middle];
-            if (entry.environment_identifier < environmentIdentifier) {
-                lower = middle + 1u;
-            } else if (entry.environment_identifier > environmentIdentifier) {
-                upper = middle;
-            } else {
-                NBDueInvocationABI invocation;
-                invocation.timestamp_microseconds = group.timestamp_microseconds;
-                invocation.interrupt_mask = entry.interrupt_mask;
-                invocation.environment_identifier = environmentIdentifier;
-                invocation.module_id = group.module_id;
-                invocation.clock_class = group.clock_class;
-                invocation.reason_flags = entry.reason_flags;
-                invocation.reserved = 0u;
-                outputInvocations[outputBase + ulong(outputCount)] = invocation;
-                outputCount += 1u;
-                break;
-            }
+        if (cohort_entry_index(group, entries, environmentIdentifier) != ~0u) {
+            localCount += 1u;
         }
     }
-    outputCounts[environmentIndex] = outputCount;
+    threadgroup uint inclusiveCounts[64];
+    inclusiveCounts[lane] = localCount;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint offset = 1u; offset < laneCount; offset <<= 1u) {
+        const uint addend = lane >= offset
+            ? inclusiveCounts[lane - offset]
+            : 0u;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        inclusiveCounts[lane] += addend;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    uint outputIndex = lane == 0u ? 0u : inclusiveCounts[lane - 1u];
+    for (uint groupIndex = groupBegin; groupIndex < groupEnd; ++groupIndex) {
+        const NBDispatchGroupABI group = groups[groupIndex];
+        const uint entryIndex = cohort_entry_index(
+            group,
+            entries,
+            environmentIdentifier
+        );
+        if (entryIndex == ~0u) {
+            continue;
+        }
+        const NBDispatchEntryABI entry = entries[entryIndex];
+        NBDueInvocationABI invocation;
+        invocation.timestamp_microseconds = group.timestamp_microseconds;
+        invocation.interrupt_mask = entry.interrupt_mask;
+        invocation.environment_identifier = environmentIdentifier;
+        invocation.module_id = group.module_id;
+        invocation.clock_class = group.clock_class;
+        invocation.reason_flags = entry.reason_flags;
+        invocation.reserved = 0u;
+        outputInvocations[outputBase + ulong(outputIndex)] = invocation;
+        outputIndex += 1u;
+    }
+    if (lane == 0u) {
+        outputCounts[environmentIndex] = inclusiveCounts[laneCount - 1u];
+    }
 }
 
 /// Routed cohort token operator. One 64-lane threadgroup owns every recurrent,
