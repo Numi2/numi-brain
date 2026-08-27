@@ -75,6 +75,12 @@ final class MetalTissueRuntimeTests: XCTestCase {
       episodeIdentifier: 27,
       moduleIdentifier: 12
     )
+    XCTAssertEqual(events.activeEventIndices(at: 1), [])
+    XCTAssertEqual(events.activeEventIndices(at: 2), [0])
+    XCTAssertEqual(events.activeEventIndices(at: 8), [0, 1])
+    XCTAssertEqual(events.activeEventIndices(at: 14), [1])
+    XCTAssertEqual(events.activeEventIndices(at: 18), [])
+    XCTAssertEqual(events.maximumSimultaneouslyActiveEventCount, 2)
     let initial = try CPUTissueDynamics.makeRestingGrid(
       parameters: parameters,
       structure: structure
@@ -101,12 +107,14 @@ final class MetalTissueRuntimeTests: XCTestCase {
       randomContext: randomContext,
       maxEncodedSubsteps: acceptance.count
     )
-    _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    let submission = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
     try metal.commitRootTransaction()
     let gpu = try metal.snapshotCommitted()
 
     XCTAssertEqual(metal.eventScheduleHash, events.stableHash())
     XCTAssertEqual(metal.eventByteCount, events.packedByteCount)
+    XCTAssertEqual(metal.activeEventIndexByteCount, events.activeIndexByteCapacity)
+    XCTAssertEqual(submission.eventCompactionDispatches, acceptance.count)
     XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
   }
 
@@ -275,10 +283,15 @@ final class MetalTissueRuntimeTests: XCTestCase {
       maxEncodedSubsteps: 12
     )
 
-    _ = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
+    let directSubmission = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])
     try direct.commitRootTransaction()
-    _ = try retried.runRootTransaction(at: 0, acceptedSubsteps: [false, true])
+    let retrySubmission = try retried.runRootTransaction(
+      at: 0,
+      acceptedSubsteps: [false, true]
+    )
     try retried.commitRootTransaction()
+    XCTAssertEqual(directSubmission.eventCompactionDispatches, 1)
+    XCTAssertEqual(retrySubmission.eventCompactionDispatches, 2)
     for runtime in [direct, retried] {
       _ = try runtime.runRootTransaction(
         at: 1,

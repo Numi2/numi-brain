@@ -222,6 +222,15 @@ public struct TissueEventSchedule: Equatable, Sendable {
   public var packedByteCount: Int {
     eventCount * Self.packedVectorsPerEvent * MemoryLayout<PackedVector>.stride
   }
+  public var activeIndexByteCapacity: Int {
+    (Self.maximumEventCount + 1) * MemoryLayout<UInt32>.stride
+  }
+  public var maximumSimultaneouslyActiveEventCount: Int {
+    events.lazy
+      .filter { $0.radius > 0 && $0.endMilliseconds > $0.startMilliseconds }
+      .map { activeEventIndices(at: $0.startMilliseconds).count }
+      .max() ?? 0
+  }
 
   public static let empty = TissueEventSchedule(validatedEvents: [])
 
@@ -245,6 +254,22 @@ public struct TissueEventSchedule: Equatable, Sendable {
         )
       ]
     )
+  }
+
+  /// Returns canonical schedule indices active at the supplied physical time.
+  /// Intervals are half-open and zero-radius records never enter the active set.
+  public func activeEventIndices(at timeMilliseconds: Float) -> [UInt32] {
+    guard timeMilliseconds.isFinite else { return [] }
+    return events.indices.compactMap { index in
+      let event = events[index]
+      guard event.radius > 0,
+        timeMilliseconds >= event.startMilliseconds,
+        timeMilliseconds < event.endMilliseconds
+      else {
+        return nil
+      }
+      return UInt32(index)
+    }
   }
 
   public func packedVectors() -> [PackedVector] {

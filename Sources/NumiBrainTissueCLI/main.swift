@@ -284,6 +284,7 @@ private struct TimingEvidence: Codable {
   let attemptedSubsteps: Int
   let acceptedSubsteps: Int
   let rootTransactions: Int
+  let gpuEventCompactionDispatches: Int?
   let cellUpdatesPerSecond: Double
   let gpuCellUpdatesPerSecond: Double?
 }
@@ -298,6 +299,7 @@ private struct MemoryEvidence: Codable {
   let projectionOffsetBytes: Int
   let projectionEdgeBytes: Int
   let eventScheduleBytes: Int
+  let activeEventIndexBytes: Int
   let relayHistoryPlaneCount: Int
   let relayHistoryBytes: Int
   let relayTransactionBytes: Int
@@ -327,6 +329,7 @@ private struct EventEvidence: Codable {
   let hash: String
   let count: Int
   let maximumScheduleCount: Int
+  let maximumSimultaneouslyActiveCount: Int
   let packedBytes: Int
   let stimulusNoiseAmplitude: Float
   let flags: UInt32
@@ -491,7 +494,8 @@ private struct NumiBrainTissueCommand {
         device: String,
         gpuSeconds: Double?,
         rootTransactions: Int,
-        residencyAllocatedBytes: UInt64?
+        residencyAllocatedBytes: UInt64?,
+        eventCompactionDispatches: Int?
       )
     switch options.backend {
     case .cpu:
@@ -608,13 +612,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v4",
+      schema: "numibrain.tissue-simulation-evidence.v5",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with timestamped noisy receptor events, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with GPU-compacted timestamped noisy receptor events, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -652,12 +656,16 @@ private struct NumiBrainTissueCommand {
         hash: eventSchedule.stableHash(),
         count: eventSchedule.eventCount,
         maximumScheduleCount: TissueEventSchedule.maximumEventCount,
+        maximumSimultaneouslyActiveCount:
+          eventSchedule.maximumSimultaneouslyActiveEventCount,
         packedBytes: eventSchedule.packedByteCount,
         stimulusNoiseAmplitude: options.stimulusNoiseAmplitude,
         flags: eventSchedule.events.reduce(UInt32.zero) { result, event in
           result | event.flags.rawValue
         },
-        execution: "bounded canonical event scan per active tissue site",
+        execution: options.backend == .metal
+          ? "GPU compact_receptor_events dispatch per attempted substep, followed by active-only tissue scan"
+          : "CPU canonical active-index selection followed by active-only tissue scan",
         interpretation:
           "receptor-derived neural input schedule; not raw or privileged simulator state"
       ),
@@ -677,6 +685,7 @@ private struct NumiBrainTissueCommand {
         attemptedSubsteps: totalSubsteps,
         acceptedSubsteps: totalSubsteps,
         rootTransactions: result.rootTransactions,
+        gpuEventCompactionDispatches: result.eventCompactionDispatches,
         cellUpdatesPerSecond: wallSeconds > 0 ? cellUpdates / wallSeconds : 0,
         gpuCellUpdatesPerSecond: result.gpuSeconds.flatMap {
           $0 > 0 ? cellUpdates / $0 : nil
@@ -694,6 +703,9 @@ private struct NumiBrainTissueCommand {
         projectionEdgeBytes: connectome.edgeCount
           * MemoryLayout<TissueConnectome.PackedEdge>.stride,
         eventScheduleBytes: eventSchedule.packedByteCount,
+        activeEventIndexBytes: options.backend == .metal
+          ? eventSchedule.activeIndexByteCapacity
+          : 0,
         relayHistoryPlaneCount: options.backend == .metal ? 2 : 1,
         relayHistoryBytes: delayField.count * MemoryLayout<Float>.stride
           * TissueDelayField.historyCapacity * (options.backend == .metal ? 2 : 1),
@@ -703,7 +715,7 @@ private struct NumiBrainTissueCommand {
             : min(substepsPerControl, TissueDelayField.historyCapacity) + 1),
         residencyAllocatedBytes: result.residencyAllocatedBytes,
         storageMode: options.backend == .metal
-          ? "private GPU state, relay history, connectome, and receptor events plus shared uniforms and explicit inspection staging"
+          ? "private GPU state, relay history, connectome, receptor events, and compacted active indices plus shared uniforms and explicit inspection staging"
           : "CPU reference arrays with authoritative relay history and root-local relay journal"
       ),
       metrics: metrics,
@@ -717,7 +729,7 @@ private struct NumiBrainTissueCommand {
       ),
       snapshotPath: options.snapshotPath,
       executionPath: options.backend == .metal
-        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> MTL4ComputeCommandEncoder -> MTL4ArgumentTable"
+        ? "MTL4CommandQueue -> reusable MTL4CommandBuffer -> compact_receptor_events -> device barrier -> neural_tissue_step"
         : "Swift FP32 CPU oracle"
     )
   }
@@ -733,7 +745,7 @@ private struct NumiBrainTissueCommand {
     randomContext: TissueRandomContext,
     totalSubsteps: Int,
     substepsPerControl: Int
-  ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
+  ) throws -> (TissueGrid, String, Double?, Int, UInt64?, Int?) {
     var runtime = try CPUTissueRuntime(
       initialState: initialState,
       parameters: parameters,
@@ -755,7 +767,7 @@ private struct NumiBrainTissueCommand {
       completed += count
       rootTransactions += 1
     }
-    return (runtime.committed, "CPU reference", nil, rootTransactions, nil)
+    return (runtime.committed, "CPU reference", nil, rootTransactions, nil, nil)
   }
 
   @available(macOS 26.0, *)
@@ -770,7 +782,7 @@ private struct NumiBrainTissueCommand {
     randomContext: TissueRandomContext,
     totalSubsteps: Int,
     substepsPerControl: Int
-  ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
+  ) throws -> (TissueGrid, String, Double?, Int, UInt64?, Int?) {
     let runtime = try MetalTissueRuntime(
       initialState: initialState,
       parameters: parameters,
@@ -785,6 +797,7 @@ private struct NumiBrainTissueCommand {
     var completed = 0
     var rootTransactions = 0
     var gpuSeconds = 0.0
+    var eventCompactionDispatches = 0
     while completed < totalSubsteps {
       let count = min(substepsPerControl, totalSubsteps - completed)
       let submission = try runtime.runRootTransaction(
@@ -793,6 +806,7 @@ private struct NumiBrainTissueCommand {
       )
       try runtime.commitRootTransaction()
       gpuSeconds += submission.gpuDurationSeconds
+      eventCompactionDispatches += submission.eventCompactionDispatches
       completed += count
       rootTransactions += 1
     }
@@ -801,7 +815,8 @@ private struct NumiBrainTissueCommand {
       runtime.deviceName,
       gpuSeconds,
       rootTransactions,
-      runtime.residencyAllocatedBytes
+      runtime.residencyAllocatedBytes,
+      eventCompactionDispatches
     )
   }
 

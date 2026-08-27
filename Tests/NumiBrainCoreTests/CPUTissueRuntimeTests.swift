@@ -54,6 +54,16 @@ final class CPUTissueRuntimeTests: XCTestCase {
     let reversed = try TissueEventSchedule(events: [late, early])
     XCTAssertEqual(forward.events.map(\.identifier), [2, 1])
     XCTAssertEqual(forward.stableHash(), reversed.stableHash())
+    XCTAssertEqual(forward.activeEventIndices(at: 4), [])
+    XCTAssertEqual(forward.activeEventIndices(at: 5), [0])
+    XCTAssertEqual(forward.activeEventIndices(at: 10), [])
+    XCTAssertEqual(forward.activeEventIndices(at: 15), [1])
+    XCTAssertEqual(forward.activeEventIndices(at: 20), [])
+    XCTAssertEqual(forward.maximumSimultaneouslyActiveEventCount, 1)
+    XCTAssertEqual(
+      forward.activeIndexByteCapacity,
+      (TissueEventSchedule.maximumEventCount + 1) * MemoryLayout<UInt32>.stride
+    )
     XCTAssertEqual(
       forward.packedByteCount,
       2 * TissueEventSchedule.packedVectorsPerEvent

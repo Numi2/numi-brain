@@ -136,6 +136,34 @@ inline float tissue_random_symmetric_unit(
     return 2.0f * uniform - 1.0f;
 }
 
+/// Compacts temporally due receptor events into canonical schedule order.
+/// One deterministic GPU lane is sufficient for the bounded v0 schedule;
+/// larger cohort queues will replace this with a prefix-sum implementation.
+kernel void compact_receptor_events(
+    constant float *uniforms [[buffer(0)]],
+    device const float4 *receptorEvents [[buffer(1)]],
+    device uint *activeEventIndices [[buffer(2)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+    const uint eventCount = uint(uniforms[TissueEventCount]);
+    const float time = uniforms[TissueTimeMilliseconds];
+    uint activeCount = 0u;
+    for (uint eventIndex = 0u; eventIndex < eventCount; ++eventIndex) {
+        const float4 geometryAndStart = receptorEvents[eventIndex * 3u];
+        const float4 endDriveAndNoise = receptorEvents[eventIndex * 3u + 1u];
+        if (geometryAndStart.z > 0.0f
+            && time >= geometryAndStart.w
+            && time < endDriveAndNoise.x) {
+            activeEventIndices[activeCount + 1u] = eventIndex;
+            activeCount += 1u;
+        }
+    }
+    activeEventIndices[0] = activeCount;
+}
+
 kernel void neural_tissue_step(
     device const float4 *input [[buffer(0)]],
     device float4 *output [[buffer(1)]],
@@ -147,6 +175,7 @@ kernel void neural_tissue_step(
     device const uint *projectionOffsets [[buffer(7)]],
     device const uint4 *projectionEdges [[buffer(8)]],
     device const float4 *receptorEvents [[buffer(9)]],
+    device const uint *activeEventIndices [[buffer(10)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -248,10 +277,9 @@ kernel void neural_tissue_step(
 
     float stimulusE = 0.0f;
     float stimulusI = 0.0f;
-    const float time = uniforms[TissueTimeMilliseconds];
     const float normalizedX = float(x) / float(max(width - 1, 1u));
     const float normalizedY = float(y) / float(max(height - 1, 1u));
-    const uint eventCount = uint(uniforms[TissueEventCount]);
+    const uint activeEventCount = activeEventIndices[0];
     const uint randomSeed = as_type<uint>(uniforms[TissueRandomSeed]);
     const uint randomEnvironment = as_type<uint>(
         uniforms[TissueRandomEnvironmentIdentifier]
@@ -260,16 +288,14 @@ kernel void neural_tissue_step(
     const uint randomModule = as_type<uint>(uniforms[TissueRandomModuleIdentifier]);
     const uint acceptedStepLow = as_type<uint>(uniforms[TissueAcceptedStepLow]);
     const uint acceptedStepHigh = as_type<uint>(uniforms[TissueAcceptedStepHigh]);
-    for (uint eventIndex = 0; eventIndex < eventCount; ++eventIndex) {
+    for (uint activeEventIndex = 0u;
+         activeEventIndex < activeEventCount;
+         ++activeEventIndex) {
+        const uint eventIndex = activeEventIndices[activeEventIndex + 1u];
         const float4 geometryAndStart = receptorEvents[eventIndex * 3];
         const float4 endDriveAndNoise = receptorEvents[eventIndex * 3 + 1];
         const float4 metadata = receptorEvents[eventIndex * 3 + 2];
         const float radius = geometryAndStart.z;
-        if (time < geometryAndStart.w
-            || time >= endDriveAndNoise.x
-            || radius <= 0.0f) {
-            continue;
-        }
         const float dx = normalizedX - geometryAndStart.x;
         const float dy = normalizedY - geometryAndStart.y;
         if (dx * dx + dy * dy > radius * radius) {

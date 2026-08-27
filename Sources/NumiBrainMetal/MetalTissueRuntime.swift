@@ -7,6 +7,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public struct Submission: Equatable, Sendable, Codable {
     public let attemptedSubsteps: Int
     public let acceptedSubsteps: Int
+    public let eventCompactionDispatches: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -34,8 +35,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
-  private let pipeline: any MTLComputePipelineState
+  private let tissuePipeline: any MTLComputePipelineState
+  private let eventCompactionPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
+  private let eventArgumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let structureBuffer: any MTLBuffer
@@ -45,6 +48,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let projectionOffsetBuffer: any MTLBuffer
   private let projectionEdgeBuffer: any MTLBuffer
   private let eventBuffer: any MTLBuffer
+  private let activeEventIndexBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
@@ -53,6 +57,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let projectionOffsetByteCount: Int
   public let projectionEdgeByteCount: Int
   public let eventByteCount: Int
+  public let activeEventIndexByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -151,22 +156,40 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     } catch {
       throw TissueError.metal("Metal 4 library compilation failed: \(error)")
     }
-    guard let function = library.makeFunction(name: "neural_tissue_step") else {
+    guard let tissueFunction = library.makeFunction(name: "neural_tissue_step") else {
       throw TissueError.metal("neural_tissue_step is missing from the Metal library")
     }
-    let pipeline: any MTLComputePipelineState
+    guard let eventCompactionFunction = library.makeFunction(name: "compact_receptor_events") else {
+      throw TissueError.metal("compact_receptor_events is missing from the Metal library")
+    }
+    let tissuePipeline: any MTLComputePipelineState
+    let eventCompactionPipeline: any MTLComputePipelineState
     do {
-      pipeline = try device.makeComputePipelineState(function: function)
+      tissuePipeline = try device.makeComputePipelineState(function: tissueFunction)
+      eventCompactionPipeline = try device.makeComputePipelineState(
+        function: eventCompactionFunction
+      )
     } catch {
-      throw TissueError.metal("compute pipeline creation failed: \(error)")
+      throw TissueError.metal("tissue or event-compaction pipeline creation failed: \(error)")
     }
 
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain tissue arguments"
-    argumentDescriptor.maxBufferBindCount = 10
+    argumentDescriptor.maxBufferBindCount = 11
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the Metal 4 argument table")
+    }
+    let eventArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    eventArgumentDescriptor.label = "NumiBrain event-compaction arguments"
+    eventArgumentDescriptor.maxBufferBindCount = 3
+    eventArgumentDescriptor.initializeBindings = true
+    guard
+      let eventArgumentTable = try? device.makeArgumentTable(
+        descriptor: eventArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the event-compaction argument table")
     }
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
@@ -243,15 +266,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     projectionEdgeBuffer.label = "NumiBrain packed delayed projections"
     let packedEvents = eventSchedule.packedVectors()
     let eventByteCount = eventSchedule.packedByteCount
+    let activeEventIndexByteCount = eventSchedule.activeIndexByteCapacity
     guard
       let eventBuffer = device.makeBuffer(
         length: max(eventByteCount, MemoryLayout<TissueEventSchedule.PackedVector>.stride),
         options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let activeEventIndexBuffer = device.makeBuffer(
+        length: activeEventIndexByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
       )
     else {
-      throw TissueError.metal("failed to allocate the private receptor-event schedule")
+      throw TissueError.metal("failed to allocate private receptor-event buffers")
     }
     eventBuffer.label = "NumiBrain immutable receptor-event schedule"
+    activeEventIndexBuffer.label = "NumiBrain compacted active-event indices"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -280,7 +309,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 9
+    residencyDescriptor.initialCapacity = stateBuffers.count + 10
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -297,6 +326,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(projectionOffsetBuffer)
     residencySet.addAllocation(projectionEdgeBuffer)
     residencySet.addAllocation(eventBuffer)
+    residencySet.addAllocation(activeEventIndexBuffer)
     residencySet.addAllocation(uniformBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
@@ -318,8 +348,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
-    self.pipeline = pipeline
+    self.tissuePipeline = tissuePipeline
+    self.eventCompactionPipeline = eventCompactionPipeline
     self.argumentTable = argumentTable
+    self.eventArgumentTable = eventArgumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.structureBuffer = structureBuffer
@@ -329,6 +361,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.projectionOffsetBuffer = projectionOffsetBuffer
     self.projectionEdgeBuffer = projectionEdgeBuffer
     self.eventBuffer = eventBuffer
+    self.activeEventIndexBuffer = activeEventIndexBuffer
     self.uniformBuffer = uniformBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
@@ -337,6 +370,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.projectionOffsetByteCount = projectionOffsetByteCount
     self.projectionEdgeByteCount = projectionEdgeByteCount
     self.eventByteCount = eventByteCount
+    self.activeEventIndexByteCount = activeEventIndexByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -494,15 +528,28 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     rootShadowIndex = committedIndex
     let feedback = try submit(label: "NumiBrain tissue root transaction") { encoder in
-      encoder.setComputePipelineState(pipeline)
       for attempt in acceptedSubsteps.indices {
+        let uniformAddress =
+          uniformBuffer.gpuAddress + UInt64(attempt * TissueUniforms.byteCount)
+        eventArgumentTable.setAddress(uniformAddress, index: 0)
+        eventArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+        eventArgumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 2)
+        encoder.setComputePipelineState(eventCompactionPipeline)
+        encoder.setArgumentTable(eventArgumentTable)
+        encoder.dispatchThreads(
+          threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+          threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+        )
+        encoder.barrier(
+          afterEncoderStages: .dispatch,
+          beforeEncoderStages: .dispatch,
+          visibilityOptions: .device
+        )
+
         let destination = destinationIndex(rootShadowIndex: rootShadowIndex)
         argumentTable.setAddress(stateBuffers[rootShadowIndex].gpuAddress, index: 0)
         argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
-        argumentTable.setAddress(
-          uniformBuffer.gpuAddress + UInt64(attempt * TissueUniforms.byteCount),
-          index: 2
-        )
+        argumentTable.setAddress(uniformAddress, index: 2)
         argumentTable.setAddress(structureBuffer.gpuAddress, index: 3)
         argumentTable.setAddress(delayBuffer.gpuAddress, index: 4)
         argumentTable.setAddress(relayHistoryBuffer.gpuAddress, index: 5)
@@ -510,6 +557,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         argumentTable.setAddress(projectionOffsetBuffer.gpuAddress, index: 7)
         argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
         argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
+        argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+        encoder.setComputePipelineState(tissuePipeline)
         encoder.setArgumentTable(argumentTable)
         encoder.dispatchThreads(
           threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
@@ -533,6 +582,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     return Submission(
       attemptedSubsteps: acceptedSubsteps.count,
       acceptedSubsteps: acceptedCount,
+      eventCompactionDispatches: acceptedSubsteps.count,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )
@@ -681,8 +731,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   private func threadgroupSize() -> MTLSize {
-    let width = min(16, pipeline.threadExecutionWidth)
-    let height = max(1, min(16, pipeline.maxTotalThreadsPerThreadgroup / width))
+    let width = min(16, tissuePipeline.threadExecutionWidth)
+    let height = max(1, min(16, tissuePipeline.maxTotalThreadsPerThreadgroup / width))
     return MTLSize(width: width, height: height, depth: 1)
   }
 }

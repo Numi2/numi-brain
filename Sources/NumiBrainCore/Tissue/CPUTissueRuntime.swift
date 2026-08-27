@@ -149,6 +149,7 @@ public enum CPUTissueDynamics {
       && timeMilliseconds >= stimulus.startMilliseconds
       && timeMilliseconds < stimulus.endMilliseconds
       && stimulus.radius > 0
+    let activeEventIndices = eventSchedule?.activeEventIndices(at: timeMilliseconds) ?? []
 
     for y in 0..<input.height {
       let up = clampedIndex(y - 1, upperBound: input.height)
@@ -209,11 +210,8 @@ public enum CPUTissueDynamics {
           let siteIndex = UInt32(truncatingIfNeeded: y * input.width + x)
           let normalizedX = Float(x) / widthScale
           let normalizedY = Float(y) / heightScale
-          for event in eventSchedule.events
-          where timeMilliseconds >= event.startMilliseconds
-            && timeMilliseconds < event.endMilliseconds
-            && event.radius > 0
-          {
+          for eventIndex in activeEventIndices {
+            let event = eventSchedule.events[Int(eventIndex)]
             let dx = normalizedX - event.centerX
             let dy = normalizedY - event.centerY
             guard dx * dx + dy * dy <= event.radius * event.radius else { continue }
