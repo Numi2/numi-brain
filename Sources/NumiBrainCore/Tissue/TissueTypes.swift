@@ -135,6 +135,190 @@ public struct TissueDelayField: Equatable, Sendable {
   }
 }
 
+public struct TissueProjection: Equatable, Sendable, Codable {
+  public let sourceIndex: Int
+  public let destinationIndex: Int
+  public let weight: Float
+  public let delaySteps: UInt8
+
+  public init(
+    sourceIndex: Int,
+    destinationIndex: Int,
+    weight: Float,
+    delaySteps: UInt8
+  ) {
+    self.sourceIndex = sourceIndex
+    self.destinationIndex = destinationIndex
+    self.weight = weight
+    self.delaySteps = delaySteps
+  }
+}
+
+/// Destination-major sparse long-range axonal projections.
+///
+/// The CPU representation owns validated semantic edges. Metal receives a CSR
+/// offset table and packed `uint4` edges containing source, delay, FP32 weight
+/// bits, and flags. Projection delay samples the same committed relay history
+/// as local conduction, so a long-range tract cannot read future source state.
+public struct TissueConnectome: Equatable, Sendable {
+  public typealias PackedEdge = SIMD4<UInt32>
+
+  public let width: Int
+  public let height: Int
+  public let destinationOffsets: [UInt32]
+  public let projections: [TissueProjection]
+
+  public init(
+    width: Int,
+    height: Int,
+    projections: [TissueProjection]
+  ) throws {
+    guard width > 0, height > 0 else {
+      throw TissueError.invalidConnectome("width and height must be positive")
+    }
+    let (siteCount, siteOverflow) = width.multipliedReportingOverflow(by: height)
+    guard !siteOverflow, siteCount <= Int(UInt32.max) else {
+      throw TissueError.invalidConnectome("site count exceeds UInt32 CSR capacity")
+    }
+    guard projections.count <= Int(UInt32.max) else {
+      throw TissueError.invalidConnectome("edge count exceeds UInt32 CSR capacity")
+    }
+    for edge in projections {
+      guard (0..<siteCount).contains(edge.sourceIndex),
+        (0..<siteCount).contains(edge.destinationIndex)
+      else {
+        throw TissueError.invalidConnectome("projection endpoint is outside the tissue grid")
+      }
+      guard edge.weight.isFinite else {
+        throw TissueError.invalidConnectome("projection weights must be finite")
+      }
+      guard Int(edge.delaySteps) <= TissueDelayField.maximumDelaySteps else {
+        throw TissueError.invalidConnectome(
+          "projection delay exceeds the \(TissueDelayField.maximumDelaySteps)-step history limit"
+        )
+      }
+    }
+
+    let sorted = projections.enumerated().sorted { lhs, rhs in
+      let left = lhs.element
+      let right = rhs.element
+      if left.destinationIndex != right.destinationIndex {
+        return left.destinationIndex < right.destinationIndex
+      }
+      if left.sourceIndex != right.sourceIndex {
+        return left.sourceIndex < right.sourceIndex
+      }
+      if left.delaySteps != right.delaySteps {
+        return left.delaySteps < right.delaySteps
+      }
+      if left.weight.bitPattern != right.weight.bitPattern {
+        return left.weight.bitPattern < right.weight.bitPattern
+      }
+      return lhs.offset < rhs.offset
+    }.map(\.element)
+
+    var offsets = Array(repeating: UInt32.zero, count: siteCount + 1)
+    for edge in sorted {
+      offsets[edge.destinationIndex + 1] += 1
+    }
+    for index in 1..<offsets.count {
+      offsets[index] += offsets[index - 1]
+    }
+
+    self.width = width
+    self.height = height
+    self.destinationOffsets = offsets
+    self.projections = sorted
+  }
+
+  public var siteCount: Int { width * height }
+  public var edgeCount: Int { projections.count }
+  public var maximumProjectionDelaySteps: Int {
+    Int(projections.lazy.map(\.delaySteps).max() ?? 0)
+  }
+  public var maximumIncomingProjectionCount: Int {
+    destinationOffsets.indices.dropLast().reduce(0) { maximum, index in
+      max(maximum, Int(destinationOffsets[index + 1] - destinationOffsets[index]))
+    }
+  }
+
+  public static func none(width: Int, height: Int) throws -> TissueConnectome {
+    try TissueConnectome(width: width, height: height, projections: [])
+  }
+
+  /// Creates two synthetic mirrored projection bands across the sheet.
+  /// This is a deterministic long-range communication test, not a calibrated
+  /// corpus callosum or species connectome.
+  public static func bilateralBridgeV0(
+    width: Int,
+    height: Int,
+    weight: Float = 0.6,
+    delaySteps: UInt8 = 12
+  ) throws -> TissueConnectome {
+    guard weight.isFinite else {
+      throw TissueError.invalidConnectome("bridge weight must be finite")
+    }
+    var edges: [TissueProjection] = []
+    let widthScale = Float(max(width - 1, 1))
+    let heightScale = Float(max(height - 1, 1))
+    for y in 0..<height {
+      let normalizedY = Float(y) / heightScale
+      guard (0.35...0.65).contains(normalizedY) else { continue }
+      for x in 0..<width {
+        let normalizedX = Float(x) / widthScale
+        guard
+          (0.18...0.32).contains(normalizedX)
+            || (0.68...0.82).contains(normalizedX)
+        else { continue }
+        let sourceX = width - 1 - x
+        edges.append(
+          TissueProjection(
+            sourceIndex: y * width + sourceX,
+            destinationIndex: y * width + x,
+            weight: weight,
+            delaySteps: delaySteps
+          )
+        )
+      }
+    }
+    return try TissueConnectome(width: width, height: height, projections: edges)
+  }
+
+  public func packedEdges() -> [PackedEdge] {
+    projections.map { edge in
+      PackedEdge(
+        UInt32(edge.sourceIndex),
+        UInt32(edge.delaySteps),
+        edge.weight.bitPattern,
+        0
+      )
+    }
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt32, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x100_0000_01b3
+        }
+      }
+    }
+    mix(UInt32(width), into: &hash)
+    mix(UInt32(height), into: &hash)
+    for edge in projections {
+      mix(UInt32(edge.sourceIndex), into: &hash)
+      mix(UInt32(edge.destinationIndex), into: &hash)
+      mix(edge.weight.bitPattern, into: &hash)
+      mix(UInt32(edge.delaySteps), into: &hash)
+    }
+    return String(format: "%016llx", hash)
+  }
+}
+
 public struct TissueStructure: Equatable, Sendable {
   public let width: Int
   public let height: Int
@@ -421,6 +605,7 @@ public struct TissueParameters: Equatable, Sendable, Codable {
   public var excitatorySpatialMix: Float
   public var inhibitorySpatialMix: Float
   public var adaptationStrength: Float
+  public var longRangeProjectionGain: Float
   public var excitatoryBias: Float
   public var inhibitoryBias: Float
   public var excitatoryGain: Float
@@ -439,6 +624,7 @@ public struct TissueParameters: Equatable, Sendable, Codable {
     excitatorySpatialMix: Float = 0.75,
     inhibitorySpatialMix: Float = 0.15,
     adaptationStrength: Float = 2.0,
+    longRangeProjectionGain: Float = 1.0,
     excitatoryBias: Float = -2.5,
     inhibitoryBias: Float = -3.0,
     excitatoryGain: Float = 1.0,
@@ -456,6 +642,7 @@ public struct TissueParameters: Equatable, Sendable, Codable {
     self.excitatorySpatialMix = excitatorySpatialMix
     self.inhibitorySpatialMix = inhibitorySpatialMix
     self.adaptationStrength = adaptationStrength
+    self.longRangeProjectionGain = longRangeProjectionGain
     self.excitatoryBias = excitatoryBias
     self.inhibitoryBias = inhibitoryBias
     self.excitatoryGain = excitatoryGain
@@ -478,6 +665,7 @@ public struct TissueParameters: Equatable, Sendable, Codable {
       excitatorySpatialMix,
       inhibitorySpatialMix,
       adaptationStrength,
+      longRangeProjectionGain,
       excitatoryBias,
       inhibitoryBias,
       excitatoryGain,
@@ -528,6 +716,7 @@ public enum TissueError: Error, Equatable, CustomStringConvertible {
   case invalidGrid(String)
   case invalidStructure(String)
   case invalidConduction(String)
+  case invalidConnectome(String)
   case invalidParameters(String)
   case invalidStimulus(String)
   case transaction(String)
@@ -538,6 +727,7 @@ public enum TissueError: Error, Equatable, CustomStringConvertible {
     case .invalidGrid(let message): "invalid grid: \(message)"
     case .invalidStructure(let message): "invalid tissue structure: \(message)"
     case .invalidConduction(let message): "invalid tissue conduction: \(message)"
+    case .invalidConnectome(let message): "invalid tissue connectome: \(message)"
     case .invalidParameters(let message): "invalid parameters: \(message)"
     case .invalidStimulus(let message): "invalid stimulus: \(message)"
     case .transaction(let message): "transaction error: \(message)"

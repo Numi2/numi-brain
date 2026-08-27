@@ -39,6 +39,7 @@ swift run -c release numi-brain-tissue \
   --control-ms 20 \
   --structure layered \
   --delays layered \
+  --connectome bilateral \
   --lesion-x 0.62 \
   --lesion-y 0.5 \
   --lesion-radius 0.10 \
@@ -49,9 +50,9 @@ swift run -c release numi-brain-tissue \
   --output artifacts/tissue-evidence.json
 ```
 
-The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, and `--delays instantaneous` as baselines. Layered structure, delay classes, and lesion controls are synthetic experiment inputs, not anatomical, conduction-velocity, or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state, structure, and conduction hashes; device and execution path; full relay-history memory; boundedness; delayed-future rollback/retry; replay; and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
+The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, `--delays instantaneous`, and `--connectome none` as baselines. Layered structure, delay classes, the bilateral sparse graph, and lesion controls are synthetic experiment inputs, not anatomical, conduction-velocity, or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state, structure, conduction, and connectome hashes; graph and memory sizes; device and execution path; boundedness; delayed-future rollback/retry; replay; and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
-A reproducible Apple M4 development run of the delayed layered-lesion path is checked into [evidence/tissue-v0.2](evidence/tissue-v0.2/README.md). The preceding no-explicit-delay artifact remains in [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). These are correctness and visual-inspection artifacts, not production performance qualifications.
+A reproducible Apple M4 development run of the sparse-projection, delayed, layered-lesion path is checked into [evidence/tissue-v0.3](evidence/tissue-v0.3/README.md). Earlier artifacts remain in [evidence/tissue-v0.2](evidence/tissue-v0.2/README.md) and [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). These are correctness and visual-inspection artifacts, not production performance qualifications.
 
 ## Foundational invariants
 
@@ -66,7 +67,7 @@ A reproducible Apple M4 development run of the delayed layered-lesion path is ch
 
 ## Implementation order
 
-The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, explicit per-site conduction-delay history, lesionable short-range coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement spiking neurons, calibrated distance or conduction velocity, long-range multi-region axons, sensor transduction, NumanX interop, learning, memory, or motor control.
+The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, synthetic per-site heterogeneity, a finite-time axonal relay, explicit conduction history, lesionable short-range coupling, destination-major sparse delayed projections, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement spiking neurons, calibrated distance or conduction velocity, an anatomical multi-region graph, sensor transduction, NumanX interop, learning, memory, or motor control.
 
 The next runtime-foundation work is a stable brain-state ABI, multi-rate scheduler, event queue, immutable parameter versions, counter-based randomness, indirect active-region dispatch, nested NumanX transaction interop, and private-heap state storage. Later phases add causal receptors, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
 

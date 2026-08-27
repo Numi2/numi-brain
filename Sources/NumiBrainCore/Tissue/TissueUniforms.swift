@@ -14,6 +14,7 @@ public enum TissueUniformIndex: Int, Sendable {
   case excitatorySpatialMix = 12
   case inhibitorySpatialMix = 13
   case adaptationStrength = 14
+  case longRangeProjectionGain = 15
   case excitatoryBias = 16
   case inhibitoryBias = 17
   case excitatoryGain = 18
@@ -69,6 +70,8 @@ public enum TissueUniforms {
     values[TissueUniformIndex.excitatorySpatialMix.rawValue] = parameters.excitatorySpatialMix
     values[TissueUniformIndex.inhibitorySpatialMix.rawValue] = parameters.inhibitorySpatialMix
     values[TissueUniformIndex.adaptationStrength.rawValue] = parameters.adaptationStrength
+    values[TissueUniformIndex.longRangeProjectionGain.rawValue] =
+      parameters.longRangeProjectionGain
     values[TissueUniformIndex.excitatoryBias.rawValue] = parameters.excitatoryBias
     values[TissueUniformIndex.inhibitoryBias.rawValue] = parameters.inhibitoryBias
     values[TissueUniformIndex.excitatoryGain.rawValue] = parameters.excitatoryGain

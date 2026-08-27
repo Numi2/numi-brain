@@ -119,7 +119,8 @@ public enum CPUTissueDynamics {
     parameters: TissueParameters,
     stimulus: TissueStimulus,
     structure: TissueStructure,
-    delayedRelay: [Float]? = nil
+    delayedRelay: [Float]? = nil,
+    longRangeExcitatoryDrive: [Float]? = nil
   ) throws -> TissueGrid {
     try parameters.validate()
     try stimulus.validate()
@@ -129,6 +130,9 @@ public enum CPUTissueDynamics {
     }
     guard delayedRelay == nil || delayedRelay?.count == input.count else {
       throw TissueError.invalidConduction("delayed relay count must match the state grid")
+    }
+    guard longRangeExcitatoryDrive == nil || longRangeExcitatoryDrive?.count == input.count else {
+      throw TissueError.invalidConnectome("projection drive count must match the state grid")
     }
     guard timeMilliseconds.isFinite else {
       throw TissueError.invalidParameters("simulation time must be finite")
@@ -164,6 +168,7 @@ public enum CPUTissueDynamics {
         let southRelay = delayedRelay?[down * input.width + x] ?? south.w
         let westRelay = delayedRelay?[y * input.width + left] ?? west.w
         let eastRelay = delayedRelay?[y * input.width + right] ?? east.w
+        let projectionDrive = longRangeExcitatoryDrive?[y * input.width + x] ?? 0
 
         let neighborRelay =
           0.25
@@ -204,6 +209,7 @@ public enum CPUTissueDynamics {
               - parameters.adaptationStrength * center.z
               + parameters.excitatoryBias
               + stimulusE)
+            + parameters.longRangeProjectionGain * projectionDrive
         )
         let targetI = sigmoid(
           parameters.inhibitoryGain * centerSite.y
@@ -346,6 +352,7 @@ public struct CPUTissueRuntime: Sendable {
   public let stimulus: TissueStimulus
   public let structure: TissueStructure
   public let delayField: TissueDelayField
+  public let connectome: TissueConnectome
 
   private var rootShadow: TissueGrid?
   private var candidate: TissueGrid?
@@ -373,7 +380,8 @@ public struct CPUTissueRuntime: Sendable {
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
-      delayField: delayField
+      delayField: delayField,
+      connectome: nil
     )
   }
 
@@ -392,7 +400,8 @@ public struct CPUTissueRuntime: Sendable {
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
-      delayField: delayField
+      delayField: delayField,
+      connectome: nil
     )
   }
 
@@ -401,7 +410,8 @@ public struct CPUTissueRuntime: Sendable {
     parameters: TissueParameters,
     stimulus: TissueStimulus,
     structure: TissueStructure,
-    delayField: TissueDelayField
+    delayField: TissueDelayField,
+    connectome requestedConnectome: TissueConnectome? = nil
   ) throws {
     try parameters.validate()
     try stimulus.validate()
@@ -413,11 +423,24 @@ public struct CPUTissueRuntime: Sendable {
     guard delayField.width == initialState.width, delayField.height == initialState.height else {
       throw TissueError.invalidConduction("delay dimensions must match the initial state")
     }
+    let connectome: TissueConnectome
+    if let requestedConnectome {
+      connectome = requestedConnectome
+    } else {
+      connectome = try TissueConnectome.none(
+        width: initialState.width,
+        height: initialState.height
+      )
+    }
+    guard connectome.width == initialState.width, connectome.height == initialState.height else {
+      throw TissueError.invalidConnectome("connectome dimensions must match the initial state")
+    }
     self.committed = initialState
     self.parameters = parameters
     self.stimulus = stimulus
     self.structure = structure
     self.delayField = delayField
+    self.connectome = connectome
     let initialRelay = initialState.cells.map(\.w)
     self.committedRelayHistory = Array(
       repeating: initialRelay,
@@ -453,13 +476,15 @@ public struct CPUTissueRuntime: Sendable {
       throw TissueError.transaction("accept or reject the existing candidate first")
     }
     let delayedRelay = makeDelayedRelay(at: rootAcceptedStep)
+    let projectionDrive = makeProjectionDrive(at: rootAcceptedStep)
     let candidate = try CPUTissueDynamics.advance(
       rootShadow,
       timeMilliseconds: time,
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
-      delayedRelay: delayedRelay
+      delayedRelay: delayedRelay,
+      longRangeExcitatoryDrive: projectionDrive
     )
     self.candidate = candidate
     candidateRelay = candidate.cells.map(\.w)
@@ -566,9 +591,39 @@ public struct CPUTissueRuntime: Sendable {
     var delayed = Array(repeating: Float.zero, count: committed.count)
     for index in delayed.indices {
       let delay = Int(delayField.delaySteps[index])
-      let slot = (currentSlot - delay + capacity) % capacity
-      delayed[index] = rootHistoryWrites[slot]?[index] ?? committedRelayHistory[slot][index]
+      delayed[index] = relay(siteIndex: index, delay: delay, currentSlot: currentSlot)
     }
     return delayed
+  }
+
+  private func makeProjectionDrive(at step: UInt64) -> [Float]? {
+    guard connectome.edgeCount > 0 else { return nil }
+    let currentSlot = Int(step % UInt64(TissueDelayField.historyCapacity))
+    var drive = Array(repeating: Float.zero, count: committed.count)
+    for destination in 0..<connectome.siteCount {
+      let start = Int(connectome.destinationOffsets[destination])
+      let end = Int(connectome.destinationOffsets[destination + 1])
+      guard start < end else { continue }
+      var value: Float = 0
+      for edgeIndex in start..<end {
+        let edge = connectome.projections[edgeIndex]
+        value +=
+          edge.weight
+          * relay(
+            siteIndex: edge.sourceIndex,
+            delay: Int(edge.delaySteps),
+            currentSlot: currentSlot
+          )
+      }
+      drive[destination] = value
+    }
+    return drive
+  }
+
+  private func relay(siteIndex: Int, delay: Int, currentSlot: Int) -> Float {
+    let slot =
+      (currentSlot - delay + TissueDelayField.historyCapacity)
+      % TissueDelayField.historyCapacity
+    return rootHistoryWrites[slot]?[siteIndex] ?? committedRelayHistory[slot][siteIndex]
   }
 }

@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.2
+# Mesoscale neural tissue model v0.3
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -22,12 +22,14 @@ S=(s_E,s_I,s_C,V),
 
 where `sE` and `sI` scale local excitatory and inhibitory response, `sC` scales outgoing short-range coupling, and viability `V` lies in `[0, 1]`. The default layered profile is a deterministic synthetic test morphology with four depth strata and slight lateral modulation. It is not a histological fit to a named cortical area.
 
-An immutable `uint8` field stores outgoing conduction delay class `d_j` for every source site. V0.2 supports integer delays from 0 through 31 accepted integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. V0.3 supports integer delays from 0 through 31 accepted integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+
+Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own 0–31 step delay. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
 The update is a normalized Wilson-Cowan-family system:
 
 \[
-\tau_E \dot E = -E + V\,\sigma_E\!\left(s_E(w_{EE}\bar R-w_{EI}I-g_AA+b_E+P)\right),
+\tau_E \dot E = -E + V\,\sigma_E\!\left(s_E(w_{EE}\bar R-w_{EI}I-g_AA+b_E+P)+g_LL_i\right),
 \]
 
 \[
@@ -48,7 +50,13 @@ The delayed excitatory stencil is
 \bar R_i(t)=\frac{1}{4}\sum_{j\in\mathcal N(i)}s_{C,j}V_jR_j(t-d_j\Delta t).
 \]
 
-`R-bar` and `I-bar` blend the local site with its four clamped boundary neighbors. Neighbor contributions are weighted by their outgoing coupling and viability. The relay time constant and explicit history delay model different effects: `R` is local axonal filtering, while `d` selects a committed past relay generation. The finite stencil is the v0.2 numerical approximation to short-range lateral interaction. The implementation uses forward Euler with explicit clamping to the normalized state interval.
+The sparse long-range drive is
+
+\[
+L_i(t)=\sum_{e:j\rightarrow i}w_eR_j(t-d_e\Delta t).
+\]
+
+`R-bar` and `I-bar` blend the local site with its four clamped boundary neighbors. Neighbor contributions are weighted by their outgoing coupling and viability. The relay time constant and explicit history delay model different effects: `R` is local axonal filtering, while `d` selects a committed past relay generation. Sparse projections read the same authoritative history with their edge-specific delay, so local and long-range paths share one causal transaction boundary. The finite stencil is the v0.3 numerical approximation to short-range lateral interaction. The implementation uses forward Euler with explicit clamping to the normalized state interval.
 
 A circular lesion lowers `V` inside its normalized footprint. With `V = 0`, a site initializes and remains exactly silent, and its outgoing contribution is zero. Partial viability is an abstract response/transmission attenuation coefficient, not a tissue-damage law.
 
@@ -68,11 +76,12 @@ The uncalibrated v0 parameter set is:
 | Excitatory spatial mix | 0.75 |
 | Inhibitory spatial mix | 0.15 |
 | Adaptation strength | 2 |
+| Long-range projection gain | 1 |
 | Excitatory bias | -2.5 |
 | Inhibitory bias | -3.0 |
 | Sigmoid gains | 1, 1 |
 
-Grid coordinates are normalized, not millimetres. V0.2 therefore establishes delayed structured neural-field computation and transactional execution, not a measured conduction velocity, cortical thickness, anatomical connectivity, lesion pathology, or tissue scale.
+Grid coordinates are normalized, not millimetres. V0.3 therefore establishes delayed structured neural-field computation and transactional sparse execution, not a measured conduction velocity, cortical thickness, anatomical connectivity, lesion pathology, or tissue scale.
 
 Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in 1972 and extended the theory to two-dimensional cortical and thalamic sheets with recurrent lateral connections in 1973. Those papers establish the model class, not this repository's chosen parameters or biological calibration:
 
@@ -88,6 +97,7 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 - Rejecting a candidate discards it without advancing time.
 - Root abort preserves the committed grid exactly.
 - Root commit publishes the final accepted shadow grid atomically.
+- Local and long-range delayed reads use only accepted root-shadow or committed relay generations.
 - The v0 model is deterministic and contains no stochastic term. Counter-based stochastic channels will be introduced only with explicit keyed replay tests.
 
 ## Initial evidence gates
@@ -104,6 +114,9 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 10. Explicit delay classes postpone lateral recruitment relative to the zero-delay control.
 11. Abort and rejected retry preserve delayed future state, not only the immediate state grid.
 12. A Metal root that would overwrite abort-authoritative relay history rejects before dispatch.
+13. A sparse edge recruits a distant site beyond the local stencil only after its configured delay.
+14. Sparse delayed execution agrees between CPU and Metal within the declared tolerance.
+15. Retry and abort remain exact after advancing beyond the largest local or projection delay.
 
 Passing these gates proves an executable deterministic mesoscale tissue field. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -111,7 +124,7 @@ Passing these gates proves an executable deterministic mesoscale tissue field. I
 
 The Metal implementation compiles `NeuralTissue.metal` as Metal language version 4.0 with safe FP arithmetic and precise floating-point functions. It submits work through a Metal 4 command queue, reusable command buffer and allocator, compute encoder, argument table, explicit dispatch barriers, and a residency set.
 
-Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure and per-site delay classes. Relay history uses two private 32-slot FP32 planes. A 32-bit owner mask selects the authoritative plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private scratch buffer. Commit publishes the shadow owner mask and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative.
+Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure, per-site delay classes, CSR destination offsets, and packed `uint4` projection edges. Each Metal thread gathers only the incoming edges for its destination site and samples edge-specific history. Relay history uses two private 32-slot FP32 planes. A 32-bit owner mask selects the authoritative plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private scratch buffer. Commit publishes the shadow owner mask and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative.
 
 The history allocation is
 
@@ -120,3 +133,11 @@ The history allocation is
 \]
 
 This is deliberately reported in runtime evidence. A future compressed history representation must demonstrate delayed-trajectory parity and memory/performance benefit before replacing FP32. A tracked shared buffer owns uniforms, and a separate shared staging buffer is used only for initial uploads and explicit inspection after GPU completion. No CPU access occurs between encoded substeps. Moving these private buffers into long-lived placement heaps remains Phase 1 work.
+
+For `N` tissue sites and `E` projections, the immutable sparse graph adds
+
+\[
+4(N+1)+16E\text{ bytes}
+\]
+
+before allocator alignment. Graph size, edge count, maximum fan-in, maximum edge delay, and graph hash are explicit schema-v3 evidence fields.

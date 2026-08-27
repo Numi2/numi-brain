@@ -21,6 +21,11 @@ private enum DelayProfile: String, Codable {
   case layered
 }
 
+private enum ConnectomeProfile: String, Codable {
+  case none
+  case bilateral
+}
+
 private struct LesionOptions: Codable {
   var centerX: Float = 0.5
   var centerY: Float = 0.5
@@ -40,6 +45,7 @@ private struct Options {
   var verifyReplay = false
   var structureProfile: StructureProfile = .layered
   var delayProfile: DelayProfile = .layered
+  var connectomeProfile: ConnectomeProfile = .bilateral
   var lesion = LesionOptions()
   var stimulus = TissueStimulus(
     radius: 0.08,
@@ -104,6 +110,12 @@ private struct Options {
           throw CLIError("--delays must be instantaneous or layered")
         }
         options.delayProfile = profile
+      case "--connectome":
+        let raw = try value(after: argument)
+        guard let profile = ConnectomeProfile(rawValue: raw) else {
+          throw CLIError("--connectome must be none or bilateral")
+        }
+        options.connectomeProfile = profile
       case "--lesion-x":
         options.lesion.centerX = try parseFloat(try value(after: argument), flag: argument)
       case "--lesion-y":
@@ -196,6 +208,7 @@ private struct Options {
         --verify-replay       Repeat the run and compare the final state hash
         --structure homogeneous|layered  Tissue profile (default: layered)
         --delays instantaneous|layered  Conduction profile (default: layered)
+        --connectome none|bilateral  Sparse projection profile (default: bilateral)
         --lesion-x N          Normalized lesion center x (default: 0.5)
         --lesion-y N          Normalized lesion center y (default: 0.5)
         --lesion-radius N     Normalized lesion radius (default: 0, disabled)
@@ -241,6 +254,8 @@ private struct MemoryEvidence: Codable {
   let uniformArenaBytes: Int
   let structureBytes: Int
   let delayFieldBytes: Int
+  let projectionOffsetBytes: Int
+  let projectionEdgeBytes: Int
   let relayHistoryPlaneCount: Int
   let relayHistoryBytes: Int
   let relayTransactionBytes: Int
@@ -254,6 +269,15 @@ private struct ConductionEvidence: Codable {
   let maximumDelaySteps: Int
   let maximumDelayMilliseconds: Float
   let historyCapacity: Int
+  let interpretation: String
+}
+
+private struct ConnectomeEvidence: Codable {
+  let profile: ConnectomeProfile
+  let hash: String
+  let edgeCount: Int
+  let maximumIncomingProjectionCount: Int
+  let maximumDelaySteps: Int
   let interpretation: String
 }
 
@@ -285,6 +309,7 @@ private struct SimulationEvidence: Codable {
   let stimulus: TissueStimulus
   let structure: StructureEvidence
   let conduction: ConductionEvidence
+  let connectome: ConnectomeEvidence
   let timestepMilliseconds: Float
   let acceptedDurationMilliseconds: Float
   let controlIntervalMilliseconds: Float
@@ -360,6 +385,19 @@ private struct NumiBrainTissueCommand {
         height: options.height
       )
     }
+    let connectome: TissueConnectome
+    switch options.connectomeProfile {
+    case .none:
+      connectome = try TissueConnectome.none(
+        width: options.width,
+        height: options.height
+      )
+    case .bilateral:
+      connectome = try TissueConnectome.bilateralBridgeV0(
+        width: options.width,
+        height: options.height
+      )
+    }
     let initialState = try CPUTissueDynamics.makeRestingGrid(
       parameters: parameters,
       structure: structure
@@ -392,6 +430,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -405,6 +444,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       )
@@ -417,7 +457,10 @@ private struct NumiBrainTissueCommand {
       backend: options.backend,
       initialState: initialState,
       parameters: parameters,
-      stimulus: stimulus, structure: structure, delayField: delayField
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome
     )
     let cpuParity: (error: Float, tolerance: Float, passed: Bool)?
     if options.verifyCPU, options.backend == .metal {
@@ -427,6 +470,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         totalSubsteps: totalSubsteps,
         substepsPerControl: substepsPerControl
       ).0
@@ -447,6 +491,7 @@ private struct NumiBrainTissueCommand {
           stimulus: stimulus,
           structure: structure,
           delayField: delayField,
+          connectome: connectome,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -460,6 +505,7 @@ private struct NumiBrainTissueCommand {
           stimulus: stimulus,
           structure: structure,
           delayField: delayField,
+          connectome: connectome,
           totalSubsteps: totalSubsteps,
           substepsPerControl: substepsPerControl
         ).0
@@ -479,12 +525,13 @@ private struct NumiBrainTissueCommand {
     }
 
     return SimulationEvidence(
-      schema: "numibrain.tissue-simulation-evidence.v2",
+      schema: "numibrain.tissue-simulation-evidence.v3",
       backend: options.backend,
       device: result.device,
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
-      model: "heterogeneous Wilson-Cowan E/I field with adaptation and explicit conduction delays",
+      model:
+        "heterogeneous Wilson-Cowan E/I field with adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -509,6 +556,15 @@ private struct NumiBrainTissueCommand {
         historyCapacity: TissueDelayField.historyCapacity,
         interpretation: "synthetic outgoing delay classes; not calibrated conduction velocity"
       ),
+      connectome: ConnectomeEvidence(
+        profile: options.connectomeProfile,
+        hash: connectome.stableHash(),
+        edgeCount: connectome.edgeCount,
+        maximumIncomingProjectionCount: connectome.maximumIncomingProjectionCount,
+        maximumDelaySteps: connectome.maximumProjectionDelaySteps,
+        interpretation:
+          "synthetic destination-major sparse projection graph; not an anatomical connectome"
+      ),
       timestepMilliseconds: parameters.timestepMilliseconds,
       acceptedDurationMilliseconds: Float(totalSubsteps) * parameters.timestepMilliseconds,
       controlIntervalMilliseconds: Float(substepsPerControl) * parameters.timestepMilliseconds,
@@ -530,6 +586,10 @@ private struct NumiBrainTissueCommand {
         uniformArenaBytes: max(substepsPerControl, 2) * TissueUniforms.byteCount,
         structureBytes: structure.count * MemoryLayout<TissueSite>.stride,
         delayFieldBytes: delayField.count * MemoryLayout<UInt8>.stride,
+        projectionOffsetBytes: connectome.destinationOffsets.count
+          * MemoryLayout<UInt32>.stride,
+        projectionEdgeBytes: connectome.edgeCount
+          * MemoryLayout<TissueConnectome.PackedEdge>.stride,
         relayHistoryPlaneCount: options.backend == .metal ? 2 : 1,
         relayHistoryBytes: delayField.count * MemoryLayout<Float>.stride
           * TissueDelayField.historyCapacity * (options.backend == .metal ? 2 : 1),
@@ -564,13 +624,17 @@ private struct NumiBrainTissueCommand {
     stimulus: TissueStimulus,
     structure: TissueStructure,
     delayField: TissueDelayField,
+    connectome: TissueConnectome,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
     var runtime = try CPUTissueRuntime(
       initialState: initialState,
       parameters: parameters,
-      stimulus: stimulus, structure: structure, delayField: delayField
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome
     )
     var completed = 0
     var rootTransactions = 0
@@ -593,6 +657,7 @@ private struct NumiBrainTissueCommand {
     stimulus: TissueStimulus,
     structure: TissueStructure,
     delayField: TissueDelayField,
+    connectome: TissueConnectome,
     totalSubsteps: Int,
     substepsPerControl: Int
   ) throws -> (TissueGrid, String, Double?, Int, UInt64?) {
@@ -602,6 +667,7 @@ private struct NumiBrainTissueCommand {
       stimulus: stimulus,
       structure: structure,
       delayField: delayField,
+      connectome: connectome,
       maxEncodedSubsteps: max(substepsPerControl, 2)
     )
     var completed = 0
@@ -631,10 +697,19 @@ private struct NumiBrainTissueCommand {
     backend: Backend,
     initialState: TissueGrid,
     parameters: TissueParameters,
-    stimulus: TissueStimulus, structure: TissueStructure, delayField: TissueDelayField
+    stimulus: TissueStimulus,
+    structure: TissueStructure,
+    delayField: TissueDelayField,
+    connectome: TissueConnectome
   ) throws -> (retry: Bool, abort: Bool) {
     let followUpSteps = min(
-      max(delayField.maximumConfiguredDelaySteps + 2, 2),
+      max(
+        max(
+          delayField.maximumConfiguredDelaySteps,
+          connectome.maximumProjectionDelaySteps
+        ) + 2,
+        2
+      ),
       TissueDelayField.historyCapacity
     )
     let followUp = Array(repeating: true, count: followUpSteps)
@@ -643,7 +718,10 @@ private struct NumiBrainTissueCommand {
       var direct = try CPUTissueRuntime(
         initialState: initialState,
         parameters: parameters,
-        stimulus: stimulus, structure: structure, delayField: delayField
+        stimulus: stimulus,
+        structure: structure,
+        delayField: delayField,
+        connectome: connectome
       )
       var retried = direct
       var aborted = direct
@@ -677,6 +755,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let retried = try MetalTissueRuntime(
@@ -685,6 +764,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let aborted = try MetalTissueRuntime(
@@ -693,6 +773,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       let abortBaseline = try MetalTissueRuntime(
@@ -701,6 +782,7 @@ private struct NumiBrainTissueCommand {
         stimulus: stimulus,
         structure: structure,
         delayField: delayField,
+        connectome: connectome,
         maxEncodedSubsteps: max(followUpSteps, 2)
       )
       _ = try direct.runRootTransaction(at: 0, acceptedSubsteps: [true])

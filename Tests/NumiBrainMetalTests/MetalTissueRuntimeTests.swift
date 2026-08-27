@@ -89,6 +89,68 @@ final class MetalTissueRuntimeTests: XCTestCase {
     }
   }
 
+  func testMetalAgreesForSparseDelayedProjection() throws {
+    try requireMetal4()
+    let width = 41
+    let height = 21
+    let sourceX = 10
+    let destinationX = 30
+    let y = height / 2
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let delayField = try TissueDelayField.instantaneous(width: width, height: height)
+    let connectome = try TissueConnectome(
+      width: width,
+      height: height,
+      projections: [
+        TissueProjection(
+          sourceIndex: y * width + sourceX,
+          destinationIndex: y * width + destinationX,
+          weight: 4,
+          delaySteps: 6
+        )
+      ]
+    )
+    let stimulus = TissueStimulus(
+      centerX: Float(sourceX) / Float(width - 1),
+      centerY: 0.5,
+      radius: 0.03,
+      excitatoryDrive: 8,
+      startMilliseconds: 0,
+      endMilliseconds: 30
+    )
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let acceptance = Array(repeating: true, count: 30)
+    var cpu = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome
+    )
+    try cpu.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome,
+      maxEncodedSubsteps: acceptance.count
+    )
+    _ = try metal.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try metal.commitRootTransaction()
+    let gpu = try metal.snapshotCommitted()
+
+    XCTAssertEqual(metal.connectomeHash, connectome.stableHash())
+    XCTAssertEqual(metal.projectionEdgeByteCount, MemoryLayout<TissueConnectome.PackedEdge>.stride)
+    XCTAssertLessThan(maximumDifference(cpu.committed, gpu), 3e-5)
+  }
+
   func testMetalRejectedRetryMatchesDirectAcceptance() throws {
     try requireMetal4()
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
@@ -102,11 +164,24 @@ final class MetalTissueRuntimeTests: XCTestCase {
       height: 16,
       repeating: 4
     )
+    let connectome = try TissueConnectome(
+      width: 16,
+      height: 16,
+      projections: [
+        TissueProjection(
+          sourceIndex: 8 * 16 + 4,
+          destinationIndex: 8 * 16 + 12,
+          weight: 2,
+          delaySteps: 8
+        )
+      ]
+    )
     let direct = try MetalTissueRuntime(
       initialState: initial,
       parameters: parameters,
       stimulus: stimulus,
       delayField: delayField,
+      connectome: connectome,
       maxEncodedSubsteps: 12
     )
     let retried = try MetalTissueRuntime(
@@ -114,6 +189,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
       parameters: parameters,
       stimulus: stimulus,
       delayField: delayField,
+      connectome: connectome,
       maxEncodedSubsteps: 12
     )
 

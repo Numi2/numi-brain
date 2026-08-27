@@ -17,6 +17,7 @@ enum TissueUniformIndex : uint {
     TissueExcitatorySpatialMix = 12,
     TissueInhibitorySpatialMix = 13,
     TissueAdaptationStrength = 14,
+    TissueLongRangeProjectionGain = 15,
     TissueExcitatoryBias = 16,
     TissueInhibitoryBias = 17,
     TissueExcitatoryGain = 18,
@@ -55,6 +56,21 @@ inline float tissue_delayed_relay(
     return relayHistory[historyIndex];
 }
 
+inline float tissue_relay_at_delay(
+    device const float *relayHistory,
+    uint siteIndex,
+    uint delay,
+    uint siteCount,
+    uint historyStep,
+    uint historyCapacity,
+    uint historyOwnerMask
+) {
+    const uint slot = (historyStep + historyCapacity - delay) % historyCapacity;
+    const uint plane = (historyOwnerMask >> slot) & 1u;
+    const uint historyIndex = (plane * historyCapacity + slot) * siteCount + siteIndex;
+    return relayHistory[historyIndex];
+}
+
 kernel void neural_tissue_step(
     device const float4 *input [[buffer(0)]],
     device float4 *output [[buffer(1)]],
@@ -63,6 +79,8 @@ kernel void neural_tissue_step(
     device const uchar *delaySteps [[buffer(4)]],
     device float *relayHistory [[buffer(5)]],
     device float *relayScratch [[buffer(6)]],
+    device const uint *projectionOffsets [[buffer(7)]],
+    device const uint4 *projectionEdges [[buffer(8)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -145,6 +163,22 @@ kernel void neural_tissue_step(
         + uniforms[TissueExcitatorySpatialMix] * (neighborRelay - center.x);
     const float spatialI = center.y
         + uniforms[TissueInhibitorySpatialMix] * (neighborI - center.y);
+    float projectionDrive = 0.0f;
+    const uint projectionStart = projectionOffsets[index];
+    const uint projectionEnd = projectionOffsets[index + 1];
+    for (uint edgeIndex = projectionStart; edgeIndex < projectionEnd; ++edgeIndex) {
+        const uint4 edge = projectionEdges[edgeIndex];
+        const float sourceRelay = tissue_relay_at_delay(
+            relayHistory,
+            edge.x,
+            edge.y,
+            siteCount,
+            historyStep,
+            historyCapacity,
+            historyOwnerMask
+        );
+        projectionDrive += as_type<float>(edge.z) * sourceRelay;
+    }
 
     float stimulusE = 0.0f;
     float stimulusI = 0.0f;
@@ -171,6 +205,7 @@ kernel void neural_tissue_step(
             + uniforms[TissueExcitatoryBias]
             + stimulusE
         )
+        + uniforms[TissueLongRangeProjectionGain] * projectionDrive
     );
     const float targetI = tissue_sigmoid(
         uniforms[TissueInhibitoryGain] * centerSite.y * (

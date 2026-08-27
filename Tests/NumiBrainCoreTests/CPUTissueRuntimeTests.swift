@@ -119,6 +119,18 @@ final class CPUTissueRuntimeTests: XCTestCase {
       width: width,
       height: height
     )
+    let connectome = try TissueConnectome(
+      width: width,
+      height: height,
+      projections: [
+        TissueProjection(
+          sourceIndex: (height / 2) * width + width / 4,
+          destinationIndex: (height / 2) * width + 3 * width / 4,
+          weight: 2,
+          delaySteps: 9
+        )
+      ]
+    )
     let initial = try CPUTissueDynamics.makeRestingGrid(
       parameters: parameters,
       structure: structure
@@ -129,7 +141,8 @@ final class CPUTissueRuntimeTests: XCTestCase {
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
-      delayField: delayField
+      delayField: delayField,
+      connectome: connectome
     )
 
     var aborted = baseline
@@ -165,6 +178,81 @@ final class CPUTissueRuntimeTests: XCTestCase {
     )
     XCTAssertEqual(single.committed, chunked.committed)
     XCTAssertEqual(single.committedHistoryHash(), chunked.committedHistoryHash())
+  }
+
+  func testSparseDelayedProjectionRecruitsDistantTarget() throws {
+    let width = 41
+    let height = 21
+    let sourceX = 10
+    let destinationX = 30
+    let y = height / 2
+    let structure = try TissueStructure.homogeneous(width: width, height: height)
+    let delayField = try TissueDelayField.instantaneous(width: width, height: height)
+    let projection = TissueProjection(
+      sourceIndex: y * width + sourceX,
+      destinationIndex: y * width + destinationX,
+      weight: 4,
+      delaySteps: 6
+    )
+    let connectome = try TissueConnectome(
+      width: width,
+      height: height,
+      projections: [projection]
+    )
+    let connectomeReplay = try TissueConnectome(
+      width: width,
+      height: height,
+      projections: [projection]
+    )
+    XCTAssertEqual(connectome.stableHash(), connectomeReplay.stableHash())
+    XCTAssertEqual(connectome.edgeCount, 1)
+    XCTAssertEqual(connectome.maximumIncomingProjectionCount, 1)
+
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let stimulus = TissueStimulus(
+      centerX: Float(sourceX) / Float(width - 1),
+      centerY: 0.5,
+      radius: 0.03,
+      excitatoryDrive: 8,
+      startMilliseconds: 0,
+      endMilliseconds: 30
+    )
+    var projected = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome
+    )
+    var projectionBaseline = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      structure: structure,
+      delayField: delayField,
+      connectome: connectome
+    )
+    var localOnly = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField
+    )
+    let acceptance = Array(repeating: true, count: 30)
+    try projected.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try projectionBaseline.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+    try localOnly.runRootTransaction(at: 0, acceptedSubsteps: acceptance)
+
+    let projectedDelta =
+      projected.committed[destinationX, y].x
+      - projectionBaseline.committed[destinationX, y].x
+    let localDelta = localOnly.committed[destinationX, y].x - initial[destinationX, y].x
+    XCTAssertGreaterThan(projectedDelta, localDelta + 1e-4)
   }
 
   func testLayeredStructureAndLesionAreDeterministicAndSilent() throws {
