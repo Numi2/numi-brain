@@ -89,7 +89,7 @@ The first consumer emits exact auditable work records. The second advances a dis
 
 An exact-source 256-environment Apple M4 Pro correctness artifact for v0.20 is in [evidence/cohort-dispatch-v0.20](evidence/cohort-dispatch-v0.20/README.md); the preceding 16-environment Apple M4 control is in [v0.19](evidence/cohort-dispatch-v0.19/README.md). The exact 8,192-environment v0.14 indirect-consumption artifact remains in [v0.14](evidence/cohort-dispatch-v0.14/README.md), with the preceding materialization-only artifact in [v0.13](evidence/cohort-dispatch-v0.13/README.md). Command-feedback timings cover only the named kernels and are not production performance claims.
 
-The interactive joint candidate lifecycle and timestamped CPU relay oracle have an exact-source 71-test Apple M4 Pro qualification in [evidence/joint-transaction-v0.4](evidence/joint-transaction-v0.4/README.md). It is correctness evidence, not live NumanX coupling or throughput evidence.
+Physical-time Metal conduction and accepted fast scheduler/regional prefixes have an exact-source 74-test Apple M4 Pro qualification in [evidence/joint-transaction-v0.6](evidence/joint-transaction-v0.6/README.md). The earlier interactive-lifecycle and CPU-oracle qualification remains in [v0.4](evidence/joint-transaction-v0.4/README.md). These are correctness artifacts, not live NumanX coupling or throughput evidence.
 
 ## Foundational invariants
 
