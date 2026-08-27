@@ -37,7 +37,12 @@ enum {
   NB_DISPATCH_WORK_ITEM_BYTE_COUNT = 32,
   NB_DISPATCH_COHORT_UNIFORMS_BYTE_COUNT = 32,
   NB_DISPATCH_TOKEN_UNIFORMS_BYTE_COUNT = 32,
+  NB_JOINT_TRANSACTION_TOKEN_BYTE_COUNT = 96,
+  NB_JOINT_SUBSTEP_TOKEN_BYTE_COUNT = 72,
+  NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT = 64,
+  NB_JOINT_COMMIT_TOKEN_BYTE_COUNT = 64,
   NB_DISPATCH_PLAN_VERSION = 1,
+  NB_JOINT_TRANSACTION_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -322,6 +327,69 @@ typedef struct NBDispatchTokenUniforms {
   uint64_t total_scalar_count;
 } NBDispatchTokenUniforms;
 
+/// Immutable root identity shared by NumiBrain and NumanX. The fingerprint is
+/// the only opaque transaction handle accepted by nested substep records.
+typedef struct NBJointTransactionToken {
+  uint32_t format_version;
+  uint32_t environment_identifier;
+  uint64_t episode_identifier;
+  uint64_t control_step_identifier;
+  uint64_t parameter_version_fingerprint;
+  uint64_t base_brain_generation;
+  uint64_t base_physics_generation;
+  uint64_t committed_timestamp_microseconds;
+  uint64_t target_timestamp_microseconds;
+  uint64_t shadow_generation;
+  uint64_t random_counter_generation;
+  uint32_t flags;
+  uint32_t reserved;
+  uint64_t transaction_fingerprint;
+} NBJointTransactionToken;
+
+/// One candidate physical substep. Rejected attempts retain the accepted
+/// substep index, shadow generation, and random-counter generation.
+typedef struct NBJointSubstepToken {
+  uint64_t transaction_fingerprint;
+  uint32_t substep_index;
+  uint32_t attempt_index;
+  uint64_t start_timestamp_microseconds;
+  uint64_t duration_microseconds;
+  uint64_t candidate_timestamp_microseconds;
+  uint64_t shadow_generation;
+  uint64_t random_counter_generation;
+  uint32_t flags;
+  uint32_t reserved;
+  uint64_t substep_fingerprint;
+} NBJointSubstepToken;
+
+/// NumanX acceptance proof for one candidate. The physical state itself stays
+/// NumanX-owned; NumiBrain receives only this content-addressed handoff.
+typedef struct NBAcceptedPhysicsStateToken {
+  uint64_t transaction_fingerprint;
+  uint64_t substep_fingerprint;
+  uint64_t physics_state_fingerprint;
+  uint64_t accepted_timestamp_microseconds;
+  uint64_t physics_generation;
+  uint32_t environment_identifier;
+  uint32_t flags;
+  uint64_t reserved;
+  uint64_t token_fingerprint;
+} NBAcceptedPhysicsStateToken;
+
+/// Atomic root-commit receipt. Publishing this record means both runtimes
+/// accepted the same final physical token and committed timestamp.
+typedef struct NBJointCommitToken {
+  uint64_t transaction_fingerprint;
+  uint64_t accepted_physics_token_fingerprint;
+  uint64_t brain_generation;
+  uint64_t physics_generation;
+  uint64_t committed_timestamp_microseconds;
+  uint64_t parameter_version_fingerprint;
+  uint32_t environment_identifier;
+  uint32_t flags;
+  uint64_t commit_fingerprint;
+} NBJointCommitToken;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -418,6 +486,18 @@ typedef enum NBDispatchPlanValidation {
   NB_DISPATCH_PLAN_FINGERPRINT = 8,
 } NBDispatchPlanValidation;
 
+typedef enum NBJointTransactionValidation {
+  NB_JOINT_TRANSACTION_VALID = 0,
+  NB_JOINT_TRANSACTION_NULL = 1,
+  NB_JOINT_TRANSACTION_FORMAT = 2,
+  NB_JOINT_TRANSACTION_IDENTITY = 3,
+  NB_JOINT_TRANSACTION_TIME_ORDER = 4,
+  NB_JOINT_TRANSACTION_GENERATION = 5,
+  NB_JOINT_TRANSACTION_FLAGS = 6,
+  NB_JOINT_TRANSACTION_FINGERPRINT = 7,
+  NB_JOINT_TRANSACTION_RELATION = 8,
+} NBJointTransactionValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -444,6 +524,10 @@ size_t nb_brain_abi_dispatch_plan_result_size(void);
 size_t nb_brain_abi_dispatch_work_item_size(void);
 size_t nb_brain_abi_dispatch_cohort_uniforms_size(void);
 size_t nb_brain_abi_dispatch_token_uniforms_size(void);
+size_t nb_brain_abi_joint_transaction_token_size(void);
+size_t nb_brain_abi_joint_substep_token_size(void);
+size_t nb_brain_abi_accepted_physics_state_token_size(void);
+size_t nb_brain_abi_joint_commit_token_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -576,6 +660,43 @@ uint64_t nb_brain_abi_cohort_invocation_fingerprint(
     const NBDueInvocation *invocations,
     const uint32_t *invocation_counts,
     uint32_t invocation_capacity_per_environment
+);
+
+uint64_t nb_brain_abi_joint_transaction_fingerprint(
+    const NBJointTransactionToken *token
+);
+
+uint32_t nb_brain_abi_validate_joint_transaction(
+    const NBJointTransactionToken *token
+);
+
+uint64_t nb_brain_abi_joint_substep_fingerprint(
+    const NBJointSubstepToken *token
+);
+
+uint32_t nb_brain_abi_validate_joint_substep(
+    const NBJointTransactionToken *transaction,
+    const NBJointSubstepToken *substep
+);
+
+uint64_t nb_brain_abi_accepted_physics_state_fingerprint(
+    const NBAcceptedPhysicsStateToken *token
+);
+
+uint32_t nb_brain_abi_validate_accepted_physics_state(
+    const NBJointTransactionToken *transaction,
+    const NBJointSubstepToken *substep,
+    const NBAcceptedPhysicsStateToken *accepted
+);
+
+uint64_t nb_brain_abi_joint_commit_fingerprint(
+    const NBJointCommitToken *token
+);
+
+uint32_t nb_brain_abi_validate_joint_commit(
+    const NBJointTransactionToken *transaction,
+    const NBAcceptedPhysicsStateToken *accepted,
+    const NBJointCommitToken *commit
 );
 
 #ifdef __cplusplus
