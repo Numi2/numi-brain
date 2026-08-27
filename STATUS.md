@@ -33,6 +33,8 @@ The scheduler v0.1 foundation currently proves:
 
 The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. It is a Swift CPU oracle over the compiled C++ ABI, not the production GPU scheduler. Device-resident due selection, GPU cohort prefix sums, indirect module dispatch, delay-line delivery, adaptive periods, and integration into the tissue command timeline remain unimplemented.
 
+The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advanced four independent scheduler states through 200 ms in ten root transactions. It emitted 3,064 invocations, compacted them into 772 canonical groups, and delivered eight module interrupts from three fractional-time source events with zero timestamp latency. Replay, retry, abort, independent-state, and canonical-order checks passed. The exact JSON is in [`evidence/scheduler-v0.1`](evidence/scheduler-v0.1/README.md). This is CPU semantic evidence, not GPU scheduler or throughput qualification.
+
 ## Implemented tissue evidence
 
 The v0.5 slice currently proves:

@@ -70,6 +70,8 @@ swift run -c release numi-brain-scheduler \
 
 This executable is deliberately a CPU oracle. It validates the stable record layout and causal scheduling rules before the hot scheduler moves into the single Metal command timeline. It is not GPU-resident scheduler evidence or full 96-module execution.
 
+The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler-v0.1](evidence/scheduler-v0.1/README.md).
+
 ## Foundational invariants
 
 - Normal observations are causal receptor signals, never perfect or future simulator state.

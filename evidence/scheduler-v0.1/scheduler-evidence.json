@@ -1,0 +1,150 @@
+{
+  "abi" : {
+    "dueInvocationBytes" : 32,
+    "interruptEventBytes" : 24,
+    "moduleClockStateBytes" : 16,
+    "moduleDescriptorBytes" : 32,
+    "owner" : "NumiBrainABI C++ static layout assertions and explicit field fingerprint",
+    "scheduleFingerprint" : "c0162952817e2b01",
+    "version" : 1
+  },
+  "backend" : "Swift deterministic CPU oracle over compiled C++ ABI",
+  "events" : {
+    "deliveredModuleInterruptCount" : 8,
+    "interpretation" : "timestamped receptor-derived interrupt classes; no privileged physical state",
+    "sourceEventCount" : 3,
+    "timestampsMicroseconds" : [
+      7500,
+      63750,
+      120125
+    ],
+    "zeroLatency" : true
+  },
+  "executionPath" : "physical microseconds -> shadow due/event merge -> module/time cohort compaction -> commit",
+  "limitations" : [
+    "CPU oracle only; the production scheduler kernel is not yet Metal-resident",
+    "Eight logical modules qualify the ABI and scheduler, not the complete 96-module graph",
+    "Cohort compaction is a deterministic host reference, not GPU prefix-sum dispatch"
+  ],
+  "numericalScope" : "physical-time module scheduling and event interruption; no neural regional computation",
+  "operatingSystem" : "Version 26.6 (Build 25G5028f)",
+  "revision" : "579afea9ab55d4c989ff07abdadeaf2abcd952b7",
+  "schedule" : {
+    "dispatchGroupCount" : 772,
+    "interruptInvocations" : 8,
+    "maximumEnvironmentCountPerGroup" : 4,
+    "moduleCount" : 8,
+    "modules" : [
+      {
+        "clockClass" : 1,
+        "conductionDelayMicroseconds" : 0,
+        "flags" : 0,
+        "interruptMask" : 75,
+        "intrinsicTimescaleMicroseconds" : 5000,
+        "moduleIdentifier" : 12,
+        "periodMicroseconds" : 1000,
+        "tokenCount" : 4,
+        "tokenDimension" : 64
+      },
+      {
+        "clockClass" : 7,
+        "conductionDelayMicroseconds" : 2000,
+        "flags" : 0,
+        "interruptMask" : 0,
+        "intrinsicTimescaleMicroseconds" : 100000,
+        "moduleIdentifier" : 25,
+        "periodMicroseconds" : 50000,
+        "tokenCount" : 16,
+        "tokenDimension" : 256
+      },
+      {
+        "clockClass" : 1,
+        "conductionDelayMicroseconds" : 0,
+        "flags" : 0,
+        "interruptMask" : 639,
+        "intrinsicTimescaleMicroseconds" : 2000,
+        "moduleIdentifier" : 26,
+        "periodMicroseconds" : 1000,
+        "tokenCount" : 8,
+        "tokenDimension" : 64
+      },
+      {
+        "clockClass" : 6,
+        "conductionDelayMicroseconds" : 2000,
+        "flags" : 0,
+        "interruptMask" : 384,
+        "intrinsicTimescaleMicroseconds" : 20000,
+        "moduleIdentifier" : 37,
+        "periodMicroseconds" : 20000,
+        "tokenCount" : 16,
+        "tokenDimension" : 128
+      },
+      {
+        "clockClass" : 9,
+        "conductionDelayMicroseconds" : 5000,
+        "flags" : 0,
+        "interruptMask" : 0,
+        "intrinsicTimescaleMicroseconds" : 250000,
+        "moduleIdentifier" : 77,
+        "periodMicroseconds" : 100000,
+        "tokenCount" : 8,
+        "tokenDimension" : 256
+      },
+      {
+        "clockClass" : 4,
+        "conductionDelayMicroseconds" : 1000,
+        "flags" : 0,
+        "interruptMask" : 12,
+        "intrinsicTimescaleMicroseconds" : 10000,
+        "moduleIdentifier" : 83,
+        "periodMicroseconds" : 5000,
+        "tokenCount" : 8,
+        "tokenDimension" : 128
+      },
+      {
+        "clockClass" : 3,
+        "conductionDelayMicroseconds" : 500,
+        "flags" : 0,
+        "interruptMask" : 4,
+        "intrinsicTimescaleMicroseconds" : 5000,
+        "moduleIdentifier" : 90,
+        "periodMicroseconds" : 2000,
+        "tokenCount" : 4,
+        "tokenDimension" : 64
+      },
+      {
+        "clockClass" : 2,
+        "conductionDelayMicroseconds" : 250,
+        "flags" : 0,
+        "interruptMask" : 111,
+        "intrinsicTimescaleMicroseconds" : 5000,
+        "moduleIdentifier" : 95,
+        "periodMicroseconds" : 1000,
+        "tokenCount" : 8,
+        "tokenDimension" : 64
+      }
+    ],
+    "periodicInvocations" : 3056,
+    "totalInvocations" : 3064
+  },
+  "schema" : "numibrain.scheduler-evidence.v1",
+  "timing" : {
+    "controlIntervalMicroseconds" : 20000,
+    "durationMicroseconds" : 200000,
+    "rootTransactions" : 10,
+    "wallSeconds" : 0.002279458
+  },
+  "verification" : {
+    "abortExact" : true,
+    "canonicalCohortOrder" : true,
+    "finalSnapshotHashes" : [
+      "6a376bec76ac5326",
+      "6a376bec76ac5326",
+      "6a376bec76ac5326",
+      "6a376bec76ac5326"
+    ],
+    "independentMinds" : true,
+    "replayExact" : true,
+    "retryExact" : true
+  }
+}
