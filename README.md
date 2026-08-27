@@ -51,7 +51,7 @@ swift run -c release numi-brain-tissue \
 
 The executable also supports `--backend cpu` as a deterministic FP32 oracle, `--structure homogeneous`, and `--delays instantaneous` as baselines. Layered structure, delay classes, and lesion controls are synthetic experiment inputs, not anatomical, conduction-velocity, or injury calibration. JSON evidence separates wall time from Metal 4 GPU time and records the state, structure, and conduction hashes; device and execution path; full relay-history memory; boundedness; delayed-future rollback/retry; replay; and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
-A reproducible Apple M4 development run of the layered-lesion path is checked into [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). It is a correctness and visual-inspection artifact, not a production performance qualification.
+A reproducible Apple M4 development run of the delayed layered-lesion path is checked into [evidence/tissue-v0.2](evidence/tissue-v0.2/README.md). The preceding no-explicit-delay artifact remains in [evidence/tissue-v0.1](evidence/tissue-v0.1/README.md). These are correctness and visual-inspection artifacts, not production performance qualifications.
 
 ## Foundational invariants
 

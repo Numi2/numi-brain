@@ -37,9 +37,9 @@ The current XCTest suite contains 16 passing tests: ten CPU oracle tests and six
 
 The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, scratch, uniforms, and inspection staging. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
-The checked Apple M4 development probe on 2026-08-27 used commit `77adca9`, a 256×192 layered sheet, a circular zero-viability lesion, and 100 accepted 1 ms substeps. It reported `1.7881393e-07` maximum CPU/Metal error, exact replay, retry and root abort, finite bounded output, state hash `bf5eecda30bfe9d0`, and structure hash `b6e62daa60fd9c99`. The JSON and inspected PNG are in [`evidence/tissue-v0.1`](evidence/tissue-v0.1/README.md). This is implementation evidence, not a calibrated brain-tissue result or production GPU benchmark.
+The latest checked Apple M4 development probe on 2026-08-27 used commit `4e0f6aa`, a 256×192 delayed layered sheet, a circular zero-viability lesion, and 100 accepted 1 ms substeps. It reported `1.7881393e-07` maximum CPU/Metal error, exact replay, delayed-future retry and root abort, finite bounded output, state hash `c8448e95c1c778ec`, structure hash `b6e62daa60fd9c99`, and conduction hash `5143e3cd88b1312a`. The JSON and inspected PNG are in [`evidence/tissue-v0.2`](evidence/tissue-v0.2/README.md). This is implementation evidence, not a calibrated brain-tissue result or production GPU benchmark.
 
-An M4 Pro v0 throughput run was not promoted because a new external Metal training workload began between the idle check and dispatch. The current v0.1 revision is synchronized to `/Users/n/numi-brain` on `macmini`, but uncontended production-size qualification remains pending.
+An M4 Pro v0 throughput run was not promoted because a new external Metal training workload began between the idle check and dispatch. The current source is synchronized to `/Users/n/numi-brain` on `macmini` after each committed development slice, but uncontended production-size v0.2 qualification remains pending.
 
 ## Local Numi Lab readiness snapshot
 
