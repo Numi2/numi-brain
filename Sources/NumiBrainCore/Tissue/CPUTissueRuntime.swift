@@ -123,7 +123,8 @@ public enum CPUTissueDynamics {
     longRangeExcitatoryDrive: [Float]? = nil,
     eventSchedule: TissueEventSchedule? = nil,
     randomContext: TissueRandomContext = .deterministicDefault,
-    acceptedStep: UInt64 = 0
+    acceptedStep: UInt64 = 0,
+    timestepMilliseconds requestedTimestepMilliseconds: Float? = nil
   ) throws -> TissueGrid {
     try parameters.validate()
     try stimulus.validate()
@@ -139,6 +140,18 @@ public enum CPUTissueDynamics {
     }
     guard timeMilliseconds.isFinite else {
       throw TissueError.invalidParameters("simulation time must be finite")
+    }
+    let timestepMilliseconds =
+      requestedTimestepMilliseconds ?? parameters.timestepMilliseconds
+    guard timestepMilliseconds.isFinite, timestepMilliseconds > 0,
+      timestepMilliseconds <= parameters.excitatoryTimeConstantMilliseconds,
+      timestepMilliseconds <= parameters.inhibitoryTimeConstantMilliseconds,
+      timestepMilliseconds <= parameters.adaptationTimeConstantMilliseconds,
+      timestepMilliseconds <= parameters.axonalRelayTimeConstantMilliseconds
+    else {
+      throw TissueError.invalidParameters(
+        "candidate timestep must be positive, finite, and bounded by every tissue time constant"
+      )
     }
 
     var output = try TissueGrid(width: input.width, height: input.height)
@@ -258,7 +271,7 @@ public enum CPUTissueDynamics {
         let nextE = min(
           max(
             center.x
-              + parameters.timestepMilliseconds
+              + timestepMilliseconds
               / parameters.excitatoryTimeConstantMilliseconds
               * (centerSite.w * targetE - center.x),
             0
@@ -266,7 +279,7 @@ public enum CPUTissueDynamics {
         let nextI = min(
           max(
             center.y
-              + parameters.timestepMilliseconds
+              + timestepMilliseconds
               / parameters.inhibitoryTimeConstantMilliseconds
               * (centerSite.w * targetI - center.y),
             0
@@ -274,7 +287,7 @@ public enum CPUTissueDynamics {
         let nextA = min(
           max(
             center.z
-              + parameters.timestepMilliseconds
+              + timestepMilliseconds
               / parameters.adaptationTimeConstantMilliseconds
               * (center.x - center.z),
             0
@@ -283,7 +296,7 @@ public enum CPUTissueDynamics {
         let nextRelay = min(
           max(
             center.w
-              + parameters.timestepMilliseconds
+              + timestepMilliseconds
               / parameters.axonalRelayTimeConstantMilliseconds
               * (center.x - center.w),
             0
@@ -395,10 +408,11 @@ public struct CPUTissueRuntime: Sendable {
   private var rootShadow: TissueGrid?
   private var candidate: TissueGrid?
   private var candidateRelay: [Float]?
-  private var acceptedTimeMilliseconds: Float?
+  private var candidateDurationMicroseconds: UInt64?
+  private var acceptedTimestamp: BrainTimestamp?
   private var rootAcceptedStep: UInt64?
-  private var rootHistoryWrites: [Int: [Float]] = [:]
-  private var committedRelayHistory: [[Float]]
+  private var rootRelayHistory: TimestampedRelayHistory?
+  private var committedRelayHistory: TimestampedRelayHistory
 
   public init(
     initialState: TissueGrid,
@@ -491,14 +505,16 @@ public struct CPUTissueRuntime: Sendable {
     self.eventSchedule = eventSchedule
     self.randomContext = randomContext
     let initialRelay = initialState.cells.map(\.w)
-    self.committedRelayHistory = Array(
-      repeating: initialRelay,
-      count: TissueDelayField.historyCapacity
+    self.committedRelayHistory = try TimestampedRelayHistory(
+      originTimestamp: BrainTimestamp(microseconds: 0),
+      values: initialRelay,
+      capacity: TissueDelayField.historyCapacity
     )
   }
 
   public var hasOpenRootTransaction: Bool { rootShadow != nil }
   public var hasCandidateSubstep: Bool { candidate != nil }
+  public var committedTimestamp: BrainTimestamp { committedRelayHistory.newestTimestamp }
 
   public mutating func beginRootTransaction(at timeMilliseconds: Float) throws {
     guard rootShadow == nil else {
@@ -507,28 +523,54 @@ public struct CPUTissueRuntime: Sendable {
     guard timeMilliseconds.isFinite else {
       throw TissueError.transaction("root time must be finite")
     }
+    let timestamp = try Self.timestamp(milliseconds: timeMilliseconds)
+    guard timestamp >= committedRelayHistory.newestTimestamp else {
+      throw TissueError.transaction("root time precedes committed relay history")
+    }
     rootShadow = committed
     candidate = nil
     candidateRelay = nil
-    acceptedTimeMilliseconds = timeMilliseconds
+    candidateDurationMicroseconds = nil
+    acceptedTimestamp = timestamp
     rootAcceptedStep = committedStep
-    rootHistoryWrites.removeAll(keepingCapacity: true)
+    rootRelayHistory = committedRelayHistory
   }
 
   public mutating func advanceCandidateSubstep() throws {
-    guard let rootShadow, let time = acceptedTimeMilliseconds,
-      let rootAcceptedStep
+    try advanceCandidateSubstep(
+      durationMicroseconds: Self.timestepMicroseconds(parameters: parameters)
+    )
+  }
+
+  public mutating func advanceCandidateSubstep(
+    durationMicroseconds: UInt64
+  ) throws {
+    guard let rootShadow, let acceptedTimestamp, let rootAcceptedStep,
+      let rootRelayHistory
     else {
       throw TissueError.transaction("begin a root transaction before advancing")
     }
     guard candidate == nil else {
       throw TissueError.transaction("accept or reject the existing candidate first")
     }
-    let delayedRelay = makeDelayedRelay(at: rootAcceptedStep)
-    let projectionDrive = makeProjectionDrive(at: rootAcceptedStep)
+    guard durationMicroseconds > 0 else {
+      throw TissueError.transaction("candidate duration must be positive")
+    }
+    let timestepMilliseconds = Float(Double(durationMicroseconds) / 1_000)
+    guard timestepMilliseconds.isFinite else {
+      throw TissueError.transaction("candidate duration is not representable in milliseconds")
+    }
+    let delayedRelay = try makeDelayedRelay(
+      at: acceptedTimestamp,
+      history: rootRelayHistory
+    )
+    let projectionDrive = try makeProjectionDrive(
+      at: acceptedTimestamp,
+      history: rootRelayHistory
+    )
     let candidate = try CPUTissueDynamics.advance(
       rootShadow,
-      timeMilliseconds: time,
+      timeMilliseconds: Float(Double(acceptedTimestamp.rawValue) / 1_000),
       parameters: parameters,
       stimulus: stimulus,
       structure: structure,
@@ -536,26 +578,35 @@ public struct CPUTissueRuntime: Sendable {
       longRangeExcitatoryDrive: projectionDrive,
       eventSchedule: eventSchedule,
       randomContext: randomContext,
-      acceptedStep: rootAcceptedStep
+      acceptedStep: rootAcceptedStep,
+      timestepMilliseconds: timestepMilliseconds
     )
     self.candidate = candidate
     candidateRelay = candidate.cells.map(\.w)
+    candidateDurationMicroseconds = durationMicroseconds
   }
 
   public mutating func acceptCandidateSubstep() throws {
-    guard let candidate, let candidateRelay, let time = acceptedTimeMilliseconds,
-      let rootAcceptedStep
+    guard let candidate, let candidateRelay, let candidateDurationMicroseconds,
+      let acceptedTimestamp, let rootAcceptedStep, var rootRelayHistory
     else {
       throw TissueError.transaction("there is no candidate substep to accept")
     }
-    let nextStep = rootAcceptedStep + 1
-    let historySlot = Int(nextStep % UInt64(TissueDelayField.historyCapacity))
-    rootHistoryWrites[historySlot] = candidateRelay
+    let (nextStep, stepOverflow) = rootAcceptedStep.addingReportingOverflow(1)
+    let (nextTimestampValue, timestampOverflow) = acceptedTimestamp.rawValue
+      .addingReportingOverflow(candidateDurationMicroseconds)
+    guard !stepOverflow, !timestampOverflow else {
+      throw TissueError.transaction("accepted tissue time or step overflows")
+    }
+    let nextTimestamp = BrainTimestamp(microseconds: nextTimestampValue)
+    try rootRelayHistory.append(timestamp: nextTimestamp, values: candidateRelay)
     rootShadow = candidate
     self.candidate = nil
     self.candidateRelay = nil
-    acceptedTimeMilliseconds = time + parameters.timestepMilliseconds
+    self.candidateDurationMicroseconds = nil
+    self.acceptedTimestamp = nextTimestamp
     self.rootAcceptedStep = nextStep
+    self.rootRelayHistory = rootRelayHistory
   }
 
   public mutating func rejectCandidateSubstep() throws {
@@ -564,16 +615,17 @@ public struct CPUTissueRuntime: Sendable {
     }
     candidate = nil
     candidateRelay = nil
+    candidateDurationMicroseconds = nil
   }
 
   public mutating func commitRootTransaction() throws {
-    guard let rootShadow, let rootAcceptedStep, candidate == nil else {
+    guard let rootShadow, let rootAcceptedStep, let rootRelayHistory,
+      candidate == nil
+    else {
       throw TissueError.transaction("root commit requires a shadow and no pending candidate")
     }
     committed = rootShadow
-    for (slot, relay) in rootHistoryWrites {
-      committedRelayHistory[slot] = relay
-    }
+    committedRelayHistory = rootRelayHistory
     committedStep = rootAcceptedStep
     clearTransaction()
   }
@@ -610,47 +662,39 @@ public struct CPUTissueRuntime: Sendable {
     rootShadow = nil
     candidate = nil
     candidateRelay = nil
-    acceptedTimeMilliseconds = nil
+    candidateDurationMicroseconds = nil
+    acceptedTimestamp = nil
     rootAcceptedStep = nil
-    rootHistoryWrites.removeAll(keepingCapacity: true)
+    rootRelayHistory = nil
   }
 
   public func committedHistoryHash() -> String {
-    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-    @inline(__always)
-    func mix(_ byte: UInt8, into hash: inout UInt64) {
-      hash ^= UInt64(byte)
-      hash &*= 0x100_0000_01b3
-    }
-    var step = committedStep.littleEndian
-    withUnsafeBytes(of: &step) { bytes in
-      for byte in bytes { mix(byte, into: &hash) }
-    }
-    for historySlot in committedRelayHistory {
-      for relay in historySlot {
-        var bits = relay.bitPattern.littleEndian
-        withUnsafeBytes(of: &bits) { bytes in
-          for byte in bytes { mix(byte, into: &hash) }
-        }
-      }
-    }
-    return String(format: "%016llx", hash)
+    committedRelayHistory.stableHash()
   }
 
-  private func makeDelayedRelay(at step: UInt64) -> [Float] {
-    let capacity = TissueDelayField.historyCapacity
-    let currentSlot = Int(step % UInt64(capacity))
+  private func makeDelayedRelay(
+    at timestamp: BrainTimestamp,
+    history: TimestampedRelayHistory
+  ) throws -> [Float] {
+    let timestepMicroseconds = Self.timestepMicroseconds(parameters: parameters)
     var delayed = Array(repeating: Float.zero, count: committed.count)
     for index in delayed.indices {
-      let delay = Int(delayField.delaySteps[index])
-      delayed[index] = relay(siteIndex: index, delay: delay, currentSlot: currentSlot)
+      let delay = UInt64(delayField.delaySteps[index]) * timestepMicroseconds
+      delayed[index] = try history.sample(
+        siteIndex: index,
+        at: timestamp,
+        delayMicroseconds: delay
+      )
     }
     return delayed
   }
 
-  private func makeProjectionDrive(at step: UInt64) -> [Float]? {
+  private func makeProjectionDrive(
+    at timestamp: BrainTimestamp,
+    history: TimestampedRelayHistory
+  ) throws -> [Float]? {
     guard connectome.edgeCount > 0 else { return nil }
-    let currentSlot = Int(step % UInt64(TissueDelayField.historyCapacity))
+    let timestepMicroseconds = Self.timestepMicroseconds(parameters: parameters)
     var drive = Array(repeating: Float.zero, count: committed.count)
     for destination in 0..<connectome.siteCount {
       let start = Int(connectome.destinationOffsets[destination])
@@ -661,21 +705,30 @@ public struct CPUTissueRuntime: Sendable {
         let edge = connectome.projections[edgeIndex]
         value +=
           edge.weight
-          * relay(
+          * (try history.sample(
             siteIndex: edge.sourceIndex,
-            delay: Int(edge.delaySteps),
-            currentSlot: currentSlot
-          )
+            at: timestamp,
+            delayMicroseconds: UInt64(edge.delaySteps) * timestepMicroseconds
+          ))
       }
       drive[destination] = value
     }
     return drive
   }
 
-  private func relay(siteIndex: Int, delay: Int, currentSlot: Int) -> Float {
-    let slot =
-      (currentSlot - delay + TissueDelayField.historyCapacity)
-      % TissueDelayField.historyCapacity
-    return rootHistoryWrites[slot]?[siteIndex] ?? committedRelayHistory[slot][siteIndex]
+  private static func timestepMicroseconds(parameters: TissueParameters) -> UInt64 {
+    UInt64((Double(parameters.timestepMilliseconds) * 1_000).rounded())
+  }
+
+  private static func timestamp(milliseconds: Float) throws -> BrainTimestamp {
+    guard milliseconds.isFinite, milliseconds >= 0 else {
+      throw TissueError.transaction("root time must be finite and nonnegative")
+    }
+    let scaled = Double(milliseconds) * 1_000
+    let rounded = scaled.rounded()
+    guard rounded < Double(UInt64.max), abs(scaled - rounded) <= 0.01 else {
+      throw TissueError.transaction("root time is not representable in integer microseconds")
+    }
+    return BrainTimestamp(microseconds: UInt64(rounded))
   }
 }

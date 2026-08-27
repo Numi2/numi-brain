@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.12
+# Mesoscale neural tissue model v0.15
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -22,9 +22,9 @@ S=(s_E,s_I,s_C,V),
 
 where `sE` and `sI` scale local excitatory and inhibitory response, `sC` scales outgoing short-range coupling, and viability `V` lies in `[0, 1]`. The default layered profile is a deterministic synthetic test morphology with four depth strata and slight lateral modulation. It is not a histological fit to a named cortical area.
 
-An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. V0.8 supports integer delays from 0 through 31 accepted integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. The configured delay is `d_j` times the model's nominal base timestep. The v0.15 CPU oracle resolves that interval against accepted physical timestamps and linearly interpolates bracketed relay samples. The Metal v0.14 path still resolves the same class as 0–31 accepted fixed integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
 
-Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own 0–31 step delay. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
+Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own delay class. The CPU oracle converts that class to physical microseconds through the nominal timestep; Metal currently retains the fixed-step interpretation. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
 Runtime input uses an immutable canonical schedule of at most 64 receptor-derived events. Each compiled 64-byte event stores a unique schedule identifier, normalized center and radius, half-open physical-time interval, excitatory and inhibitory drive, bounded noise amplitude, flags, interrupt class, conduction latency, receptor identity, magnitude, and auxiliary metadata. The schedule is neural input after receptor transduction; it is not raw or privileged NumanX state. Before every attempted tissue substep, a Metal kernel compacts the due schedule indices into a private GPU buffer. A device barrier publishes that list before the tissue kernel, so each site scans only the active set. The CPU oracle constructs the same canonical active-index list. Future records may remain in the immutable schedule without entering tissue computation before their timestamps.
 
@@ -121,6 +121,9 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 - Local and long-range delayed reads use only accepted root-shadow or committed relay generations.
 - Counter-random samples are pure functions of committed identity and accepted step; retry, replay, and control-interval chunking do not change them.
 - Different configured seeds produce different noisy trajectories without changing event timing or topology.
+- The CPU relay oracle stores accepted physical timestamps, samples delay targets by microseconds, interpolates only between accepted states, and fails closed if a bounded ring has lost a required post-origin bracket.
+- A CPU candidate may use a positive duration distinct from the nominal timestep while retaining accepted-step random identity; rejection and root abort append no timestamped relay sample.
+- The Metal tissue path remains fixed-duration until the timestamped relay ring and its coverage checks are implemented in the shader/runtime boundary.
 
 ## Initial evidence gates
 
@@ -175,6 +178,9 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 49. Metal scheduler and regional kernels validate one private 64-byte parameter binding before execution.
 50. Publication is rejected while a rollout cohort leases the current generation and accepts only its compatible direct successor at a synchronization boundary.
 51. Schema-v12 reports manifest, version, parent, component count, bytes, regional shape/content identities, and CPU/Metal version parity.
+52. Timestamped CPU relay history returns exact samples at accepted times and deterministic interpolation between irregular accepted samples.
+53. Losing a required post-origin time bracket fails closed rather than substituting a temporally incorrect relay value.
+54. Variable-duration CPU candidates preserve exact retry, abort, replay, and root-chunking identity.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 

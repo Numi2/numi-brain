@@ -510,6 +510,64 @@ final class CPUTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(direct.committed, retried.committed)
   }
 
+  func testVariableDurationRelayHistoryRetriesChunksAndAbortsExactly() throws {
+    let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
+    let baseline = try makeRuntime(
+      width: 16,
+      height: 16,
+      stimulus: stimulus,
+      noiseAmplitude: 0.4,
+      seed: 91
+    )
+    var direct = baseline
+    var retried = baseline
+    var chunked = baseline
+    var aborted = baseline
+
+    try direct.beginRootTransaction(at: 0)
+    try direct.advanceCandidateSubstep(durationMicroseconds: 500)
+    try direct.acceptCandidateSubstep()
+    try direct.advanceCandidateSubstep(durationMicroseconds: 500)
+    try direct.acceptCandidateSubstep()
+    try direct.commitRootTransaction()
+
+    try retried.beginRootTransaction(at: 0)
+    try retried.advanceCandidateSubstep(durationMicroseconds: 500)
+    try retried.rejectCandidateSubstep()
+    try retried.advanceCandidateSubstep(durationMicroseconds: 500)
+    try retried.acceptCandidateSubstep()
+    try retried.advanceCandidateSubstep(durationMicroseconds: 500)
+    try retried.acceptCandidateSubstep()
+    try retried.commitRootTransaction()
+
+    try chunked.beginRootTransaction(at: 0)
+    try chunked.advanceCandidateSubstep(durationMicroseconds: 500)
+    try chunked.acceptCandidateSubstep()
+    try chunked.commitRootTransaction()
+    try chunked.beginRootTransaction(at: 0.5)
+    try chunked.advanceCandidateSubstep(durationMicroseconds: 500)
+    try chunked.acceptCandidateSubstep()
+    try chunked.commitRootTransaction()
+
+    let abortedState = aborted.committed.stableHash()
+    let abortedHistory = aborted.committedHistoryHash()
+    try aborted.beginRootTransaction(at: 0)
+    try aborted.advanceCandidateSubstep(durationMicroseconds: 250)
+    try aborted.acceptCandidateSubstep()
+    try aborted.abortRootTransaction()
+
+    XCTAssertEqual(direct.committedTimestamp, BrainTimestamp(microseconds: 1_000))
+    XCTAssertEqual(direct.committedStep, 2)
+    XCTAssertEqual(direct.committed, retried.committed)
+    XCTAssertEqual(direct.committedHistoryHash(), retried.committedHistoryHash())
+    XCTAssertEqual(direct.committed, chunked.committed)
+    XCTAssertEqual(direct.committedHistoryHash(), chunked.committedHistoryHash())
+    XCTAssertEqual(aborted.committedTimestamp, BrainTimestamp(microseconds: 0))
+    XCTAssertEqual(aborted.committedStep, 0)
+    XCTAssertEqual(aborted.committed.stableHash(), abortedState)
+    XCTAssertEqual(aborted.committedHistoryHash(), abortedHistory)
+  }
+
   func testRootAbortRestoresEntireCommittedState() throws {
     let stimulus = TissueStimulus(startMilliseconds: 0, endMilliseconds: 20)
     var runtime = try makeRuntime(
