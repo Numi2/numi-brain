@@ -48,11 +48,13 @@ final class BrainDispatchPlanTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_dispatch_entry_size(), 16)
     XCTAssertEqual(nb_brain_abi_dispatch_plan_header_size(), 48)
     XCTAssertEqual(nb_brain_abi_dispatch_plan_result_size(), 32)
+    XCTAssertEqual(nb_brain_abi_dispatch_work_item_size(), 32)
     XCTAssertEqual(MemoryLayout<NBCohortEnvironment>.stride, 40)
     XCTAssertEqual(MemoryLayout<NBDispatchGroup>.stride, 24)
     XCTAssertEqual(MemoryLayout<NBDispatchEntry>.stride, 16)
     XCTAssertEqual(MemoryLayout<NBDispatchPlanHeader>.stride, 48)
     XCTAssertEqual(MemoryLayout<NBDispatchPlanResult>.stride, 32)
+    XCTAssertEqual(MemoryLayout<NBDispatchWorkItem>.stride, 32)
 
     let (schedule, version, environments) = try makeInputs()
     let plan = try BrainDispatchPlan(environments: environments)
@@ -64,6 +66,8 @@ final class BrainDispatchPlanTests: XCTestCase {
     XCTAssertGreaterThan(plan.fingerprint, 0)
     XCTAssertFalse(plan.groups.isEmpty)
     XCTAssertEqual(plan.entryCount, plan.groups.reduce(0) { $0 + $1.entries.count })
+    XCTAssertEqual(plan.workItems.count, plan.entryCount)
+    XCTAssertGreaterThan(plan.workFingerprint, 0)
     XCTAssertTrue(
       plan.groups.allSatisfy { group in
         group.entries.map(\.environmentIdentifier)
@@ -98,6 +102,16 @@ final class BrainDispatchPlanTests: XCTestCase {
       }
     }
     XCTAssertEqual(recomputed, plan.fingerprint)
+    let workRecords = plan.workItems.map(\.abiRecord)
+    let workFingerprint = workRecords.withUnsafeBufferPointer { records in
+      nb_brain_abi_dispatch_work_fingerprint(
+        plan.fingerprint,
+        version.fingerprint,
+        records.baseAddress,
+        UInt32(records.count)
+      )
+    }
+    XCTAssertEqual(workFingerprint, plan.workFingerprint)
   }
 
   func testDispatchPlanPreservesIndependentInterruptEntries() throws {
@@ -113,6 +127,18 @@ final class BrainDispatchPlanTests: XCTestCase {
           && group.entries[0].environmentIdentifier == 3
           && group.entries[0].reasons == .interrupt
           && group.entries[0].interruptMask == .pain
+      }
+    )
+    let interruptWorkItems = plan.workItems.filter {
+      $0.timestamp == BrainTimestamp(microseconds: 7_500)
+    }
+    XCTAssertEqual(interruptWorkItems.map(\.moduleIdentifier), [12, 26, 95])
+    XCTAssertTrue(
+      interruptWorkItems.allSatisfy { item in
+        item.environmentIdentifier == 3
+          && item.reasons == .interrupt
+          && item.interruptMask == .pain
+          && plan.groups[Int(item.groupIndex)].moduleIdentifier == item.moduleIdentifier
       }
     )
     let periodic = try XCTUnwrap(

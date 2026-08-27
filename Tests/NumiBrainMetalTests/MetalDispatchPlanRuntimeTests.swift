@@ -56,7 +56,12 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
     XCTAssertEqual(first.planFingerprint, plan.fingerprint)
     XCTAssertEqual(first.parameterVersionFingerprint, version.fingerprint)
     XCTAssertEqual(first.groups, plan.groups)
+    XCTAssertEqual(first.workItems, plan.workItems)
+    XCTAssertEqual(first.workFingerprint, plan.workFingerprint)
+    XCTAssertEqual(first.indirectThreadgroupCount, UInt32((plan.entryCount + 63) / 64))
     XCTAssertEqual(first.groups, replay.groups)
+    XCTAssertEqual(first.workItems, replay.workItems)
+    XCTAssertEqual(first.workFingerprint, replay.workFingerprint)
     XCTAssertEqual(first.planFingerprint, replay.planFingerprint)
     XCTAssertEqual(first.parameterVersionFingerprint, replay.parameterVersionFingerprint)
     XCTAssertEqual(first.entryCount, plan.entryCount)
@@ -74,6 +79,8 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
       plan.groups.count * BrainDispatchPlan.groupByteCount
         + plan.entryCount * BrainDispatchPlan.entryByteCount
         + BrainDispatchPlan.resultByteCount
+        + 16
+        + plan.entryCount * BrainDispatchPlan.workItemByteCount
     )
   }
 

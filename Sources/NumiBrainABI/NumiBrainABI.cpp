@@ -35,6 +35,7 @@ static_assert(sizeof(NBDispatchGroup) == NB_DISPATCH_GROUP_BYTE_COUNT);
 static_assert(sizeof(NBDispatchEntry) == NB_DISPATCH_ENTRY_BYTE_COUNT);
 static_assert(sizeof(NBDispatchPlanHeader) == NB_DISPATCH_PLAN_HEADER_BYTE_COUNT);
 static_assert(sizeof(NBDispatchPlanResult) == NB_DISPATCH_PLAN_RESULT_BYTE_COUNT);
+static_assert(sizeof(NBDispatchWorkItem) == NB_DISPATCH_WORK_ITEM_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -166,6 +167,10 @@ size_t nb_brain_abi_dispatch_plan_header_size(void) {
 
 size_t nb_brain_abi_dispatch_plan_result_size(void) {
   return sizeof(NBDispatchPlanResult);
+}
+
+size_t nb_brain_abi_dispatch_work_item_size(void) {
+  return sizeof(NBDispatchWorkItem);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -769,4 +774,32 @@ uint32_t nb_brain_abi_validate_dispatch_plan(
     return NB_DISPATCH_PLAN_FINGERPRINT;
   }
   return NB_DISPATCH_PLAN_VALID;
+}
+
+uint64_t nb_brain_abi_dispatch_work_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    const NBDispatchWorkItem *items,
+    uint32_t item_count
+) {
+  if (plan_fingerprint == 0 || parameter_version_fingerprint == 0
+      || (item_count > 0 && items == nullptr)) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_DISPATCH_PLAN_VERSION));
+  mix_little_endian(hash, plan_fingerprint);
+  mix_little_endian(hash, parameter_version_fingerprint);
+  mix_little_endian(hash, item_count);
+  for (uint32_t index = 0; index < item_count; ++index) {
+    const NBDispatchWorkItem &item = items[index];
+    mix_little_endian(hash, item.timestamp_microseconds);
+    mix_little_endian(hash, item.interrupt_mask);
+    mix_little_endian(hash, item.environment_identifier);
+    mix_little_endian(hash, item.reason_flags);
+    mix_little_endian(hash, item.module_id);
+    mix_little_endian(hash, item.clock_class);
+    mix_little_endian(hash, item.group_index);
+  }
+  return hash;
 }

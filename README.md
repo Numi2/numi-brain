@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice, deterministic scheduler oracle, versioned cohort-dispatch compiler, and integrated Metal recurrent regional-token path with compiled delayed sparse routes. The complete NumiBrain runtime is not implemented or qualified yet.
+> Status: formal architecture plus an executable heterogeneous mesoscale neural-tissue slice, deterministic scheduler oracle, versioned cohort-dispatch compiler with GPU-generated indirect consumption, and integrated Metal recurrent regional-token path with compiled delayed sparse routes. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 
@@ -76,7 +76,7 @@ The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler
 
 ## Run cohort dispatch materialization
 
-The v0.13 dispatch executable preserves independent version-bound scheduler shadows, compiles their active module work into canonical timestamp/module groups, and materializes the flattened plan into private Metal 4 buffers:
+The v0.14 dispatch executable preserves independent version-bound scheduler shadows, compiles their active module work into canonical timestamp/module groups, materializes the flattened plan into private Metal 4 buffers, and launches a second consumer from GPU-generated indirect arguments:
 
 ```sh
 swift run -c release numi-brain-dispatch \
@@ -85,7 +85,7 @@ swift run -c release numi-brain-dispatch \
   --output artifacts/cohort-dispatch-evidence.json
 ```
 
-The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU output and replay, and stale-parameter rejection. The CPU currently owns plan construction; the GPU kernel owns private region-major materialization. This is not yet GPU prefix-sum grouping, indirect regional execution, or cohort throughput qualification.
+The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU materialization, exact indirect work consumption and replay, and stale-parameter rejection. The CPU currently owns plan construction; Metal owns private region-major materialization and the no-readback handoff into the indirect consumer. The consumer emits work records but does not yet update recurrent cohort state. This is not yet GPU prefix-sum grouping or cohort throughput qualification.
 
 The exact 8,192-environment Apple M4 correctness artifact is checked into [evidence/cohort-dispatch-v0.13](evidence/cohort-dispatch-v0.13/README.md). Its command-feedback timing covers only the materialization kernel and is not a production performance claim.
 
@@ -104,6 +104,6 @@ The exact 8,192-environment Apple M4 correctness artifact is checked into [evide
 
 The first executable vertical slice now establishes an FP32 excitatory/inhibitory tissue field plus a schedule-driven recurrent regional primitive: synthetic per-site heterogeneity, finite-time axonal relay and conduction history, lesionable short-range coupling, destination-major sparse delayed tissue projections, timestamped noisy receptor events, a compiled 64-byte receptor-event ABI, GPU event and interrupt compaction, counter-based randomness, private scheduler clocks, 10,752 region-major token scalars, immutable factorized slow parameters, seven candidate regional routes with transaction-owned timestamped delivery rings, deterministic content-scored top-k selection, emergency bypass, normalized strengths, compact selected-route gathering, matching CPU oracles, versioned multi-agent dispatch plans, private Metal cohort materialization, Metal 4 dispatch, and committed/root-shadow/candidate transactions. Each attempted substep compacts due receptor events before tissue execution; each accepted root transduces receptor onsets and compacts due modules before timestamp-synchronous regional token execution. The bridge preserves event timestamps and transaction semantics but does not yet interrupt NumanX within a candidate physical substep. It does not yet implement calibrated receptors or conduction velocity, learned/context-conditioned routing, differentiable training routing, dense tiled regional matrices, GPU prefix-sum plan construction, indirect cohort execution, the complete 96-module graph, NumanX interop, learning, memory, or motor control.
 
-The next runtime-foundation work is connecting materialized cohorts to indirect active-region execution, then moving plan construction to parallel GPU prefix sums. Nested NumanX transaction interop, immutable successor-buffer activation across runtimes, persistent checkpoints, and private-heap state storage follow. Routing still needs learned/context-conditioned biases, capacity balancing, and its differentiable training form. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, motivation, skills and planning, memory, development, communication, and persistent life mode.
+The next runtime-foundation work is connecting indirectly consumed cohort work to recurrent active-region state updates, then moving plan construction to parallel GPU prefix sums. Nested NumanX transaction interop, immutable successor-buffer activation across runtimes, persistent checkpoints, and private-heap state storage follow. Routing still needs learned/context-conditioned biases, capacity balancing, and its differentiable training form. Later phases add calibrated causal receptor adapters, body schema, protective and motor systems, world modeling, motivation, skills and planning, memory, development, communication, and persistent life mode.
 
 No phase is intended as a throwaway implementation.

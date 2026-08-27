@@ -34,6 +34,7 @@ enum {
   NB_DISPATCH_ENTRY_BYTE_COUNT = 16,
   NB_DISPATCH_PLAN_HEADER_BYTE_COUNT = 48,
   NB_DISPATCH_PLAN_RESULT_BYTE_COUNT = 32,
+  NB_DISPATCH_WORK_ITEM_BYTE_COUNT = 32,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
@@ -285,6 +286,18 @@ typedef struct NBDispatchPlanResult {
   uint64_t parameter_version_fingerprint;
 } NBDispatchPlanResult;
 
+/// One fully expanded active-environment work item consumed by a downstream
+/// indirect dispatch. It retains the source group for deterministic tracing.
+typedef struct NBDispatchWorkItem {
+  uint64_t timestamp_microseconds;
+  uint64_t interrupt_mask;
+  uint32_t environment_identifier;
+  uint32_t reason_flags;
+  uint16_t module_id;
+  uint16_t clock_class;
+  uint32_t group_index;
+} NBDispatchWorkItem;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -404,6 +417,7 @@ size_t nb_brain_abi_dispatch_group_size(void);
 size_t nb_brain_abi_dispatch_entry_size(void);
 size_t nb_brain_abi_dispatch_plan_header_size(void);
 size_t nb_brain_abi_dispatch_plan_result_size(void);
+size_t nb_brain_abi_dispatch_work_item_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -481,6 +495,13 @@ uint32_t nb_brain_abi_validate_dispatch_plan(
     const NBDispatchPlanHeader *header,
     const NBDispatchGroup *groups,
     const NBDispatchEntry *entries
+);
+
+uint64_t nb_brain_abi_dispatch_work_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    const NBDispatchWorkItem *items,
+    uint32_t item_count
 );
 
 #ifdef __cplusplus

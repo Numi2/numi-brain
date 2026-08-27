@@ -1,6 +1,49 @@
 import Foundation
 import NumiBrainABI
 
+/// One flattened active-environment invocation ready for a downstream
+/// region-major consumer. Group identity preserves deterministic provenance.
+@frozen
+public struct BrainDispatchWorkItem: Codable, Equatable, Sendable {
+  public let timestamp: BrainTimestamp
+  public let interruptMask: BrainInterruptMask
+  public let environmentIdentifier: UInt32
+  public let reasons: BrainInvocationReason
+  public let moduleIdentifier: UInt16
+  public let clockClass: BrainClockClass
+  public let groupIndex: UInt32
+
+  public init(
+    timestamp: BrainTimestamp,
+    interruptMask: BrainInterruptMask,
+    environmentIdentifier: UInt32,
+    reasons: BrainInvocationReason,
+    moduleIdentifier: UInt16,
+    clockClass: BrainClockClass,
+    groupIndex: UInt32
+  ) {
+    self.timestamp = timestamp
+    self.interruptMask = interruptMask
+    self.environmentIdentifier = environmentIdentifier
+    self.reasons = reasons
+    self.moduleIdentifier = moduleIdentifier
+    self.clockClass = clockClass
+    self.groupIndex = groupIndex
+  }
+
+  public var abiRecord: NBDispatchWorkItem {
+    var record = NBDispatchWorkItem()
+    record.timestamp_microseconds = timestamp.rawValue
+    record.interrupt_mask = interruptMask.rawValue
+    record.environment_identifier = environmentIdentifier
+    record.reason_flags = reasons.rawValue
+    record.module_id = moduleIdentifier
+    record.clock_class = clockClass.rawValue
+    record.group_index = groupIndex
+    return record
+  }
+}
+
 /// A compiled, flattened cohort dispatch plan. It preserves independent
 /// environment state while grouping identical module work for later
 /// region-major GPU execution.
@@ -12,6 +55,7 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
   public static let entryByteCount = Int(NB_DISPATCH_ENTRY_BYTE_COUNT)
   public static let headerByteCount = Int(NB_DISPATCH_PLAN_HEADER_BYTE_COUNT)
   public static let resultByteCount = Int(NB_DISPATCH_PLAN_RESULT_BYTE_COUNT)
+  public static let workItemByteCount = Int(NB_DISPATCH_WORK_ITEM_BYTE_COUNT)
 
   public let scheduleFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
@@ -205,6 +249,34 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
   public var cohortFingerprintHex: String { String(format: "%016llx", cohortFingerprint) }
 
   public var entryCount: Int { groups.reduce(0) { $0 + $1.entries.count } }
+
+  public var workItems: [BrainDispatchWorkItem] {
+    groups.enumerated().flatMap { groupIndex, group in
+      group.entries.map { entry in
+        BrainDispatchWorkItem(
+          timestamp: group.timestamp,
+          interruptMask: entry.interruptMask,
+          environmentIdentifier: entry.environmentIdentifier,
+          reasons: entry.reasons,
+          moduleIdentifier: group.moduleIdentifier,
+          clockClass: group.clockClass,
+          groupIndex: UInt32(groupIndex)
+        )
+      }
+    }
+  }
+
+  public var workFingerprint: UInt64 {
+    let records = workItems.map(\.abiRecord)
+    return records.withUnsafeBufferPointer { records in
+      nb_brain_abi_dispatch_work_fingerprint(
+        fingerprint,
+        parameterVersionFingerprint,
+        records.baseAddress,
+        UInt32(records.count)
+      )
+    }
+  }
 
   public var abiHeader: NBDispatchPlanHeader {
     var record = NBDispatchPlanHeader()

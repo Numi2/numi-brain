@@ -1,8 +1,8 @@
-# Versioned cohort dispatch v0.13
+# Versioned cohort dispatch v0.14
 
-This document defines the first executable active-module cohort boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan and materialized into private Metal 4 buffers under one immutable parameter-version binding. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 45, 47, 50, 51, 52, and 62.
+This document defines the first executable active-module cohort boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 45, 47, 50, 51, 52, and 62.
 
-It does not yet perform GPU prefix-sum grouping, indirect regional execution, per-agent recurrent-state gathering, or a complete multi-agent brain tick.
+It does not yet perform GPU prefix-sum grouping, recurrent regional-state updates across the cohort, or a complete multi-agent brain tick.
 
 ## Stable records
 
@@ -15,6 +15,7 @@ It does not yet perform GPU prefix-sum grouping, indirect regional execution, pe
 | `NBDispatchEntry` | 16 | Independent environment identifier, invocation reasons, and interrupt mask |
 | `NBDispatchPlanHeader` | 48 | Schedule, parameter, source-cohort, and complete-plan identities plus counts and format version |
 | `NBDispatchPlanResult` | 32 | Materialized counts, typed status, plan identity, and parameter identity |
+| `NBDispatchWorkItem` | 32 | Expanded timestamp, module, environment, reason, interrupt, and source-group work record |
 
 The records are standard-layout C values mirrored explicitly in Metal. Compile-time assertions and Swift tests require exact size agreement. Fingerprints mix explicit little-endian fields and never hash struct padding. They are deterministic content identities, not cryptographic signatures.
 
@@ -48,7 +49,9 @@ column = active environment entry within that group
 
 The kernel validates the bound format, counts, schedule identity, parameter identity, nonzero source-cohort identity, and group capacities. It copies canonical groups and entries into private region-major output buffers without atomics. The result remains private for a future indirect regional executor.
 
-The current public materializer performs an explicit readback only after command completion to verify exact output and report evidence. It does not recompute the complete field-wise plan fingerprint inside Metal; the compiled C validator owns canonical fingerprint verification before upload, while Metal enforces that authenticated identity against the private parameter binding.
+The materializer also writes a private 12-byte `MTLDispatchThreadgroupsIndirectArguments` payload. After a device barrier, `consume_dispatch_plan` launches from that GPU-generated count, finds the source group for each flattened entry, and writes one private `NBDispatchWorkItem` per active environment invocation. No entry-count readback occurs between these kernels.
+
+The current public materializer performs an explicit readback only after both kernels complete to verify exact output and report evidence. It does not recompute the complete field-wise plan fingerprint inside Metal; the compiled C validator owns canonical fingerprint verification before upload, while Metal enforces that authenticated identity against the private parameter binding. The expanded work stream receives its own compiled field-wise fingerprint during post-completion verification.
 
 Private byte counts are:
 
@@ -57,10 +60,10 @@ B_{in}=48+24N_G+16N_E+64,
 \]
 
 \[
-B_{out}=24N_G+16N_E+32,
+B_{out}=24N_G+16N_E+32+16+32N_E,
 \]
 
-where \(N_G\) is the number of dispatch groups and \(N_E\) is the number of active environment entries.
+where \(N_G\) is the number of dispatch groups and \(N_E\) is the number of active environment entries. The extra 16 bytes are aligned private storage for the 12-byte indirect argument payload.
 
 ## Evidence gates
 
@@ -70,8 +73,10 @@ where \(N_G\) is the number of dispatch groups and \(N_E\) is the number of acti
 4. Entry ordering, reason drift, span overflow, serialized fingerprint drift, duplicate identifiers, unversioned cohorts, and mixed versions fail closed.
 5. Discarded source shadows change no committed scheduler state, and retry plans are exact.
 6. Metal output groups and entries exactly equal the compiled CPU plan.
-7. Repeated Metal materialization is discrete-state exact.
-8. A stale parameter generation is rejected before upload.
-9. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
+7. GPU-generated indirect threadgroup counts cover the exact flattened entry count without an intervening CPU readback.
+8. Every indirectly consumed work item and the compiled work fingerprint exactly match the CPU plan.
+9. Repeated Metal materialization and indirect consumption are discrete-state exact.
+10. A stale parameter generation is rejected before upload.
+11. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
 
-Passing these gates establishes a deterministic versioned dispatch boundary and private Metal materialization. It does not establish GPU-native plan construction, prefix sums, indirect execution, cohort neural-state updates, production throughput, or the complete 96-module graph.
+Passing these gates establishes a deterministic versioned dispatch boundary, private Metal materialization, and GPU-generated indirect work consumption. It does not establish GPU-native plan construction, prefix sums, cohort recurrent-state updates, production throughput, or the complete 96-module graph.

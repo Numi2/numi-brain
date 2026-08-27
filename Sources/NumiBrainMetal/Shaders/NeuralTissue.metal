@@ -293,6 +293,22 @@ struct NBDispatchPlanResultABI {
     ulong parameter_version_fingerprint;
 };
 
+struct NBDispatchWorkItemABI {
+    ulong timestamp_microseconds;
+    ulong interrupt_mask;
+    uint environment_identifier;
+    uint reason_flags;
+    ushort module_id;
+    ushort clock_class;
+    uint group_index;
+};
+
+struct NBDispatchIndirectArgumentsABI {
+    uint threadgroups_x;
+    uint threadgroups_y;
+    uint threadgroups_z;
+};
+
 struct NBSchedulerResultABI {
     uint invocation_count;
     uint status;
@@ -394,6 +410,8 @@ static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI d
 static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
 static_assert(sizeof(NBDispatchEntryABI) == 16, "dispatch entry ABI drift");
 static_assert(sizeof(NBDispatchPlanResultABI) == 32, "dispatch result ABI drift");
+static_assert(sizeof(NBDispatchWorkItemABI) == 32, "dispatch work-item ABI drift");
+static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
@@ -417,6 +435,7 @@ constant uint NBDispatchPlanVersion = 1u;
 constant uint NBDispatchPlanStatusValid = 0u;
 constant uint NBDispatchPlanStatusIdentity = 1u;
 constant uint NBDispatchPlanStatusCapacity = 2u;
+constant uint NBDispatchConsumerThreadgroupWidth = 64u;
 constant uint NBReceptorTransductionStatusValid = 0u;
 constant uint NBReceptorTransductionStatusEventCapacity = 1u;
 constant uint NBReceptorTransductionStatusTimeOverflow = 2u;
@@ -449,6 +468,7 @@ kernel void materialize_dispatch_plan(
     device NBDispatchGroupABI *outputGroups [[buffer(4)]],
     device NBDispatchEntryABI *outputEntries [[buffer(5)]],
     device NBDispatchPlanResultABI *result [[buffer(6)]],
+    device NBDispatchIndirectArgumentsABI *indirectArguments [[buffer(7)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint groupIndex = position.y;
@@ -462,6 +482,9 @@ kernel void materialize_dispatch_plan(
         result->reserved = 0u;
         result->plan_fingerprint = header->plan_fingerprint;
         result->parameter_version_fingerprint = header->parameter_version_fingerprint;
+        indirectArguments->threadgroups_x = 0u;
+        indirectArguments->threadgroups_y = 0u;
+        indirectArguments->threadgroups_z = 0u;
         if (header->plan_version != NBDispatchPlanVersion
             || header->flags != 0u
             || header->group_count == 0u
@@ -485,6 +508,15 @@ kernel void materialize_dispatch_plan(
                 }
             }
         }
+        if (result->status == NBDispatchPlanStatusValid) {
+            indirectArguments->threadgroups_x =
+                header->entry_count / NBDispatchConsumerThreadgroupWidth
+                + (header->entry_count % NBDispatchConsumerThreadgroupWidth == 0u
+                    ? 0u
+                    : 1u);
+            indirectArguments->threadgroups_y = 1u;
+            indirectArguments->threadgroups_z = 1u;
+        }
     }
     const NBDispatchGroupABI group = inputGroups[groupIndex];
     if (position.x == 0u) {
@@ -498,6 +530,49 @@ kernel void materialize_dispatch_plan(
         const uint entryIndex = group.entry_offset + position.x;
         outputEntries[entryIndex] = inputEntries[entryIndex];
     }
+}
+
+/// Expands the private canonical plan through GPU-generated indirect dispatch.
+/// Each flattened entry is owned by one lane and retains its source group.
+kernel void consume_dispatch_plan(
+    device const NBDispatchPlanHeaderABI *header [[buffer(0)]],
+    device const NBDispatchGroupABI *groups [[buffer(1)]],
+    device const NBDispatchEntryABI *entries [[buffer(2)]],
+    device NBDispatchWorkItemABI *workItems [[buffer(3)]],
+    uint entryIndex [[thread_position_in_grid]]
+) {
+    if (entryIndex >= header->entry_count) {
+        return;
+    }
+    uint lower = 0u;
+    uint upper = header->group_count;
+    uint groupIndex = ~0u;
+    while (lower < upper) {
+        const uint middle = lower + (upper - lower) / 2u;
+        const NBDispatchGroupABI group = groups[middle];
+        if (entryIndex < group.entry_offset) {
+            upper = middle;
+        } else if (entryIndex >= group.entry_offset + group.entry_count) {
+            lower = middle + 1u;
+        } else {
+            groupIndex = middle;
+            break;
+        }
+    }
+    if (groupIndex == ~0u) {
+        return;
+    }
+    const NBDispatchGroupABI group = groups[groupIndex];
+    const NBDispatchEntryABI entry = entries[entryIndex];
+    NBDispatchWorkItemABI item;
+    item.timestamp_microseconds = group.timestamp_microseconds;
+    item.interrupt_mask = entry.interrupt_mask;
+    item.environment_identifier = entry.environment_identifier;
+    item.reason_flags = entry.reason_flags;
+    item.module_id = group.module_id;
+    item.clock_class = group.clock_class;
+    item.group_index = groupIndex;
+    workItems[entryIndex] = item;
 }
 
 /// Converts immutable receptor-event onsets into the scheduler's compact

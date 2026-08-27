@@ -41,6 +41,7 @@ ABI version 1 compiles the following standard-layout records:
 | `NBDispatchEntry` | 16 | Environment, reason, and interrupt contribution |
 | `NBDispatchPlanHeader` | 48 | Versioned schedule, parameter, source-cohort, and plan identities |
 | `NBDispatchPlanResult` | 32 | Private materialization counts, status, and identities |
+| `NBDispatchWorkItem` | 32 | Expanded indirectly consumed active-environment work record |
 
 The module descriptor layout is:
 
@@ -132,7 +133,7 @@ Independent agent transactions share immutable descriptors but retain separate c
 3. module identifier;
 4. environment identifier within the group.
 
-`BrainDispatchPlan` now compiles this ordering into the stable flattened ABI, binds it to source generations and one immutable parameter version, and rejects layout or identity drift. `materialize_dispatch_plan` copies the canonical grid into private Metal buffers with one timestamp/module row and active-environment columns. See [COHORT_DISPATCH_V0.md](COHORT_DISPATCH_V0.md).
+`BrainDispatchPlan` now compiles this ordering into the stable flattened ABI, binds it to source generations and one immutable parameter version, and rejects layout or identity drift. `materialize_dispatch_plan` copies the canonical grid into private Metal buffers with one timestamp/module row and active-environment columns, writes private indirect arguments, and hands them across a device barrier to `consume_dispatch_plan` without a CPU count readback. See [COHORT_DISPATCH_V0.md](COHORT_DISPATCH_V0.md).
 
 Plan construction remains the CPU semantic oracle. GPU prefix-sum construction and indirect cohort regional execution are not yet implemented, so this proves the versioned materialization boundary rather than production cohort throughput.
 
@@ -203,5 +204,7 @@ These names define scheduling roles. Every role currently executes the common fa
 46. Retry and discarded shadows reproduce the same plan without changing committed scheduler state.
 47. Metal materialization and replay exactly reproduce the compiled groups and entries.
 48. Mixed, missing, stale, malformed, capacity-drifted, or serialized-tampered plans fail closed.
+49. The materializer writes the exact private threadgroup count consumed by a Metal 4 indirect dispatch after a device barrier.
+50. Every expanded 32-byte work item and its field-wise fingerprint exactly match the CPU plan without an intervening count readback.
 
 Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.

@@ -77,6 +77,7 @@ private struct ABIEvidence: Codable {
   let entryBytes: Int
   let headerBytes: Int
   let resultBytes: Int
+  let workItemBytes: Int
   let parameterBindingBytes: Int
 }
 
@@ -85,6 +86,7 @@ private struct IdentityEvidence: Codable {
   let parameterVersionFingerprint: String
   let cohortFingerprint: String
   let dispatchPlanFingerprint: String
+  let dispatchWorkFingerprint: String
 }
 
 private struct CohortEvidence: Codable {
@@ -101,6 +103,9 @@ private struct MetalEvidence: Codable {
   let device: String
   let privateInputBytes: Int
   let privateOutputBytes: Int
+  let workItemCount: Int
+  let workItemBytes: Int
+  let indirectThreadgroupCount: UInt32
   let status: UInt32
   let gpuSeconds: Double
   let execution: String
@@ -111,6 +116,7 @@ private struct VerificationEvidence: Codable {
   let discardedShadowStateUnchanged: Bool
   let canonicalInputOrderExact: Bool
   let gpuMaterializationExact: Bool
+  let gpuIndirectConsumptionExact: Bool
   let gpuReplayExact: Bool
   let staleParameterVersionRejected: Bool
 }
@@ -233,18 +239,24 @@ private struct NumiBrainDispatchCommand {
       && materialized.planFingerprint == plan.fingerprint
       && materialized.parameterVersionFingerprint == version.fingerprint
       && materialized.status == 0
+    let indirectConsumptionExact = materialized.workItems == plan.workItems
+      && materialized.workFingerprint == plan.workFingerprint
+      && materialized.indirectThreadgroupCount
+        == UInt32((plan.entryCount + 63) / 64)
     let replayExact = replay.groups == materialized.groups
+      && replay.workItems == materialized.workItems
+      && replay.workFingerprint == materialized.workFingerprint
       && replay.planFingerprint == materialized.planFingerprint
       && replay.parameterVersionFingerprint == materialized.parameterVersionFingerprint
       && replay.status == materialized.status
     guard retryExact, shadowStateUnchanged, reversed == plan, materializationExact,
-      replayExact, staleParameterVersionRejected
+      indirectConsumptionExact, replayExact, staleParameterVersionRejected
     else {
       throw DispatchCLIError("cohort materialization verification failed")
     }
 
     return DispatchEvidence(
-      schema: "numibrain.cohort-dispatch-evidence.v1",
+      schema: "numibrain.cohort-dispatch-evidence.v2",
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       abi: ABIEvidence(
@@ -254,13 +266,15 @@ private struct NumiBrainDispatchCommand {
         entryBytes: BrainDispatchPlan.entryByteCount,
         headerBytes: BrainDispatchPlan.headerByteCount,
         resultBytes: BrainDispatchPlan.resultByteCount,
+        workItemBytes: BrainDispatchPlan.workItemByteCount,
         parameterBindingBytes: BrainParameterVersion.bindingByteCount
       ),
       identity: IdentityEvidence(
         scheduleFingerprint: schedule.fingerprintHex,
         parameterVersionFingerprint: version.fingerprintHex,
         cohortFingerprint: plan.cohortFingerprintHex,
-        dispatchPlanFingerprint: plan.fingerprintHex
+        dispatchPlanFingerprint: plan.fingerprintHex,
+        dispatchWorkFingerprint: String(format: "%016llx", plan.workFingerprint)
       ),
       cohort: CohortEvidence(
         environmentCount: options.environmentCount,
@@ -275,25 +289,29 @@ private struct NumiBrainDispatchCommand {
         device: materialized.deviceName,
         privateInputBytes: materialized.privateInputByteCount,
         privateOutputBytes: materialized.privateOutputByteCount,
+        workItemCount: materialized.workItems.count,
+        workItemBytes: materialized.workItems.count * BrainDispatchPlan.workItemByteCount,
+        indirectThreadgroupCount: materialized.indirectThreadgroupCount,
         status: materialized.status,
         gpuSeconds: materialized.gpuDurationSeconds,
         execution:
-          "Metal 4 private immutable plan and parameter inputs -> 2D timestamp/module by environment materialization -> private group and entry outputs -> explicit post-completion inspection"
+          "Metal 4 private immutable plan and parameter inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect consume -> private work items -> explicit post-completion inspection"
       ),
       verification: VerificationEvidence(
         retryExact: retryExact,
         discardedShadowStateUnchanged: shadowStateUnchanged,
         canonicalInputOrderExact: reversed == plan,
         gpuMaterializationExact: materializationExact,
+        gpuIndirectConsumptionExact: indirectConsumptionExact,
         gpuReplayExact: replayExact,
         staleParameterVersionRejected: staleParameterVersionRejected
       ),
       executionPath:
-        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major dispatch materialization",
+        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect dispatch consumption",
       limitations: [
         "The CPU oracle currently compiles cohort membership before GPU materialization.",
-        "The Metal kernel materializes compact dispatch records; indirect regional execution across the cohort is not yet connected.",
-        "GPU seconds are command-feedback telemetry, not a production throughput or counter qualification.",
+        "The indirect consumer expands work records but does not yet update cohort recurrent regional state.",
+        "GPU seconds are command-feedback telemetry for materialization and indirect consumption, not a production throughput or counter qualification.",
         "The eight-module runtime-foundation subset is not the complete 96-module graph.",
       ]
     )

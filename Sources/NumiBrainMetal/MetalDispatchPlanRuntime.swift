@@ -3,9 +3,10 @@ import Foundation
 import NumiBrainABI
 import NumiBrainCore
 
-/// Bounded Metal 4 materializer for a compiled cohort dispatch plan. The plan
-/// is authenticated by the compiled C ABI before upload, then copied into
-/// private region-major buffers under the immutable parameter-version binding.
+/// Bounded Metal 4 materializer and indirect consumer for a compiled cohort
+/// dispatch plan. The plan is authenticated by the compiled C ABI before
+/// upload, copied into private region-major buffers under the immutable
+/// parameter-version binding, and expanded without an intervening count readback.
 @available(macOS 26.0, *)
 public enum MetalDispatchPlanRuntime {
   public struct Materialization: Equatable, Sendable {
@@ -13,6 +14,9 @@ public enum MetalDispatchPlanRuntime {
     public let planFingerprint: UInt64
     public let parameterVersionFingerprint: UInt64
     public let groups: [BrainDispatchGroup]
+    public let workItems: [BrainDispatchWorkItem]
+    public let workFingerprint: UInt64
+    public let indirectThreadgroupCount: UInt32
     public let status: UInt32
     public let privateInputByteCount: Int
     public let privateOutputByteCount: Int
@@ -31,6 +35,12 @@ public enum MetalDispatchPlanRuntime {
   private struct FeedbackSnapshot {
     let gpuStartTime: Double
     let gpuEndTime: Double
+  }
+
+  private struct DispatchIndirectArguments {
+    var threadgroupsX: UInt32 = 0
+    var threadgroupsY: UInt32 = 0
+    var threadgroupsZ: UInt32 = 0
   }
 
   private final class FeedbackBox: @unchecked Sendable {
@@ -57,6 +67,8 @@ public enum MetalDispatchPlanRuntime {
       MemoryLayout<NBDispatchGroup>.stride == BrainDispatchPlan.groupByteCount,
       MemoryLayout<NBDispatchEntry>.stride == BrainDispatchPlan.entryByteCount,
       MemoryLayout<NBDispatchPlanResult>.stride == BrainDispatchPlan.resultByteCount,
+      MemoryLayout<NBDispatchWorkItem>.stride == BrainDispatchPlan.workItemByteCount,
+      MemoryLayout<DispatchIndirectArguments>.stride == 12,
       MemoryLayout<NBParameterVersionBinding>.stride
         == BrainParameterVersion.bindingByteCount
     else {
@@ -124,21 +136,36 @@ public enum MetalDispatchPlanRuntime {
     } catch {
       throw TissueError.metal("Metal 4 library compilation failed: \(error)")
     }
-    guard let function = library.makeFunction(name: "materialize_dispatch_plan") else {
-      throw TissueError.metal("materialize_dispatch_plan is missing from the Metal library")
+    guard let function = library.makeFunction(name: "materialize_dispatch_plan"),
+      let consumerFunction = library.makeFunction(name: "consume_dispatch_plan")
+    else {
+      throw TissueError.metal("cohort dispatch functions are missing from the Metal library")
     }
     let pipeline: any MTLComputePipelineState
+    let consumerPipeline: any MTLComputePipelineState
     do {
       pipeline = try device.makeComputePipelineState(function: function)
+      consumerPipeline = try device.makeComputePipelineState(function: consumerFunction)
     } catch {
       throw TissueError.metal("dispatch-plan pipeline creation failed: \(error)")
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain dispatch-plan arguments"
-    argumentDescriptor.maxBufferBindCount = 7
+    argumentDescriptor.maxBufferBindCount = 8
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the dispatch-plan argument table")
+    }
+    let consumerArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    consumerArgumentDescriptor.label = "NumiBrain dispatch consumer arguments"
+    consumerArgumentDescriptor.maxBufferBindCount = 4
+    consumerArgumentDescriptor.initializeBindings = true
+    guard
+      let consumerArgumentTable = try? device.makeArgumentTable(
+        descriptor: consumerArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the dispatch consumer argument table")
     }
 
     let headerByteCount = MemoryLayout<NBDispatchPlanHeader>.stride
@@ -146,7 +173,11 @@ public enum MetalDispatchPlanRuntime {
     let entryByteCount = inputEntries.count * MemoryLayout<NBDispatchEntry>.stride
     let bindingByteCount = MemoryLayout<NBParameterVersionBinding>.stride
     let resultByteCount = MemoryLayout<NBDispatchPlanResult>.stride
+    let indirectArgumentByteCount = MemoryLayout<DispatchIndirectArguments>.stride
+    let indirectStorageByteCount = 16
+    let workItemByteCount = inputEntries.count * MemoryLayout<NBDispatchWorkItem>.stride
     let inspectionByteCount = resultByteCount + groupByteCount + entryByteCount
+      + indirectStorageByteCount + workItemByteCount
     let stagingByteCount = max(
       inspectionByteCount,
       max(max(headerByteCount, groupByteCount), max(entryByteCount, bindingByteCount))
@@ -192,6 +223,14 @@ public enum MetalDispatchPlanRuntime {
       length: resultByteCount,
       label: "NumiBrain private dispatch-plan result"
     )
+    let indirectArgumentBuffer = try privateBuffer(
+      length: indirectStorageByteCount,
+      label: "NumiBrain private GPU-generated indirect dispatch arguments"
+    )
+    let workItemBuffer = try privateBuffer(
+      length: workItemByteCount,
+      label: "NumiBrain private indirect dispatch work items"
+    )
     guard
       let stagingBuffer = device.makeBuffer(
         length: stagingByteCount,
@@ -204,7 +243,7 @@ public enum MetalDispatchPlanRuntime {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
-    residencyDescriptor.initialCapacity = 8
+    residencyDescriptor.initialCapacity = 10
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -219,6 +258,8 @@ public enum MetalDispatchPlanRuntime {
       outputGroupBuffer,
       outputEntryBuffer,
       resultBuffer,
+      indirectArgumentBuffer,
+      workItemBuffer,
       stagingBuffer,
     ]
     for buffer in buffers {
@@ -326,9 +367,19 @@ public enum MetalDispatchPlanRuntime {
     argumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 4)
     argumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 5)
     argumentTable.setAddress(resultBuffer.gpuAddress, index: 6)
+    argumentTable.setAddress(indirectArgumentBuffer.gpuAddress, index: 7)
+    consumerArgumentTable.setAddress(headerBuffer.gpuAddress, index: 0)
+    consumerArgumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 1)
+    consumerArgumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 2)
+    consumerArgumentTable.setAddress(workItemBuffer.gpuAddress, index: 3)
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
-    let feedback = try submit(label: "NumiBrain cohort dispatch materialization") { encoder in
+    let consumerThreadgroupWidth = 64
+    guard consumerPipeline.maxTotalThreadsPerThreadgroup >= consumerThreadgroupWidth else {
+      throw TissueError.metal("dispatch consumer does not support 64-lane threadgroups")
+    }
+    let feedback = try submit(label: "NumiBrain cohort materialization and indirect consume") {
+      encoder in
       encoder.setComputePipelineState(pipeline)
       encoder.setArgumentTable(argumentTable)
       encoder.dispatchThreads(
@@ -338,6 +389,21 @@ public enum MetalDispatchPlanRuntime {
           depth: 1
         ),
         threadsPerThreadgroup: MTLSize(width: threadgroupWidth, height: 1, depth: 1)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      encoder.setComputePipelineState(consumerPipeline)
+      encoder.setArgumentTable(consumerArgumentTable)
+      encoder.dispatchThreadgroups(
+        indirectBuffer: indirectArgumentBuffer.gpuAddress,
+        threadsPerThreadgroup: MTLSize(
+          width: consumerThreadgroupWidth,
+          height: 1,
+          depth: 1
+        )
       )
     }
     _ = try submit(label: "NumiBrain dispatch-plan inspection") { encoder in
@@ -361,6 +427,21 @@ public enum MetalDispatchPlanRuntime {
         destinationBuffer: stagingBuffer,
         destinationOffset: resultByteCount + groupByteCount,
         size: entryByteCount
+      )
+      let indirectOffset = resultByteCount + groupByteCount + entryByteCount
+      encoder.copy(
+        sourceBuffer: indirectArgumentBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: indirectOffset,
+        size: indirectArgumentByteCount
+      )
+      encoder.copy(
+        sourceBuffer: workItemBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: indirectOffset + indirectStorageByteCount,
+        size: workItemByteCount
       )
     }
 
@@ -390,6 +471,16 @@ public enum MetalDispatchPlanRuntime {
         count: inputEntries.count
       )
     )
+    let indirectOffset = resultByteCount + groupByteCount + entryByteCount
+    let indirectArguments = inspection.advanced(by: indirectOffset)
+      .load(as: DispatchIndirectArguments.self)
+    let outputWorkRecords = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: indirectOffset + indirectStorageByteCount)
+          .assumingMemoryBound(to: NBDispatchWorkItem.self),
+        count: inputEntries.count
+      )
+    )
     let groups = try outputGroups.map { record -> BrainDispatchGroup in
       guard record.entry_offset <= UInt32(outputEntries.count),
         record.entry_count <= UInt32(outputEntries.count) - record.entry_offset,
@@ -416,15 +507,54 @@ public enum MetalDispatchPlanRuntime {
     guard groups == plan.groups else {
       throw TissueError.metal("GPU materialization does not match the compiled dispatch plan")
     }
+    let workItems = try outputWorkRecords.map { record -> BrainDispatchWorkItem in
+      guard let clockClass = BrainClockClass(rawValue: record.clock_class),
+        record.group_index < UInt32(groups.count)
+      else {
+        throw TissueError.metal("GPU indirect consumer produced an invalid work item")
+      }
+      return BrainDispatchWorkItem(
+        timestamp: BrainTimestamp(microseconds: record.timestamp_microseconds),
+        interruptMask: BrainInterruptMask(rawValue: record.interrupt_mask),
+        environmentIdentifier: record.environment_identifier,
+        reasons: BrainInvocationReason(rawValue: record.reason_flags),
+        moduleIdentifier: record.module_id,
+        clockClass: clockClass,
+        groupIndex: record.group_index
+      )
+    }
+    let workFingerprint = outputWorkRecords.withUnsafeBufferPointer { records in
+      nb_brain_abi_dispatch_work_fingerprint(
+        plan.fingerprint,
+        parameterVersion.fingerprint,
+        records.baseAddress,
+        UInt32(records.count)
+      )
+    }
+    let expectedIndirectThreadgroups = UInt32(
+      (inputEntries.count + consumerThreadgroupWidth - 1) / consumerThreadgroupWidth
+    )
+    guard workItems == plan.workItems,
+      workFingerprint == plan.workFingerprint,
+      indirectArguments.threadgroupsX == expectedIndirectThreadgroups,
+      indirectArguments.threadgroupsY == 1,
+      indirectArguments.threadgroupsZ == 1
+    else {
+      throw TissueError.metal("GPU indirect dispatch consumption does not match the plan")
+    }
     return Materialization(
       deviceName: device.name,
       planFingerprint: result.plan_fingerprint,
       parameterVersionFingerprint: result.parameter_version_fingerprint,
       groups: groups,
+      workItems: workItems,
+      workFingerprint: workFingerprint,
+      indirectThreadgroupCount: indirectArguments.threadgroupsX,
       status: result.status,
       privateInputByteCount: headerByteCount + groupByteCount + entryByteCount
         + bindingByteCount,
-      privateOutputByteCount: groupByteCount + entryByteCount + resultByteCount,
+      privateOutputByteCount: groupByteCount + entryByteCount + resultByteCount
+        + indirectStorageByteCount + workItemByteCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )
