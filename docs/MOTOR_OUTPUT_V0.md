@@ -105,10 +105,11 @@ consumer to reuse content after the owning generation is recycled.
 The standalone interop executable replaces fixture identifiers with the full
 ordered source-muscle catalog loaded from the NumanX `.nhmyo` asset. The first
 six channels retain deterministic fixture gains; the remaining channels have
-zero neural output gain but retain NumanX passive force. Peak actuator-force
-transduction identifies one tendon, but the global protective command still
-cannot express attachment-aware or body-side withdrawal, and the overload
-threshold is not calibrated.
+zero neural output gain but retain NumanX passive force. An immutable catalog
+maps each tendon to its ordered first and terminal route-site body identifiers
+and local coordinates. Peak force is therefore mechanically localized, but the
+global protective command still cannot express body-side withdrawal, and the
+overload threshold is not calibrated.
 
 ## Evidence boundary
 
@@ -116,7 +117,7 @@ Tests establish compiled ABI identity, validation and golden persistent-state fi
 exact CPU/Metal excitation output, accepted next-candidate mapping, rejected
 event silence, abort restoration, commit publication, and transaction-bound
 GPU-address packet validation, exact opaque-buffer identity, and stale-lease
-rejection. They do not establish tendon attachment/body mapping, a body-side
+rejection. They do not establish anatomical/body-side semantics, a body-side
 localized reflex, species calibration, voluntary movement, motor learning,
 autonomic physiology, biological behavior, or performance qualification.
 
@@ -124,8 +125,9 @@ The isolated NumanX receiver revision recorded in
 `evidence/numanx-myosim-interop-v0.1` consumes a private borrowed excitation
 buffer before MyoSim force evaluation and demonstrates an activation, force,
 and articulated-state consequence on Apple M4 Pro. The later
-`evidence/numanx-joint-root-v0.3` artifact executes the actual 416-channel
+`evidence/numanx-joint-root-v0.4` artifact executes the actual 416-channel
 NumiBrain producer and that receiving path in one Apple M4 process, including
-tendon-local accepted feedback and exact physical retry. It still uses separate
-command queues, staged diagnostics, CPU articulated integration, and sequential
-root publication. The original selected six-muscle proof remains in v0.2.
+cross-language attachment identity, tendon-to-endpoint-body localization,
+accepted feedback, and exact physical retry. It still uses separate command
+queues, staged diagnostics, CPU articulated integration, and sequential root
+publication. The full-muscle v0.3 and selected six-muscle v0.2 controls remain.
