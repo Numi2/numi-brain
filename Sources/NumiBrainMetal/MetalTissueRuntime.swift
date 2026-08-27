@@ -1402,6 +1402,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       at: startMilliseconds,
       acceptedSubsteps: acceptance,
       schedulerEvents: schedulerEvents
+        + transaction.resolutions.lazy
+          .filter(\.isAccepted)
+          .flatMap(\.receptorEvents)
     )
     guard pendingSchedulerTargetTime == token.targetTimestamp else {
       try abortRootTransaction()

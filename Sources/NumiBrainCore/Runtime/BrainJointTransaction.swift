@@ -390,13 +390,16 @@ public enum BrainJointTransactionStatus: Equatable, Sendable {
 public struct BrainJointSubstepResolution: Equatable, Hashable, Sendable {
   public let substep: BrainJointSubstepToken
   public let acceptedPhysicsState: AcceptedPhysicsStateToken?
+  public let receptorEvents: [BrainInterruptEvent]
 
   public init(
     substep: BrainJointSubstepToken,
-    acceptedPhysicsState: AcceptedPhysicsStateToken?
+    acceptedPhysicsState: AcceptedPhysicsStateToken?,
+    receptorEvents: [BrainInterruptEvent] = []
   ) {
     self.substep = substep
     self.acceptedPhysicsState = acceptedPhysicsState
+    self.receptorEvents = receptorEvents
   }
 
   public var isAccepted: Bool { acceptedPhysicsState != nil }
@@ -444,9 +447,11 @@ public struct BrainJointTransaction: Sendable {
   }
 
   public mutating func rejectPhysicsSubstep(
-    _ substep: BrainJointSubstepToken
+    _ substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent] = []
   ) throws {
     try requireActive(substep)
+    let canonicalEvents = try canonicalReceptorEvents(receptorEvents, for: substep)
     let (nextAttempt, overflow) = attemptIndex.addingReportingOverflow(1)
     guard !overflow else {
       throw BrainRuntimeError.transaction("physical retry attempt index overflows UInt32")
@@ -459,16 +464,22 @@ public struct BrainJointTransaction: Sendable {
     attemptIndex = nextAttempt
     rejectedAttemptCount = nextRejectedCount
     resolutions.append(
-      BrainJointSubstepResolution(substep: substep, acceptedPhysicsState: nil)
+      BrainJointSubstepResolution(
+        substep: substep,
+        acceptedPhysicsState: nil,
+        receptorEvents: canonicalEvents
+      )
     )
     activeSubstep = nil
   }
 
   public mutating func acceptPhysicsSubstep(
     _ accepted: AcceptedPhysicsStateToken,
-    for substep: BrainJointSubstepToken
+    for substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent] = []
   ) throws {
     try requireActive(substep)
+    let canonicalEvents = try canonicalReceptorEvents(receptorEvents, for: substep)
     var rootRecord = token.abiRecord
     var substepRecord = substep.abiRecord
     var acceptedRecord = accepted.abiRecord
@@ -495,7 +506,8 @@ public struct BrainJointTransaction: Sendable {
     resolutions.append(
       BrainJointSubstepResolution(
         substep: substep,
-        acceptedPhysicsState: accepted
+        acceptedPhysicsState: accepted,
+        receptorEvents: canonicalEvents
       )
     )
     activeSubstep = nil
@@ -545,6 +557,30 @@ public struct BrainJointTransaction: Sendable {
     try requireOpen()
     guard activeSubstep == substep else {
       throw BrainRuntimeError.transaction("stale or unrelated physical substep token")
+    }
+  }
+
+  private func canonicalReceptorEvents(
+    _ events: [BrainInterruptEvent],
+    for substep: BrainJointSubstepToken
+  ) throws -> [BrainInterruptEvent] {
+    let receptorDerived = UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    guard events.allSatisfy({ event in
+      event.timestamp > substep.startTimestamp
+        && event.timestamp <= substep.candidateTimestamp
+        && event.flags & receptorDerived != 0
+    }) else {
+      throw BrainRuntimeError.transaction(
+        "substep events must be receptor-derived and lie after start through candidate time"
+      )
+    }
+    return events.sorted { lhs, rhs in
+      if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+      if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
+      if lhs.mask.rawValue != rhs.mask.rawValue {
+        return lhs.mask.rawValue < rhs.mask.rawValue
+      }
+      return lhs.flags < rhs.flags
     }
   }
 }

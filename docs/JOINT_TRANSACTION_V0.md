@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.2
+# NumanX joint transaction contract v0.3
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -80,13 +80,21 @@ and routing-state generations, and returns the compiled joint receipt. Root
 abort publishes none of those neural generations and clears the pending joint
 binding.
 
+Each resolution can also carry canonical receptor-derived interrupt events
+whose timestamps lie strictly after candidate start and no later than candidate
+end. Untransduced or out-of-window events are rejected by the coordinator.
+Metal merges events only from accepted resolutions into the private root event
+path; events attached to rejected physical candidates remain transaction-local
+diagnostics and never reach scheduling or committed neural history.
+
 ## Current boundary
 
 The compiled ABI, validation, fingerprints, Swift value wrappers, transaction
-state machine, exact attempt ledger, and bounded Metal-root binding are
-implemented and covered by deterministic CPU and Metal tests. There is no live
-NumanX adapter or demonstrated atomic physical/brain pointer publication yet.
-The current Metal binding re-encodes a resolved fixed-duration ledger; it does
-not yet ingest NumanX fast-event packets interactively between candidate
-substeps or support corrected retry durations. Those are the next interop
-steps, so this boundary is not yet a claim of working NumanX coupling.
+state machine, exact attempt/event ledger, accepted-event filtering, and bounded
+Metal-root binding are implemented and covered by deterministic CPU and Metal
+tests. There is no live NumanX adapter or demonstrated atomic physical/brain
+pointer publication yet. The current Metal binding re-encodes a resolved
+fixed-duration ledger; it does not yet react to NumanX events interactively
+during candidate execution or support corrected retry durations. Those are the
+next interop steps, so this boundary is not yet a claim of working NumanX
+coupling.

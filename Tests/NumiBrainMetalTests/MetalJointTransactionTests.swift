@@ -1,4 +1,5 @@
 import Metal
+import NumiBrainABI
 import XCTest
 
 @testable import NumiBrainCore
@@ -19,7 +20,13 @@ final class MetalJointTransactionTests: XCTestCase {
     )
 
     let rejected = try joint.beginPhysicsSubstep(durationMicroseconds: 1_000)
-    try joint.rejectPhysicsSubstep(rejected)
+    let rejectedPain = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 500),
+      mask: .pain,
+      identifier: 900,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    try joint.rejectPhysicsSubstep(rejected, receptorEvents: [rejectedPain])
     let retry = try joint.beginPhysicsSubstep(durationMicroseconds: 1_000)
     let firstPhysics = try AcceptedPhysicsStateToken(
       transaction: joint.token,
@@ -27,7 +34,17 @@ final class MetalJointTransactionTests: XCTestCase {
       physicsStateFingerprint: 0xabc1,
       physicsGeneration: 101
     )
-    try joint.acceptPhysicsSubstep(firstPhysics, for: retry)
+    let acceptedSupportLoss = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 750),
+      mask: .lossOfSupport,
+      identifier: 901,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    try joint.acceptPhysicsSubstep(
+      firstPhysics,
+      for: retry,
+      receptorEvents: [acceptedSupportLoss]
+    )
     let second = try joint.beginPhysicsSubstep(durationMicroseconds: 1_000)
     let secondPhysics = try AcceptedPhysicsStateToken(
       transaction: joint.token,
@@ -40,6 +57,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let submission = try runtime.runJointRootTransaction(joint)
     XCTAssertEqual(submission.attemptedSubsteps, 3)
     XCTAssertEqual(submission.acceptedSubsteps, 2)
+    XCTAssertEqual(submission.schedulerHostInputEventCount, 1)
     XCTAssertTrue(runtime.hasPendingRootTransaction)
     XCTAssertTrue(runtime.hasPendingJointTransaction)
     XCTAssertThrowsError(try runtime.commitRootTransaction())
@@ -55,6 +73,15 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.schedulerCommittedGeneration, commit.brainGeneration)
     XCTAssertEqual(runtime.schedulerCommittedTimestamp, commit.committedTimestamp)
     XCTAssertEqual(runtime.committedStep, 2)
+    let scheduler = try runtime.inspectCommittedScheduler()
+    XCTAssertTrue(
+      scheduler.invocations.contains(where: {
+        $0.interruptMask.contains(.lossOfSupport)
+      })
+    )
+    XCTAssertFalse(
+      scheduler.invocations.contains(where: { $0.interruptMask.contains(.pain) })
+    )
 
     var next = try runtime.beginJointControl(
       controlStepIdentifier: 5,

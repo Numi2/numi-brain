@@ -70,7 +70,13 @@ final class BrainJointTransactionTests: XCTestCase {
     let rejected = try transaction.beginPhysicsSubstep(durationMicroseconds: 5_000)
     XCTAssertEqual(rejected.substepIndex, 0)
     XCTAssertEqual(rejected.attemptIndex, 0)
-    try transaction.rejectPhysicsSubstep(rejected)
+    let rejectedEvent = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 82_500),
+      mask: .pain,
+      identifier: 41,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    try transaction.rejectPhysicsSubstep(rejected, receptorEvents: [rejectedEvent])
 
     let retry = try transaction.beginPhysicsSubstep(durationMicroseconds: 5_000)
     XCTAssertEqual(retry.substepIndex, rejected.substepIndex)
@@ -94,11 +100,23 @@ final class BrainJointTransactionTests: XCTestCase {
       ),
       firstAccepted
     )
-    try transaction.acceptPhysicsSubstep(firstAccepted, for: retry)
+    let acceptedEvent = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 83_000),
+      mask: .lossOfSupport,
+      identifier: 42,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+    try transaction.acceptPhysicsSubstep(
+      firstAccepted,
+      for: retry,
+      receptorEvents: [acceptedEvent]
+    )
     XCTAssertEqual(transaction.acceptedTimestamp, BrainTimestamp(microseconds: 85_000))
     XCTAssertEqual(transaction.acceptedSubstepCount, 1)
     XCTAssertEqual(transaction.rejectedAttemptCount, 1)
     XCTAssertEqual(transaction.resolutions.map(\.isAccepted), [false, true])
+    XCTAssertEqual(transaction.resolutions[0].receptorEvents, [rejectedEvent])
+    XCTAssertEqual(transaction.resolutions[1].receptorEvents, [acceptedEvent])
 
     let second = try transaction.beginPhysicsSubstep(durationMicroseconds: 15_000)
     XCTAssertEqual(second.substepIndex, 1)
@@ -139,6 +157,17 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertThrowsError(try transaction.commit())
 
     let candidate = try transaction.beginPhysicsSubstep(durationMicroseconds: 5_000)
+    let untransduced = try BrainInterruptEvent(
+      timestamp: BrainTimestamp(microseconds: 82_000),
+      mask: .pain,
+      identifier: 99
+    )
+    XCTAssertThrowsError(
+      try transaction.rejectPhysicsSubstep(
+        candidate,
+        receptorEvents: [untransduced]
+      )
+    )
     XCTAssertThrowsError(
       try AcceptedPhysicsStateToken(
         transaction: token,
