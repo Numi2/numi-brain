@@ -36,6 +36,7 @@ enum {
   NB_DISPATCH_PLAN_RESULT_BYTE_COUNT = 32,
   NB_DISPATCH_WORK_ITEM_BYTE_COUNT = 32,
   NB_DISPATCH_COHORT_UNIFORMS_BYTE_COUNT = 32,
+  NB_DISPATCH_TOKEN_UNIFORMS_BYTE_COUNT = 32,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
@@ -310,6 +311,17 @@ typedef struct NBDispatchCohortUniforms {
   uint32_t flags;
 } NBDispatchCohortUniforms;
 
+/// Immutable shape and identity for one environment-major cohort token-state
+/// generation. The total count is 64-bit because production cohorts can
+/// contain hundreds of millions of FP32 scalars.
+typedef struct NBDispatchTokenUniforms {
+  uint64_t regional_program_fingerprint;
+  uint64_t schedule_fingerprint;
+  uint32_t environment_count;
+  uint32_t scalar_count_per_environment;
+  uint64_t total_scalar_count;
+} NBDispatchTokenUniforms;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -431,6 +443,7 @@ size_t nb_brain_abi_dispatch_plan_header_size(void);
 size_t nb_brain_abi_dispatch_plan_result_size(void);
 size_t nb_brain_abi_dispatch_work_item_size(void);
 size_t nb_brain_abi_dispatch_cohort_uniforms_size(void);
+size_t nb_brain_abi_dispatch_token_uniforms_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -525,6 +538,16 @@ uint64_t nb_brain_abi_cohort_regional_state_fingerprint(
     uint32_t environment_count,
     const NBRegionalModuleState *states,
     uint32_t module_count
+);
+
+uint64_t nb_brain_abi_cohort_token_state_fingerprint(
+    uint64_t plan_fingerprint,
+    uint64_t parameter_version_fingerprint,
+    uint64_t regional_program_fingerprint,
+    const uint32_t *environment_identifiers,
+    uint32_t environment_count,
+    const float *token_values,
+    uint32_t scalar_count_per_environment
 );
 
 #ifdef __cplusplus

@@ -21,6 +21,10 @@ public enum MetalDispatchPlanRuntime {
     public let regionalStateFingerprint: UInt64
     public let regionalIndirectThreadgroupCount: UInt32
     public let regionalStateByteCount: Int
+    public let tokenStates: [BrainCohortTokenState]
+    public let tokenStateFingerprint: UInt64
+    public let tokenIndirectThreadgroupCount: UInt32
+    public let tokenStateByteCount: Int
     public let status: UInt32
     public let privateInputByteCount: Int
     public let privateOutputByteCount: Int
@@ -54,13 +58,18 @@ public enum MetalDispatchPlanRuntime {
   public static func materialize(
     plan: BrainDispatchPlan,
     schedule: BrainModuleSchedule,
+    regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
     initialRegionalStates: [BrainCohortRegionalState]? = nil,
+    initialTokenStates: [BrainCohortTokenState]? = nil,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws -> Materialization {
     guard plan.scheduleFingerprint == schedule.fingerprint,
       plan.scheduleFingerprint == parameterVersion.scheduleFingerprint,
-      plan.parameterVersionFingerprint == parameterVersion.fingerprint
+      plan.parameterVersionFingerprint == parameterVersion.fingerprint,
+      regionalProgram.scheduleFingerprint == schedule.fingerprint,
+      regionalProgram.fingerprint == parameterVersion.regionalProgramFingerprint,
+      regionalProgram.routes.isEmpty
     else {
       throw TissueError.metal(
         "dispatch plan does not match the immutable parameter-version binding"
@@ -77,6 +86,14 @@ public enum MetalDispatchPlanRuntime {
       MemoryLayout<NBDispatchWorkItem>.stride == BrainDispatchPlan.workItemByteCount,
       MemoryLayout<NBDispatchCohortUniforms>.stride
         == BrainDispatchPlan.cohortUniformByteCount,
+      MemoryLayout<NBDispatchTokenUniforms>.stride
+        == BrainDispatchPlan.tokenUniformByteCount,
+      MemoryLayout<NBRegionalProgramHeader>.stride
+        == Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT),
+      MemoryLayout<NBRegionalTokenLayout>.stride
+        == Int(NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT),
+      MemoryLayout<NBRegionalTokenParameters>.stride
+        == Int(NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT),
       MemoryLayout<NBRegionalModuleState>.stride
         == Int(NB_REGIONAL_MODULE_STATE_BYTE_COUNT),
       MemoryLayout<DispatchIndirectArguments>.stride == 12,
@@ -100,6 +117,15 @@ public enum MetalDispatchPlanRuntime {
       environmentIdentifiers.count.multipliedReportingOverflow(by: schedule.modules.count)
     guard !regionalStateCountOverflow, regionalStateCount <= Int(UInt32.max) else {
       throw TissueError.metal("cohort regional-state count exceeds the ABI limit")
+    }
+    let (tokenStateCount, tokenStateCountOverflow) =
+      environmentIdentifiers.count.multipliedReportingOverflow(
+        by: regionalProgram.scalarCount
+      )
+    let (tokenStateByteCount, tokenStateByteCountOverflow) =
+      tokenStateCount.multipliedReportingOverflow(by: MemoryLayout<Float>.stride)
+    guard !tokenStateCountOverflow, !tokenStateByteCountOverflow else {
+      throw TissueError.metal("cohort regional-token state exceeds the ABI limit")
     }
     let canonicalInitialRegionalStates: [BrainCohortRegionalState]
     if let initialRegionalStates {
@@ -161,7 +187,36 @@ public enum MetalDispatchPlanRuntime {
     let initialRegionalStateRecords = canonicalInitialRegionalStates.flatMap { state in
       state.states.map(\.abiRecord)
     }
+    let canonicalInitialTokenStates: [BrainCohortTokenState]
+    if let initialTokenStates {
+      canonicalInitialTokenStates = initialTokenStates.sorted {
+        $0.environmentIdentifier < $1.environmentIdentifier
+      }
+      guard
+        canonicalInitialTokenStates.map(\.environmentIdentifier)
+          == environmentIdentifiers,
+        canonicalInitialTokenStates.allSatisfy({ state in
+          state.values.count == regionalProgram.scalarCount
+            && state.values.allSatisfy(\.isFinite)
+        })
+      else {
+        throw TissueError.metal(
+          "initial cohort token state does not match active environments or program shape"
+        )
+      }
+    } else {
+      canonicalInitialTokenStates = environmentIdentifiers.map { identifier in
+        BrainCohortTokenState(
+          environmentIdentifier: identifier,
+          values: [Float](repeating: 0, count: regionalProgram.scalarCount)
+        )
+      }
+    }
+    let initialTokenValues = canonicalInitialTokenStates.flatMap(\.values)
     let moduleRecords = schedule.modules.map(\.abiRecord)
+    var programHeader = regionalProgram.headerRecord
+    let layoutRecords = regionalProgram.layouts.map(\.abiRecord)
+    let parameterRecords = regionalProgram.parameters.map(\.abiRecord)
     var cohortUniforms = NBDispatchCohortUniforms()
     cohortUniforms.plan_fingerprint = plan.fingerprint
     cohortUniforms.parameter_version_fingerprint = parameterVersion.fingerprint
@@ -169,6 +224,12 @@ public enum MetalDispatchPlanRuntime {
     cohortUniforms.module_count = UInt32(schedule.modules.count)
     cohortUniforms.state_count = UInt32(regionalStateCount)
     cohortUniforms.flags = 0
+    var tokenUniforms = NBDispatchTokenUniforms()
+    tokenUniforms.regional_program_fingerprint = regionalProgram.fingerprint
+    tokenUniforms.schedule_fingerprint = schedule.fingerprint
+    tokenUniforms.environment_count = UInt32(environmentIdentifiers.count)
+    tokenUniforms.scalar_count_per_environment = UInt32(regionalProgram.scalarCount)
+    tokenUniforms.total_scalar_count = UInt64(tokenStateCount)
     let validation = inputGroups.withUnsafeBufferPointer { groups in
       inputEntries.withUnsafeBufferPointer { entries in
         withUnsafePointer(to: &header) { header in
@@ -231,6 +292,9 @@ public enum MetalDispatchPlanRuntime {
       let consumerFunction = library.makeFunction(name: "consume_dispatch_plan"),
       let regionalFunction = library.makeFunction(
         name: "advance_cohort_regional_diagnostics"
+      ),
+      let tokenFunction = library.makeFunction(
+        name: "advance_cohort_regional_tokens_unrouted"
       )
     else {
       throw TissueError.metal("cohort dispatch functions are missing from the Metal library")
@@ -238,16 +302,18 @@ public enum MetalDispatchPlanRuntime {
     let pipeline: any MTLComputePipelineState
     let consumerPipeline: any MTLComputePipelineState
     let regionalPipeline: any MTLComputePipelineState
+    let tokenPipeline: any MTLComputePipelineState
     do {
       pipeline = try device.makeComputePipelineState(function: function)
       consumerPipeline = try device.makeComputePipelineState(function: consumerFunction)
       regionalPipeline = try device.makeComputePipelineState(function: regionalFunction)
+      tokenPipeline = try device.makeComputePipelineState(function: tokenFunction)
     } catch {
       throw TissueError.metal("dispatch-plan pipeline creation failed: \(error)")
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain dispatch-plan arguments"
-    argumentDescriptor.maxBufferBindCount = 9
+    argumentDescriptor.maxBufferBindCount = 10
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the dispatch-plan argument table")
@@ -274,6 +340,17 @@ public enum MetalDispatchPlanRuntime {
     else {
       throw TissueError.metal("failed to create the cohort regional-state argument table")
     }
+    let tokenArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    tokenArgumentDescriptor.label = "NumiBrain cohort regional-token arguments"
+    tokenArgumentDescriptor.maxBufferBindCount = 16
+    tokenArgumentDescriptor.initializeBindings = true
+    guard
+      let tokenArgumentTable = try? device.makeArgumentTable(
+        descriptor: tokenArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the cohort regional-token argument table")
+    }
 
     let headerByteCount = MemoryLayout<NBDispatchPlanHeader>.stride
     let groupByteCount = inputGroups.count * MemoryLayout<NBDispatchGroup>.stride
@@ -281,18 +358,25 @@ public enum MetalDispatchPlanRuntime {
     let bindingByteCount = MemoryLayout<NBParameterVersionBinding>.stride
     let resultByteCount = MemoryLayout<NBDispatchPlanResult>.stride
     let indirectArgumentByteCount = MemoryLayout<DispatchIndirectArguments>.stride
-    let indirectArgumentCount = 2
-    let indirectStorageByteCount = 32
+    let indirectArgumentCount = 3
+    let indirectStorageByteCount = 48
     let workItemByteCount = inputEntries.count * MemoryLayout<NBDispatchWorkItem>.stride
     let cohortUniformByteCount = MemoryLayout<NBDispatchCohortUniforms>.stride
+    let tokenUniformByteCount = MemoryLayout<NBDispatchTokenUniforms>.stride
     let environmentIdentifierByteCount = environmentIdentifiers.count * MemoryLayout<UInt32>.stride
     let moduleByteCount = moduleRecords.count * MemoryLayout<NBModuleDescriptor>.stride
     let regionalStateByteCount =
       regionalStateCount
       * MemoryLayout<NBRegionalModuleState>.stride
+    let programHeaderByteCount = MemoryLayout<NBRegionalProgramHeader>.stride
+    let layoutByteCount = layoutRecords.count * MemoryLayout<NBRegionalTokenLayout>.stride
+    let parameterByteCount =
+      parameterRecords.count * MemoryLayout<NBRegionalTokenParameters>.stride
+    let tokenLastUpdateByteCount = regionalStateCount * MemoryLayout<UInt64>.stride
     let inspectionByteCount =
       resultByteCount + groupByteCount + entryByteCount
       + indirectStorageByteCount + workItemByteCount + regionalStateByteCount
+      + tokenStateByteCount + tokenLastUpdateByteCount
     let stagingByteCount = max(
       inspectionByteCount,
       max(
@@ -300,8 +384,17 @@ public enum MetalDispatchPlanRuntime {
         max(
           max(entryByteCount, bindingByteCount),
           max(
-            max(cohortUniformByteCount, environmentIdentifierByteCount),
-            max(moduleByteCount, regionalStateByteCount)
+            max(
+              max(cohortUniformByteCount, tokenUniformByteCount),
+              max(environmentIdentifierByteCount, programHeaderByteCount)
+            ),
+            max(
+              max(moduleByteCount, regionalStateByteCount),
+              max(
+                max(layoutByteCount, parameterByteCount),
+                max(tokenStateByteCount, tokenLastUpdateByteCount)
+              )
+            )
           )
         )
       )
@@ -359,6 +452,10 @@ public enum MetalDispatchPlanRuntime {
       length: cohortUniformByteCount,
       label: "NumiBrain immutable cohort regional uniforms"
     )
+    let tokenUniformBuffer = try privateBuffer(
+      length: tokenUniformByteCount,
+      label: "NumiBrain immutable cohort regional-token uniforms"
+    )
     let environmentIdentifierBuffer = try privateBuffer(
       length: environmentIdentifierByteCount,
       label: "NumiBrain immutable active environment identifiers"
@@ -367,6 +464,18 @@ public enum MetalDispatchPlanRuntime {
       length: moduleByteCount,
       label: "NumiBrain immutable cohort module descriptors"
     )
+    let programHeaderBuffer = try privateBuffer(
+      length: programHeaderByteCount,
+      label: "NumiBrain immutable cohort regional-token header"
+    )
+    let layoutBuffer = try privateBuffer(
+      length: layoutByteCount,
+      label: "NumiBrain immutable cohort regional-token layouts"
+    )
+    let parameterBuffer = try privateBuffer(
+      length: parameterByteCount,
+      label: "NumiBrain immutable cohort regional-token parameters"
+    )
     let inputRegionalStateBuffer = try privateBuffer(
       length: regionalStateByteCount,
       label: "NumiBrain private cohort regional input generation"
@@ -374,6 +483,22 @@ public enum MetalDispatchPlanRuntime {
     let outputRegionalStateBuffer = try privateBuffer(
       length: regionalStateByteCount,
       label: "NumiBrain private cohort regional output generation"
+    )
+    let inputTokenBuffer = try privateBuffer(
+      length: tokenStateByteCount,
+      label: "NumiBrain private cohort regional-token input generation"
+    )
+    let outputTokenBuffer = try privateBuffer(
+      length: tokenStateByteCount,
+      label: "NumiBrain private cohort regional-token output generation"
+    )
+    let candidateTokenBuffer = try privateBuffer(
+      length: tokenStateByteCount,
+      label: "NumiBrain private cohort regional-token candidate generation"
+    )
+    let tokenLastUpdateBuffer = try privateBuffer(
+      length: tokenLastUpdateByteCount,
+      label: "NumiBrain private cohort regional-token last-update state"
     )
     guard
       let stagingBuffer = device.makeBuffer(
@@ -387,7 +512,7 @@ public enum MetalDispatchPlanRuntime {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
-    residencyDescriptor.initialCapacity = 15
+    residencyDescriptor.initialCapacity = 23
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -405,10 +530,18 @@ public enum MetalDispatchPlanRuntime {
       indirectArgumentBuffer,
       workItemBuffer,
       cohortUniformBuffer,
+      tokenUniformBuffer,
       environmentIdentifierBuffer,
       moduleBuffer,
+      programHeaderBuffer,
+      layoutBuffer,
+      parameterBuffer,
       inputRegionalStateBuffer,
       outputRegionalStateBuffer,
+      inputTokenBuffer,
+      outputTokenBuffer,
+      candidateTokenBuffer,
+      tokenLastUpdateBuffer,
       stagingBuffer,
     ]
     for buffer in buffers {
@@ -519,6 +652,16 @@ public enum MetalDispatchPlanRuntime {
       }
     }
     try upload(
+      to: tokenUniformBuffer,
+      byteCount: tokenUniformByteCount,
+      label: "cohort regional-token uniform upload"
+    ) { destination in
+      withUnsafeBytes(of: &tokenUniforms) { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: tokenUniformByteCount)
+      }
+    }
+    try upload(
       to: environmentIdentifierBuffer,
       byteCount: environmentIdentifierByteCount,
       label: "active environment identifier upload"
@@ -539,6 +682,36 @@ public enum MetalDispatchPlanRuntime {
       }
     }
     try upload(
+      to: programHeaderBuffer,
+      byteCount: programHeaderByteCount,
+      label: "cohort regional-token header upload"
+    ) { destination in
+      withUnsafeBytes(of: &programHeader) { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: programHeaderByteCount)
+      }
+    }
+    try upload(
+      to: layoutBuffer,
+      byteCount: layoutByteCount,
+      label: "cohort regional-token layout upload"
+    ) { destination in
+      layoutRecords.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: layoutByteCount)
+      }
+    }
+    try upload(
+      to: parameterBuffer,
+      byteCount: parameterByteCount,
+      label: "cohort regional-token parameter upload"
+    ) { destination in
+      parameterRecords.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: parameterByteCount)
+      }
+    }
+    try upload(
       to: inputRegionalStateBuffer,
       byteCount: regionalStateByteCount,
       label: "cohort regional input-state upload"
@@ -546,6 +719,16 @@ public enum MetalDispatchPlanRuntime {
       initialRegionalStateRecords.withUnsafeBytes { bytes in
         guard let source = bytes.baseAddress else { return }
         destination.copyMemory(from: source, byteCount: regionalStateByteCount)
+      }
+    }
+    try upload(
+      to: inputTokenBuffer,
+      byteCount: tokenStateByteCount,
+      label: "cohort regional-token input-state upload"
+    ) { destination in
+      initialTokenValues.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: tokenStateByteCount)
       }
     }
 
@@ -558,6 +741,7 @@ public enum MetalDispatchPlanRuntime {
     argumentTable.setAddress(resultBuffer.gpuAddress, index: 6)
     argumentTable.setAddress(indirectArgumentBuffer.gpuAddress, index: 7)
     argumentTable.setAddress(cohortUniformBuffer.gpuAddress, index: 8)
+    argumentTable.setAddress(tokenUniformBuffer.gpuAddress, index: 9)
     consumerArgumentTable.setAddress(headerBuffer.gpuAddress, index: 0)
     consumerArgumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 1)
     consumerArgumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 2)
@@ -570,6 +754,22 @@ public enum MetalDispatchPlanRuntime {
     regionalArgumentTable.setAddress(moduleBuffer.gpuAddress, index: 5)
     regionalArgumentTable.setAddress(inputRegionalStateBuffer.gpuAddress, index: 6)
     regionalArgumentTable.setAddress(outputRegionalStateBuffer.gpuAddress, index: 7)
+    tokenArgumentTable.setAddress(headerBuffer.gpuAddress, index: 0)
+    tokenArgumentTable.setAddress(cohortUniformBuffer.gpuAddress, index: 1)
+    tokenArgumentTable.setAddress(tokenUniformBuffer.gpuAddress, index: 2)
+    tokenArgumentTable.setAddress(bindingBuffer.gpuAddress, index: 3)
+    tokenArgumentTable.setAddress(outputGroupBuffer.gpuAddress, index: 4)
+    tokenArgumentTable.setAddress(outputEntryBuffer.gpuAddress, index: 5)
+    tokenArgumentTable.setAddress(environmentIdentifierBuffer.gpuAddress, index: 6)
+    tokenArgumentTable.setAddress(moduleBuffer.gpuAddress, index: 7)
+    tokenArgumentTable.setAddress(programHeaderBuffer.gpuAddress, index: 8)
+    tokenArgumentTable.setAddress(layoutBuffer.gpuAddress, index: 9)
+    tokenArgumentTable.setAddress(parameterBuffer.gpuAddress, index: 10)
+    tokenArgumentTable.setAddress(inputRegionalStateBuffer.gpuAddress, index: 11)
+    tokenArgumentTable.setAddress(inputTokenBuffer.gpuAddress, index: 12)
+    tokenArgumentTable.setAddress(outputTokenBuffer.gpuAddress, index: 13)
+    tokenArgumentTable.setAddress(candidateTokenBuffer.gpuAddress, index: 14)
+    tokenArgumentTable.setAddress(tokenLastUpdateBuffer.gpuAddress, index: 15)
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
     let consumerThreadgroupWidth = 64
@@ -578,6 +778,9 @@ public enum MetalDispatchPlanRuntime {
     }
     guard regionalPipeline.maxTotalThreadsPerThreadgroup >= consumerThreadgroupWidth else {
       throw TissueError.metal("cohort regional kernel does not support 64-lane threadgroups")
+    }
+    guard tokenPipeline.maxTotalThreadsPerThreadgroup >= consumerThreadgroupWidth else {
+      throw TissueError.metal("cohort regional-token kernel does not support 64 lanes")
     }
     let feedback = try submit(label: "NumiBrain cohort materialization and indirect consume") {
       encoder in
@@ -611,6 +814,17 @@ public enum MetalDispatchPlanRuntime {
       encoder.dispatchThreadgroups(
         indirectBuffer: indirectArgumentBuffer.gpuAddress
           + UInt64(indirectArgumentByteCount),
+        threadsPerThreadgroup: MTLSize(
+          width: consumerThreadgroupWidth,
+          height: 1,
+          depth: 1
+        )
+      )
+      encoder.setComputePipelineState(tokenPipeline)
+      encoder.setArgumentTable(tokenArgumentTable)
+      encoder.dispatchThreadgroups(
+        indirectBuffer: indirectArgumentBuffer.gpuAddress
+          + UInt64(indirectArgumentByteCount * 2),
         threadsPerThreadgroup: MTLSize(
           width: consumerThreadgroupWidth,
           height: 1,
@@ -663,6 +877,23 @@ public enum MetalDispatchPlanRuntime {
           + workItemByteCount,
         size: regionalStateByteCount
       )
+      let tokenOffset =
+        indirectOffset + indirectStorageByteCount
+        + workItemByteCount + regionalStateByteCount
+      encoder.copy(
+        sourceBuffer: outputTokenBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: tokenOffset,
+        size: tokenStateByteCount
+      )
+      encoder.copy(
+        sourceBuffer: tokenLastUpdateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagingBuffer,
+        destinationOffset: tokenOffset + tokenStateByteCount,
+        size: tokenLastUpdateByteCount
+      )
     }
 
     let inspection = stagingBuffer.contents()
@@ -711,6 +942,23 @@ public enum MetalDispatchPlanRuntime {
         start: inspection.advanced(
           by: indirectOffset + indirectStorageByteCount + workItemByteCount
         ).assumingMemoryBound(to: NBRegionalModuleState.self),
+        count: regionalStateCount
+      )
+    )
+    let tokenOffset =
+      indirectOffset + indirectStorageByteCount
+      + workItemByteCount + regionalStateByteCount
+    let outputTokenValues = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: tokenOffset)
+          .assumingMemoryBound(to: Float.self),
+        count: tokenStateCount
+      )
+    )
+    let outputTokenLastUpdates = Array(
+      UnsafeBufferPointer(
+        start: inspection.advanced(by: tokenOffset + tokenStateByteCount)
+          .assumingMemoryBound(to: UInt64.self),
         count: regionalStateCount
       )
     )
@@ -778,7 +1026,10 @@ public enum MetalDispatchPlanRuntime {
       indirectArguments[0].threadgroupsZ == 1,
       indirectArguments[1].threadgroupsX == expectedRegionalIndirectThreadgroups,
       indirectArguments[1].threadgroupsY == 1,
-      indirectArguments[1].threadgroupsZ == 1
+      indirectArguments[1].threadgroupsZ == 1,
+      indirectArguments[2].threadgroupsX == UInt32(environmentIdentifiers.count),
+      indirectArguments[2].threadgroupsY == 1,
+      indirectArguments[2].threadgroupsZ == 1
     else {
       throw TissueError.metal("GPU indirect dispatch consumption does not match the plan")
     }
@@ -810,6 +1061,40 @@ public enum MetalDispatchPlanRuntime {
     guard regionalStateFingerprint > 0 else {
       throw TissueError.metal("GPU cohort regional state has no compiled identity")
     }
+    guard outputTokenValues.allSatisfy(\.isFinite),
+      zip(outputTokenLastUpdates, outputRegionalStateRecords).allSatisfy({
+        lastUpdate, state in
+        lastUpdate == state.last_update_microseconds
+      })
+    else {
+      throw TissueError.metal("GPU cohort regional-token execution is invalid or incomplete")
+    }
+    let tokenStates = environmentIdentifiers.enumerated().map {
+      environmentIndex, environmentIdentifier in
+      let lower = environmentIndex * regionalProgram.scalarCount
+      let upper = lower + regionalProgram.scalarCount
+      return BrainCohortTokenState(
+        environmentIdentifier: environmentIdentifier,
+        values: Array(outputTokenValues[lower..<upper])
+      )
+    }
+    let tokenStateFingerprint = environmentIdentifiers.withUnsafeBufferPointer {
+      identifiers in
+      outputTokenValues.withUnsafeBufferPointer { values in
+        nb_brain_abi_cohort_token_state_fingerprint(
+          plan.fingerprint,
+          parameterVersion.fingerprint,
+          regionalProgram.fingerprint,
+          identifiers.baseAddress,
+          UInt32(identifiers.count),
+          values.baseAddress,
+          UInt32(regionalProgram.scalarCount)
+        )
+      }
+    }
+    guard tokenStateFingerprint > 0 else {
+      throw TissueError.metal("GPU cohort regional-token state has no compiled identity")
+    }
     return Materialization(
       deviceName: device.name,
       planFingerprint: result.plan_fingerprint,
@@ -822,12 +1107,19 @@ public enum MetalDispatchPlanRuntime {
       regionalStateFingerprint: regionalStateFingerprint,
       regionalIndirectThreadgroupCount: indirectArguments[1].threadgroupsX,
       regionalStateByteCount: regionalStateByteCount,
+      tokenStates: tokenStates,
+      tokenStateFingerprint: tokenStateFingerprint,
+      tokenIndirectThreadgroupCount: indirectArguments[2].threadgroupsX,
+      tokenStateByteCount: tokenStateByteCount,
       status: result.status,
       privateInputByteCount: headerByteCount + groupByteCount + entryByteCount
         + bindingByteCount + cohortUniformByteCount + environmentIdentifierByteCount
-        + moduleByteCount + regionalStateByteCount,
+        + moduleByteCount + regionalStateByteCount + tokenUniformByteCount
+        + programHeaderByteCount + layoutByteCount + parameterByteCount
+        + tokenStateByteCount,
       privateOutputByteCount: groupByteCount + entryByteCount + resultByteCount
-        + indirectStorageByteCount + workItemByteCount + regionalStateByteCount,
+        + indirectStorageByteCount + workItemByteCount + regionalStateByteCount
+        + tokenStateByteCount * 2 + tokenLastUpdateByteCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )

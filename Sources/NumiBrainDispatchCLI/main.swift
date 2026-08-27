@@ -79,17 +79,20 @@ private struct ABIEvidence: Codable {
   let resultBytes: Int
   let workItemBytes: Int
   let cohortUniformBytes: Int
+  let tokenUniformBytes: Int
   let regionalStateBytes: Int
   let parameterBindingBytes: Int
 }
 
 private struct IdentityEvidence: Codable {
   let scheduleFingerprint: String
+  let regionalProgramFingerprint: String
   let parameterVersionFingerprint: String
   let cohortFingerprint: String
   let dispatchPlanFingerprint: String
   let dispatchWorkFingerprint: String
   let regionalStateFingerprint: String
+  let tokenStateFingerprint: String
 }
 
 private struct CohortEvidence: Codable {
@@ -100,6 +103,7 @@ private struct CohortEvidence: Codable {
   let dispatchGroupCount: Int
   let dispatchEntryCount: Int
   let maximumEnvironmentCountPerGroup: Int
+  let tokenScalarsPerEnvironment: Int
 }
 
 private struct MetalEvidence: Codable {
@@ -112,6 +116,9 @@ private struct MetalEvidence: Codable {
   let regionalEnvironmentCount: Int
   let regionalStateBytes: Int
   let regionalIndirectThreadgroupCount: UInt32
+  let tokenEnvironmentCount: Int
+  let tokenStateBytes: Int
+  let tokenIndirectThreadgroupCount: UInt32
   let status: UInt32
   let gpuSeconds: Double
   let execution: String
@@ -128,6 +135,11 @@ private struct VerificationEvidence: Codable {
   let gpuRegionalOwnershipAndInterruptIsolationExact: Bool
   let regionalCPUReferenceMaximumAbsoluteError: Double
   let regionalCPUReferenceTolerance: Double
+  let gpuTokenCPUReferenceWithinTolerance: Bool
+  let gpuTokenOwnershipExact: Bool
+  let tokenCPUReferenceMaximumAbsoluteError: Double
+  let tokenCPUReferenceTolerance: Double
+  let tokenCPUReferenceSampleCount: Int
   let gpuReplayExact: Bool
   let staleParameterVersionRejected: Bool
 }
@@ -176,7 +188,9 @@ private struct NumiBrainDispatchCommand {
   @available(macOS 26.0, *)
   private static func run(options: Options) throws -> DispatchEvidence {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
-    let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let program = try RegionalTokenProgram.runtimeFoundationUnroutedV0(
+      schedule: schedule
+    )
     let version = try BrainParameterVersion.runtimeFoundationV0(
       schedule: schedule,
       regionalProgram: program,
@@ -243,17 +257,34 @@ private struct NumiBrainDispatchCommand {
         ($0.environmentIdentifier, $0.states)
       }
     )
+    let initialTokenStates = plan.activeEnvironmentIdentifiers.map { identifier in
+      BrainCohortTokenState(
+        environmentIdentifier: identifier,
+        values: (0..<program.scalarCount).map { scalarIndex in
+          Float((Int(identifier) * 7 + scalarIndex) % 29) / 64
+        }
+      )
+    }
+    let initialTokenStatesByIdentifier = Dictionary(
+      uniqueKeysWithValues: initialTokenStates.map {
+        ($0.environmentIdentifier, $0.values)
+      }
+    )
     let materialized = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
       schedule: schedule,
+      regionalProgram: program,
       parameterVersion: version,
-      initialRegionalStates: initialRegionalStates
+      initialRegionalStates: initialRegionalStates,
+      initialTokenStates: initialTokenStates
     )
     let replay = try MetalDispatchPlanRuntime.materialize(
       plan: plan,
       schedule: schedule,
+      regionalProgram: program,
       parameterVersion: version,
-      initialRegionalStates: initialRegionalStates
+      initialRegionalStates: initialRegionalStates,
+      initialTokenStates: initialTokenStates
     )
     let successor = try version.successor(
       regionalProgramFingerprint: version.regionalProgramFingerprint,
@@ -264,6 +295,7 @@ private struct NumiBrainDispatchCommand {
       _ = try MetalDispatchPlanRuntime.materialize(
         plan: plan,
         schedule: schedule,
+        regionalProgram: program,
         parameterVersion: successor
       )
       staleParameterVersionRejected = false
@@ -333,25 +365,72 @@ private struct NumiBrainDispatchCommand {
       && totalRegionalInterruptCount == interruptDeliveryCount
       && materialized.regionalIndirectThreadgroupCount
         == UInt32((plan.activeEnvironmentIdentifiers.count + 63) / 64)
+    let tokenReferenceIdentifiers = Set([
+      plan.activeEnvironmentIdentifiers[0],
+      plan.activeEnvironmentIdentifiers[
+        plan.activeEnvironmentIdentifiers.count / 2
+      ],
+      plan.activeEnvironmentIdentifiers[plan.activeEnvironmentIdentifiers.count - 1],
+    ])
+    let tokenTolerance: Float = 3e-6
+    var tokenMaximumAbsoluteError: Float = 0
+    for environment in materialized.tokenStates
+    where tokenReferenceIdentifiers.contains(environment.environmentIdentifier) {
+      guard
+        let initialTokens = initialTokenStatesByIdentifier[
+          environment.environmentIdentifier
+        ],
+        let initialDiagnostics = initialRegionalStatesByIdentifier[
+          environment.environmentIdentifier
+        ]
+      else {
+        throw DispatchCLIError("cohort regional-token input ownership is incomplete")
+      }
+      let reference = try CPURegionalTokenOperator.advance(
+        state: initialTokens,
+        diagnostics: initialDiagnostics,
+        schedule: schedule,
+        program: program,
+        invocations: plan.invocations(for: environment.environmentIdentifier)
+      )
+      guard environment.values.count == reference.values.count else {
+        throw DispatchCLIError("cohort regional-token output shape drifted")
+      }
+      for (actual, expected) in zip(environment.values, reference.values) {
+        tokenMaximumAbsoluteError = max(tokenMaximumAbsoluteError, abs(actual - expected))
+      }
+    }
+    let tokenCPUReferenceWithinTolerance = tokenMaximumAbsoluteError <= tokenTolerance
+    let tokenOwnershipExact =
+      materialized.tokenStates.map(\.environmentIdentifier)
+      == plan.activeEnvironmentIdentifiers
+      && materialized.tokenStates.allSatisfy {
+        $0.values.count == program.scalarCount
+      }
+      && materialized.tokenIndirectThreadgroupCount
+        == UInt32(plan.activeEnvironmentIdentifiers.count)
     let replayExact =
       replay.groups == materialized.groups
       && replay.workItems == materialized.workItems
       && replay.workFingerprint == materialized.workFingerprint
       && replay.regionalStates == materialized.regionalStates
       && replay.regionalStateFingerprint == materialized.regionalStateFingerprint
+      && replay.tokenStates == materialized.tokenStates
+      && replay.tokenStateFingerprint == materialized.tokenStateFingerprint
       && replay.planFingerprint == materialized.planFingerprint
       && replay.parameterVersionFingerprint == materialized.parameterVersionFingerprint
       && replay.status == materialized.status
     guard retryExact, shadowStateUnchanged, reversed == plan, materializationExact,
       indirectConsumptionExact, regionalCPUReferenceWithinTolerance,
       regionalDiscreteStateExact, regionalOwnershipAndInterruptIsolationExact,
-      replayExact, staleParameterVersionRejected
+      tokenCPUReferenceWithinTolerance, tokenOwnershipExact, replayExact,
+      staleParameterVersionRejected
     else {
       throw DispatchCLIError("cohort materialization verification failed")
     }
 
     return DispatchEvidence(
-      schema: "numibrain.cohort-dispatch-evidence.v3",
+      schema: "numibrain.cohort-dispatch-evidence.v4",
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       abi: ABIEvidence(
@@ -363,11 +442,13 @@ private struct NumiBrainDispatchCommand {
         resultBytes: BrainDispatchPlan.resultByteCount,
         workItemBytes: BrainDispatchPlan.workItemByteCount,
         cohortUniformBytes: BrainDispatchPlan.cohortUniformByteCount,
+        tokenUniformBytes: BrainDispatchPlan.tokenUniformByteCount,
         regionalStateBytes: RegionalModuleState.abiByteCount,
         parameterBindingBytes: BrainParameterVersion.bindingByteCount
       ),
       identity: IdentityEvidence(
         scheduleFingerprint: schedule.fingerprintHex,
+        regionalProgramFingerprint: program.fingerprintHex,
         parameterVersionFingerprint: version.fingerprintHex,
         cohortFingerprint: plan.cohortFingerprintHex,
         dispatchPlanFingerprint: plan.fingerprintHex,
@@ -375,6 +456,10 @@ private struct NumiBrainDispatchCommand {
         regionalStateFingerprint: String(
           format: "%016llx",
           materialized.regionalStateFingerprint
+        ),
+        tokenStateFingerprint: String(
+          format: "%016llx",
+          materialized.tokenStateFingerprint
         )
       ),
       cohort: CohortEvidence(
@@ -384,7 +469,8 @@ private struct NumiBrainDispatchCommand {
         interruptDeliveryCount: interruptDeliveryCount,
         dispatchGroupCount: plan.groups.count,
         dispatchEntryCount: plan.entryCount,
-        maximumEnvironmentCountPerGroup: plan.groups.map { $0.entries.count }.max() ?? 0
+        maximumEnvironmentCountPerGroup: plan.groups.map { $0.entries.count }.max() ?? 0,
+        tokenScalarsPerEnvironment: program.scalarCount
       ),
       metal: MetalEvidence(
         device: materialized.deviceName,
@@ -396,10 +482,13 @@ private struct NumiBrainDispatchCommand {
         regionalEnvironmentCount: materialized.regionalStates.count,
         regionalStateBytes: materialized.regionalStateByteCount,
         regionalIndirectThreadgroupCount: materialized.regionalIndirectThreadgroupCount,
+        tokenEnvironmentCount: materialized.tokenStates.count,
+        tokenStateBytes: materialized.tokenStateByteCount,
+        tokenIndirectThreadgroupCount: materialized.tokenIndirectThreadgroupCount,
         status: materialized.status,
         gpuSeconds: materialized.gpuDurationSeconds,
         execution:
-          "Metal 4 private immutable plan, parameter, schedule and state inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion and independent cohort regional-state advance -> private outputs -> explicit post-completion inspection"
+          "Metal 4 private immutable plan, parameter, schedule, diagnostic and token inputs -> 2D timestamp/module by environment materialization -> device barrier -> GPU-generated indirect work expansion, compact diagnostic advance and one-threadgroup-per-agent authoritative unrouted token advance -> private generations -> explicit post-completion inspection"
       ),
       verification: VerificationEvidence(
         retryExact: retryExact,
@@ -413,15 +502,21 @@ private struct NumiBrainDispatchCommand {
           regionalOwnershipAndInterruptIsolationExact,
         regionalCPUReferenceMaximumAbsoluteError: Double(regionalMaximumAbsoluteError),
         regionalCPUReferenceTolerance: Double(regionalTolerance),
+        gpuTokenCPUReferenceWithinTolerance: tokenCPUReferenceWithinTolerance,
+        gpuTokenOwnershipExact: tokenOwnershipExact,
+        tokenCPUReferenceMaximumAbsoluteError: Double(tokenMaximumAbsoluteError),
+        tokenCPUReferenceTolerance: Double(tokenTolerance),
+        tokenCPUReferenceSampleCount: tokenReferenceIdentifiers.count,
         gpuReplayExact: replayExact,
         staleParameterVersionRejected: staleParameterVersionRejected
       ),
       executionPath:
-        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion and independent compact recurrent regional-state generations",
+        "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major materialization -> GPU-generated indirect work expansion -> independent compact diagnostic and authoritative unrouted 10752-scalar recurrent token generations",
       limitations: [
         "The CPU oracle currently compiles cohort membership before GPU materialization.",
-        "The regional kernel advances the compact 32-byte diagnostic state per module, not the authoritative 10752-scalar regional token state.",
-        "GPU seconds are command-feedback telemetry for materialization and both indirect consumers, not a production throughput or counter qualification.",
+        "The cohort token kernel advances authoritative regional token values but intentionally disables long-range routes; per-agent route history and routing state are not yet cohort-resident.",
+        "Token CPU parity is sampled across deterministic boundary and interrupt-owning environments; ownership, shape and replay are checked across the full cohort.",
+        "GPU seconds are command-feedback telemetry for materialization and three indirect consumers, not a production throughput or counter qualification.",
         "The eight-module runtime-foundation subset is not the complete 96-module graph.",
       ]
     )

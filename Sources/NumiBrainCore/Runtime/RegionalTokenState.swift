@@ -423,6 +423,15 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     return try RegionalTokenProgram(schedule: schedule, routes: routes)
   }
 
+  /// Uses the authoritative token shapes and factorized recurrent parameters
+  /// without long-range routes. This is the bounded cohort execution profile;
+  /// routed cohort history is added as an independent transactional boundary.
+  public static func runtimeFoundationUnroutedV0(
+    schedule: BrainModuleSchedule
+  ) throws -> RegionalTokenProgram {
+    try RegionalTokenProgram(schedule: schedule, routes: [])
+  }
+
   private static func makeFoundationParameters(
     schedule: BrainModuleSchedule,
     layouts: [RegionalTokenLayout]

@@ -1,8 +1,8 @@
-# Versioned cohort dispatch v0.15
+# Versioned cohort dispatch v0.16
 
-This document defines the first executable active-module cohort-state boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. One indirect consumer expands auditable work records; a second advances an independent compact recurrent regional-state generation for every active environment. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 45, 46, 47, 50, 51, 52, and 62.
+This document defines the first executable active-module cohort-token boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. One indirect consumer expands auditable work records; a second advances independent compact diagnostic state; a third advances an independent authoritative 10,752-scalar recurrent token generation for every active environment. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 8, 45, 46, 47, 50, 51, 52, and 62.
 
-It does not yet perform GPU prefix-sum grouping, advance the authoritative 10,752-scalar regional token state across the cohort, or execute a complete multi-agent brain tick.
+The v0.16 cohort token program intentionally contains no long-range routes. It does not yet perform GPU prefix-sum grouping, allocate per-agent route-history and routing-state generations, or execute a complete multi-agent brain tick.
 
 ## Stable records
 
@@ -17,6 +17,7 @@ It does not yet perform GPU prefix-sum grouping, advance the authoritative 10,75
 | `NBDispatchPlanResult` | 32 | Materialized counts, typed status, plan identity, and parameter identity |
 | `NBDispatchWorkItem` | 32 | Expanded timestamp, module, environment, reason, interrupt, and source-group work record |
 | `NBDispatchCohortUniforms` | 32 | Bound plan and parameter identities plus environment, module, and state counts |
+| `NBDispatchTokenUniforms` | 32 | Regional-program and schedule identities plus per-agent and total token-scalar counts |
 | `NBRegionalModuleState` | 32 | Compact activation, integration, interrupt salience, phase, counters, and last-update time |
 
 The records are standard-layout C values mirrored explicitly in Metal. Compile-time assertions and Swift tests require exact size agreement. Fingerprints mix explicit little-endian fields and never hash struct padding. They are deterministic content identities, not cryptographic signatures.
@@ -51,26 +52,27 @@ column = active environment entry within that group
 
 The kernel validates the bound format, counts, schedule identity, parameter identity, nonzero source-cohort identity, and group capacities. It copies canonical groups and entries into private region-major output buffers without atomics. The result remains private for a future indirect regional executor.
 
-The materializer writes two private 12-byte `MTLDispatchThreadgroupsIndirectArguments` payloads. After a device barrier:
+The materializer writes three private 12-byte `MTLDispatchThreadgroupsIndirectArguments` payloads. After a device barrier:
 
 1. `consume_dispatch_plan` launches from the first GPU-generated count, finds the source group for each flattened entry, and writes one private `NBDispatchWorkItem` per active environment invocation.
 2. `advance_cohort_regional_diagnostics` launches from the second GPU-generated count. One lane owns one active environment, copies its input generation to its output generation, walks canonical physical-time groups, finds only that environment's entries, and applies the same FP32 recurrence as `CPURegionalModuleOperator`.
+3. `advance_cohort_regional_tokens_unrouted` launches one threadgroup per active environment from the third count. Its 64 lanes copy that agent's private token generation, walk canonical physical-time groups, compute candidates from a stable pre-update module vector, and publish to a separate private generation using the same gated FP32 recurrence and immutable factorized parameters as `CPURegionalTokenOperator`.
 
-There is no count readback between materialization and either consumer. Module state is stored environment-major and then canonical module-major, so agents never share recurrent values. Initial state may be supplied explicitly and is rejected if a last-update timestamp is newer than that environment/module's first invocation.
+There is no count readback between materialization and any consumer. Diagnostic state is stored environment-major and then canonical module-major; token state is environment-major and then canonical regional-scalar-major. Agents never share recurrent values. Initial state may be supplied explicitly and is rejected if its ownership or shape drifts, any scalar is nonfinite, or a diagnostic last-update timestamp is newer than that environment/module's first invocation.
 
-The current public materializer performs an explicit readback only after all three kernels complete to verify exact output and report evidence. It does not recompute the complete field-wise plan fingerprint inside Metal; the compiled C validator owns canonical fingerprint verification before upload, while Metal enforces that authenticated identity against the private parameter binding. The expanded work stream and output regional-state generation receive separate compiled field-wise fingerprints during post-completion verification.
+The current public materializer performs an explicit readback only after all four kernels complete to verify exact output and report evidence. It does not recompute the complete field-wise plan fingerprint inside Metal; the compiled C validator owns canonical fingerprint verification before upload, while Metal enforces that authenticated identity against the private parameter binding. The expanded work stream, output diagnostic state, and output token generation receive separate compiled field-wise fingerprints during post-completion verification.
 
 Private byte counts are:
 
 \[
-B_{in}=48+24N_G+16N_E+64+32+4N_B+32N_M+32N_BN_M,
+B_{in}=224+24N_G+16N_E+4N_B+64N_M+32N_BN_M+32N_S+4N_BN_S,
 \]
 
 \[
-B_{out}=24N_G+16N_E+32+32+32N_E+32N_BN_M,
+B_{out}=80+24N_G+48N_E+40N_BN_M+8N_BN_S,
 \]
 
-where \(N_G\) is the number of dispatch groups, \(N_E\) is the number of active environment entries, \(N_B\) is the number of active environments, and \(N_M\) is the number of modules. The 32 output bytes after the result are aligned private storage for two 12-byte indirect argument payloads.
+where \(N_G\) is the number of dispatch groups, \(N_E\) is the number of active environment entries, \(N_B\) is the number of active environments, \(N_M\) is the number of modules, and \(N_S\) is the token-scalar count per environment. Output accounting includes the candidate-token scratch generation and per-module token last-update scratch. The 48 bytes after the result are aligned private storage for three 12-byte indirect argument payloads.
 
 ## Evidence gates
 
@@ -86,7 +88,9 @@ where \(N_G\) is the number of dispatch groups, \(N_E\) is the number of active 
 10. GPU regional floats match the CPU recurrence within the declared FP32 tolerance; counters and timestamps match exactly.
 11. Environment-specific interrupts alter only their owning states, and the summed interrupt counters equal the source delivery count.
 12. Repeated Metal materialization, indirect consumption, and regional-state advance are discrete-state exact and have the same state fingerprint.
-13. A stale parameter generation and a temporally invalid initial state are rejected before upload.
-14. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
+13. Every active environment receives one independent token vector with the exact compiled scalar count and one GPU-generated threadgroup.
+14. Token values match the unrouted CPU operator within the declared FP32 tolerance, while full-cohort ownership, shape, finiteness, and replay fingerprints are exact.
+15. A stale parameter generation, routed program, malformed token input, and temporally invalid diagnostic input are rejected before upload.
+16. The command-feedback interval is reported only as bounded telemetry, not throughput evidence.
 
-Passing these gates establishes a deterministic versioned dispatch boundary, private Metal materialization, GPU-generated indirect work consumption, and independent compact recurrent cohort state. It does not establish GPU-native plan construction, prefix sums, authoritative regional-token cohort execution, production throughput, or the complete 96-module graph. The current regional kernel deliberately favors a transparent CPU-parity oracle: each environment lane scans canonical groups and performs a binary search within each group. It is not the final compacted regional executor.
+Passing these gates establishes a deterministic versioned dispatch boundary, private Metal materialization, GPU-generated indirect work consumption, independent compact diagnostic state, and independent authoritative unrouted token state. It does not establish GPU-native plan construction, prefix sums, routed cohort execution, production throughput, or the complete 96-module graph. The current diagnostic lane and token threadgroup both scan canonical groups and perform a binary search for their environment. This transparent CPU-parity implementation is not the final compacted regional executor.

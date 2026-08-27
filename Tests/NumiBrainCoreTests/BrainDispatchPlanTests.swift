@@ -52,6 +52,7 @@ final class BrainDispatchPlanTests: XCTestCase {
     XCTAssertEqual(nb_brain_abi_dispatch_plan_result_size(), 32)
     XCTAssertEqual(nb_brain_abi_dispatch_work_item_size(), 32)
     XCTAssertEqual(nb_brain_abi_dispatch_cohort_uniforms_size(), 32)
+    XCTAssertEqual(nb_brain_abi_dispatch_token_uniforms_size(), 32)
     XCTAssertEqual(MemoryLayout<NBCohortEnvironment>.stride, 40)
     XCTAssertEqual(MemoryLayout<NBDispatchGroup>.stride, 24)
     XCTAssertEqual(MemoryLayout<NBDispatchEntry>.stride, 16)

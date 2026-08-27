@@ -57,6 +57,19 @@ public struct BrainCohortRegionalState: Equatable, Sendable {
   }
 }
 
+/// Independent environment-major authoritative regional token state. This
+/// owns neural scalars; compact regional state remains diagnostic metadata.
+@frozen
+public struct BrainCohortTokenState: Equatable, Sendable {
+  public let environmentIdentifier: UInt32
+  public let values: [Float]
+
+  public init(environmentIdentifier: UInt32, values: [Float]) {
+    self.environmentIdentifier = environmentIdentifier
+    self.values = values
+  }
+}
+
 /// A compiled, flattened cohort dispatch plan. It preserves independent
 /// environment state while grouping identical module work for later
 /// region-major GPU execution.
@@ -70,6 +83,7 @@ public struct BrainDispatchPlan: Codable, Equatable, Sendable {
   public static let resultByteCount = Int(NB_DISPATCH_PLAN_RESULT_BYTE_COUNT)
   public static let workItemByteCount = Int(NB_DISPATCH_WORK_ITEM_BYTE_COUNT)
   public static let cohortUniformByteCount = Int(NB_DISPATCH_COHORT_UNIFORMS_BYTE_COUNT)
+  public static let tokenUniformByteCount = Int(NB_DISPATCH_TOKEN_UNIFORMS_BYTE_COUNT)
 
   public let scheduleFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64

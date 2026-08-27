@@ -312,6 +312,14 @@ struct NBDispatchCohortUniformsABI {
     uint flags;
 };
 
+struct NBDispatchTokenUniformsABI {
+    ulong regional_program_fingerprint;
+    ulong schedule_fingerprint;
+    uint environment_count;
+    uint scalar_count_per_environment;
+    ulong total_scalar_count;
+};
+
 struct NBDispatchIndirectArgumentsABI {
     uint threadgroups_x;
     uint threadgroups_y;
@@ -421,6 +429,7 @@ static_assert(sizeof(NBDispatchEntryABI) == 16, "dispatch entry ABI drift");
 static_assert(sizeof(NBDispatchPlanResultABI) == 32, "dispatch result ABI drift");
 static_assert(sizeof(NBDispatchWorkItemABI) == 32, "dispatch work-item ABI drift");
 static_assert(sizeof(NBDispatchCohortUniformsABI) == 32, "cohort uniform ABI drift");
+static_assert(sizeof(NBDispatchTokenUniformsABI) == 32, "token uniform ABI drift");
 static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
@@ -480,6 +489,7 @@ kernel void materialize_dispatch_plan(
     device NBDispatchPlanResultABI *result [[buffer(6)]],
     device NBDispatchIndirectArgumentsABI *indirectArguments [[buffer(7)]],
     device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(8)]],
+    device const NBDispatchTokenUniformsABI *tokenUniforms [[buffer(9)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint groupIndex = position.y;
@@ -499,6 +509,9 @@ kernel void materialize_dispatch_plan(
         indirectArguments[1].threadgroups_x = 0u;
         indirectArguments[1].threadgroups_y = 0u;
         indirectArguments[1].threadgroups_z = 0u;
+        indirectArguments[2].threadgroups_x = 0u;
+        indirectArguments[2].threadgroups_y = 0u;
+        indirectArguments[2].threadgroups_z = 0u;
         if (header->plan_version != NBDispatchPlanVersion
             || header->flags != 0u
             || header->group_count == 0u
@@ -512,6 +525,16 @@ kernel void materialize_dispatch_plan(
             || cohortUniforms->environment_count == 0u
             || cohortUniforms->module_count == 0u
             || cohortUniforms->flags != 0u
+            || tokenUniforms->regional_program_fingerprint
+                != parameterVersion->regional_program_fingerprint
+            || tokenUniforms->schedule_fingerprint
+                != header->schedule_fingerprint
+            || tokenUniforms->environment_count
+                != cohortUniforms->environment_count
+            || tokenUniforms->scalar_count_per_environment == 0u
+            || tokenUniforms->total_scalar_count
+                != ulong(tokenUniforms->environment_count)
+                    * ulong(tokenUniforms->scalar_count_per_environment)
             || header->parameter_version_fingerprint
                 != parameterVersion->version_fingerprint
             || header->schedule_fingerprint
@@ -549,6 +572,9 @@ kernel void materialize_dispatch_plan(
                     : 1u);
             indirectArguments[1].threadgroups_y = 1u;
             indirectArguments[1].threadgroups_z = 1u;
+            indirectArguments[2].threadgroups_x = tokenUniforms->environment_count;
+            indirectArguments[2].threadgroups_y = 1u;
+            indirectArguments[2].threadgroups_z = 1u;
         }
     }
     const NBDispatchGroupABI group = inputGroups[groupIndex];
@@ -709,6 +735,177 @@ kernel void advance_cohort_regional_diagnostics(
         }
         state.last_update_microseconds = group.timestamp_microseconds;
         outputStates[stateIndex] = state;
+    }
+}
+
+/// Advances the authoritative environment-major recurrent token generation
+/// for an unrouted regional program. One threadgroup owns one environment;
+/// groups remain in canonical physical-time order and each module update reads
+/// a stable pre-update token vector before publishing its candidate values.
+kernel void advance_cohort_regional_tokens_unrouted(
+    device const NBDispatchPlanHeaderABI *planHeader [[buffer(0)]],
+    device const NBDispatchCohortUniformsABI *cohortUniforms [[buffer(1)]],
+    device const NBDispatchTokenUniformsABI *tokenUniforms [[buffer(2)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(3)]],
+    device const NBDispatchGroupABI *groups [[buffer(4)]],
+    device const NBDispatchEntryABI *entries [[buffer(5)]],
+    device const uint *environmentIdentifiers [[buffer(6)]],
+    device const NBModuleDescriptorABI *modules [[buffer(7)]],
+    device const NBRegionalProgramHeaderABI *programHeader [[buffer(8)]],
+    device const NBRegionalTokenLayoutABI *layouts [[buffer(9)]],
+    device const NBRegionalTokenParametersABI *parameters [[buffer(10)]],
+    device const NBRegionalModuleStateABI *inputDiagnostics [[buffer(11)]],
+    device const float *inputTokens [[buffer(12)]],
+    device float *outputTokens [[buffer(13)]],
+    device float *candidateTokens [[buffer(14)]],
+    device ulong *tokenLastUpdates [[buffer(15)]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
+    uint3 threadgroupPosition [[threadgroup_position_in_grid]]
+) {
+    const uint environmentIndex = threadgroupPosition.x;
+    if (environmentIndex >= cohortUniforms->environment_count
+        || programHeader->route_count != 0u
+        || programHeader->module_count != cohortUniforms->module_count
+        || programHeader->token_scalar_count
+            != tokenUniforms->scalar_count_per_environment
+        || programHeader->parameter_count != programHeader->token_scalar_count
+        || programHeader->program_fingerprint
+            != tokenUniforms->regional_program_fingerprint
+        || programHeader->program_fingerprint
+            != parameterVersion->regional_program_fingerprint
+        || tokenUniforms->schedule_fingerprint
+            != parameterVersion->schedule_fingerprint) {
+        return;
+    }
+    const uint laneCount = lanesPerThreadgroup.x;
+    const uint environmentIdentifier = environmentIdentifiers[environmentIndex];
+    const ulong tokenBase = ulong(environmentIndex)
+        * ulong(programHeader->token_scalar_count);
+    const uint diagnosticBase = environmentIndex * cohortUniforms->module_count;
+    for (uint scalarIndex = lane;
+         scalarIndex < programHeader->token_scalar_count;
+         scalarIndex += laneCount) {
+        outputTokens[tokenBase + ulong(scalarIndex)] =
+            inputTokens[tokenBase + ulong(scalarIndex)];
+    }
+    for (uint moduleIndex = lane;
+         moduleIndex < cohortUniforms->module_count;
+         moduleIndex += laneCount) {
+        tokenLastUpdates[diagnosticBase + moduleIndex] =
+            inputDiagnostics[diagnosticBase + moduleIndex].last_update_microseconds;
+    }
+    threadgroup_barrier(mem_flags::mem_device);
+
+    threadgroup uint active;
+    threadgroup uint activeModuleIndex;
+    threadgroup float activeAlpha;
+    threadgroup float activeDrive;
+    for (uint groupIndex = 0u; groupIndex < planHeader->group_count; ++groupIndex) {
+        const NBDispatchGroupABI group = groups[groupIndex];
+        if (lane == 0u) {
+            active = 0u;
+            uint lower = group.entry_offset;
+            uint upper = group.entry_offset + group.entry_count;
+            while (lower < upper) {
+                const uint middle = lower + (upper - lower) / 2u;
+                const uint candidate = entries[middle].environment_identifier;
+                if (candidate < environmentIdentifier) {
+                    lower = middle + 1u;
+                } else if (candidate > environmentIdentifier) {
+                    upper = middle;
+                } else {
+                    uint moduleIndex = ~0u;
+                    for (uint candidateIndex = 0u;
+                         candidateIndex < cohortUniforms->module_count;
+                         ++candidateIndex) {
+                        if (modules[candidateIndex].module_id == group.module_id) {
+                            moduleIndex = candidateIndex;
+                            break;
+                        }
+                    }
+                    if (moduleIndex != ~0u) {
+                        const NBModuleDescriptorABI module = modules[moduleIndex];
+                        const NBDispatchEntryABI entry = entries[middle];
+                        const ulong lastUpdate = tokenLastUpdates[
+                            diagnosticBase + moduleIndex
+                        ];
+                        const ulong elapsedMicroseconds = lastUpdate == ~0ul
+                            ? ulong(module.period_microseconds)
+                            : group.timestamp_microseconds - lastUpdate;
+                        activeModuleIndex = moduleIndex;
+                        activeAlpha = 1.0f - exp(
+                            -float(elapsedMicroseconds)
+                                / float(module.intrinsic_timescale_microseconds)
+                        );
+                        const float periodicDrive =
+                            (entry.reason_flags & NBSchedulerReasonPeriodic) != 0u
+                            ? 0.25f
+                            : 0.0f;
+                        const float interruptDrive = min(
+                            float(popcount(entry.interrupt_mask)) * 0.125f,
+                            1.0f
+                        );
+                        activeDrive = periodicDrive + interruptDrive;
+                        active = 1u;
+                    }
+                    break;
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        if (active == 0u) {
+            continue;
+        }
+
+        const NBRegionalTokenLayoutABI layout = layouts[activeModuleIndex];
+        for (uint localScalar = lane;
+             localScalar < layout.scalar_count;
+             localScalar += laneCount) {
+            const uint scalarIndex = layout.scalar_offset + localScalar;
+            const uint dimension = uint(layout.token_dimension);
+            const uint tokenStart = layout.scalar_offset
+                + (localScalar / dimension) * dimension;
+            float localSum = 0.0f;
+            for (uint localFeature = 0u;
+                 localFeature < dimension;
+                 ++localFeature) {
+                localSum += outputTokens[
+                    tokenBase + ulong(tokenStart + localFeature)
+                ];
+            }
+            const float localMean = localSum / float(dimension);
+            const NBRegionalTokenParametersABI parameter = parameters[
+                layout.parameter_offset + localScalar
+            ];
+            const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
+            const float current = outputTokens[absoluteScalar];
+            const float candidate = tanh(
+                parameter.recurrent_gain * current
+                + parameter.local_gain * localMean
+                + parameter.drive_gain * activeDrive
+                + parameter.bias
+            );
+            const float gateInput = parameter.gate_bias
+                + parameter.gate_recurrent_gain * current
+                + parameter.gate_input_gain * activeDrive;
+            const float gate = 1.0f / (1.0f + exp(-gateInput));
+            candidateTokens[absoluteScalar] = current
+                + activeAlpha * gate * (candidate - current);
+        }
+        threadgroup_barrier(mem_flags::mem_device);
+        for (uint localScalar = lane;
+             localScalar < layout.scalar_count;
+             localScalar += laneCount) {
+            const ulong absoluteScalar = tokenBase
+                + ulong(layout.scalar_offset + localScalar);
+            outputTokens[absoluteScalar] = candidateTokens[absoluteScalar];
+        }
+        if (lane == 0u) {
+            tokenLastUpdates[diagnosticBase + activeModuleIndex] =
+                group.timestamp_microseconds;
+        }
+        threadgroup_barrier(mem_flags::mem_device);
     }
 }
 
