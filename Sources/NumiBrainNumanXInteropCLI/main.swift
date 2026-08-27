@@ -219,30 +219,6 @@ private final class NumanXMyoSimBridge {
 }
 
 @available(macOS 26.0, *)
-private func transduceAcceptedMyoSimEvents(
-  maximumGeneralizedForce: Float,
-  timestamp: BrainTimestamp
-) throws -> [BrainInterruptEvent] {
-  let overloadThreshold: Float = 1
-  guard maximumGeneralizedForce.isFinite, maximumGeneralizedForce >= 0 else {
-    throw NSError(
-      domain: "NumiBrainNumanXInterop",
-      code: 8,
-      userInfo: [NSLocalizedDescriptionKey: "NumanX returned an invalid force observation"]
-    )
-  }
-  guard maximumGeneralizedForce > overloadThreshold else { return [] }
-  return [
-    try BrainInterruptEvent(
-      timestamp: timestamp,
-      mask: .muscleOverload,
-      identifier: 0x4d59_4f53,
-      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
-    )
-  ]
-}
-
-@available(macOS 26.0, *)
 private func run() throws {
   guard CommandLine.arguments.count == 4 else {
     throw NSError(
@@ -278,6 +254,7 @@ private func run() throws {
     musclePath: CommandLine.arguments[3],
     muscleCount: UInt32(runtime.protectiveMotorProfile.channels.count)
   )
+  let muscleLoadTransducer = try MuscleLoadReceptorTransducer(overloadThreshold: 1)
   try bridge.beginRoot()
   var completed = false
   defer {
@@ -353,10 +330,12 @@ private func run() throws {
     )
     let events: [BrainInterruptEvent]
     if candidateIndex == 0 {
-      events = try transduceAcceptedMyoSimEvents(
-        maximumGeneralizedForce: physical.force,
-        timestamp: fast.substep.candidateTimestamp
-      )
+      events =
+        try muscleLoadTransducer.transduce(
+          maximumAbsoluteGeneralizedForce: physical.force,
+          acceptedPhysicsState: accepted,
+          receptorIdentifier: 0x4d59_4f53
+        ).map { [$0] } ?? []
       transducedMyoSimEventCount += events.count
     } else {
       events = []

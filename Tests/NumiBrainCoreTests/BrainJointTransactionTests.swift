@@ -1,7 +1,8 @@
 import Foundation
 import NumiBrainABI
-@testable import NumiBrainCore
 import XCTest
+
+@testable import NumiBrainCore
 
 final class BrainJointTransactionTests: XCTestCase {
   private func makeToken(
@@ -197,5 +198,57 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(transaction.resolutions, [])
     XCTAssertEqual(transaction.physicsGeneration, token.basePhysicsGeneration)
     XCTAssertThrowsError(try transaction.beginPhysicsSubstep(durationMicroseconds: 1))
+  }
+
+  func testAcceptedMuscleLoadTransducesWithoutExposingForceToScheduler() throws {
+    let token = try makeToken()
+    let substep = try BrainJointSubstepToken(
+      transaction: token,
+      substepIndex: 0,
+      attemptIndex: 0,
+      startTimestamp: token.committedTimestamp,
+      durationMicroseconds: 5_000
+    )
+    let accepted = try AcceptedPhysicsStateToken(
+      transaction: token,
+      substep: substep,
+      physicsStateFingerprint: 0xa001,
+      physicsGeneration: 101
+    )
+    let transducer = try MuscleLoadReceptorTransducer(overloadThreshold: 10)
+
+    XCTAssertNil(
+      try transducer.transduce(
+        maximumAbsoluteGeneralizedForce: 10,
+        acceptedPhysicsState: accepted,
+        receptorIdentifier: 77
+      )
+    )
+    let event = try XCTUnwrap(
+      transducer.transduce(
+        maximumAbsoluteGeneralizedForce: 10.25,
+        acceptedPhysicsState: accepted,
+        receptorIdentifier: 77
+      )
+    )
+    XCTAssertEqual(event.timestamp, accepted.acceptedTimestamp)
+    XCTAssertEqual(event.mask, .muscleOverload)
+    XCTAssertEqual(event.identifier, 77)
+    XCTAssertEqual(event.flags, UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED))
+    XCTAssertThrowsError(
+      try transducer.transduce(
+        maximumAbsoluteGeneralizedForce: -.infinity,
+        acceptedPhysicsState: accepted,
+        receptorIdentifier: 77
+      )
+    )
+    XCTAssertThrowsError(
+      try transducer.transduce(
+        maximumAbsoluteGeneralizedForce: 11,
+        acceptedPhysicsState: accepted,
+        receptorIdentifier: 0
+      )
+    )
+    XCTAssertThrowsError(try MuscleLoadReceptorTransducer(overloadThreshold: .nan))
   }
 }
