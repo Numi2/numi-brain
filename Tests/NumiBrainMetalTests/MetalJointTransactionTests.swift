@@ -317,7 +317,7 @@ final class MetalJointTransactionTests: XCTestCase {
     )
   }
 
-  func testInteractiveAbortAndUnsupportedDurationPublishNothing() throws {
+  func testInteractiveAbortAndInvalidDurationPublishNothing() throws {
     try requireMetal4()
     let runtime = try makeRuntime(maxEncodedSubsteps: 2)
     let before = try runtime.snapshotCommitted().stableHash()
@@ -328,9 +328,12 @@ final class MetalJointTransactionTests: XCTestCase {
       targetTimestamp: BrainTimestamp(microseconds: 1_000)
     )
     XCTAssertThrowsError(
-      try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
+      try runtime.advanceFastSystems(candidateDurationMicroseconds: 0)
     )
-    let candidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_000)
+    XCTAssertThrowsError(
+      try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_001)
+    )
+    let candidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
     XCTAssertTrue(runtime.hasOpenInteractiveJointControl)
     XCTAssertThrowsError(try runtime.finishInteractiveJointControl())
     XCTAssertThrowsError(
@@ -348,7 +351,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
   }
 
-  func testJointMetalBindingRejectsVariableDurationAndStaleGeneration() throws {
+  func testJointMetalBindingAcceptsCorrectedDurationAndRejectsStaleGeneration() throws {
     try requireMetal4()
     let runtime = try makeRuntime(maxEncodedSubsteps: 2)
     var joint = try runtime.beginJointControl(
@@ -367,15 +370,19 @@ final class MetalJointTransactionTests: XCTestCase {
       )
       try joint.acceptPhysicsSubstep(physics, for: substep)
     }
-    XCTAssertThrowsError(try runtime.runJointRootTransaction(joint))
-    XCTAssertFalse(runtime.hasPendingRootTransaction)
+    let variableSubmission = try runtime.runJointRootTransaction(joint)
+    XCTAssertEqual(variableSubmission.attemptedSubsteps, 2)
+    XCTAssertEqual(variableSubmission.acceptedSubsteps, 2)
+    let variableCommit = try runtime.commitJointRootTransaction()
+    XCTAssertEqual(variableCommit.committedTimestamp, BrainTimestamp(microseconds: 1_000))
+    XCTAssertEqual(runtime.committedStep, 2)
 
     let stale = try BrainJointTransactionToken(
       environmentIdentifier: 7,
       episodeIdentifier: 23,
       controlStepIdentifier: 5,
       parameterVersionFingerprint: runtime.parameterVersion.fingerprint,
-      baseBrainGeneration: 1,
+      baseBrainGeneration: 0,
       basePhysicsGeneration: 100,
       committedTimestamp: BrainTimestamp(microseconds: 0),
       targetTimestamp: BrainTimestamp(microseconds: 1_000),
@@ -392,6 +399,133 @@ final class MetalJointTransactionTests: XCTestCase {
     try staleJoint.acceptPhysicsSubstep(physics, for: substep)
     XCTAssertThrowsError(try runtime.runJointRootTransaction(staleJoint))
     XCTAssertFalse(runtime.hasPendingRootTransaction)
+  }
+
+  func testCorrectedDurationInteractiveRelayMatchesCPUAndRetryExactly() throws {
+    try requireMetal4()
+    let (direct, directCPU) = try makeVariableDurationRuntimes()
+    let (retried, _) = try makeVariableDurationRuntimes()
+    var cpu = directCPU
+    let target = BrainTimestamp(microseconds: 2_250)
+
+    func runMetal(
+      _ runtime: MetalTissueRuntime,
+      rejectFirst: Bool
+    ) throws -> MetalTissueRuntime.Submission {
+      let token = try runtime.beginInteractiveJointControl(
+        controlStepIdentifier: 9,
+        basePhysicsGeneration: 200,
+        committedTimestamp: BrainTimestamp(microseconds: 0),
+        targetTimestamp: target
+      )
+      var physicsGeneration: UInt64 = 200
+      if rejectFirst {
+        let rejected = try runtime.advanceFastSystems(candidateDurationMicroseconds: 750)
+        try runtime.rejectPhysicsSubstep(rejected.substep)
+      }
+      for fingerprint in [0xdef1, 0xdef2, 0xdef3] as [UInt64] {
+        let candidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 750)
+        physicsGeneration += 1
+        let accepted = try AcceptedPhysicsStateToken(
+          transaction: token,
+          substep: candidate.substep,
+          physicsStateFingerprint: fingerprint,
+          physicsGeneration: physicsGeneration
+        )
+        try runtime.acceptPhysicsSubstep(accepted, for: candidate.substep)
+      }
+      let submission = try runtime.finishInteractiveJointControl()
+      let commit = try runtime.commitJointRootTransaction()
+      XCTAssertEqual(commit.committedTimestamp, target)
+      XCTAssertEqual(commit.physicsGeneration, 203)
+      return submission
+    }
+
+    let directSubmission = try runMetal(direct, rejectFirst: false)
+    let retriedSubmission = try runMetal(retried, rejectFirst: true)
+    try cpu.beginRootTransaction(at: 0)
+    for _ in 0..<3 {
+      try cpu.advanceCandidateSubstep(durationMicroseconds: 750)
+      try cpu.acceptCandidateSubstep()
+    }
+    try cpu.commitRootTransaction()
+
+    XCTAssertEqual(directSubmission.attemptedSubsteps, 3)
+    XCTAssertEqual(retriedSubmission.attemptedSubsteps, 4)
+    XCTAssertEqual(direct.committedStep, 3)
+    XCTAssertEqual(retried.committedStep, 3)
+    XCTAssertEqual(
+      try direct.snapshotCommitted().stableHash(),
+      try retried.snapshotCommitted().stableHash()
+    )
+    let directTimestamps = try direct.snapshotCommittedRelayHistoryTimestamps()
+    XCTAssertEqual(
+      directTimestamps,
+      try retried.snapshotCommittedRelayHistoryTimestamps()
+    )
+    XCTAssertTrue(directTimestamps.contains(BrainTimestamp(microseconds: 750)))
+    XCTAssertTrue(directTimestamps.contains(BrainTimestamp(microseconds: 1_500)))
+    XCTAssertTrue(directTimestamps.contains(BrainTimestamp(microseconds: 2_250)))
+    let metalState = try direct.snapshotCommitted()
+    XCTAssertEqual(metalState.count, cpu.committed.count)
+    for index in metalState.cells.indices {
+      let metal = metalState.cells[index]
+      let reference = cpu.committed.cells[index]
+      XCTAssertEqual(metal.x, reference.x, accuracy: 2e-6)
+      XCTAssertEqual(metal.y, reference.y, accuracy: 2e-6)
+      XCTAssertEqual(metal.z, reference.z, accuracy: 2e-6)
+      XCTAssertEqual(metal.w, reference.w, accuracy: 2e-6)
+    }
+  }
+
+  func testCorrectedDurationHistoryCoverageFailsBeforeOverwrite() throws {
+    try requireMetal4()
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 4,
+      height: 4,
+      parameters: parameters
+    )
+    let delayField = try TissueDelayField(
+      width: 4,
+      height: 4,
+      repeating: UInt8(TissueDelayField.maximumDelaySteps)
+    )
+    let runtime = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      delayField: delayField,
+      schedulerEnvironmentIdentifier: 0
+    )
+    let token = try runtime.beginInteractiveJointControl(
+      controlStepIdentifier: 10,
+      basePhysicsGeneration: 300,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 20_000)
+    )
+    for acceptedIndex in 1...31 {
+      let candidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
+      let accepted = try AcceptedPhysicsStateToken(
+        transaction: token,
+        substep: candidate.substep,
+        physicsStateFingerprint: UInt64(acceptedIndex),
+        physicsGeneration: 300 + UInt64(acceptedIndex)
+      )
+      try runtime.acceptPhysicsSubstep(accepted, for: candidate.substep)
+    }
+
+    XCTAssertThrowsError(
+      try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
+    )
+    try runtime.abortInteractiveJointControl()
+    XCTAssertEqual(runtime.committedStep, 0)
+    XCTAssertEqual(
+      try runtime.snapshotCommittedRelayHistoryTimestamps(),
+      Array(
+        repeating: BrainTimestamp(microseconds: 0),
+        count: TissueDelayField.historyCapacity
+      )
+    )
   }
 
   private func makeRuntime(maxEncodedSubsteps: Int) throws -> MetalTissueRuntime {
@@ -412,6 +546,41 @@ final class MetalJointTransactionTests: XCTestCase {
       schedulerEnvironmentIdentifier: 7,
       maxEncodedSubsteps: maxEncodedSubsteps
     )
+  }
+
+  private func makeVariableDurationRuntimes() throws -> (
+    MetalTissueRuntime,
+    CPUTissueRuntime
+  ) {
+    let structure = try TissueStructure.homogeneous(width: 8, height: 8)
+    let delayField = try TissueDelayField(width: 8, height: 8, repeating: 1)
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      parameters: parameters,
+      structure: structure
+    )
+    let stimulus = TissueStimulus(
+      radius: 0.35,
+      excitatoryDrive: 6,
+      startMilliseconds: 0,
+      endMilliseconds: 5
+    )
+    let metal = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField,
+      schedulerEnvironmentIdentifier: 0,
+      maxEncodedSubsteps: 4
+    )
+    let cpu = try CPUTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: stimulus,
+      structure: structure,
+      delayField: delayField
+    )
+    return (metal, cpu)
   }
 
   private func requireMetal4() throws {

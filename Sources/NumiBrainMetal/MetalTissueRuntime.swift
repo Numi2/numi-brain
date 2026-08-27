@@ -59,6 +59,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let parameterVersion: BrainParameterVersion
   public let schedulerEnvironmentIdentifier: UInt32
   public let historyCapacity = TissueDelayField.historyCapacity
+  public let maximumTissueDelayMicroseconds: UInt64
   public let maxEncodedSubsteps: Int
   public let maxSchedulerEvents: Int
   public let maxSchedulerInvocations: Int
@@ -83,6 +84,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let structureBuffer: any MTLBuffer
   private let delayBuffer: any MTLBuffer
   private let relayHistoryBuffer: any MTLBuffer
+  private let relayHistoryTimestampBuffer: any MTLBuffer
   private let relayScratchBuffer: any MTLBuffer
   private let projectionOffsetBuffer: any MTLBuffer
   private let projectionEdgeBuffer: any MTLBuffer
@@ -117,6 +119,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stateByteCount: Int
   private let relayByteCount: Int
   public let relayHistoryByteCount: Int
+  public let relayHistoryTimestampByteCount: Int
   public let projectionOffsetByteCount: Int
   public let projectionEdgeByteCount: Int
   public let eventByteCount: Int
@@ -141,9 +144,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
+  private var committedRelayHistoryTimestamps = [UInt64](
+    repeating: 0,
+    count: TissueDelayField.historyCapacity
+  )
   private var pendingRootShadowIndex: Int?
   private var pendingRootShadowOwnerMask: UInt32?
   private var pendingRootShadowStep: UInt64?
+  private var pendingRelayHistoryTimestamps: [UInt64]?
   private var committedSchedulerClockIndex = 0
   private var committedSchedulerTime: BrainTimestamp?
   private var committedSchedulerGeneration: UInt64 = 0
@@ -167,7 +175,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     var rootShadowIndex: Int
     var historyOwnerMask: UInt32
     var historyStep: UInt64
-    var acceptedTimeMilliseconds: Float
+    var relayHistoryTimestamps: [UInt64]
+    var acceptedTimestamp: BrainTimestamp
     var candidate: InteractiveCandidate?
     var firstGPUStartSeconds: Double?
   }
@@ -314,6 +323,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     }
     let timestepMicroseconds = UInt64(roundedTimestepMicroseconds)
+    let maximumTissueDelaySteps = max(
+      delayField.maximumConfiguredDelaySteps,
+      connectome.maximumProjectionDelaySteps
+    )
+    let (maximumTissueDelayMicroseconds, tissueDelayOverflow) = UInt64(
+      maximumTissueDelaySteps
+    ).multipliedReportingOverflow(by: timestepMicroseconds)
+    guard !tissueDelayOverflow else {
+      throw TissueError.metal("physical tissue delay overflows UInt64")
+    }
     let maximumRouteDelay = UInt64(
       regionalTokenProgram.routes.map(\.delayMicroseconds).max() ?? 0
     )
@@ -407,7 +426,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain tissue arguments"
-    argumentDescriptor.maxBufferBindCount = 11
+    argumentDescriptor.maxBufferBindCount = 12
     argumentDescriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor) else {
       throw TissueError.metal("failed to create the Metal 4 argument table")
@@ -486,6 +505,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let (relayHistoryByteCount, relayHistoryOverflow) =
       historyPlaneByteCount
       .multipliedReportingOverflow(by: 2)
+    let relayHistoryTimestampByteCount =
+      2 * TissueDelayField.historyCapacity
+      * MemoryLayout<UInt64>.stride
     guard !historyPlaneOverflow, !relayHistoryOverflow else {
       throw TissueError.metal("relay history byte count overflows Int")
     }
@@ -498,6 +520,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: relayHistoryByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let relayHistoryTimestampBuffer = device.makeBuffer(
+        length: relayHistoryTimestampByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let relayScratchBuffer = device.makeBuffer(
         length: relayByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -507,6 +533,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     delayBuffer.label = "NumiBrain immutable conduction delays"
     relayHistoryBuffer.label = "NumiBrain transactional relay history"
+    relayHistoryTimestampBuffer.label = "NumiBrain physical relay-history timestamps"
     relayScratchBuffer.label = "NumiBrain rejected relay scratch"
     let packedProjectionEdges = connectome.packedEdges()
     let projectionOffsetByteCount =
@@ -877,7 +904,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 41
+    residencyDescriptor.initialCapacity = stateBuffers.count + 42
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -890,6 +917,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(structureBuffer)
     residencySet.addAllocation(delayBuffer)
     residencySet.addAllocation(relayHistoryBuffer)
+    residencySet.addAllocation(relayHistoryTimestampBuffer)
     residencySet.addAllocation(relayScratchBuffer)
     residencySet.addAllocation(projectionOffsetBuffer)
     residencySet.addAllocation(projectionEdgeBuffer)
@@ -954,6 +982,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalTokenProgram = regionalTokenProgram
     self.parameterVersion = parameterVersion
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
+    self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
     self.maxEncodedSubsteps = maxEncodedSubsteps
     self.maxSchedulerEvents = maxSchedulerEvents
     self.maxSchedulerInvocations = maxSchedulerInvocations
@@ -975,6 +1004,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.structureBuffer = structureBuffer
     self.delayBuffer = delayBuffer
     self.relayHistoryBuffer = relayHistoryBuffer
+    self.relayHistoryTimestampBuffer = relayHistoryTimestampBuffer
     self.relayScratchBuffer = relayScratchBuffer
     self.projectionOffsetBuffer = projectionOffsetBuffer
     self.projectionEdgeBuffer = projectionEdgeBuffer
@@ -1009,6 +1039,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
     self.relayHistoryByteCount = relayHistoryByteCount
+    self.relayHistoryTimestampByteCount = relayHistoryTimestampByteCount
     self.projectionOffsetByteCount = projectionOffsetByteCount
     self.projectionEdgeByteCount = projectionEdgeByteCount
     self.eventByteCount = eventByteCount
@@ -1067,6 +1098,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       stagingBuffer.contents().copyMemory(from: source, byteCount: relayByteCount)
     }
     try seedRelayHistory()
+    let initialRelayTimestamps = [UInt64](
+      repeating: 0,
+      count: 2 * TissueDelayField.historyCapacity
+    )
+    initialRelayTimestamps.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: relayHistoryTimestampByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: relayHistoryTimestampBuffer,
+      size: relayHistoryTimestampByteCount,
+      label: "NumiBrain relay-history timestamp seed"
+    )
     connectome.destinationOffsets.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
       stagingBuffer.contents().copyMemory(from: source, byteCount: projectionOffsetByteCount)
@@ -1382,28 +1430,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       committedTimestamp: committedTimestamp,
       targetTimestamp: targetTimestamp
     )
-    let startMilliseconds = Float(Double(committedTimestamp.rawValue) / 1_000)
-    guard try schedulerTimestamp(milliseconds: startMilliseconds) == committedTimestamp else {
-      throw TissueError.transaction(
-        "interactive root time is not representable by the tissue runtime"
-      )
-    }
     interactiveJointRoot = InteractiveJointRoot(
       transaction: transaction,
       rootShadowIndex: committedIndex,
       historyOwnerMask: committedHistoryOwnerMask,
       historyStep: committedStep,
-      acceptedTimeMilliseconds: startMilliseconds,
+      relayHistoryTimestamps: committedRelayHistoryTimestamps,
+      acceptedTimestamp: committedTimestamp,
       candidate: nil,
       firstGPUStartSeconds: nil
     )
     return transaction.token
   }
 
-  /// Advances one neural tissue candidate without publishing it. The v0.4
-  /// interactive slice intentionally retains the compiled fixed tissue step;
-  /// physical-duration correction is validated as unsupported rather than
-  /// silently changing conduction semantics.
+  /// Advances one neural tissue candidate without publishing it. Corrected
+  /// durations may shrink from the nominal tissue step; local and sparse
+  /// conduction still resolve against accepted physical timestamps.
   public func advanceFastSystems(
     candidateDurationMicroseconds: UInt64
   ) throws -> FastSystemResult {
@@ -1418,12 +1460,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         "interactive root exhausted its \(TissueDelayField.historyCapacity)-slot delayed history"
       )
     }
-    let fixedDuration = try schedulerTimestamp(
+    let nominalDuration = try schedulerTimestamp(
       milliseconds: parameters.timestepMilliseconds
     ).rawValue
-    guard candidateDurationMicroseconds == fixedDuration else {
+    guard candidateDurationMicroseconds > 0,
+      candidateDurationMicroseconds <= nominalDuration
+    else {
       throw TissueError.transaction(
-        "interactive candidate duration does not match fixed tissue conduction semantics"
+        "interactive candidate duration must be positive and no larger than the nominal tissue step"
       )
     }
     var transaction = root.transaction
@@ -1433,10 +1477,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard substep.candidateTimestamp <= transaction.token.targetTimestamp else {
       throw TissueError.transaction("interactive candidate would overshoot the root target")
     }
-    guard
-      substep.startTimestamp.rawValue
-        == (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds).rawValue)
-    else {
+    guard substep.startTimestamp == root.acceptedTimestamp else {
       throw TissueError.transaction("interactive neural and physical start times diverged")
     }
     let (nextHistoryStep, historyOverflow) = root.historyStep.addingReportingOverflow(1)
@@ -1449,11 +1490,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let currentOwner =
       (root.historyOwnerMask >> UInt32(historyWriteSlot)) & 1
     let historyWritePlane = currentOwner ^ 1
+    var prospectiveTimestamps = root.relayHistoryTimestamps
+    prospectiveTimestamps[historyWriteSlot] = substep.candidateTimestamp.rawValue
+    try validateRelayHistoryCoverage(
+      at: substep.candidateTimestamp,
+      timestamps: prospectiveTimestamps
+    )
     let destination = destinationIndex(rootShadowIndex: root.rootShadowIndex)
+    let timestepMilliseconds = Float(Double(candidateDurationMicroseconds) / 1_000)
     let values = TissueUniforms.encode(
       width: width,
       height: height,
-      timeMilliseconds: root.acceptedTimeMilliseconds,
+      timeMilliseconds: Float(Double(root.acceptedTimestamp.rawValue) / 1_000),
       parameters: parameters,
       stimulus: stimulus,
       historyStep: UInt32(root.historyStep % UInt64(TissueDelayField.historyCapacity)),
@@ -1462,7 +1510,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       historyWritePlane: historyWritePlane,
       eventCount: eventSchedule.eventCount,
       randomContext: randomContext,
-      acceptedStep: root.historyStep
+      acceptedStep: root.historyStep,
+      timestepMilliseconds: timestepMilliseconds,
+      currentTimestamp: root.acceptedTimestamp,
+      candidateTimestamp: substep.candidateTimestamp
     )
     writeUniforms(values, attempt: 0)
     let feedback = try submit(label: "NumiBrain interactive fast neural candidate") {
@@ -1492,6 +1543,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
       argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
       argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+      argumentTable.setAddress(relayHistoryTimestampBuffer.gpuAddress, index: 11)
       encoder.setComputePipelineState(tissuePipeline)
       encoder.setArgumentTable(argumentTable)
       encoder.dispatchThreads(
@@ -1539,9 +1591,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       owner: candidate.historyWritePlane
     )
     root.historyStep += 1
-    root.acceptedTimeMilliseconds = Float(
-      Double(accepted.acceptedTimestamp.rawValue) / 1_000
-    )
+    root.relayHistoryTimestamps[candidate.historyWriteSlot] =
+      accepted.acceptedTimestamp.rawValue
+    root.acceptedTimestamp = accepted.acceptedTimestamp
     root.candidate = nil
     interactiveJointRoot = root
   }
@@ -1601,8 +1653,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       UInt64(transaction.acceptedSubstepCount)
     )
     guard !historyOverflow, root.historyStep == expectedHistoryStep,
-      (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds))
-        == token.targetTimestamp
+      root.acceptedTimestamp == token.targetTimestamp
     else {
       throw TissueError.transaction("interactive tissue shadow diverged from the joint ledger")
     }
@@ -1610,10 +1661,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let acceptedEvents = transaction.resolutions.lazy
       .filter(\.isAccepted)
       .flatMap(\.receptorEvents)
-    let startMilliseconds = Float(Double(token.committedTimestamp.rawValue) / 1_000)
     let schedulerWindow = try prepareSchedulerWindow(
-      timeMilliseconds: startMilliseconds,
-      acceptedSubstepCount: Int(transaction.acceptedSubstepCount),
+      startTime: token.committedTimestamp,
+      targetTime: token.targetTimestamp,
       events: schedulerEvents + acceptedEvents
     )
     guard schedulerWindow.targetTime == token.targetTimestamp,
@@ -1629,6 +1679,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRootShadowIndex = root.rootShadowIndex
     pendingRootShadowOwnerMask = root.historyOwnerMask
     pendingRootShadowStep = root.historyStep
+    pendingRelayHistoryTimestamps = root.relayHistoryTimestamps
     pendingSchedulerClockIndex = schedulerWindow.outputClockIndex
     pendingSchedulerTargetTime = schedulerWindow.targetTime
     pendingRegionalStateIndex = schedulerWindow.outputClockIndex
@@ -1661,10 +1712,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     interactiveJointRoot = nil
   }
 
-  /// Encodes a Metal root from the exact accepted/rejected NumanX ledger. The
-  /// bounded tissue slice currently requires every physical attempt to use its
-  /// fixed integration timestep; corrected variable-duration retry is a later
-  /// interop extension.
+  /// Encodes a Metal root from the exact accepted/rejected NumanX ledger.
+  /// Candidate durations may shrink from the nominal tissue step, while
+  /// physical-time relay lookup preserves the configured conduction interval.
   public func runJointRootTransaction(
     _ transaction: BrainJointTransaction,
     schedulerEvents: [BrainInterruptEvent] = []
@@ -1697,11 +1747,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     ).rawValue
     guard
       transaction.resolutions.allSatisfy({
-        $0.substep.durationMicroseconds == timestep
+        $0.substep.durationMicroseconds > 0
+          && $0.substep.durationMicroseconds <= timestep
       })
     else {
       throw TissueError.transaction(
-        "joint substep duration does not match the fixed Metal tissue timestep"
+        "joint substep duration must be positive and no larger than the nominal tissue step"
       )
     }
     let acceptance = transaction.resolutions.map(\.isAccepted)
@@ -1712,8 +1763,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("joint substep ledger counters do not match")
     }
-    let (duration, durationOverflow) = UInt64(acceptedCount)
-      .multipliedReportingOverflow(by: timestep)
+    var duration: UInt64 = 0
+    var durationOverflow = false
+    for resolution in transaction.resolutions where resolution.isAccepted {
+      let result = duration.addingReportingOverflow(
+        resolution.substep.durationMicroseconds
+      )
+      duration = result.partialValue
+      durationOverflow = durationOverflow || result.overflow
+    }
     let (expectedTarget, targetOverflow) = token.committedTimestamp.rawValue
       .addingReportingOverflow(duration)
     guard !durationOverflow, !targetOverflow,
@@ -1721,17 +1779,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("joint accepted duration does not reach the root target")
     }
-    let startMilliseconds = Float(
-      Double(token.committedTimestamp.rawValue) / 1_000
-    )
-    guard
-      try schedulerTimestamp(milliseconds: startMilliseconds)
-        == token.committedTimestamp
-    else {
-      throw TissueError.transaction("joint root time is not representable by the tissue runtime")
-    }
     let submission = try runRootTransaction(
-      at: startMilliseconds,
+      startTime: token.committedTimestamp,
+      candidateDurationsMicroseconds: transaction.resolutions.map(
+        \.substep.durationMicroseconds
+      ),
       acceptedSubsteps: acceptance,
       schedulerEvents: schedulerEvents
         + transaction.resolutions.lazy
@@ -1751,14 +1803,35 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     acceptedSubsteps: [Bool],
     schedulerEvents: [BrainInterruptEvent] = []
   ) throws -> Submission {
+    let startTime = try schedulerTimestamp(milliseconds: timeMilliseconds)
+    let nominalDuration = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    return try runRootTransaction(
+      startTime: startTime,
+      candidateDurationsMicroseconds: Array(
+        repeating: nominalDuration,
+        count: acceptedSubsteps.count
+      ),
+      acceptedSubsteps: acceptedSubsteps,
+      schedulerEvents: schedulerEvents
+    )
+  }
+
+  private func runRootTransaction(
+    startTime: BrainTimestamp,
+    candidateDurationsMicroseconds: [UInt64],
+    acceptedSubsteps: [Bool],
+    schedulerEvents: [BrainInterruptEvent]
+  ) throws -> Submission {
     guard pendingRootShadowIndex == nil, interactiveJointRoot == nil else {
       throw TissueError.transaction("commit or abort the pending Metal root transaction first")
     }
-    guard timeMilliseconds.isFinite else {
-      throw TissueError.transaction("root time must be finite")
-    }
     guard !acceptedSubsteps.isEmpty else {
       throw TissueError.transaction("a root transaction needs at least one candidate substep")
+    }
+    guard candidateDurationsMicroseconds.count == acceptedSubsteps.count else {
+      throw TissueError.transaction("candidate duration and acceptance ledgers differ in shape")
     }
     guard acceptedSubsteps.count <= maxEncodedSubsteps else {
       throw TissueError.transaction(
@@ -1774,9 +1847,38 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         "a Metal root transaction cannot accept more than \(TissueDelayField.historyCapacity) delayed substeps"
       )
     }
+    let nominalDuration = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    guard
+      candidateDurationsMicroseconds.allSatisfy({
+        $0 > 0 && $0 <= nominalDuration
+      })
+    else {
+      throw TissueError.transaction(
+        "candidate durations must be positive and no larger than the nominal tissue step"
+      )
+    }
+    var acceptedDuration: UInt64 = 0
+    for attempt in acceptedSubsteps.indices where acceptedSubsteps[attempt] {
+      let (nextDuration, overflow) = acceptedDuration.addingReportingOverflow(
+        candidateDurationsMicroseconds[attempt]
+      )
+      guard !overflow else {
+        throw TissueError.transaction("accepted root duration overflows UInt64")
+      }
+      acceptedDuration = nextDuration
+    }
+    let (targetValue, targetOverflow) = startTime.rawValue.addingReportingOverflow(
+      acceptedDuration
+    )
+    guard !targetOverflow else {
+      throw TissueError.transaction("root target time overflows UInt64")
+    }
+    let targetTime = BrainTimestamp(microseconds: targetValue)
     let schedulerWindow = try prepareSchedulerWindow(
-      timeMilliseconds: timeMilliseconds,
-      acceptedSubstepCount: acceptedCount,
+      startTime: startTime,
+      targetTime: targetTime,
       events: schedulerEvents
     )
     guard committedRegionalStateIndex == schedulerWindow.inputClockIndex else {
@@ -1784,9 +1886,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
 
     var rootShadowIndex = committedIndex
-    var acceptedTime = timeMilliseconds
+    var acceptedTime = startTime
     var historyOwnerMask = committedHistoryOwnerMask
     var historyStep = committedStep
+    var relayHistoryTimestamps = committedRelayHistoryTimestamps
 
     for attempt in acceptedSubsteps.indices {
       let (nextHistoryStep, historyOverflow) = historyStep.addingReportingOverflow(1)
@@ -1801,10 +1904,25 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         acceptedSubsteps[attempt]
         ? currentOwner ^ 1
         : 2
+      let duration = candidateDurationsMicroseconds[attempt]
+      let (candidateTimeValue, candidateTimeOverflow) = acceptedTime.rawValue
+        .addingReportingOverflow(duration)
+      guard !candidateTimeOverflow else {
+        throw TissueError.transaction("candidate timestamp overflows UInt64")
+      }
+      let candidateTime = BrainTimestamp(microseconds: candidateTimeValue)
+      var prospectiveTimestamps = relayHistoryTimestamps
+      if acceptedSubsteps[attempt] {
+        prospectiveTimestamps[historyWriteSlot] = candidateTime.rawValue
+        try validateRelayHistoryCoverage(
+          at: candidateTime,
+          timestamps: prospectiveTimestamps
+        )
+      }
       let values = TissueUniforms.encode(
         width: width,
         height: height,
-        timeMilliseconds: acceptedTime,
+        timeMilliseconds: Float(Double(acceptedTime.rawValue) / 1_000),
         parameters: parameters,
         stimulus: stimulus,
         historyStep: UInt32(historyStep % UInt64(TissueDelayField.historyCapacity)),
@@ -1813,14 +1931,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         historyWritePlane: historyWritePlane,
         eventCount: eventSchedule.eventCount,
         randomContext: randomContext,
-        acceptedStep: historyStep
+        acceptedStep: historyStep,
+        timestepMilliseconds: Float(Double(duration) / 1_000),
+        currentTimestamp: acceptedTime,
+        candidateTimestamp: candidateTime
       )
       let destination = destinationIndex(rootShadowIndex: rootShadowIndex)
       writeUniforms(values, attempt: attempt)
       if acceptedSubsteps[attempt] {
         rootShadowIndex = destination
-        acceptedTime += parameters.timestepMilliseconds
+        acceptedTime = candidateTime
         historyStep = nextHistoryStep
+        relayHistoryTimestamps = prospectiveTimestamps
         historyOwnerMask = settingHistoryOwner(
           mask: historyOwnerMask,
           slot: historyWriteSlot,
@@ -1832,6 +1954,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let finalRootShadowIndex = rootShadowIndex
     let finalHistoryOwnerMask = historyOwnerMask
     let finalHistoryStep = historyStep
+    let finalRelayHistoryTimestamps = relayHistoryTimestamps
 
     rootShadowIndex = committedIndex
     let feedback = try submit(label: "NumiBrain tissue root transaction") { encoder in
@@ -1865,6 +1988,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
         argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
         argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+        argumentTable.setAddress(relayHistoryTimestampBuffer.gpuAddress, index: 11)
         encoder.setComputePipelineState(tissuePipeline)
         encoder.setArgumentTable(argumentTable)
         encoder.dispatchThreads(
@@ -1892,6 +2016,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRootShadowIndex = finalRootShadowIndex
     pendingRootShadowOwnerMask = finalHistoryOwnerMask
     pendingRootShadowStep = finalHistoryStep
+    pendingRelayHistoryTimestamps = finalRelayHistoryTimestamps
     pendingSchedulerClockIndex = schedulerWindow.outputClockIndex
     pendingSchedulerTargetTime = schedulerWindow.targetTime
     pendingRegionalStateIndex = schedulerWindow.outputClockIndex
@@ -1934,7 +2059,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   private func publishRootTransaction() throws {
     guard let pendingRootShadowIndex, let pendingRootShadowOwnerMask,
-      let pendingRootShadowStep, let pendingSchedulerClockIndex,
+      let pendingRootShadowStep, let pendingRelayHistoryTimestamps,
+      let pendingSchedulerClockIndex,
       let pendingSchedulerTargetTime, let pendingRegionalStateIndex
     else {
       throw TissueError.transaction("there is no Metal root transaction to commit")
@@ -1952,6 +2078,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     committedIndex = pendingRootShadowIndex
     committedHistoryOwnerMask = pendingRootShadowOwnerMask
+    committedRelayHistoryTimestamps = pendingRelayHistoryTimestamps
     committedStep = pendingRootShadowStep
     committedSchedulerClockIndex = pendingSchedulerClockIndex
     committedRegionalStateIndex = pendingRegionalStateIndex
@@ -1961,6 +2088,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.pendingRootShadowIndex = nil
     self.pendingRootShadowOwnerMask = nil
     self.pendingRootShadowStep = nil
+    self.pendingRelayHistoryTimestamps = nil
     self.pendingSchedulerClockIndex = nil
     self.pendingSchedulerTargetTime = nil
     self.pendingRegionalStateIndex = nil
@@ -1983,6 +2111,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRootShadowIndex = nil
     pendingRootShadowOwnerMask = nil
     pendingRootShadowStep = nil
+    pendingRelayHistoryTimestamps = nil
     pendingSchedulerClockIndex = nil
     pendingSchedulerTargetTime = nil
     pendingRegionalStateIndex = nil
@@ -2003,6 +2132,30 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       .bindMemory(to: TissueCell.self, capacity: width * height)
     let cells = Array(UnsafeBufferPointer(start: pointer, count: width * height))
     return try TissueGrid(width: width, height: height, cells: cells)
+  }
+
+  public func snapshotCommittedRelayHistoryTimestamps() throws -> [BrainTimestamp] {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading relay-history timestamps")
+    }
+    try copy(
+      source: relayHistoryTimestampBuffer,
+      destination: stagingBuffer,
+      size: relayHistoryTimestampByteCount,
+      label: "NumiBrain committed relay-history timestamp inspection"
+    )
+    let timestampPointer = stagingBuffer.contents().bindMemory(
+      to: UInt64.self,
+      capacity: 2 * TissueDelayField.historyCapacity
+    )
+    let timestamps = (0..<TissueDelayField.historyCapacity).map { slot in
+      let plane = Int((committedHistoryOwnerMask >> UInt32(slot)) & 1)
+      return timestampPointer[plane * TissueDelayField.historyCapacity + slot]
+    }
+    guard timestamps == committedRelayHistoryTimestamps else {
+      throw TissueError.metal("GPU relay-history timestamp ownership diverged from the runtime")
+    }
+    return timestamps.map(BrainTimestamp.init(microseconds:))
   }
 
   public func inspectCommittedScheduler() throws -> SchedulerInspection {
@@ -2481,27 +2634,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   private func prepareSchedulerWindow(
-    timeMilliseconds: Float,
-    acceptedSubstepCount: Int,
+    startTime: BrainTimestamp,
+    targetTime: BrainTimestamp,
     events: [BrainInterruptEvent]
   ) throws -> PreparedSchedulerWindow {
-    let startTime = try schedulerTimestamp(milliseconds: timeMilliseconds)
     if let committedSchedulerTime, startTime != committedSchedulerTime {
       throw TissueError.transaction(
         "root time does not match committed scheduler time \(committedSchedulerTime.rawValue) us"
       )
     }
-    let timestep = try schedulerTimestamp(
-      milliseconds: parameters.timestepMilliseconds
-    ).rawValue
-    let (duration, durationOverflow) = UInt64(acceptedSubstepCount)
-      .multipliedReportingOverflow(by: timestep)
-    let (targetMicroseconds, targetOverflow) = startTime.rawValue
-      .addingReportingOverflow(duration)
-    guard !durationOverflow, !targetOverflow else {
-      throw TissueError.transaction("scheduler target time overflows UInt64")
+    guard targetTime > startTime else {
+      throw TissueError.transaction("scheduler target must advance physical time")
     }
-    let targetTime = BrainTimestamp(microseconds: targetMicroseconds)
+    let duration = targetTime.rawValue - startTime.rawValue
+    let targetMicroseconds = targetTime.rawValue
     let initialize = committedSchedulerTime == nil
     let canonicalEvents = events.sorted { lhs, rhs in
       if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
@@ -2619,6 +2765,24 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("scheduler time is not representable in integer microseconds")
     }
     return BrainTimestamp(microseconds: UInt64(rounded))
+  }
+
+  private func validateRelayHistoryCoverage(
+    at timestamp: BrainTimestamp,
+    timestamps: [UInt64]
+  ) throws {
+    guard timestamps.count == TissueDelayField.historyCapacity else {
+      throw TissueError.transaction("relay-history timestamp shape is invalid")
+    }
+    let target =
+      maximumTissueDelayMicroseconds >= timestamp.rawValue
+      ? UInt64(0)
+      : timestamp.rawValue - maximumTissueDelayMicroseconds
+    guard timestamps.contains(where: { $0 <= target }) else {
+      throw TissueError.transaction(
+        "physical relay history no longer covers target timestamp \(target) us"
+      )
+    }
   }
 
   private func destinationIndex(rootShadowIndex: Int) -> Int {

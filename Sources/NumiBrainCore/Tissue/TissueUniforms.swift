@@ -38,10 +38,16 @@ public enum TissueUniformIndex: Int, Sendable {
   case randomModuleIdentifier = 36
   case acceptedStepLow = 37
   case acceptedStepHigh = 38
+  case currentTimestampLow = 39
+  case currentTimestampHigh = 40
+  case candidateTimestampLow = 41
+  case candidateTimestampHigh = 42
+  case nominalTimestepMicrosecondsLow = 43
+  case nominalTimestepMicrosecondsHigh = 44
 }
 
 public enum TissueUniforms {
-  public static let count = 40
+  public static let count = 45
   public static let byteCount = count * MemoryLayout<Float>.stride
 
   public static func encode(
@@ -56,12 +62,16 @@ public enum TissueUniforms {
     historyWritePlane: UInt32 = 2,
     eventCount: Int = 0,
     randomContext: TissueRandomContext = .deterministicDefault,
-    acceptedStep: UInt64 = 0
+    acceptedStep: UInt64 = 0,
+    timestepMilliseconds: Float? = nil,
+    currentTimestamp: BrainTimestamp = BrainTimestamp(microseconds: 0),
+    candidateTimestamp: BrainTimestamp? = nil
   ) -> [Float] {
     var values = Array(repeating: Float.zero, count: count)
     values[TissueUniformIndex.width.rawValue] = Float(width)
     values[TissueUniformIndex.height.rawValue] = Float(height)
-    values[TissueUniformIndex.timestepMilliseconds.rawValue] = parameters.timestepMilliseconds
+    let integrationTimestep = timestepMilliseconds ?? parameters.timestepMilliseconds
+    values[TissueUniformIndex.timestepMilliseconds.rawValue] = integrationTimestep
     values[TissueUniformIndex.timeMilliseconds.rawValue] = timeMilliseconds
     values[TissueUniformIndex.excitatoryTimeConstant.rawValue] =
       parameters.excitatoryTimeConstantMilliseconds
@@ -114,6 +124,28 @@ public enum TissueUniforms {
     )
     values[TissueUniformIndex.acceptedStepHigh.rawValue] = Float(
       bitPattern: UInt32(truncatingIfNeeded: acceptedStep >> 32)
+    )
+    let candidateTimestamp = candidateTimestamp ?? currentTimestamp
+    values[TissueUniformIndex.currentTimestampLow.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: currentTimestamp.rawValue)
+    )
+    values[TissueUniformIndex.currentTimestampHigh.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: currentTimestamp.rawValue >> 32)
+    )
+    values[TissueUniformIndex.candidateTimestampLow.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: candidateTimestamp.rawValue)
+    )
+    values[TissueUniformIndex.candidateTimestampHigh.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: candidateTimestamp.rawValue >> 32)
+    )
+    let nominalTimestepMicroseconds = UInt64(
+      (Double(parameters.timestepMilliseconds) * 1_000).rounded()
+    )
+    values[TissueUniformIndex.nominalTimestepMicrosecondsLow.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: nominalTimestepMicroseconds)
+    )
+    values[TissueUniformIndex.nominalTimestepMicrosecondsHigh.rawValue] = Float(
+      bitPattern: UInt32(truncatingIfNeeded: nominalTimestepMicroseconds >> 32)
     )
     return values
   }

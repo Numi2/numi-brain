@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.15
+# Mesoscale neural tissue model v0.16
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -22,9 +22,9 @@ S=(s_E,s_I,s_C,V),
 
 where `sE` and `sI` scale local excitatory and inhibitory response, `sC` scales outgoing short-range coupling, and viability `V` lies in `[0, 1]`. The default layered profile is a deterministic synthetic test morphology with four depth strata and slight lateral modulation. It is not a histological fit to a named cortical area.
 
-An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. The configured delay is `d_j` times the model's nominal base timestep. The v0.15 CPU oracle resolves that interval against accepted physical timestamps and linearly interpolates bracketed relay samples. The Metal v0.14 path still resolves the same class as 0–31 accepted fixed integration steps. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. The configured delay is `d_j` times the model's nominal base timestep. The v0.16 CPU and Metal paths resolve that interval against accepted physical timestamps and linearly interpolate bracketed relay samples. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
 
-Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own delay class. The CPU oracle converts that class to physical microseconds through the nominal timestep; Metal currently retains the fixed-step interpretation. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
+Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own delay class. Both runtimes convert that class to physical microseconds through the nominal timestep. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
 Runtime input uses an immutable canonical schedule of at most 64 receptor-derived events. Each compiled 64-byte event stores a unique schedule identifier, normalized center and radius, half-open physical-time interval, excitatory and inhibitory drive, bounded noise amplitude, flags, interrupt class, conduction latency, receptor identity, magnitude, and auxiliary metadata. The schedule is neural input after receptor transduction; it is not raw or privileged NumanX state. Before every attempted tissue substep, a Metal kernel compacts the due schedule indices into a private GPU buffer. A device barrier publishes that list before the tissue kernel, so each site scans only the active set. The CPU oracle constructs the same canonical active-index list. Future records may remain in the immutable schedule without entering tissue computation before their timestamps.
 
@@ -123,7 +123,7 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 - Different configured seeds produce different noisy trajectories without changing event timing or topology.
 - The CPU relay oracle stores accepted physical timestamps, samples delay targets by microseconds, interpolates only between accepted states, and fails closed if a bounded ring has lost a required post-origin bracket.
 - A CPU candidate may use a positive duration distinct from the nominal timestep while retaining accepted-step random identity; rejection and root abort append no timestamped relay sample.
-- The Metal tissue path remains fixed-duration until the timestamped relay ring and its coverage checks are implemented in the shader/runtime boundary.
+- The Metal relay ring stores a timestamp beside each transactional FP32 slot, supports positive candidate durations up to the nominal timestep, and rejects a prospective accepted overwrite when the remaining ring would not cover the maximum configured physical delay.
 
 ## Initial evidence gates
 
@@ -181,6 +181,8 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 52. Timestamped CPU relay history returns exact samples at accepted times and deterministic interpolation between irregular accepted samples.
 53. Losing a required post-origin time bracket fails closed rather than substituting a temporally incorrect relay value.
 54. Variable-duration CPU candidates preserve exact retry, abort, replay, and root-chunking identity.
+55. Corrected-duration Metal candidates match the timestamped CPU oracle while rejected retries preserve exact tissue and timestamp ownership.
+56. Metal detects insufficient physical-time coverage before overwriting the sole sample needed by the maximum configured delay.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -188,7 +190,7 @@ Passing these gates proves an executable replay-deterministic mesoscale tissue f
 
 The Metal implementation compiles `NeuralTissue.metal` as Metal language version 4.0 with safe FP arithmetic and precise floating-point functions. It submits work through a Metal 4 command queue, reusable command buffer and allocator, compute encoder, argument table, explicit dispatch barriers, and a residency set.
 
-Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure, per-site delay classes, CSR destination offsets, packed `uint4` projection edges, and packed receptor events. A bounded `compact_receptor_events` dispatch writes one count and the due canonical event indices into a 260-byte private buffer. After an explicit device barrier, each Metal tissue thread gathers only the incoming edges for its destination site, samples edge-specific history, and scans only those compacted event indices. Relay history uses two private 32-slot FP32 planes. A 32-bit owner mask selects the authoritative plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private scratch buffer. Commit publishes the shadow owner mask and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative.
+Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure, per-site delay classes, CSR destination offsets, packed `uint4` projection edges, and packed receptor events. A bounded `compact_receptor_events` dispatch writes one count and the due canonical event indices into a 260-byte private buffer. After an explicit device barrier, each Metal tissue thread gathers only the incoming edges for its destination site, samples edge-specific history by physical microseconds, and scans only those compacted event indices. Relay history uses two private 32-slot FP32 planes plus two matching UInt64 timestamp planes. A 32-bit owner mask selects the authoritative value and timestamp plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private relay scratch buffer and no timestamp. Commit publishes the shadow owner mask, accepted timestamps, and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative. The host validates maximum-delay coverage before dispatch; the shader performs deterministic lower/upper timestamp selection and linear interpolation without a history readback.
 
 After the accepted tissue candidate sequence, the same encoder dispatches `transduce_receptor_interrupts`, barriers its canonical private event queue, then dispatches `schedule_due_modules`. The scheduler validates a private immutable parameter-version binding, reads private immutable module descriptors and the committed private clock generation, then writes the other clock generation plus a private due-invocation list. Root commit publishes tissue, relay, and scheduler ownership together. Abort publishes none of their neural effects. Scheduler inspection is an explicit post-completion staging operation and never occurs between control roots.
 
@@ -198,6 +200,12 @@ The history allocation is
 
 \[
 2\times32\times4=256\text{ bytes per site}.
+\]
+
+The timestamp planes add a fixed
+
+\[
+2\times32\times8=512\text{ bytes per runtime}.
 \]
 
 This is deliberately reported in runtime evidence. A future compressed history representation must demonstrate delayed-trajectory parity and memory/performance benefit before replacing FP32. A tracked shared buffer owns uniforms, and a separate shared staging buffer is used only for initial uploads and explicit inspection after GPU completion. No CPU access occurs between encoded substeps. Moving these private buffers into long-lived placement heaps remains Phase 1 work.

@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.4
+# NumanX joint transaction contract v0.5
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -70,7 +70,7 @@ candidate.
   brain generation, physical time, and random generation;
 - the ledger counters exactly match its accepted and rejected records;
 - only accepted records advance the target time;
-- every bounded v0.2 attempt uses the fixed tissue integration timestep;
+- every candidate duration is positive and no larger than the nominal tissue integration timestep;
 - the final accepted NumanX token reaches the root target.
 
 The Metal root then encodes the exact ledger. An ordinary brain-only commit is
@@ -103,7 +103,10 @@ beginInteractiveJointControl
 
 `advanceFastSystems` executes event compaction and one tissue candidate on
 Metal before physical acceptance is known. The candidate writes a private
-tissue generation and the inactive owner of its conduction-history slot.
+tissue generation and the inactive owner of its conduction-history value and
+timestamp slot. Corrected durations may shrink from the nominal timestep; the
+shader resolves configured delay classes against physical microseconds and
+interpolates accepted timestamp brackets.
 Acceptance advances only the root-shadow state pointer, history-owner bit,
 accepted time, and joint ledger. Rejection drops the candidate identity and
 leaves those authoritative shadow values unchanged, so the retry recomputes
@@ -135,9 +138,8 @@ delayed-route, and routing-state fingerprints.
 There is no live NumanX adapter or demonstrated atomic physical/brain pointer
 publication yet. Fast receptor events are retained on accepted substep records
 but reach the scheduler/regional path only during root finalization, not during
-the candidate. Candidate duration must equal the compiled tissue timestep;
-conduction history is still indexed by accepted steps, so accepting a corrected
-variable duration would silently change delay semantics. Cross-runtime command
-coordination, substep-time protective response, and physically timestamped
-conduction history remain required before this boundary can claim working
-NumanX coupling.
+the candidate. The timestamped Metal history is bounded to 32 accepted samples;
+a corrected-duration candidate fails before dispatch if accepting it would
+erase the only bracket required by the maximum configured delay. Cross-runtime
+command coordination and substep-time protective response remain required
+before this boundary can claim working NumanX coupling.

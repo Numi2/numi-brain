@@ -41,41 +41,90 @@ enum TissueUniformIndex : uint {
     TissueRandomModuleIdentifier = 36,
     TissueAcceptedStepLow = 37,
     TissueAcceptedStepHigh = 38,
+    TissueCurrentTimestampLow = 39,
+    TissueCurrentTimestampHigh = 40,
+    TissueCandidateTimestampLow = 41,
+    TissueCandidateTimestampHigh = 42,
+    TissueNominalTimestepMicrosecondsLow = 43,
+    TissueNominalTimestepMicrosecondsHigh = 44,
 };
 
 inline float tissue_sigmoid(float value) {
     return 1.0f / (1.0f + exp(-value));
 }
 
-inline float tissue_delayed_relay(
-    device const uchar *delaySteps,
-    device const float *relayHistory,
-    uint siteIndex,
-    uint siteCount,
-    uint historyStep,
-    uint historyCapacity,
-    uint historyOwnerMask
+inline ulong tissue_uint64_from_uniforms(
+    constant float *uniforms,
+    uint lowIndex,
+    uint highIndex
 ) {
-    const uint delay = uint(delaySteps[siteIndex]);
-    const uint slot = (historyStep + historyCapacity - delay) % historyCapacity;
-    const uint plane = (historyOwnerMask >> slot) & 1u;
-    const uint historyIndex = (plane * historyCapacity + slot) * siteCount + siteIndex;
-    return relayHistory[historyIndex];
+    return ulong(as_type<uint>(uniforms[lowIndex]))
+        | (ulong(as_type<uint>(uniforms[highIndex])) << 32u);
 }
 
-inline float tissue_relay_at_delay(
+inline uint tissue_history_plane(uint historyOwnerMask, uint slot) {
+    return (historyOwnerMask >> slot) & 1u;
+}
+
+inline float tissue_relay_at_physical_delay(
     device const float *relayHistory,
+    device const ulong *relayHistoryTimestamps,
     uint siteIndex,
-    uint delay,
+    uint delaySteps,
     uint siteCount,
-    uint historyStep,
     uint historyCapacity,
-    uint historyOwnerMask
+    uint historyOwnerMask,
+    ulong currentTimestamp,
+    ulong nominalTimestepMicroseconds
 ) {
-    const uint slot = (historyStep + historyCapacity - delay) % historyCapacity;
-    const uint plane = (historyOwnerMask >> slot) & 1u;
-    const uint historyIndex = (plane * historyCapacity + slot) * siteCount + siteIndex;
-    return relayHistory[historyIndex];
+    const ulong delayMicroseconds = ulong(delaySteps) * nominalTimestepMicroseconds;
+    const ulong targetTimestamp = delayMicroseconds >= currentTimestamp
+        ? 0ul
+        : currentTimestamp - delayMicroseconds;
+    bool hasLower = false;
+    bool hasUpper = false;
+    ulong lowerTimestamp = 0ul;
+    ulong upperTimestamp = ~0ul;
+    uint lowerSlot = 0u;
+    uint upperSlot = 0u;
+    uint lowerPlane = 0u;
+    uint upperPlane = 0u;
+    for (uint slot = 0u; slot < historyCapacity; ++slot) {
+        const uint plane = tissue_history_plane(historyOwnerMask, slot);
+        const ulong timestamp = relayHistoryTimestamps[plane * historyCapacity + slot];
+        if (timestamp <= targetTimestamp
+            && (!hasLower || timestamp > lowerTimestamp)) {
+            hasLower = true;
+            lowerTimestamp = timestamp;
+            lowerSlot = slot;
+            lowerPlane = plane;
+        }
+        if (timestamp >= targetTimestamp
+            && (!hasUpper || timestamp < upperTimestamp)) {
+            hasUpper = true;
+            upperTimestamp = timestamp;
+            upperSlot = slot;
+            upperPlane = plane;
+        }
+    }
+    if (!hasLower && hasUpper) {
+        lowerTimestamp = upperTimestamp;
+        lowerSlot = upperSlot;
+        lowerPlane = upperPlane;
+        hasLower = true;
+    }
+    const uint lowerIndex =
+        (lowerPlane * historyCapacity + lowerSlot) * siteCount + siteIndex;
+    const float lowerValue = relayHistory[lowerIndex];
+    if (!hasUpper || upperTimestamp == lowerTimestamp) {
+        return lowerValue;
+    }
+    const uint upperIndex =
+        (upperPlane * historyCapacity + upperSlot) * siteCount + siteIndex;
+    const float upperValue = relayHistory[upperIndex];
+    const float fraction = float(targetTimestamp - lowerTimestamp)
+        / float(upperTimestamp - lowerTimestamp);
+    return lowerValue + fraction * (upperValue - lowerValue);
 }
 
 inline void tissue_random_combine(thread uint &state, uint value) {
@@ -2437,6 +2486,7 @@ kernel void neural_tissue_step(
     device const uint4 *projectionEdges [[buffer(8)]],
     device const NBReceptorEventABI *receptorEvents [[buffer(9)]],
     device const uint *activeEventIndices [[buffer(10)]],
+    device ulong *relayHistoryTimestamps [[buffer(11)]],
     uint2 position [[thread_position_in_grid]]
 ) {
     const uint width = uint(uniforms[TissueWidth]);
@@ -2453,9 +2503,23 @@ kernel void neural_tissue_step(
     const uint down = min(y + 1, height - 1);
     const uint index = y * width + x;
     const uint siteCount = width * height;
-    const uint historyStep = uint(uniforms[TissueHistoryStep]);
     const uint historyCapacity = uint(uniforms[TissueHistoryCapacity]);
     const uint historyOwnerMask = as_type<uint>(uniforms[TissueHistoryOwnerMask]);
+    const ulong currentTimestamp = tissue_uint64_from_uniforms(
+        uniforms,
+        TissueCurrentTimestampLow,
+        TissueCurrentTimestampHigh
+    );
+    const ulong candidateTimestamp = tissue_uint64_from_uniforms(
+        uniforms,
+        TissueCandidateTimestampLow,
+        TissueCandidateTimestampHigh
+    );
+    const ulong nominalTimestepMicroseconds = tissue_uint64_from_uniforms(
+        uniforms,
+        TissueNominalTimestepMicrosecondsLow,
+        TissueNominalTimestepMicrosecondsHigh
+    );
 
     const float4 center = input[index];
     const float4 north = input[up * width + x];
@@ -2467,41 +2531,49 @@ kernel void neural_tissue_step(
     const float4 southSite = structure[down * width + x];
     const float4 westSite = structure[y * width + left];
     const float4 eastSite = structure[y * width + right];
-    const float northRelay = tissue_delayed_relay(
-        delaySteps,
+    const float northRelay = tissue_relay_at_physical_delay(
         relayHistory,
+        relayHistoryTimestamps,
         up * width + x,
+        uint(delaySteps[up * width + x]),
         siteCount,
-        historyStep,
         historyCapacity,
-        historyOwnerMask
+        historyOwnerMask,
+        currentTimestamp,
+        nominalTimestepMicroseconds
     );
-    const float southRelay = tissue_delayed_relay(
-        delaySteps,
+    const float southRelay = tissue_relay_at_physical_delay(
         relayHistory,
+        relayHistoryTimestamps,
         down * width + x,
+        uint(delaySteps[down * width + x]),
         siteCount,
-        historyStep,
         historyCapacity,
-        historyOwnerMask
+        historyOwnerMask,
+        currentTimestamp,
+        nominalTimestepMicroseconds
     );
-    const float westRelay = tissue_delayed_relay(
-        delaySteps,
+    const float westRelay = tissue_relay_at_physical_delay(
         relayHistory,
+        relayHistoryTimestamps,
         y * width + left,
+        uint(delaySteps[y * width + left]),
         siteCount,
-        historyStep,
         historyCapacity,
-        historyOwnerMask
+        historyOwnerMask,
+        currentTimestamp,
+        nominalTimestepMicroseconds
     );
-    const float eastRelay = tissue_delayed_relay(
-        delaySteps,
+    const float eastRelay = tissue_relay_at_physical_delay(
         relayHistory,
+        relayHistoryTimestamps,
         y * width + right,
+        uint(delaySteps[y * width + right]),
         siteCount,
-        historyStep,
         historyCapacity,
-        historyOwnerMask
+        historyOwnerMask,
+        currentTimestamp,
+        nominalTimestepMicroseconds
     );
     const float neighborRelay = 0.25f * (
         northRelay * northSite.z * northSite.w
@@ -2524,14 +2596,16 @@ kernel void neural_tissue_step(
     const uint projectionEnd = projectionOffsets[index + 1];
     for (uint edgeIndex = projectionStart; edgeIndex < projectionEnd; ++edgeIndex) {
         const uint4 edge = projectionEdges[edgeIndex];
-        const float sourceRelay = tissue_relay_at_delay(
+        const float sourceRelay = tissue_relay_at_physical_delay(
             relayHistory,
+            relayHistoryTimestamps,
             edge.x,
             edge.y,
             siteCount,
-            historyStep,
             historyCapacity,
-            historyOwnerMask
+            historyOwnerMask,
+            currentTimestamp,
+            nominalTimestepMicroseconds
         );
         projectionDrive += as_type<float>(edge.z) * sourceRelay;
     }
@@ -2636,6 +2710,11 @@ kernel void neural_tissue_step(
         const uint historyWriteIndex =
             (historyWritePlane * historyCapacity + historyWriteSlot) * siteCount + index;
         relayHistory[historyWriteIndex] = nextRelay;
+        if (index == 0u) {
+            relayHistoryTimestamps[
+                historyWritePlane * historyCapacity + historyWriteSlot
+            ] = candidateTimestamp;
+        }
     } else {
         relayScratch[index] = nextRelay;
     }
