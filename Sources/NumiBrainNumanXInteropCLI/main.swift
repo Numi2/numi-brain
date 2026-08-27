@@ -569,6 +569,8 @@ private func run() throws {
     }
 
   guard let committedBodyLoadFrame = runtime.latestCommittedBodyLoadFrame,
+    let committedProtectiveSelection =
+      runtime.latestCommittedProtectiveMuscleSelection,
     bridge.committedGeneration == 3,
     bridge.committedFingerprint == physicalFingerprints.last,
     transducedMyoSimEventCount == 1,
@@ -605,6 +607,11 @@ private func run() throws {
         ),
       ],
     committedBodyLoadFrame.maximumAbsoluteMuscleForce == maximumMuscleForces[0],
+    committedProtectiveSelection.bodyLoadFrameFingerprint
+      == committedBodyLoadFrame.fingerprint,
+    committedProtectiveSelection.overloadedSourceMuscleIdentifiers
+      == [maximumForceMuscleIdentifiers[0]],
+    !committedProtectiveSelection.candidates.isEmpty,
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -674,6 +681,10 @@ private func run() throws {
     "committed_body_load_sample_count": committedBodyLoadFrame.samples.count,
     "committed_body_load_body_identifiers": committedBodyLoadFrame.affectedBodyIdentifiers,
     "committed_body_load_maximum_force": committedBodyLoadFrame.maximumAbsoluteMuscleForce,
+    "committed_protective_selection_fingerprint": committedProtectiveSelection.fingerprint,
+    "committed_protective_selection_count": committedProtectiveSelection.candidates.count,
+    "committed_protective_source_muscle_identifiers":
+      committedProtectiveSelection.overloadedSourceMuscleIdentifiers,
     "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,

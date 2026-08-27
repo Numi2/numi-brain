@@ -84,6 +84,11 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(committedBodyLoad.jointCommitFingerprint, commit.fingerprint)
     XCTAssertEqual(committedBodyLoad.affectedBodyIdentifiers, [2, 5])
     XCTAssertEqual(committedBodyLoad.samples.count, 2)
+    let localizedSelection = try XCTUnwrap(
+      runtime.latestCommittedProtectiveMuscleSelection
+    )
+    XCTAssertEqual(localizedSelection.selectedMuscleIdentifiers, [100, 101, 102, 103, 104, 105])
+    XCTAssertEqual(localizedSelection.overloadedSourceMuscleIdentifiers, [100])
     let scheduler = try runtime.inspectCommittedScheduler()
     XCTAssertTrue(
       scheduler.invocations.contains(where: {
@@ -118,6 +123,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.committedStep, 3)
     XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertEqual(runtime.latestCommittedBodyLoadFrame?.samples, [])
+    XCTAssertEqual(runtime.latestCommittedProtectiveMuscleSelection?.candidates, [])
   }
 
   func testJointMetalAbortPublishesNoBrainHistory() throws {
@@ -196,6 +202,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertNil(runtime.schedulerCommittedTimestamp)
     XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertNil(runtime.latestCommittedBodyLoadFrame)
+    XCTAssertNil(runtime.latestCommittedProtectiveMuscleSelection)
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
     XCTAssertEqual(try runtime.snapshotCommittedProtectiveCommand(), beforeProtective)
     XCTAssertEqual(

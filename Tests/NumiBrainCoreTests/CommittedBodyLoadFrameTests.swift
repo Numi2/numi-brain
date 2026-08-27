@@ -21,9 +21,17 @@ final class CommittedBodyLoadFrameTests: XCTestCase {
       firstLocalPoint: try NumanXBodyLocalPoint(x: 0.7, y: 0.8, z: 0.9),
       terminalLocalPoint: try NumanXBodyLocalPoint(x: 1, y: 1.1, z: 1.2)
     )
+    let neighboringAttachment = try NumanXMuscleAttachment(
+      muscleIdentifier: 12,
+      firstBodyIdentifier: 4,
+      terminalBodyIdentifier: 5,
+      routeNodeCount: 2,
+      firstLocalPoint: try NumanXBodyLocalPoint(x: 1.3, y: 1.4, z: 1.5),
+      terminalLocalPoint: try NumanXBodyLocalPoint(x: 1.6, y: 1.7, z: 1.8)
+    )
     let catalog = try NumanXMuscleAttachmentCatalog(
       bodyCount: 6,
-      attachments: [firstAttachment, secondAttachment]
+      attachments: [firstAttachment, secondAttachment, neighboringAttachment]
     )
     let root = try BrainJointTransactionToken(
       environmentIdentifier: 7,
@@ -116,6 +124,29 @@ final class CommittedBodyLoadFrameTests: XCTestCase {
         attachmentCatalog: mismatchedCatalog,
         observations: observations
       )
+    )
+
+    let motorProfile = try ProtectiveMotorProfile(
+      channels: [10, 11, 12].map {
+        ProtectiveMuscleChannel(muscleIdentifier: $0, flags: [])
+      }
+    )
+    let selection = try LocalizedProtectiveMuscleSelection(
+      bodyLoadFrame: frame,
+      attachmentCatalog: catalog,
+      motorProfile: motorProfile
+    )
+    XCTAssertEqual(selection.selectedMuscleIdentifiers, [10, 11, 12])
+    XCTAssertEqual(selection.overloadedSourceMuscleIdentifiers, [10, 11])
+    XCTAssertEqual(selection.candidates[2].sharedBodyIdentifiers, [4])
+    XCTAssertFalse(selection.candidates[2].flags.contains(.overloadedSource))
+    XCTAssertEqual(selection.candidates[2].maximumObservedForce, 8)
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        LocalizedProtectiveMuscleSelection.self,
+        from: JSONEncoder().encode(selection)
+      ),
+      selection
     )
   }
 }

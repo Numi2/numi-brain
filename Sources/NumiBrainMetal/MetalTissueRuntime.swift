@@ -127,6 +127,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public private(set) var latestCommittedMuscleLoadObservations:
     [LocalizedMuscleLoadReceptorObservation] = []
   public private(set) var latestCommittedBodyLoadFrame: CommittedBodyLoadFrame?
+  public private(set) var latestCommittedProtectiveMuscleSelection:
+    LocalizedProtectiveMuscleSelection?
 
   private let device: any MTLDevice
   private let commandQueue: any MTL4CommandQueue
@@ -2476,11 +2478,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       .flatMap(\.localizedMuscleLoadObservations)
     let localizedObservations = Array(localizedMuscleLoadObservations)
     let bodyLoadFrame: CommittedBodyLoadFrame?
+    let protectiveMuscleSelection: LocalizedProtectiveMuscleSelection?
     if let numanXMuscleAttachmentCatalog {
-      bodyLoadFrame = try CommittedBodyLoadFrame(
+      let frame = try CommittedBodyLoadFrame(
         commit: receipt,
         attachmentCatalog: numanXMuscleAttachmentCatalog,
         observations: localizedObservations
+      )
+      bodyLoadFrame = frame
+      protectiveMuscleSelection = try LocalizedProtectiveMuscleSelection(
+        bodyLoadFrame: frame,
+        attachmentCatalog: numanXMuscleAttachmentCatalog,
+        motorProfile: protectiveMotorProfile
       )
     } else {
       guard localizedObservations.isEmpty else {
@@ -2489,10 +2498,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         )
       }
       bodyLoadFrame = nil
+      protectiveMuscleSelection = nil
     }
     try publishRootTransaction()
     latestCommittedMuscleLoadObservations = localizedObservations
     latestCommittedBodyLoadFrame = bodyLoadFrame
+    latestCommittedProtectiveMuscleSelection = protectiveMuscleSelection
     pendingJointTransaction = nil
     return receipt
   }
