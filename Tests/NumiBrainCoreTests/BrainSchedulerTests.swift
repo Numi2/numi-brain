@@ -216,6 +216,8 @@ final class BrainSchedulerTests: XCTestCase {
       [[37, 25], [12, 26], [25, 77], [95, 83], [26, 95], [83, 95], [90, 95]]
     )
     XCTAssertNotEqual(program.fingerprint, 0)
+    XCTAssertEqual(program.fingerprintHex, "704931c121ffb989")
+    XCTAssertEqual(program.shapeFingerprintHex, "97cc4e9a47c2baa8")
 
     let descriptors = schedule.modules.map(\.abiRecord)
     let layouts = program.layouts.map(\.abiRecord)
@@ -232,7 +234,8 @@ final class BrainSchedulerTests: XCTestCase {
                 routes.baseAddress,
                 UInt32(routes.count),
                 parameters.baseAddress,
-                UInt32(parameters.count)
+                UInt32(parameters.count),
+                UInt32(program.compiledRouteHistoryCapacity)
               )
             }
           }
@@ -256,6 +259,29 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(
       validation(invalidReceiverSpan),
       UInt32(NB_REGIONAL_PROGRAM_LAYOUT_MISMATCH.rawValue)
+    )
+
+    let compact = try RegionalTokenProgram.runtimeFoundationV0(
+      schedule: schedule,
+      historyCapacity: 32
+    )
+    XCTAssertEqual(compact.compiledRouteHistoryCapacity, 32)
+    XCTAssertEqual(compact.headerRecord.history_capacity, 32)
+    XCTAssertEqual(compact.routeHistoryScalarCount, 24_576)
+    XCTAssertNotEqual(compact.fingerprint, program.fingerprint)
+    XCTAssertNotEqual(compact.shapeFingerprint, program.shapeFingerprint)
+    XCTAssertEqual(RegionalRouteHistory(program: compact).timestamps.count, 224)
+    XCTAssertThrowsError(
+      try RegionalTokenProgram.runtimeFoundationV0(
+        schedule: schedule,
+        historyCapacity: 0
+      )
+    )
+    XCTAssertThrowsError(
+      try RegionalTokenProgram.runtimeFoundationV0(
+        schedule: schedule,
+        historyCapacity: RegionalTokenProgram.routeHistoryCapacity + 1
+      )
     )
   }
 

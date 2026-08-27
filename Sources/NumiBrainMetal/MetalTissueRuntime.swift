@@ -216,7 +216,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard regionalTokenProgram.scheduleFingerprint == brainSchedule.fingerprint else {
       throw TissueError.metal("regional token program does not match the brain schedule")
     }
-    let parameterVersion = try requestedParameterVersion
+    let parameterVersion =
+      try requestedParameterVersion
       ?? BrainParameterVersion.runtimeFoundationV0(
         schedule: brainSchedule,
         regionalProgram: regionalTokenProgram,
@@ -295,10 +296,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let (requiredRouteHistoryCapacity, historyCapacityOverflow) =
       historyPublicationsPerWindow.addingReportingOverflow(1)
     guard !historyPublicationOverflow, !historyCapacityOverflow,
-      requiredRouteHistoryCapacity <= UInt64(RegionalTokenProgram.routeHistoryCapacity)
+      requiredRouteHistoryCapacity <= UInt64(regionalTokenProgram.compiledRouteHistoryCapacity)
     else {
       throw TissueError.metal(
-        "scheduler/event bounds require \(requiredRouteHistoryCapacity) regional route-history slots; capacity is \(RegionalTokenProgram.routeHistoryCapacity)"
+        "scheduler/event bounds require \(requiredRouteHistoryCapacity) regional route-history slots; capacity is \(regionalTokenProgram.compiledRouteHistoryCapacity)"
       )
     }
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
@@ -575,7 +576,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       * MemoryLayout<NBRegionalRouteHistoryState>.stride
     let regionalRouteHistoryTimestampByteCount =
       regionalTokenProgram.routes.count
-      * RegionalTokenProgram.routeHistoryCapacity
+      * regionalTokenProgram.compiledRouteHistoryCapacity
       * MemoryLayout<UInt64>.stride
     let regionalRouteHistoryValueByteCount =
       regionalTokenProgram.routeHistoryScalarCount * MemoryLayout<Float>.stride
@@ -1881,7 +1882,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let timestampCount =
       regionalTokenProgram.routes.count
-      * RegionalTokenProgram.routeHistoryCapacity
+      * regionalTokenProgram.compiledRouteHistoryCapacity
     let timestamps: [UInt64]
     if timestampCount == 0 {
       timestamps = []

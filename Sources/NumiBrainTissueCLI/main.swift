@@ -1187,7 +1187,7 @@ private struct NumiBrainTissueCommand {
       routeDelaysMicroseconds: runtime.regionalTokenProgram.routes.map(\.delayMicroseconds),
       normalRouteBudgets: runtime.regionalTokenProgram.layouts.map(\.normalRouteBudget),
       routeHistoryGenerationCount: 2,
-      routeHistoryCapacity: RegionalTokenProgram.routeHistoryCapacity,
+      routeHistoryCapacity: runtime.regionalTokenProgram.compiledRouteHistoryCapacity,
       routeHistoryStateBytes: runtime.regionalRouteHistoryStateByteCount * 2,
       routeHistoryTimestampBytes: runtime.regionalRouteHistoryTimestampByteCount * 2,
       routeHistoryValueBytes: runtime.regionalRouteHistoryValueByteCount * 2,

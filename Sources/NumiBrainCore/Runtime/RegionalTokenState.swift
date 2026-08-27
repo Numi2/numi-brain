@@ -168,6 +168,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   public let routes: [RegionalTokenRoute]
   public let routeHistoryValueOffsets: [UInt32]
   public let routeMessageDimensions: [UInt32]
+  public let compiledRouteHistoryCapacity: Int
   public let routeHistoryScalarCount: Int
   public let parameters: [RegionalTokenParameters]
   public let shapeFingerprint: UInt64
@@ -177,8 +178,16 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     schedule: BrainModuleSchedule,
     routes requestedRoutes: [RegionalTokenRoute],
     parameters requestedParameters: [RegionalTokenParameters]? = nil,
-    normalRouteBudgets requestedNormalRouteBudgets: [UInt16: UInt16] = [:]
+    normalRouteBudgets requestedNormalRouteBudgets: [UInt16: UInt16] = [:],
+    historyCapacity requestedHistoryCapacity: Int = Self.routeHistoryCapacity
   ) throws {
+    guard requestedHistoryCapacity > 0,
+      requestedHistoryCapacity <= Self.routeHistoryCapacity
+    else {
+      throw BrainRuntimeError.invalidSchedule(
+        "regional route-history capacity must be in 1...\(Self.routeHistoryCapacity)"
+      )
+    }
     let moduleIdentifiers = Set(schedule.modules.map(\.moduleIdentifier))
     let canonicalRoutes = requestedRoutes.sorted {
       if $0.receiverModuleIdentifier != $1.receiverModuleIdentifier {
@@ -279,7 +288,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
       let messageDimension = UInt32(layouts[senderIndex].tokenDimension)
       let historyScalars =
         UInt64(messageDimension)
-        * UInt64(Self.routeHistoryCapacity)
+        * UInt64(requestedHistoryCapacity)
       guard UInt64(routeHistoryScalarCount) + historyScalars <= UInt64(UInt32.max) else {
         throw BrainRuntimeError.invalidSchedule("regional route history exceeds ABI limits")
       }
@@ -311,7 +320,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
               routes.baseAddress,
               UInt32(routes.count),
               parameters.baseAddress,
-              UInt32(parameters.count)
+              UInt32(parameters.count),
+              UInt32(requestedHistoryCapacity)
             )
           }
         }
@@ -331,7 +341,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
             routes.baseAddress,
             UInt32(routes.count),
             parameters.baseAddress,
-            UInt32(parameters.count)
+            UInt32(parameters.count),
+            UInt32(requestedHistoryCapacity)
           )
         }
       }
@@ -343,7 +354,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
           UInt32(layouts.count),
           routes.baseAddress,
           UInt32(routes.count),
-          UInt32(parameterRecords.count)
+          UInt32(parameterRecords.count),
+          UInt32(requestedHistoryCapacity)
         )
       }
     }
@@ -352,6 +364,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     self.routes = canonicalRoutes
     self.routeHistoryValueOffsets = routeHistoryValueOffsets
     self.routeMessageDimensions = routeMessageDimensions
+    self.compiledRouteHistoryCapacity = requestedHistoryCapacity
     self.routeHistoryScalarCount = Int(routeHistoryScalarCount)
     self.parameters = parameters
     self.shapeFingerprint = shapeFingerprint
@@ -377,7 +390,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     record.route_count = UInt32(routes.count)
     record.parameter_count = UInt32(parameters.count)
     record.program_fingerprint = fingerprint
-    record.history_capacity = UInt32(Self.routeHistoryCapacity)
+    record.history_capacity = UInt32(compiledRouteHistoryCapacity)
     record.history_scalar_count = UInt32(routeHistoryScalarCount)
     record.program_version = Self.programVersion
     record.minimum_route_persistence_microseconds = Self.minimumRoutePersistenceMicroseconds
@@ -396,7 +409,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   }
 
   public static func runtimeFoundationV0(
-    schedule: BrainModuleSchedule
+    schedule: BrainModuleSchedule,
+    historyCapacity: Int = Self.routeHistoryCapacity
   ) throws -> RegionalTokenProgram {
     let moduleIDs = Set(schedule.modules.map(\.moduleIdentifier))
     let candidates: [(UInt16, UInt16, UInt16, UInt32, Float, RegionalRouteFlags)] = [
@@ -420,7 +434,11 @@ public struct RegionalTokenProgram: Equatable, Sendable {
         flags: flags
       )
     }
-    return try RegionalTokenProgram(schedule: schedule, routes: routes)
+    return try RegionalTokenProgram(
+      schedule: schedule,
+      routes: routes,
+      historyCapacity: historyCapacity
+    )
   }
 
   /// Uses the authoritative token shapes and factorized recurrent parameters
@@ -511,11 +529,11 @@ public struct RegionalRouteHistory: Equatable, Sendable {
 
   public init(program: RegionalTokenProgram) {
     programFingerprint = program.fingerprint
-    capacity = RegionalTokenProgram.routeHistoryCapacity
+    capacity = program.compiledRouteHistoryCapacity
     states = program.routes.map { _ in RegionalRouteHistoryState() }
     timestamps = [UInt64](
       repeating: RegionalRouteHistoryState.neverUpdated,
-      count: program.routes.count * RegionalTokenProgram.routeHistoryCapacity
+      count: program.routes.count * program.compiledRouteHistoryCapacity
     )
     values = [Float](repeating: 0, count: program.routeHistoryScalarCount)
   }
@@ -527,7 +545,7 @@ public struct RegionalRouteHistory: Equatable, Sendable {
     values: [Float]
   ) throws {
     programFingerprint = program.fingerprint
-    capacity = RegionalTokenProgram.routeHistoryCapacity
+    capacity = program.compiledRouteHistoryCapacity
     self.states = states
     self.timestamps = timestamps
     self.values = values
@@ -538,7 +556,7 @@ public struct RegionalRouteHistory: Equatable, Sendable {
     guard programFingerprint == program.fingerprint else {
       throw BrainRuntimeError.invalidSchedule("regional route-history program mismatch")
     }
-    guard capacity == RegionalTokenProgram.routeHistoryCapacity,
+    guard capacity == program.compiledRouteHistoryCapacity,
       states.count == program.routes.count,
       timestamps.count == program.routes.count * capacity,
       values.count == program.routeHistoryScalarCount

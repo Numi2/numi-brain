@@ -4,7 +4,7 @@
 
 - Canonical repository name: `numi-brain`
 - Canonical architecture: NumiBrain v1.0
-- Current state: specification, GPU-compacted tissue source slice v0.14, scheduler CPU oracle v0.1, immutable parameter-manifest/publication boundary v0.12, versioned cohort-dispatch and authoritative unrouted token-state boundary v0.16, and integrated Metal scheduler/regional path v0.8
+- Current state: specification, GPU-compacted tissue source slice v0.14, scheduler CPU oracle v0.1, immutable parameter-manifest/publication boundary v0.12, versioned cohort-dispatch and authoritative unrouted token-state boundary v0.16, compiled route-history storage profiles v0.17, and integrated Metal scheduler/regional path v0.8
 - Implemented runtime code: deterministic scheduler, immutable shared-parameter registry, compiled versioned cohort plans, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles plus a Metal 4 structured delayed-sheet runtime with a compiled 64-byte receptor-event ABI, compiled 32/64-byte parameter manifest records, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, private parameter-version validation, transactional module clocks, due-list compaction and consumption, deterministic multi-agent timestamp/module grouping, private region-major dispatch materialization, GPU-generated indirect work expansion, independent compact diagnostic and 10,752-scalar authoritative unrouted cohort-token generations, 10,752-scalar routed one-agent token execution, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, GPU-generated indirect work consumption, independent compact cohort diagnostic advance, independent authoritative unrouted cohort-token advance, and timestamp-synchronous routed one-agent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
@@ -49,7 +49,8 @@ The scheduler foundation currently proves:
 - a 2 ms minimum route-persistence interval and explicit persistence score bonus;
 - stable softmax normalization over selected emergency and normal routes;
 - compact selected-route index spans consumed by the recurrent scalar gather;
-- compiled 0-5 ms route delays resolved from per-route 512-slot timestamped message rings;
+- compiled 0-5 ms route delays resolved from version-identified per-route timestamped message rings, with a 512-slot one-agent profile and a 32-slot cohort storage profile;
+- history capacity included in both regional content and shape fingerprints while preserving the exact default-512 identities;
 - conservative configuration-time capacity validation that rejects a route-history overwrite risk before dispatch;
 - gated recurrent updates using module intrinsic timescales, local token context, periodic or interrupt drive, and routed input;
 - compact 32-byte module diagnostics with activation, integration, interrupt salience, phase, counters, and last-update time;

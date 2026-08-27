@@ -332,11 +332,14 @@ uint32_t nb_brain_abi_validate_regional_program(
     const NBRegionalRoute *routes,
     uint32_t route_count,
     const NBRegionalTokenParameters *parameters,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 ) {
   if (module_count == 0 || descriptors == nullptr || layouts == nullptr
       || parameter_count == 0 || parameters == nullptr
-      || (route_count > 0 && routes == nullptr)) {
+      || (route_count > 0 && routes == nullptr)
+      || history_capacity == 0
+      || history_capacity > NB_REGIONAL_ROUTE_HISTORY_CAPACITY) {
     return NB_REGIONAL_PROGRAM_NULL;
   }
   uint32_t expected_scalar_offset = 0;
@@ -422,7 +425,7 @@ uint32_t nb_brain_abi_validate_regional_program(
     const uint64_t next_history_value_offset =
         static_cast<uint64_t>(expected_history_value_offset)
         + static_cast<uint64_t>(message_dimension)
-            * static_cast<uint64_t>(NB_REGIONAL_ROUTE_HISTORY_CAPACITY);
+            * static_cast<uint64_t>(history_capacity);
     if (next_history_value_offset > UINT32_MAX) {
       return NB_REGIONAL_PROGRAM_HISTORY_LAYOUT;
     }
@@ -453,7 +456,8 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     const NBRegionalRoute *routes,
     uint32_t route_count,
     const NBRegionalTokenParameters *parameters,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 ) {
   uint64_t hash = kFNVOffset;
   mix_little_endian(hash, static_cast<uint32_t>(NB_BRAIN_ABI_VERSION));
@@ -462,7 +466,7 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
   mix_little_endian(hash, parameter_count);
   mix_little_endian(
       hash,
-      static_cast<uint32_t>(NB_REGIONAL_ROUTE_HISTORY_CAPACITY)
+      history_capacity
   );
   mix_little_endian(
       hash,
@@ -519,7 +523,8 @@ uint64_t nb_brain_abi_regional_program_shape_fingerprint(
     uint32_t module_count,
     const NBRegionalRoute *routes,
     uint32_t route_count,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 ) {
   uint64_t hash = kFNVOffset;
   mix_little_endian(hash, static_cast<uint32_t>(NB_REGIONAL_PROGRAM_VERSION));
@@ -528,7 +533,7 @@ uint64_t nb_brain_abi_regional_program_shape_fingerprint(
   mix_little_endian(hash, parameter_count);
   mix_little_endian(
       hash,
-      static_cast<uint32_t>(NB_REGIONAL_ROUTE_HISTORY_CAPACITY)
+      history_capacity
   );
   mix_little_endian(
       hash,

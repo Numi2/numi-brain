@@ -2,7 +2,7 @@
 
 This document defines the first executable active-module cohort-token boundary for NumiBrain. Independent scheduler transactions are compiled into one deterministic, content-addressed dispatch plan, materialized into private Metal 4 buffers under one immutable parameter-version binding, and consumed through GPU-generated indirect dispatch arguments. One indirect consumer expands auditable work records; a second advances independent compact diagnostic state; a third advances an independent authoritative 10,752-scalar recurrent token generation for every active environment. It implements a bounded part of NumiBrain v1.0 Sections 3.7, 3.8, 7, 8, 45, 46, 47, 50, 51, 52, and 62.
 
-The v0.16 cohort token program intentionally contains no long-range routes. It does not yet perform GPU prefix-sum grouping, allocate per-agent route-history and routing-state generations, or execute a complete multi-agent brain tick.
+The v0.16 cohort token program intentionally contains no long-range routes. A version-identified 32-slot route-history storage profile now exists for the next routed cohort boundary, but it is not activated until scheduler/event capacity is proved and per-agent routing generations are wired. The runtime does not yet perform GPU prefix-sum grouping or execute a complete multi-agent brain tick.
 
 ## Stable records
 

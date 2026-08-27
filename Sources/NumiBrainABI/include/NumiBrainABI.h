@@ -476,7 +476,8 @@ uint32_t nb_brain_abi_validate_regional_program(
     const NBRegionalRoute *routes,
     uint32_t route_count,
     const NBRegionalTokenParameters *parameters,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 );
 
 uint64_t nb_brain_abi_regional_program_fingerprint(
@@ -485,7 +486,8 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     const NBRegionalRoute *routes,
     uint32_t route_count,
     const NBRegionalTokenParameters *parameters,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 );
 
 uint64_t nb_brain_abi_regional_program_shape_fingerprint(
@@ -493,7 +495,8 @@ uint64_t nb_brain_abi_regional_program_shape_fingerprint(
     uint32_t module_count,
     const NBRegionalRoute *routes,
     uint32_t route_count,
-    uint32_t parameter_count
+    uint32_t parameter_count,
+    uint32_t history_capacity
 );
 
 uint64_t nb_brain_abi_parameter_version_fingerprint(

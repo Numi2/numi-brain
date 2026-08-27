@@ -1,4 +1,4 @@
-# Regional recurrent token operator v0.4
+# Regional recurrent token operator v0.5
 
 This document defines the first executable regional `H_r` state in NumiBrain. It replaces the former compact population trace as the authoritative neural regional state while retaining that 32-byte per-module record as scheduler diagnostics and evidence metadata.
 
@@ -17,7 +17,7 @@ It implements a bounded eight-module vertical slice of NumiBrain v1.0 Section 8.
 | `NBRegionalRouteHistoryState` | 16 | Per-route ring cursor, valid count, and latest publication time |
 | `NBRegionalRouteRuntimeState` | 32 | Per-agent score, strength, active flag, selection count, last-selected time, and switch count |
 
-The validator requires layouts to match the canonical module descriptors, scalar and route spans to be contiguous, every normal-route budget to fit the receiver's non-emergency candidate count, route endpoints and sender tokens to exist, parameters and gains to be finite, history offsets and message dimensions to be canonical, route delays to lie in `0...5000` microseconds, and the parameter count to equal the token-state scalar count. Duplicate route identities, nonzero reserved fields, and budget drift are rejected. A delayed route never silently executes as an undelayed substitute.
+The validator requires layouts to match the canonical module descriptors, scalar and route spans to be contiguous, every normal-route budget to fit the receiver's non-emergency candidate count, route endpoints and sender tokens to exist, parameters and gains to be finite, history offsets and message dimensions to be canonical for the compiled capacity, route delays to lie in `0...5000` microseconds, history capacity to lie in `1...512`, and the parameter count to equal the token-state scalar count. Duplicate route identities, nonzero reserved fields, and budget drift are rejected. A delayed route never silently executes as an undelayed substitute.
 
 The program fingerprint is FNV-1a over explicit little-endian layout and route-budget fields, program version, history capacity, delay and persistence bounds, score constants, route fields, and exact FP32 parameter bit patterns. Padding is excluded. The program is immutable for the lifetime of a rollout runtime.
 
@@ -41,7 +41,9 @@ The runtime-foundation subset retains the token shapes already carried by the mo
 
 Two private 43,008-byte token generations hold committed and shadow state. A separate private candidate buffer supports synchronous timestamp publication. Two private 256-byte diagnostic generations retain update counts, interrupt counts, phase, salience, and last-update time.
 
-Each route owns 512 timestamp slots and 512 copies of its selected sender token. Across the reference graph this is 393,216 FP32 history values. The two transactional generations use 224 bytes of route metadata, 57,344 bytes of timestamps, and 3,145,728 bytes of message values. This deliberately bounded first implementation favors explicit deterministic storage over archive compression.
+History capacity is part of both the content and shape fingerprints. The one-agent reference profile retains 512 timestamp slots and 512 copies of each selected sender token. Across the reference graph this is 393,216 FP32 history values. Its two transactional generations use 224 bytes of route metadata, 57,344 bytes of timestamps, and 3,145,728 bytes of message values.
+
+The cohort storage profile compiles 32 slots per route. The same seven routes then require 24,576 FP32 values per agent: 112 bytes of metadata, 1,792 bytes of timestamps, and 98,304 bytes of values per generation. This is a program-shape change with a different immutable parameter identity, not an allocator-side truncation. Runtime capacity validation must prove that the selected window preserves every message that can still satisfy a compiled conduction delay.
 
 Two private routing-state generations add 448 bytes for the seven candidate routes. One private 28-byte selected-route-index span and one private 32-byte per-module selected-count span compact the live gather set at each due timestamp. The scratch spans are derived state; the double-buffered route-runtime records are authoritative per-agent transaction state.
 
@@ -109,7 +111,7 @@ Here `A_r` is the compact selected set and `a_jr` is its normalized route streng
 
 Root commit publishes tissue, relay history, scheduler clocks, token state, diagnostics, route history, and routing state together by swapping generation ownership. Abort swaps none. A rejected physical candidate does not dispatch the root scheduler or regional operator until accepted simulated time is known. Retry, replay, and 20 ms versus split control-window execution produce the same committed token values, route history, and route selections.
 
-Runtime initialization derives a conservative publication bound from the configured event capacity, accepted timestep, and maximum compiled route delay. It rejects the configuration before dispatch if 512 slots cannot preserve every potentially deliverable message. This makes ring overwrite a checked configuration error rather than silent causal corruption.
+Runtime initialization derives a conservative publication bound from the configured event capacity, accepted timestep, and maximum compiled route delay. It rejects the configuration before dispatch if the program's compiled capacity cannot preserve every potentially deliverable message. This makes ring overwrite a checked configuration error rather than silent causal corruption. The existing one-agent tissue profile continues to compile 512 slots; the 32-slot cohort profile is not activated until its own scheduler-bound proof passes.
 
 FP32 is used for storage and accumulation in v0.3 to pin CPU/Metal numerical semantics. BF16 or FP16 storage with FP32 accumulation remains a future measured optimization.
 
@@ -119,6 +121,8 @@ The implementation and tests establish:
 
 - C++/Swift/Metal ABI size agreement;
 - compiled layout, parameter, route, and program identities;
+- compiled history capacity in both content and shape identities, with exact default-512 fingerprint compatibility;
+- rejection of zero, over-maximum, and history-layout-mismatched capacities;
 - 10,752-scalar GPU-resident recurrent state;
 - scheduler-driven multi-rate updates;
 - timestamp-synchronous sparse route gathering;
