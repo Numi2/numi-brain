@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.8
+# Mesoscale neural tissue model v0.9
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -154,6 +154,10 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 30. Regional token and diagnostic state retry, abort, replay, and chunk with the same causal transaction semantics as tissue and scheduler clocks.
 31. Route ablation changes the receiver token state without changing tissue or diagnostic scheduler state.
 32. Schema-v8 reports program identity, token and route memory, token and diagnostic snapshot hashes, dispatches, update totals, and CPU parity.
+33. Compiled regional route delays remain silent until their causal delivery timestamps.
+34. Persistent CPU and private Metal route histories agree on ring metadata, message timestamps, and FP32 values.
+35. Abort, rejected retry, replay, and control-window chunking preserve the route histories with the same transaction boundary as tokens and clocks.
+36. Schema-v9 reports route delays, route-history capacity and memory, route-history snapshot identity, and CPU parity.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -165,7 +169,7 @@ Three private state generations preserve transactionality: committed, root shado
 
 After the accepted tissue candidate sequence, the same encoder dispatches `schedule_due_modules`. It reads private immutable module descriptors and the committed private clock generation, then writes the other clock generation plus a private due-invocation list. Root commit publishes tissue, relay, and scheduler ownership together. Abort publishes none of them. Scheduler inspection is an explicit post-completion staging operation and never occurs between control roots.
 
-After another device barrier, `advance_due_regional_tokens` consumes the private result and due list with one 256-lane threadgroup. Lanes stride across 10,752 FP32 region-major token scalars, gathering seven compiled sparse routes and publishing each physical timestamp synchronously. It writes the other private token and diagnostic generations. Regional ownership is published with scheduler clock and tissue generations. The factorized parameter fixture has learned-model form but is not a trained production model; dynamic top-k and regional route-delay history remain absent.
+After another device barrier, `advance_due_regional_tokens` consumes the private result and due list with one 256-lane threadgroup. Lanes stride across 10,752 FP32 region-major token scalars, resolve delayed messages from per-route timestamp rings, gather seven compiled sparse routes, and publish each physical timestamp synchronously. It writes the other private token, diagnostic, and route-history generations. Regional ownership is published with scheduler clock and tissue generations. The factorized parameter fixture has learned-model form but is not a trained production model; dynamic top-k routing remains absent.
 
 The history allocation is
 

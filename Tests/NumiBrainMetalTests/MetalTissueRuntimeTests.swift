@@ -146,7 +146,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     try cpu.commit(cpuTransaction)
     let initialRegionalStates = schedule.modules.map { _ in RegionalModuleState() }
-    var cpuRegionalTokens = try CPURegionalTokenOperator.advance(
+    var cpuRegionalTransition = try CPURegionalTokenOperator.advance(
       state: [Float](repeating: 0, count: regionalProgram.scalarCount),
       diagnostics: initialRegionalStates,
       schedule: schedule,
@@ -191,6 +191,9 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(metal.regionalTokenStateByteCount, 10_752 * 4)
     XCTAssertEqual(metal.regionalRouteByteCount, 7 * 24)
     XCTAssertEqual(metal.regionalParameterByteCount, 10_752 * 32)
+    XCTAssertEqual(metal.regionalRouteHistoryStateByteCount, 7 * 16)
+    XCTAssertEqual(metal.regionalRouteHistoryTimestampByteCount, 7 * 512 * 8)
+    XCTAssertEqual(metal.regionalRouteHistoryValueByteCount, 393_216 * 4)
     XCTAssertEqual(inspection.status, 0)
     XCTAssertEqual(inspection.invocations, cpuTransaction.invocations)
     XCTAssertEqual(inspection.snapshot, cpu.snapshot)
@@ -201,7 +204,13 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     try assertRegionalTokensEqual(
       try metal.snapshotCommittedRegionalTokens(),
-      cpuValues: cpuRegionalTokens,
+      cpuValues: cpuRegionalTransition.values,
+      program: regionalProgram,
+      schedulerSnapshot: cpu.snapshot
+    )
+    try assertRegionalRouteHistoryEqual(
+      try metal.snapshotCommittedRegionalRouteHistory(),
+      cpuHistory: cpuRegionalTransition.routeHistory,
       program: regionalProgram,
       schedulerSnapshot: cpu.snapshot
     )
@@ -218,12 +227,13 @@ final class MetalTissueRuntimeTests: XCTestCase {
       events: secondEvents
     )
     try cpu.commit(secondCPUTransaction)
-    cpuRegionalTokens = try CPURegionalTokenOperator.advance(
-      state: cpuRegionalTokens,
+    cpuRegionalTransition = try CPURegionalTokenOperator.advance(
+      state: cpuRegionalTransition.values,
       diagnostics: cpuRegionalStates,
       schedule: schedule,
       program: regionalProgram,
-      invocations: secondCPUTransaction.invocations
+      invocations: secondCPUTransaction.invocations,
+      routeHistory: cpuRegionalTransition.routeHistory
     )
     cpuRegionalStates = try CPURegionalModuleOperator.advance(
       states: cpuRegionalStates,
@@ -247,7 +257,13 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     try assertRegionalTokensEqual(
       try metal.snapshotCommittedRegionalTokens(),
-      cpuValues: cpuRegionalTokens,
+      cpuValues: cpuRegionalTransition.values,
+      program: regionalProgram,
+      schedulerSnapshot: cpu.snapshot
+    )
+    try assertRegionalRouteHistoryEqual(
+      try metal.snapshotCommittedRegionalRouteHistory(),
+      cpuHistory: cpuRegionalTransition.routeHistory,
       program: regionalProgram,
       schedulerSnapshot: cpu.snapshot
     )
@@ -304,10 +320,15 @@ final class MetalTissueRuntimeTests: XCTestCase {
       try direct.snapshotCommittedRegionalTokens(),
       try retried.snapshotCommittedRegionalTokens()
     )
+    XCTAssertEqual(
+      try direct.snapshotCommittedRegionalRouteHistory(),
+      try retried.snapshotCommittedRegionalRouteHistory()
+    )
 
     let beforeScheduler = try retried.snapshotCommittedScheduler()
     let beforeRegional = try retried.snapshotCommittedRegionalState()
     let beforeRegionalTokens = try retried.snapshotCommittedRegionalTokens()
+    let beforeRegionalRouteHistory = try retried.snapshotCommittedRegionalRouteHistory()
     let beforeTissue = try retried.snapshotCommitted()
     let support = try BrainInterruptEvent(
       timestamp: BrainTimestamp(microseconds: 1_500),
@@ -323,6 +344,10 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(try retried.snapshotCommittedScheduler(), beforeScheduler)
     XCTAssertEqual(try retried.snapshotCommittedRegionalState(), beforeRegional)
     XCTAssertEqual(try retried.snapshotCommittedRegionalTokens(), beforeRegionalTokens)
+    XCTAssertEqual(
+      try retried.snapshotCommittedRegionalRouteHistory(),
+      beforeRegionalRouteHistory
+    )
     XCTAssertEqual(try retried.snapshotCommitted().stableHash(), beforeTissue.stableHash())
 
     for runtime in [direct, retried] {
@@ -349,6 +374,155 @@ final class MetalTissueRuntimeTests: XCTestCase {
       try direct.snapshotCommittedRegionalTokens(),
       try retried.snapshotCommittedRegionalTokens()
     )
+    XCTAssertEqual(
+      try direct.snapshotCommittedRegionalRouteHistory(),
+      try retried.snapshotCommittedRegionalRouteHistory()
+    )
+  }
+
+  func testMetalRegionalRouteDelayWithholdsMessageUntilConductionTime() throws {
+    try requireMetal4()
+    let schedule = try BrainModuleSchedule(modules: [
+      BrainModuleDescriptor(
+        moduleIdentifier: 1,
+        clockClass: .cortical,
+        periodMicroseconds: 1_000,
+        intrinsicTimescaleMicroseconds: 4_000,
+        tokenCount: 1,
+        tokenDimension: 4
+      ),
+      BrainModuleDescriptor(
+        moduleIdentifier: 2,
+        clockClass: .cortical,
+        periodMicroseconds: 1_000,
+        conductionDelayMicroseconds: 2_000,
+        intrinsicTimescaleMicroseconds: 4_000,
+        tokenCount: 1,
+        tokenDimension: 4
+      ),
+    ])
+    let delayedProgram = try RegionalTokenProgram(
+      schedule: schedule,
+      routes: [
+        RegionalTokenRoute(
+          senderModuleIdentifier: 1,
+          receiverModuleIdentifier: 2,
+          delayMicroseconds: 2_000,
+          gain: 1
+        )
+      ]
+    )
+    let isolatedProgram = try RegionalTokenProgram(
+      schedule: schedule,
+      routes: [],
+      parameters: delayedProgram.parameters
+    )
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 8,
+      height: 8,
+      parameters: parameters
+    )
+    let delayed = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      brainSchedule: schedule,
+      regionalTokenProgram: delayedProgram,
+      maxEncodedSubsteps: 1
+    )
+    let isolated = try MetalTissueRuntime(
+      initialState: initial,
+      parameters: parameters,
+      stimulus: .none,
+      brainSchedule: schedule,
+      regionalTokenProgram: isolatedProgram,
+      maxEncodedSubsteps: 1
+    )
+    var scheduler = CPUMultiRateScheduler(schedule: schedule)
+    var cpuDiagnostics = schedule.modules.map { _ in RegionalModuleState() }
+    var cpuTransition = RegionalTokenTransition(
+      values: [Float](repeating: 0, count: delayedProgram.scalarCount),
+      routeHistory: RegionalRouteHistory(program: delayedProgram)
+    )
+    let receiverRange = try XCTUnwrap(
+      delayedProgram.layouts.first { $0.moduleIdentifier == 2 }
+    ).scalarRange
+
+    for targetMilliseconds in [Float(1), Float(2)] {
+      let invocations = try scheduler.advance(
+        to: BrainTimestamp(microseconds: UInt64(targetMilliseconds * 1_000))
+      )
+      cpuTransition = try CPURegionalTokenOperator.advance(
+        state: cpuTransition.values,
+        diagnostics: cpuDiagnostics,
+        schedule: schedule,
+        program: delayedProgram,
+        invocations: invocations,
+        routeHistory: cpuTransition.routeHistory
+      )
+      cpuDiagnostics = try CPURegionalModuleOperator.advance(
+        states: cpuDiagnostics,
+        schedule: schedule,
+        invocations: invocations
+      )
+      let startMilliseconds = targetMilliseconds - 1
+      for runtime in [delayed, isolated] {
+        _ = try runtime.runRootTransaction(
+          at: startMilliseconds,
+          acceptedSubsteps: [true]
+        )
+        try runtime.commitRootTransaction()
+      }
+      let delayedTokens = try delayed.snapshotCommittedRegionalTokens()
+      let isolatedTokens = try isolated.snapshotCommittedRegionalTokens()
+      let routeEffect = zip(
+        delayedTokens.values[receiverRange],
+        isolatedTokens.values[receiverRange]
+      ).reduce(Float.zero) { result, pair in
+        max(result, abs(pair.0 - pair.1))
+      }
+      if targetMilliseconds < 2 {
+        XCTAssertEqual(routeEffect, 0)
+      } else {
+        XCTAssertGreaterThan(routeEffect, 1e-5)
+      }
+      try assertRegionalTokensEqual(
+        delayedTokens,
+        cpuValues: cpuTransition.values,
+        program: delayedProgram,
+        schedulerSnapshot: scheduler.snapshot
+      )
+      try assertRegionalRouteHistoryEqual(
+        try delayed.snapshotCommittedRegionalRouteHistory(),
+        cpuHistory: cpuTransition.routeHistory,
+        program: delayedProgram,
+        schedulerSnapshot: scheduler.snapshot
+      )
+    }
+  }
+
+  func testMetalRejectsUnsafeRegionalRouteHistoryBounds() throws {
+    try requireMetal4()
+    let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
+    let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
+    let initial = try CPUTissueDynamics.makeRestingGrid(
+      width: 8,
+      height: 8,
+      parameters: parameters
+    )
+
+    XCTAssertThrowsError(
+      try MetalTissueRuntime(
+        initialState: initial,
+        parameters: parameters,
+        stimulus: .none,
+        brainSchedule: schedule,
+        regionalTokenProgram: program,
+        maxSchedulerEvents: 200
+      )
+    ) { error in
+      XCTAssertTrue(String(describing: error).contains("route-history slots"))
+    }
   }
 
   func testMetalSparseRouteChangesOnlyTheCompiledRegionalProgram() throws {
@@ -736,6 +910,14 @@ final class MetalTissueRuntimeTests: XCTestCase {
       try single.snapshotCommittedRegionalTokens().values,
       try chunked.snapshotCommittedRegionalTokens().values
     )
+    XCTAssertEqual(
+      try single.snapshotCommittedRegionalRouteHistory().stableHash(),
+      try replay.snapshotCommittedRegionalRouteHistory().stableHash()
+    )
+    XCTAssertEqual(
+      try single.snapshotCommittedRegionalRouteHistory().history,
+      try chunked.snapshotCommittedRegionalRouteHistory().history
+    )
   }
 
   func testMetalRejectsHistoryOverwriteBeforeDispatch() throws {
@@ -830,6 +1012,33 @@ final class MetalTissueRuntimeTests: XCTestCase {
     XCTAssertEqual(metal.generation, schedulerSnapshot.generation, file: file, line: line)
     XCTAssertEqual(metal.values.count, cpuValues.count, file: file, line: line)
     let maximumError = zip(metal.values, cpuValues).reduce(Float.zero) { result, pair in
+      max(result, abs(pair.0 - pair.1))
+    }
+    XCTAssertLessThanOrEqual(maximumError, 3e-6, file: file, line: line)
+  }
+
+  private func assertRegionalRouteHistoryEqual(
+    _ metal: RegionalRouteHistorySnapshot,
+    cpuHistory: RegionalRouteHistory,
+    program: RegionalTokenProgram,
+    schedulerSnapshot: BrainSchedulerSnapshot,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws {
+    XCTAssertEqual(
+      metal.scheduleFingerprint,
+      schedulerSnapshot.scheduleFingerprint,
+      file: file,
+      line: line
+    )
+    XCTAssertEqual(metal.programFingerprint, program.fingerprint, file: file, line: line)
+    XCTAssertEqual(metal.committedTime, schedulerSnapshot.committedTime, file: file, line: line)
+    XCTAssertEqual(metal.generation, schedulerSnapshot.generation, file: file, line: line)
+    XCTAssertEqual(metal.history.states, cpuHistory.states, file: file, line: line)
+    XCTAssertEqual(metal.history.timestamps, cpuHistory.timestamps, file: file, line: line)
+    XCTAssertEqual(metal.history.values.count, cpuHistory.values.count, file: file, line: line)
+    let maximumError = zip(metal.history.values, cpuHistory.values).reduce(Float.zero) {
+      result, pair in
       max(result, abs(pair.0 - pair.1))
     }
     XCTAssertLessThanOrEqual(maximumError, 3e-6, file: file, line: line)

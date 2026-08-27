@@ -13,8 +13,8 @@ public struct RegionalRouteFlags: OptionSet, Codable, Hashable, Sendable {
   public static let persistent = Self(rawValue: 1 << 1)
 }
 
-/// A compiled sparse message edge. Version 0 executes synchronous, pre-timestamp
-/// routes; delayed route history is intentionally rejected by the ABI validator.
+/// A compiled sparse message edge. Zero-delay routes read the common
+/// pre-timestamp state; delayed routes read transaction-owned delivery history.
 @frozen
 public struct RegionalTokenRoute: Codable, Equatable, Hashable, Sendable {
   public let senderModuleIdentifier: UInt16
@@ -38,9 +38,9 @@ public struct RegionalTokenRoute: Codable, Equatable, Hashable, Sendable {
     guard senderModuleIdentifier != receiverModuleIdentifier else {
       throw BrainRuntimeError.invalidDescriptor("regional self-routes belong in local computation")
     }
-    guard delayMicroseconds == 0 else {
+    guard delayMicroseconds <= UInt32(NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS) else {
       throw BrainRuntimeError.invalidDescriptor(
-        "regional route-delay history is not executable in program version 0"
+        "regional route delay exceeds \(NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS) microseconds"
       )
     }
     guard gain.isFinite else {
@@ -54,7 +54,10 @@ public struct RegionalTokenRoute: Codable, Equatable, Hashable, Sendable {
     self.flags = flags
   }
 
-  public var abiRecord: NBRegionalRoute {
+  fileprivate func abiRecord(
+    historyValueOffset: UInt32,
+    messageDimension: UInt32
+  ) -> NBRegionalRoute {
     var record = NBRegionalRoute()
     record.sender_module_id = senderModuleIdentifier
     record.receiver_module_id = receiverModuleIdentifier
@@ -62,6 +65,8 @@ public struct RegionalTokenRoute: Codable, Equatable, Hashable, Sendable {
     record.flags = flags.rawValue
     record.delay_microseconds = delayMicroseconds
     record.gain = gain
+    record.history_value_offset = historyValueOffset
+    record.message_dimension = messageDimension
     return record
   }
 }
@@ -147,11 +152,15 @@ public struct RegionalTokenParameters: Codable, Equatable, Hashable, Sendable {
 
 @frozen
 public struct RegionalTokenProgram: Equatable, Sendable {
-  public static let programVersion: UInt32 = 0
+  public static let programVersion: UInt32 = 1
+  public static let routeHistoryCapacity = Int(NB_REGIONAL_ROUTE_HISTORY_CAPACITY)
 
   public let scheduleFingerprint: UInt64
   public let layouts: [RegionalTokenLayout]
   public let routes: [RegionalTokenRoute]
+  public let routeHistoryValueOffsets: [UInt32]
+  public let routeMessageDimensions: [UInt32]
+  public let routeHistoryScalarCount: Int
   public let parameters: [RegionalTokenParameters]
   public let fingerprint: UInt64
 
@@ -175,8 +184,15 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     else {
       throw BrainRuntimeError.invalidSchedule("regional route names an unknown module")
     }
-    guard Set(canonicalRoutes).count == canonicalRoutes.count else {
-      throw BrainRuntimeError.invalidSchedule("duplicate regional routes are not canonical")
+    for (previous, current) in zip(canonicalRoutes, canonicalRoutes.dropFirst()) {
+      guard
+        previous.receiverModuleIdentifier != current.receiverModuleIdentifier
+          || previous.senderModuleIdentifier != current.senderModuleIdentifier
+          || previous.senderToken != current.senderToken
+      else {
+        throw BrainRuntimeError.invalidSchedule(
+          "duplicate regional route identity is not canonical")
+      }
     }
 
     var scalarOffset: UInt32 = 0
@@ -223,9 +239,43 @@ public struct RegionalTokenProgram: Equatable, Sendable {
         "regional parameter count must equal the token scalar count"
       )
     }
+    let moduleIndices = Dictionary(
+      uniqueKeysWithValues: schedule.modules.enumerated().map {
+        ($0.element.moduleIdentifier, $0.offset)
+      }
+    )
+    var routeHistoryValueOffsets: [UInt32] = []
+    var routeMessageDimensions: [UInt32] = []
+    routeHistoryValueOffsets.reserveCapacity(canonicalRoutes.count)
+    routeMessageDimensions.reserveCapacity(canonicalRoutes.count)
+    var routeHistoryScalarCount: UInt32 = 0
+    for route in canonicalRoutes {
+      guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
+        throw BrainRuntimeError.invalidSchedule("regional route sender disappeared")
+      }
+      let messageDimension = UInt32(layouts[senderIndex].tokenDimension)
+      let historyScalars =
+        UInt64(messageDimension)
+        * UInt64(Self.routeHistoryCapacity)
+      guard UInt64(routeHistoryScalarCount) + historyScalars <= UInt64(UInt32.max) else {
+        throw BrainRuntimeError.invalidSchedule("regional route history exceeds ABI limits")
+      }
+      routeHistoryValueOffsets.append(routeHistoryScalarCount)
+      routeMessageDimensions.append(messageDimension)
+      routeHistoryScalarCount += UInt32(historyScalars)
+    }
+
     let descriptorRecords = schedule.modules.map(\.abiRecord)
     let layoutRecords = layouts.map(\.abiRecord)
-    let routeRecords = canonicalRoutes.map(\.abiRecord)
+    let routeRecords = zip(
+      canonicalRoutes.indices,
+      canonicalRoutes
+    ).map { routeIndex, route in
+      route.abiRecord(
+        historyValueOffset: routeHistoryValueOffsets[routeIndex],
+        messageDimension: routeMessageDimensions[routeIndex]
+      )
+    }
     let parameterRecords = parameters.map(\.abiRecord)
     let validation = descriptorRecords.withUnsafeBufferPointer { descriptors in
       layoutRecords.withUnsafeBufferPointer { layouts in
@@ -266,6 +316,9 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     self.scheduleFingerprint = schedule.fingerprint
     self.layouts = layouts
     self.routes = canonicalRoutes
+    self.routeHistoryValueOffsets = routeHistoryValueOffsets
+    self.routeMessageDimensions = routeMessageDimensions
+    self.routeHistoryScalarCount = Int(routeHistoryScalarCount)
     self.parameters = parameters
     self.fingerprint = fingerprint
   }
@@ -285,30 +338,41 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     record.route_count = UInt32(routes.count)
     record.parameter_count = UInt32(parameters.count)
     record.program_fingerprint = fingerprint
-    record.flags = Self.programVersion
+    record.history_capacity = UInt32(Self.routeHistoryCapacity)
+    record.history_scalar_count = UInt32(routeHistoryScalarCount)
     return record
+  }
+
+  public var routeABIRecords: [NBRegionalRoute] {
+    zip(routes.indices, routes).map { routeIndex, route in
+      route.abiRecord(
+        historyValueOffset: routeHistoryValueOffsets[routeIndex],
+        messageDimension: routeMessageDimensions[routeIndex]
+      )
+    }
   }
 
   public static func runtimeFoundationV0(
     schedule: BrainModuleSchedule
   ) throws -> RegionalTokenProgram {
     let moduleIDs = Set(schedule.modules.map(\.moduleIdentifier))
-    let candidates: [(UInt16, UInt16, UInt16, Float, RegionalRouteFlags)] = [
-      (37, 25, 0, 0.65, [.persistent]),
-      (12, 26, 0, 1.00, [.emergency, .persistent]),
-      (25, 77, 0, 0.55, [.persistent]),
-      (95, 83, 0, 0.65, [.persistent]),
-      (26, 95, 0, 1.00, [.emergency, .persistent]),
-      (83, 95, 0, 0.70, [.persistent]),
-      (90, 95, 0, 0.80, [.persistent]),
+    let candidates: [(UInt16, UInt16, UInt16, UInt32, Float, RegionalRouteFlags)] = [
+      (37, 25, 0, 2_000, 0.65, [.persistent]),
+      (12, 26, 0, 0, 1.00, [.emergency, .persistent]),
+      (25, 77, 0, 5_000, 0.55, [.persistent]),
+      (95, 83, 0, 1_000, 0.65, [.persistent]),
+      (26, 95, 0, 0, 1.00, [.emergency, .persistent]),
+      (83, 95, 0, 250, 0.70, [.persistent]),
+      (90, 95, 0, 250, 0.80, [.persistent]),
     ]
     let routes: [RegionalTokenRoute] = try candidates.compactMap { candidate in
-      let (sender, receiver, token, gain, flags) = candidate
+      let (sender, receiver, token, delay, gain, flags) = candidate
       guard moduleIDs.contains(sender), moduleIDs.contains(receiver) else { return nil }
       return try RegionalTokenRoute(
         senderModuleIdentifier: sender,
         receiverModuleIdentifier: receiver,
         senderToken: token,
+        delayMicroseconds: delay,
         gain: gain,
         flags: flags
       )
@@ -343,6 +407,266 @@ public struct RegionalTokenProgram: Equatable, Sendable {
       }
     }
     return result
+  }
+}
+
+@frozen
+public struct RegionalRouteHistoryState: Equatable, Hashable, Sendable {
+  public static let neverUpdated = UInt64.max
+
+  public var nextSlot: UInt32
+  public var count: UInt32
+  public var latestTimestamp: BrainTimestamp?
+
+  public init(
+    nextSlot: UInt32 = 0,
+    count: UInt32 = 0,
+    latestTimestamp: BrainTimestamp? = nil
+  ) {
+    self.nextSlot = nextSlot
+    self.count = count
+    self.latestTimestamp = latestTimestamp
+  }
+
+  public var abiRecord: NBRegionalRouteHistoryState {
+    var record = NBRegionalRouteHistoryState()
+    record.next_slot = nextSlot
+    record.count = count
+    record.latest_timestamp_microseconds = latestTimestamp?.rawValue ?? Self.neverUpdated
+    return record
+  }
+
+  public init(abiRecord: NBRegionalRouteHistoryState) {
+    self.init(
+      nextSlot: abiRecord.next_slot,
+      count: abiRecord.count,
+      latestTimestamp: abiRecord.latest_timestamp_microseconds == Self.neverUpdated
+        ? nil
+        : BrainTimestamp(microseconds: abiRecord.latest_timestamp_microseconds)
+    )
+  }
+}
+
+/// Per-agent, transaction-owned histories for sparse route message tokens.
+/// Each route owns a ring of one selected sender token at publication times.
+@frozen
+public struct RegionalRouteHistory: Equatable, Sendable {
+  public let programFingerprint: UInt64
+  public let capacity: Int
+  public var states: [RegionalRouteHistoryState]
+  public var timestamps: [UInt64]
+  public var values: [Float]
+
+  public init(program: RegionalTokenProgram) {
+    programFingerprint = program.fingerprint
+    capacity = RegionalTokenProgram.routeHistoryCapacity
+    states = program.routes.map { _ in RegionalRouteHistoryState() }
+    timestamps = [UInt64](
+      repeating: RegionalRouteHistoryState.neverUpdated,
+      count: program.routes.count * RegionalTokenProgram.routeHistoryCapacity
+    )
+    values = [Float](repeating: 0, count: program.routeHistoryScalarCount)
+  }
+
+  public init(
+    program: RegionalTokenProgram,
+    states: [RegionalRouteHistoryState],
+    timestamps: [UInt64],
+    values: [Float]
+  ) throws {
+    programFingerprint = program.fingerprint
+    capacity = RegionalTokenProgram.routeHistoryCapacity
+    self.states = states
+    self.timestamps = timestamps
+    self.values = values
+    try validate(program: program)
+  }
+
+  public func validate(program: RegionalTokenProgram) throws {
+    guard programFingerprint == program.fingerprint else {
+      throw BrainRuntimeError.invalidSchedule("regional route-history program mismatch")
+    }
+    guard capacity == RegionalTokenProgram.routeHistoryCapacity,
+      states.count == program.routes.count,
+      timestamps.count == program.routes.count * capacity,
+      values.count == program.routeHistoryScalarCount
+    else {
+      throw BrainRuntimeError.invalidSchedule("regional route-history shape mismatch")
+    }
+    for (routeIndex, state) in states.enumerated() {
+      guard state.nextSlot < UInt32(capacity), state.count <= UInt32(capacity) else {
+        throw BrainRuntimeError.invalidSchedule("regional route-history ring state is invalid")
+      }
+      guard (state.count == 0) == (state.latestTimestamp == nil) else {
+        throw BrainRuntimeError.invalidSchedule("regional route-history timestamp state is invalid")
+      }
+      guard state.count > 0 else { continue }
+      var newerTimestamp: UInt64?
+      for age in 0..<Int(state.count) {
+        let slot = (Int(state.nextSlot) + capacity - 1 - age) % capacity
+        let timestamp = timestamps[routeIndex * capacity + slot]
+        guard timestamp != RegionalRouteHistoryState.neverUpdated else {
+          throw BrainRuntimeError.invalidSchedule(
+            "regional route-history contains an uninitialized active timestamp"
+          )
+        }
+        if let newerTimestamp {
+          guard timestamp < newerTimestamp else {
+            throw BrainRuntimeError.invalidSchedule(
+              "regional route-history timestamps are not strictly ordered"
+            )
+          }
+        } else if timestamp != state.latestTimestamp?.rawValue {
+          throw BrainRuntimeError.invalidSchedule(
+            "regional route-history latest timestamp does not match its newest slot"
+          )
+        }
+        newerTimestamp = timestamp
+      }
+    }
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt64, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x0000_0100_0000_01b3
+        }
+      }
+    }
+    mix(programFingerprint, into: &hash)
+    mix(UInt64(capacity), into: &hash)
+    for state in states {
+      mix(UInt64(state.nextSlot), into: &hash)
+      mix(UInt64(state.count), into: &hash)
+      mix(state.latestTimestamp?.rawValue ?? RegionalRouteHistoryState.neverUpdated, into: &hash)
+    }
+    for timestamp in timestamps {
+      mix(timestamp, into: &hash)
+    }
+    for value in values {
+      mix(UInt64(value.bitPattern), into: &hash)
+    }
+    return String(format: "%016llx", hash)
+  }
+
+  fileprivate func sample(
+    routeIndex: Int,
+    targetTimestamp: BrainTimestamp,
+    feature: Int,
+    program: RegionalTokenProgram
+  ) -> Float {
+    let state = states[routeIndex]
+    guard state.count > 0 else { return 0 }
+    let messageDimension = Int(program.routeMessageDimensions[routeIndex])
+    let valueBase = Int(program.routeHistoryValueOffsets[routeIndex])
+    for age in 0..<Int(state.count) {
+      let slot = (Int(state.nextSlot) + capacity - 1 - age) % capacity
+      let timestamp = timestamps[routeIndex * capacity + slot]
+      if timestamp <= targetTimestamp.rawValue {
+        return values[valueBase + slot * messageDimension + feature % messageDimension]
+      }
+    }
+    return 0
+  }
+
+  fileprivate mutating func append(
+    routeIndex: Int,
+    timestamp: BrainTimestamp,
+    tokenValues: [Float],
+    program: RegionalTokenProgram,
+    moduleIndices: [UInt16: Int]
+  ) throws {
+    let route = program.routes[routeIndex]
+    guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
+      throw BrainRuntimeError.invalidSchedule("regional route-history sender disappeared")
+    }
+    var state = states[routeIndex]
+    if let latestTimestamp = state.latestTimestamp {
+      guard timestamp > latestTimestamp else {
+        throw BrainRuntimeError.transaction(
+          "regional route-history publication time did not advance"
+        )
+      }
+    }
+    let slot = Int(state.nextSlot)
+    let sender = program.layouts[senderIndex]
+    let dimension = Int(program.routeMessageDimensions[routeIndex])
+    let senderBase =
+      Int(sender.scalarOffset)
+      + Int(route.senderToken) * Int(sender.tokenDimension)
+    let valueBase =
+      Int(program.routeHistoryValueOffsets[routeIndex])
+      + slot * dimension
+    for feature in 0..<dimension {
+      values[valueBase + feature] = tokenValues[senderBase + feature]
+    }
+    timestamps[routeIndex * capacity + slot] = timestamp.rawValue
+    state.nextSlot = UInt32((slot + 1) % capacity)
+    state.count = min(state.count + 1, UInt32(capacity))
+    state.latestTimestamp = timestamp
+    states[routeIndex] = state
+  }
+}
+
+@frozen
+public struct RegionalTokenTransition: Equatable, Sendable {
+  public let values: [Float]
+  public let routeHistory: RegionalRouteHistory
+
+  public init(values: [Float], routeHistory: RegionalRouteHistory) {
+    self.values = values
+    self.routeHistory = routeHistory
+  }
+}
+
+@frozen
+public struct RegionalRouteHistorySnapshot: Equatable, Sendable {
+  public let scheduleFingerprint: UInt64
+  public let programFingerprint: UInt64
+  public let committedTime: BrainTimestamp
+  public let generation: UInt64
+  public let history: RegionalRouteHistory
+
+  public init(
+    scheduleFingerprint: UInt64,
+    programFingerprint: UInt64,
+    committedTime: BrainTimestamp,
+    generation: UInt64,
+    history: RegionalRouteHistory
+  ) {
+    self.scheduleFingerprint = scheduleFingerprint
+    self.programFingerprint = programFingerprint
+    self.committedTime = committedTime
+    self.generation = generation
+    self.history = history
+  }
+
+  public func stableHash() -> String {
+    var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+    @inline(__always)
+    func mix(_ value: UInt64, into hash: inout UInt64) {
+      var littleEndian = value.littleEndian
+      withUnsafeBytes(of: &littleEndian) { bytes in
+        for byte in bytes {
+          hash ^= UInt64(byte)
+          hash &*= 0x0000_0100_0000_01b3
+        }
+      }
+    }
+    mix(scheduleFingerprint, into: &hash)
+    mix(programFingerprint, into: &hash)
+    mix(committedTime.rawValue, into: &hash)
+    mix(generation, into: &hash)
+    for byte in history.stableHash().utf8 {
+      hash ^= UInt64(byte)
+      hash &*= 0x0000_0100_0000_01b3
+    }
+    return String(format: "%016llx", hash)
   }
 }
 
@@ -398,8 +722,9 @@ public enum CPURegionalTokenOperator {
     diagnostics initialDiagnostics: [RegionalModuleState],
     schedule: BrainModuleSchedule,
     program: RegionalTokenProgram,
-    invocations: [BrainModuleInvocation]
-  ) throws -> [Float] {
+    invocations: [BrainModuleInvocation],
+    routeHistory initialRouteHistory: RegionalRouteHistory? = nil
+  ) throws -> RegionalTokenTransition {
     guard program.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.invalidSchedule("regional program and schedule fingerprints differ")
     }
@@ -409,6 +734,8 @@ public enum CPURegionalTokenOperator {
     guard initialDiagnostics.count == schedule.modules.count else {
       throw BrainRuntimeError.invalidSchedule("regional diagnostic-state count mismatch")
     }
+    var routeHistory = initialRouteHistory ?? RegionalRouteHistory(program: program)
+    try routeHistory.validate(program: program)
     let moduleIndices = Dictionary(
       uniqueKeysWithValues: schedule.modules.enumerated().map {
         ($0.element.moduleIdentifier, $0.offset)
@@ -472,16 +799,29 @@ public enum CPURegionalTokenOperator {
           var routedInput: Float = 0
           for routeIndex in routeRange {
             let route = program.routes[routeIndex]
-            guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
-              throw BrainRuntimeError.invalidSchedule("regional route sender disappeared")
+            if route.delayMicroseconds == 0 {
+              guard let senderIndex = moduleIndices[route.senderModuleIdentifier] else {
+                throw BrainRuntimeError.invalidSchedule("regional route sender disappeared")
+              }
+              let sender = program.layouts[senderIndex]
+              let senderFeature = feature % Int(sender.tokenDimension)
+              let senderScalar =
+                Int(sender.scalarOffset)
+                + Int(route.senderToken) * Int(sender.tokenDimension)
+                + senderFeature
+              routedInput += route.gain * preTimestamp[senderScalar]
+            } else if invocation.timestamp.rawValue >= UInt64(route.delayMicroseconds) {
+              routedInput +=
+                route.gain
+                * routeHistory.sample(
+                  routeIndex: routeIndex,
+                  targetTimestamp: BrainTimestamp(
+                    microseconds: invocation.timestamp.rawValue - UInt64(route.delayMicroseconds)
+                  ),
+                  feature: feature,
+                  program: program
+                )
             }
-            let sender = program.layouts[senderIndex]
-            let senderFeature = feature % Int(sender.tokenDimension)
-            let senderScalar =
-              Int(sender.scalarOffset)
-              + Int(route.senderToken) * Int(sender.tokenDimension)
-              + senderFeature
-            routedInput += route.gain * preTimestamp[senderScalar]
           }
           let parameter = program.parameters[scalarIndex]
           let current = preTimestamp[scalarIndex]
@@ -505,8 +845,19 @@ public enum CPURegionalTokenOperator {
         }
         lastUpdates[moduleIndex] = invocation.timestamp
       }
+      let dueModules = Set(invocations[cursor..<end].map(\.moduleIdentifier))
+      for routeIndex in program.routes.indices
+      where dueModules.contains(program.routes[routeIndex].senderModuleIdentifier) {
+        try routeHistory.append(
+          routeIndex: routeIndex,
+          timestamp: timestamp,
+          tokenValues: values,
+          program: program,
+          moduleIndices: moduleIndices
+        )
+      }
       cursor = end
     }
-    return values
+    return RegionalTokenTransition(values: values, routeHistory: routeHistory)
   }
 }

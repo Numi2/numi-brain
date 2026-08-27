@@ -21,6 +21,9 @@ enum {
   NB_REGIONAL_ROUTE_BYTE_COUNT = 24,
   NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT = 32,
   NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT = 32,
+  NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT = 16,
+  NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
+  NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
 };
 
 typedef struct NBModuleDescriptor {
@@ -104,8 +107,8 @@ typedef struct NBRegionalRoute {
   uint16_t flags;
   uint32_t delay_microseconds;
   float gain;
-  uint32_t reserved0;
-  uint32_t reserved1;
+  uint32_t history_value_offset;
+  uint32_t message_dimension;
 } NBRegionalRoute;
 
 typedef struct NBRegionalTokenParameters {
@@ -125,9 +128,15 @@ typedef struct NBRegionalProgramHeader {
   uint32_t route_count;
   uint32_t parameter_count;
   uint64_t program_fingerprint;
-  uint32_t flags;
-  uint32_t reserved;
+  uint32_t history_capacity;
+  uint32_t history_scalar_count;
 } NBRegionalProgramHeader;
+
+typedef struct NBRegionalRouteHistoryState {
+  uint32_t next_slot;
+  uint32_t count;
+  uint64_t latest_timestamp_microseconds;
+} NBRegionalRouteHistoryState;
 
 typedef enum NBSchedulerStatus {
   NB_SCHEDULER_STATUS_VALID = 0,
@@ -154,7 +163,8 @@ typedef enum NBRegionalProgramValidation {
   NB_REGIONAL_PROGRAM_UNKNOWN_MODULE = 5,
   NB_REGIONAL_PROGRAM_TOKEN_RANGE = 6,
   NB_REGIONAL_PROGRAM_NONFINITE = 7,
-  NB_REGIONAL_PROGRAM_DELAY_UNSUPPORTED = 8,
+  NB_REGIONAL_PROGRAM_DELAY_RANGE = 8,
+  NB_REGIONAL_PROGRAM_HISTORY_LAYOUT = 9,
 } NBRegionalProgramValidation;
 
 size_t nb_brain_abi_module_descriptor_size(void);
@@ -168,6 +178,7 @@ size_t nb_brain_abi_regional_token_layout_size(void);
 size_t nb_brain_abi_regional_route_size(void);
 size_t nb_brain_abi_regional_token_parameters_size(void);
 size_t nb_brain_abi_regional_program_header_size(void);
+size_t nb_brain_abi_regional_route_history_state_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);

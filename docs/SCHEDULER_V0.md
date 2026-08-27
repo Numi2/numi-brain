@@ -99,11 +99,11 @@ The compacted due-invocation buffer and result header remain private. Explicit i
 
 ## Recurrent regional execution
 
-After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal threadgroup to the agent. Its lanes stride across 10,752 region-major FP32 scalars. For each due timestamp, they evaluate local token means, compiled sparse routed input, immutable factorized recurrence, periodic or interrupt drive, and a learned-form update gate. All modules at that timestamp read the same pre-timestamp state and publish after a device barrier.
+After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal threadgroup to the agent. Its lanes stride across 10,752 region-major FP32 scalars. For each due timestamp, they evaluate local token means, compiled sparse routed input, immutable factorized recurrence, periodic or interrupt drive, and a learned-form update gate. All modules at that timestamp read the same pre-timestamp state; delayed routes resolve the newest timestamped message no later than their conduction boundary, then all candidates and outgoing messages publish after device barriers.
 
 Two private token generations and two private diagnostic generations track the scheduler clock generations. Commit publishes tissue, scheduler clocks, token state, and diagnostics together; abort publishes none. The 32-byte diagnostic record retains update counts, interrupt counts, phase, salience, and last-update time, but is no longer the authoritative regional neural state. The token operator has a deterministic CPU numerical oracle and performs no hot-path readback.
 
-The executable token program is fingerprinted and immutable during rollout. Seven fixed sparse routes provide the first live routed input sum. Dynamic top-k selection, nonzero route-delay history, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
+The executable token program is fingerprinted and immutable during rollout. Seven fixed sparse routes provide the first live routed input sum with compiled 0-5 ms delays and transaction-owned 512-slot message rings. Dynamic top-k selection, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
 
 ## Cohort compaction oracle
 
@@ -156,10 +156,13 @@ These names define scheduling roles. Every role currently executes the common fa
 19. Regional state is bit-exact across replay and rejected retry, unchanged by abort, and state-equivalent across control chunking.
 20. Schema-v7 records regional diagnostic dispatches, state bytes, update totals, snapshot hash, and CPU parity.
 21. The compiled token layouts cover 10,752 contiguous region-major FP32 scalars and exactly seven canonical incoming routes.
-22. C++ validation rejects layout, route, token-range, nonfinite-parameter, and unsupported-delay drift.
-23. CPU and Metal token states agree within declared FP32 tolerance across consecutive roots.
-24. A Metal route ablation changes the compiled receiver token state while tissue and scheduler diagnostics remain identical.
-25. Token generations are exact across replay and rejected retry, unchanged by abort, and state-equivalent across control-window chunking.
-26. Schema-v8 records program fingerprint, token snapshot hash, token and parameter memory, sparse-route memory, and CPU parity.
+22. Delayed routes remain silent before their conduction boundary and match the persistent CPU route-history oracle after delivery.
+23. Route-history metadata, timestamps, and values are restored on abort and reproduce under retry, replay, and control-window chunking.
+24. Configurations whose event and timestep bounds could overwrite an undelivered route message fail before dispatch.
+25. C++ validation rejects layout, route, token-range, nonfinite-parameter, delay-range, and history-layout drift.
+26. CPU and Metal token states agree within declared FP32 tolerance across consecutive roots.
+27. A Metal route ablation changes the compiled receiver token state while tissue and scheduler diagnostics remain identical.
+28. Token generations are exact across replay and rejected retry, unchanged by abort, and state-equivalent across control-window chunking.
+29. Schema-v9 records program fingerprint, token and route-history snapshot hashes, token, parameter, and route-history memory, and CPU parity.
 
-Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, fixed sparse routed messages, and the shared transaction boundary. It does not establish learned production weights, dynamic top-k routing, regional route delays, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, fixed delayed sparse messages, and the shared transaction boundary. It does not establish learned production weights, dynamic top-k routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
