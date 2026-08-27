@@ -21,6 +21,7 @@ private final class NumanXMyoSimBridge {
     ) -> UInt32
   private typealias UInt64Function = @convention(c) (UnsafeMutableRawPointer?) -> UInt64
   private typealias FloatFunction = @convention(c) (UnsafeMutableRawPointer?) -> Float
+  private typealias DoubleFunction = @convention(c) (UnsafeMutableRawPointer?) -> Double
 
   private let library: UnsafeMutableRawPointer
   private let bridge: UnsafeMutableRawPointer
@@ -35,6 +36,8 @@ private final class NumanXMyoSimBridge {
   private let pendingBorrowedAddressFunction: UInt64Function
   private let pendingMaximumExcitationFunction: FloatFunction
   private let pendingMaximumForceFunction: FloatFunction
+  private let pendingMaximumVelocityDeltaFunction: DoubleFunction
+  private let pendingMaximumConfigurationDeltaFunction: DoubleFunction
   private let committedFingerprintFunction: UInt64Function
   private let committedGenerationFunction: UInt64Function
 
@@ -88,6 +91,12 @@ private final class NumanXMyoSimBridge {
     pendingMaximumForceFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_pending_maximum_force", from: library
     )
+    pendingMaximumVelocityDeltaFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_velocity_delta", from: library
+    )
+    pendingMaximumConfigurationDeltaFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_configuration_delta", from: library
+    )
     committedFingerprintFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_committed_fingerprint", from: library
     )
@@ -137,7 +146,13 @@ private final class NumanXMyoSimBridge {
     lease: MetalTissueRuntime.NumanXMotorBufferLease,
     packet: NumanXMotorCandidate,
     durationMicroseconds: UInt32
-  ) throws -> (fingerprint: UInt64, excitation: Float, force: Float) {
+  ) throws -> (
+    fingerprint: UInt64,
+    excitation: Float,
+    force: Float,
+    velocityDelta: Double,
+    configurationDelta: Double
+  ) {
     let status = runCandidateFunction(
       bridge,
       UnsafeRawPointer(lease.excitationMetalBufferObject),
@@ -170,7 +185,9 @@ private final class NumanXMyoSimBridge {
     return (
       fingerprint,
       pendingMaximumExcitationFunction(bridge),
-      pendingMaximumForceFunction(bridge)
+      pendingMaximumForceFunction(bridge),
+      pendingMaximumVelocityDeltaFunction(bridge),
+      pendingMaximumConfigurationDeltaFunction(bridge)
     )
   }
 
@@ -287,6 +304,8 @@ private func run() throws {
   var physicalFingerprints = [UInt64]()
   var maximumExcitations = [Float]()
   var maximumForces = [Float]()
+  var maximumVelocityDeltas = [Double]()
+  var maximumConfigurationDeltas = [Double]()
   var retrySubstepFingerprint: UInt64 = 0
   var retryRandomCounterGeneration: UInt64 = 0
   var transducedMyoSimEventCount = 0
@@ -306,7 +325,9 @@ private func run() throws {
         packet.randomCounterGeneration == rejectedPacket.randomCounterGeneration,
         physical.fingerprint == rejectedPhysical.fingerprint,
         physical.excitation == rejectedPhysical.excitation,
-        physical.force == rejectedPhysical.force
+        physical.force == rejectedPhysical.force,
+        physical.velocityDelta == rejectedPhysical.velocityDelta,
+        physical.configurationDelta == rejectedPhysical.configurationDelta
       else {
         bridge.rejectCandidate()
         throw NSError(
@@ -322,6 +343,8 @@ private func run() throws {
     physicalFingerprints.append(physical.fingerprint)
     maximumExcitations.append(physical.excitation)
     maximumForces.append(physical.force)
+    maximumVelocityDeltas.append(physical.velocityDelta)
+    maximumConfigurationDeltas.append(physical.configurationDelta)
     let accepted = try AcceptedPhysicsStateToken(
       transaction: token,
       substep: fast.substep,
@@ -357,7 +380,9 @@ private func run() throws {
     bridge.committedFingerprint == physicalFingerprints.last,
     transducedMyoSimEventCount == 1,
     maximumExcitations[1] > maximumExcitations[0],
-    maximumForces[2] != maximumForces[0]
+    maximumForces[2] != maximumForces[0],
+    maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
+    maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
     throw NSError(
       domain: "NumiBrainNumanXInterop",
@@ -377,6 +402,8 @@ private func run() throws {
     "candidate_physical_fingerprints": physicalFingerprints,
     "candidate_maximum_excitations": maximumExcitations,
     "candidate_maximum_generalized_forces": maximumForces,
+    "candidate_maximum_velocity_deltas": maximumVelocityDeltas,
+    "candidate_maximum_configuration_deltas": maximumConfigurationDeltas,
     "rejected_physical_fingerprint": rejectedPhysical.fingerprint,
     "rejected_substep_fingerprint": rejectedPacket.substepFingerprint,
     "retry_substep_fingerprint": retrySubstepFingerprint,
