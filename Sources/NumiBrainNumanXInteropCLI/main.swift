@@ -41,6 +41,8 @@ private final class NumanXMyoSimBridge {
   private let pendingBorrowedAddressFunction: UInt64Function
   private let pendingMaximumExcitationFunction: FloatFunction
   private let pendingMaximumForceFunction: FloatFunction
+  private let pendingMaximumMuscleForceFunction: FloatFunction
+  private let pendingMaximumForceMuscleIdentifierFunction: UInt32Function
   private let pendingMaximumVelocityDeltaFunction: DoubleFunction
   private let pendingMaximumConfigurationDeltaFunction: DoubleFunction
   private let committedFingerprintFunction: UInt64Function
@@ -102,6 +104,13 @@ private final class NumanXMyoSimBridge {
     )
     pendingMaximumForceFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_pending_maximum_force", from: library
+    )
+    pendingMaximumMuscleForceFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_muscle_force", from: library
+    )
+    pendingMaximumForceMuscleIdentifierFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_force_muscle_identifier",
+      from: library
     )
     pendingMaximumVelocityDeltaFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_pending_maximum_velocity_delta", from: library
@@ -188,6 +197,8 @@ private final class NumanXMyoSimBridge {
     fingerprint: UInt64,
     excitation: Float,
     force: Float,
+    muscleForce: Float,
+    muscleIdentifier: UInt32,
     velocityDelta: Double,
     configurationDelta: Double
   ) {
@@ -224,6 +235,8 @@ private final class NumanXMyoSimBridge {
       fingerprint,
       pendingMaximumExcitationFunction(bridge),
       pendingMaximumForceFunction(bridge),
+      pendingMaximumMuscleForceFunction(bridge),
+      pendingMaximumForceMuscleIdentifierFunction(bridge),
       pendingMaximumVelocityDeltaFunction(bridge),
       pendingMaximumConfigurationDeltaFunction(bridge)
     )
@@ -346,6 +359,8 @@ private func run() throws {
   var physicalFingerprints = [UInt64]()
   var maximumExcitations = [Float]()
   var maximumForces = [Float]()
+  var maximumMuscleForces = [Float]()
+  var maximumForceMuscleIdentifiers = [UInt32]()
   var maximumVelocityDeltas = [Double]()
   var maximumConfigurationDeltas = [Double]()
   var retrySubstepFingerprint: UInt64 = 0
@@ -368,6 +383,8 @@ private func run() throws {
         physical.fingerprint == rejectedPhysical.fingerprint,
         physical.excitation == rejectedPhysical.excitation,
         physical.force == rejectedPhysical.force,
+        physical.muscleForce == rejectedPhysical.muscleForce,
+        physical.muscleIdentifier == rejectedPhysical.muscleIdentifier,
         physical.velocityDelta == rejectedPhysical.velocityDelta,
         physical.configurationDelta == rejectedPhysical.configurationDelta
       else {
@@ -385,6 +402,8 @@ private func run() throws {
     physicalFingerprints.append(physical.fingerprint)
     maximumExcitations.append(physical.excitation)
     maximumForces.append(physical.force)
+    maximumMuscleForces.append(physical.muscleForce)
+    maximumForceMuscleIdentifiers.append(physical.muscleIdentifier)
     maximumVelocityDeltas.append(physical.velocityDelta)
     maximumConfigurationDeltas.append(physical.configurationDelta)
     let accepted = try AcceptedPhysicsStateToken(
@@ -397,9 +416,9 @@ private func run() throws {
     if candidateIndex == 0 {
       events =
         try muscleLoadTransducer.transduce(
-          maximumAbsoluteGeneralizedForce: physical.force,
+          maximumAbsoluteMuscleForce: physical.muscleForce,
           acceptedPhysicsState: accepted,
-          receptorIdentifier: 0x4d59_4f53
+          receptorIdentifier: physical.muscleIdentifier
         ).map { [$0] } ?? []
       transducedMyoSimEventCount += events.count
     } else {
@@ -423,6 +442,8 @@ private func run() throws {
     transducedMyoSimEventCount == 1,
     maximumExcitations[1] > maximumExcitations[0],
     maximumForces[2] != maximumForces[0],
+    maximumMuscleForces.allSatisfy({ $0 > 0 }),
+    maximumForceMuscleIdentifiers.allSatisfy(bridge.muscleIdentifiers.contains),
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -444,6 +465,8 @@ private func run() throws {
     "candidate_physical_fingerprints": physicalFingerprints,
     "candidate_maximum_excitations": maximumExcitations,
     "candidate_maximum_generalized_forces": maximumForces,
+    "candidate_maximum_muscle_forces": maximumMuscleForces,
+    "candidate_maximum_force_muscle_identifiers": maximumForceMuscleIdentifiers,
     "candidate_maximum_velocity_deltas": maximumVelocityDeltas,
     "candidate_maximum_configuration_deltas": maximumConfigurationDeltas,
     "rejected_physical_fingerprint": rejectedPhysical.fingerprint,
@@ -454,7 +477,7 @@ private func run() throws {
     "rejected_candidate_replayed_exactly": true,
     "actual_borrowed_buffer": true,
     "receptor_interrupt": "muscle-overload",
-    "receptor_event_source": "accepted-numanx-myosim-generalized-force",
+    "receptor_event_source": "accepted-numanx-myosim-muscle-force",
     "receptor_event_threshold": 1,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,

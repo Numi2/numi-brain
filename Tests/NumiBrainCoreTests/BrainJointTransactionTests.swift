@@ -219,14 +219,14 @@ final class BrainJointTransactionTests: XCTestCase {
 
     XCTAssertNil(
       try transducer.transduce(
-        maximumAbsoluteGeneralizedForce: 10,
+        maximumAbsoluteMuscleForce: 10,
         acceptedPhysicsState: accepted,
         receptorIdentifier: 77
       )
     )
     let event = try XCTUnwrap(
       transducer.transduce(
-        maximumAbsoluteGeneralizedForce: 10.25,
+        maximumAbsoluteMuscleForce: 10.25,
         acceptedPhysicsState: accepted,
         receptorIdentifier: 77
       )
@@ -237,14 +237,14 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(event.flags, UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED))
     XCTAssertThrowsError(
       try transducer.transduce(
-        maximumAbsoluteGeneralizedForce: -.infinity,
+        maximumAbsoluteMuscleForce: -.infinity,
         acceptedPhysicsState: accepted,
         receptorIdentifier: 77
       )
     )
     XCTAssertThrowsError(
       try transducer.transduce(
-        maximumAbsoluteGeneralizedForce: 11,
+        maximumAbsoluteMuscleForce: 11,
         acceptedPhysicsState: accepted,
         receptorIdentifier: 0
       )

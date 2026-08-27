@@ -18,12 +18,12 @@ public struct MuscleLoadReceptorTransducer: Codable, Equatable, Hashable, Sendab
   }
 
   public func transduce(
-    maximumAbsoluteGeneralizedForce: Float,
+    maximumAbsoluteMuscleForce: Float,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     receptorIdentifier: UInt32
   ) throws -> BrainInterruptEvent? {
-    guard maximumAbsoluteGeneralizedForce.isFinite,
-      maximumAbsoluteGeneralizedForce >= 0
+    guard maximumAbsoluteMuscleForce.isFinite,
+      maximumAbsoluteMuscleForce >= 0
     else {
       throw BrainRuntimeError.invalidEvent(
         "accepted muscle-load observation must be finite and nonnegative"
@@ -32,7 +32,7 @@ public struct MuscleLoadReceptorTransducer: Codable, Equatable, Hashable, Sendab
     guard receptorIdentifier != 0 else {
       throw BrainRuntimeError.invalidEvent("receptor identifier zero is reserved")
     }
-    guard maximumAbsoluteGeneralizedForce > overloadThreshold else { return nil }
+    guard maximumAbsoluteMuscleForce > overloadThreshold else { return nil }
     return try BrainInterruptEvent(
       timestamp: acceptedPhysicsState.acceptedTimestamp,
       mask: .muscleOverload,
