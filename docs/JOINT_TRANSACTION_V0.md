@@ -152,9 +152,11 @@ paired with the command generation. The following candidate receives GPU
 addresses and identity metadata for both buffers. Rejection, abort, and commit
 apply to command and excitation generations together.
 
-The foundation profile has six synthetic channels and a global rather than
-body-local interrupt. It is an executable ABI fixture, not a real species body
-map or a NumanX muscle catalog.
+The standalone interop executable binds the six foundation channels to the
+first six source-tendon identifiers loaded from the NumanX `.nhmyo` asset. The
+ordered identity and output fingerprint therefore match the physical consumer,
+but the gains remain fixtures and the selected subset is not a complete
+species body map.
 
 For each candidate, `NBNumanXMotorCandidate` binds the root and substep
 fingerprints to the accepted brain time/generation and the private motor-header
@@ -168,12 +170,13 @@ candidate Metal submission so an external physical solver can return its
 acceptance token. This proves state ownership and retry semantics; it is not a
 no-readback cross-runtime command timeline.
 
-The runtime can now lend the exact resident header and excitation `MTLBuffer`
-objects for the still-live physical candidate. The lease retains their object
-lifetime and exposes opaque process-local handles without reading their
-contents. A NumanX receiver must still import that excitation buffer into its
-own candidate command buffer and return an accepted-physics token before the
-brain can advance or recycle the generation.
+The runtime lends the exact resident header and excitation `MTLBuffer` objects
+for the still-live physical candidate. The lease retains their object lifetime
+and exposes opaque process-local handles without reading their contents. The
+bounded NumanX bridge imports the excitation allocation into its own MyoSim
+command buffer and returns the candidate physical fingerprint and generation
+used to construct the accepted-physics token before the brain can advance or
+recycle the generation.
 
 ## Current boundary
 
@@ -184,16 +187,20 @@ covered by deterministic CPU and Metal tests. The interactive and batched
 paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
-The isolated NumanX receiver at `b42b283` imports an equivalent private
-excitation buffer into the owning MyoSim command buffer and has a measured
-full-body physical consequence. There is no single executable passing the
-actual NumiBrain lease to that receiver or demonstrated atomic physical/brain
-pointer publication yet. Accepted receptor events reach a fast scheduler/regional
-shadow and a species-neutral protective command after physical acceptance and
-before the next candidate; they cannot alter the physical candidate that has
-already been accepted. The timestamped Metal history is bounded to 32 accepted
-samples; a corrected-duration candidate fails before dispatch if accepting it
-would erase the only bracket required by the maximum configured delay. A live
-cross-runtime consumer, authoritative body catalog, receptor-localized reflex
-map, and composition with voluntary control remain required before this
-boundary can claim working NumanX coupling.
+The joint-root executable at NumiBrain `20ca7ff` and isolated NumanX `cfcef81`
+passes the actual private excitation allocation to MyoSim, advances an
+articulated Core candidate, transduces the accepted peak actuator force with
+its source-tendon identity, changes the next neural output, rejects and exactly
+replays one physical candidate, and publishes both roots. Accepted receptor
+events reach the fast scheduler/regional shadow only after physical acceptance
+and before the next candidate; they cannot alter the candidate already
+accepted. The timestamped Metal history is bounded to 32 accepted samples; a
+corrected-duration candidate fails before dispatch if accepting it would erase
+the only bracket required by the maximum configured delay.
+
+This remains a reference bridge rather than Phase 1 completion. NumiBrain and
+NumanX synchronize separate Metal queues, the MyoSim result is staged for
+diagnostics, Core articulated integration is CPU-side, and root publication is
+sequential rather than one atomic GPU pointer swap. A full body catalog,
+body-side receptor field, NumanX-generated adaptive substep rejection, shared
+GPU timeline, and composition with voluntary control remain required.
