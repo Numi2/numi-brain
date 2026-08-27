@@ -87,6 +87,8 @@ swift run -c release numi-brain-dispatch \
 
 The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU output and replay, and stale-parameter rejection. The CPU currently owns plan construction; the GPU kernel owns private region-major materialization. This is not yet GPU prefix-sum grouping, indirect regional execution, or cohort throughput qualification.
 
+The exact 8,192-environment Apple M4 correctness artifact is checked into [evidence/cohort-dispatch-v0.13](evidence/cohort-dispatch-v0.13/README.md). Its command-feedback timing covers only the materialization kernel and is not a production performance claim.
+
 ## Foundational invariants
 
 - Normal observations are causal receptor signals, never perfect or future simulator state.

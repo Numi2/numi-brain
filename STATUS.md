@@ -10,7 +10,7 @@
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, and timestamp-synchronous recurrent regional-token integration with private transactional interrupt, token, diagnostic, route-history, and routing-state generations
 - NumanX interop: none
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
-- GPU performance evidence: bounded Apple M4 Pro/M4 v0.12 and earlier v0.11 correctness probes only; production throughput and counter qualification remain pending
+- GPU performance evidence: bounded Apple M4 v0.13 cohort-materialization correctness plus Apple M4 Pro/M4 v0.12 and earlier v0.11 tissue correctness probes only; production throughput and counter qualification remain pending
 
 The architecture document remains a design contract. Only the tissue and scheduler behavior owned by the source and tests in this repository is currently live.
 
@@ -72,6 +72,8 @@ The scheduler foundation currently proves:
 The executable reference subset contains eight logical roles from the 96-module graph at periods from 1–100 ms. The CPU oracle and bounded Metal kernels share the compiled ABI and deterministic semantics. The token operator is authoritative regional neural state; the compact trace is diagnostic metadata. Cohort plan construction remains on the CPU and cohort regional execution is not yet connected. Learned/context-conditioned route biases, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, GPU cohort prefix sums, indirect execution, adaptive periods, learned production weights, and the complete 96-module graph remain unimplemented.
 
 The checked v0.1 scheduler probe on 2026-08-27 used commit `579afea` and advanced four independent scheduler states through 200 ms in ten root transactions. It emitted 3,064 invocations, compacted them into 772 canonical groups, and delivered eight module interrupts from three fractional-time source events with zero timestamp latency. Replay, retry, abort, independent-state, and canonical-order checks passed. The exact JSON is in [`evidence/scheduler-v0.1`](evidence/scheduler-v0.1/README.md). This is CPU semantic evidence, not GPU scheduler or throughput qualification.
+
+The checked v0.13 Apple M4 cohort probe on 2026-08-27 used source commit `dce5d5d` and compiled one 20 ms shadow transaction across 8,192 version-bound scheduler states. It flattened 679,943 independent invocations into 90 canonical groups, materialized 10,881,280 output bytes in private Metal buffers, preserved three source-event classes as 11 isolated module deliveries, and returned zero device status. Retry, discarded-shadow, input-order, CPU-plan/Metal-output, Metal replay, and stale-version checks passed. The exact JSON is in [`evidence/cohort-dispatch-v0.13`](evidence/cohort-dispatch-v0.13/README.md). Its recorded GPU interval covers only the materialization dispatch and is not end-to-end cohort throughput, profiler, or counter evidence.
 
 ## Implemented tissue and regional evidence
 

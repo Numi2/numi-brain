@@ -1,0 +1,52 @@
+{
+  "abi" : {
+    "cohortEnvironmentBytes" : 40,
+    "entryBytes" : 16,
+    "groupBytes" : 24,
+    "headerBytes" : 48,
+    "parameterBindingBytes" : 64,
+    "planVersion" : 1,
+    "resultBytes" : 32
+  },
+  "cohort" : {
+    "dispatchEntryCount" : 679943,
+    "dispatchGroupCount" : 90,
+    "environmentCount" : 8192,
+    "interruptDeliveryCount" : 11,
+    "maximumEnvironmentCountPerGroup" : 8192,
+    "moduleCount" : 8,
+    "sourceInvocationCount" : 679943
+  },
+  "executionPath" : "independent version-bound scheduler shadows -> compiled canonical cohort plan -> private Metal 4 region-major dispatch materialization",
+  "identity" : {
+    "cohortFingerprint" : "dda9ac241e3ce636",
+    "dispatchPlanFingerprint" : "51a78f0bcdbe4665",
+    "parameterVersionFingerprint" : "f5e9c9c4aa094246",
+    "scheduleFingerprint" : "c0162952817e2b01"
+  },
+  "limitations" : [
+    "The CPU oracle currently compiles cohort membership before GPU materialization.",
+    "The Metal kernel materializes compact dispatch records; indirect regional execution across the cohort is not yet connected.",
+    "GPU seconds are command-feedback telemetry, not a production throughput or counter qualification.",
+    "The eight-module runtime-foundation subset is not the complete 96-module graph."
+  ],
+  "metal" : {
+    "device" : "Apple M4",
+    "execution" : "Metal 4 private immutable plan and parameter inputs -> 2D timestamp/module by environment materialization -> private group and entry outputs -> explicit post-completion inspection",
+    "gpuSeconds" : 0.000539249973371625,
+    "privateInputBytes" : 10881360,
+    "privateOutputBytes" : 10881280,
+    "status" : 0
+  },
+  "operatingSystem" : "Version 26.6 (Build 25G5028f)",
+  "revision" : "dce5d5df1b6b204921c9ff3ec330e04da9f446ce",
+  "schema" : "numibrain.cohort-dispatch-evidence.v1",
+  "verification" : {
+    "canonicalInputOrderExact" : true,
+    "discardedShadowStateUnchanged" : true,
+    "gpuMaterializationExact" : true,
+    "gpuReplayExact" : true,
+    "retryExact" : true,
+    "staleParameterVersionRejected" : true
+  }
+}
