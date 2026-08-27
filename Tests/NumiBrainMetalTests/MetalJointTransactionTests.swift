@@ -419,6 +419,30 @@ final class MetalJointTransactionTests: XCTestCase {
       firstNumanXMotorCandidate.muscleExcitationGPUAddress,
       firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress
     )
+    let firstMotorLease = try runtime.borrowNumanXMotorBuffers(for: firstCandidate)
+    XCTAssertEqual(firstMotorLease.output, firstCandidate.protectiveMotorOutput)
+    let borrowedHeaderObject = Unmanaged<AnyObject>.fromOpaque(
+      firstMotorLease.headerMetalBufferObject
+    ).takeUnretainedValue()
+    let borrowedExcitationObject = Unmanaged<AnyObject>.fromOpaque(
+      firstMotorLease.excitationMetalBufferObject
+    ).takeUnretainedValue()
+    let borrowedHeader = try XCTUnwrap(borrowedHeaderObject as? any MTLBuffer)
+    let borrowedExcitations = try XCTUnwrap(
+      borrowedExcitationObject as? any MTLBuffer
+    )
+    XCTAssertEqual(
+      borrowedHeader.gpuAddress,
+      firstNumanXMotorCandidate.motorOutputHeaderGPUAddress
+    )
+    XCTAssertEqual(
+      borrowedExcitations.gpuAddress,
+      firstNumanXMotorCandidate.muscleExcitationGPUAddress
+    )
+    XCTAssertGreaterThanOrEqual(
+      borrowedExcitations.length,
+      Int(firstNumanXMotorCandidate.muscleExcitationByteCount)
+    )
     XCTAssertEqual(
       firstNumanXMotorCandidate,
       try NumanXMotorCandidate(
@@ -451,6 +475,9 @@ final class MetalJointTransactionTests: XCTestCase {
       firstPhysics,
       for: firstCandidate.substep,
       receptorEvents: [supportLoss]
+    )
+    XCTAssertThrowsError(
+      try runtime.borrowNumanXMotorBuffers(for: firstCandidate)
     )
 
     let firstFastScheduler = try runtime.inspectInteractiveFastScheduler()

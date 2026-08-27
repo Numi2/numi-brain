@@ -14,6 +14,35 @@ private struct ProtectiveCommandUniforms {
 
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
+  /// Retains the exact Metal allocations lent to one immediate NumanX
+  /// candidate. The opaque object handles are CF-style, unretained views of
+  /// the retained `MTLBuffer` objects; a consumer must not store them beyond
+  /// this lease or serialize them as transaction identity.
+  public final class NumanXMotorBufferLease: @unchecked Sendable {
+    public let output: ProtectiveMotorOutputBufferView
+
+    private let headerBuffer: any MTLBuffer
+    private let excitationBuffer: any MTLBuffer
+
+    fileprivate init(
+      output: ProtectiveMotorOutputBufferView,
+      headerBuffer: any MTLBuffer,
+      excitationBuffer: any MTLBuffer
+    ) {
+      self.output = output
+      self.headerBuffer = headerBuffer
+      self.excitationBuffer = excitationBuffer
+    }
+
+    public var headerMetalBufferObject: UnsafeMutableRawPointer {
+      Unmanaged.passUnretained(headerBuffer as AnyObject).toOpaque()
+    }
+
+    public var excitationMetalBufferObject: UnsafeMutableRawPointer {
+      Unmanaged.passUnretained(excitationBuffer as AnyObject).toOpaque()
+    }
+  }
+
   public struct Submission: Equatable, Sendable, Codable {
     public let parameterVersionFingerprint: UInt64
     public let attemptedSubsteps: Int
@@ -1901,6 +1930,45 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     root.lastGPUEndSeconds = feedback.gpuEndTime
     hasCommittedSchedulerResult = false
     interactiveJointRoot = root
+  }
+
+  /// Lends the private protective-output allocations to the physical runtime
+  /// without staging either payload through CPU memory. The fast-system result
+  /// must still be the live, unaccepted candidate owned by this runtime.
+  public func borrowNumanXMotorBuffers(
+    for fastSystems: FastSystemResult
+  ) throws -> NumanXMotorBufferLease {
+    guard let root = interactiveJointRoot,
+      let candidate = root.candidate,
+      candidate.substep == fastSystems.substep
+    else {
+      throw TissueError.transaction(
+        "cannot lend motor buffers for a stale or accepted neural candidate"
+      )
+    }
+    let output = fastSystems.protectiveMotorOutput
+    guard
+      let headerBuffer = protectiveMotorOutputHeaderBuffers.first(where: {
+        $0.gpuAddress == output.headerGPUAddress
+      }),
+      let excitationBuffer = protectiveMuscleExcitationBuffers.first(where: {
+        $0.gpuAddress == output.muscleExcitationGPUAddress
+      }),
+      output.headerByteCount == ProtectiveMotorOutput.headerByteCount,
+      output.muscleExcitationByteCount == protectiveMuscleExcitationByteCount,
+      output.muscleCount == protectiveMotorProfile.channels.count,
+      headerBuffer.length >= output.headerByteCount,
+      excitationBuffer.length >= output.muscleExcitationByteCount
+    else {
+      throw TissueError.transaction(
+        "fast-system motor view does not identify this runtime's resident buffers"
+      )
+    }
+    return NumanXMotorBufferLease(
+      output: output,
+      headerBuffer: headerBuffer,
+      excitationBuffer: excitationBuffer
+    )
   }
 
   public func rejectPhysicsSubstep(

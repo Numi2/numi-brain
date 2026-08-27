@@ -91,6 +91,14 @@ the owning `MetalTissueRuntime` and residency set remain alive, and only for its
 named physical candidate. Retry produces a new substep fingerprint while
 preserving the same accepted neural output until simulated time advances.
 
+`MetalTissueRuntime.borrowNumanXMotorBuffers(for:)` converts the live,
+unaccepted `FastSystemResult` into a lifetime-safe lease over the exact header
+and excitation `MTLBuffer` objects. The lease exposes unretained opaque Metal
+object handles while retaining both buffers itself, rejects stale or already
+accepted candidates, and performs no staging copy or readback. The handles
+remain process-local and transactional: retaining a lease does not authorize a
+consumer to reuse content after the owning generation is recycled.
+
 The six-channel runtime-foundation profile is a deterministic synthetic fixture.
 Its identifiers and gains are not anatomy, calibration, a named species, or a
 NumanX muscle catalog. The global command also lacks receptor/body-side
@@ -101,7 +109,8 @@ localization, so it cannot yet express a localized withdrawal reflex.
 Tests establish compiled ABI identity, validation and golden persistent-state fingerprints,
 exact CPU/Metal excitation output, accepted next-candidate mapping, rejected
 event silence, abort restoration, commit publication, and transaction-bound
-GPU-address packet validation. They do not establish
+GPU-address packet validation, exact opaque-buffer identity, and stale-lease
+rejection. They do not establish
 a live NumanX consumer, physical muscle activation, localized reflexes, species
 calibration, voluntary movement, motor learning, autonomic physiology,
 biological behavior, or performance qualification.

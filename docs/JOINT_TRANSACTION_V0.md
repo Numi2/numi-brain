@@ -168,6 +168,13 @@ candidate Metal submission so an external physical solver can return its
 acceptance token. This proves state ownership and retry semantics; it is not a
 no-readback cross-runtime command timeline.
 
+The runtime can now lend the exact resident header and excitation `MTLBuffer`
+objects for the still-live physical candidate. The lease retains their object
+lifetime and exposes opaque process-local handles without reading their
+contents. A NumanX receiver must still import that excitation buffer into its
+own candidate command buffer and return an accepted-physics token before the
+brain can advance or recycle the generation.
+
 ## Current boundary
 
 The compiled ABI, validation, fingerprints, Swift value wrappers, transaction
@@ -177,7 +184,7 @@ covered by deterministic CPU and Metal tests. The interactive and batched
 paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
-There is no live NumanX adapter or demonstrated atomic physical/brain pointer
+There is no in-repository live NumanX receiver or demonstrated atomic physical/brain pointer
 publication yet. Accepted receptor events reach a fast scheduler/regional
 shadow and a species-neutral protective command after physical acceptance and
 before the next candidate; they cannot alter the physical candidate that has
