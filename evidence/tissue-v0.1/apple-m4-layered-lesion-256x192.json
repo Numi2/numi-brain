@@ -1,0 +1,100 @@
+{
+  "acceptedDurationMilliseconds" : 100,
+  "backend" : "metal",
+  "controlIntervalMilliseconds" : 20,
+  "device" : "Apple M4",
+  "executionPath" : "MTL4CommandQueue -> reusable MTL4CommandBuffer -> MTL4ComputeCommandEncoder -> MTL4ArgumentTable",
+  "grid" : {
+    "cells" : 49152,
+    "height" : 192,
+    "width" : 256
+  },
+  "memory" : {
+    "bytesPerCell" : 16,
+    "residencyAllocatedBytes" : 4063232,
+    "stateGenerationBytes" : 2359296,
+    "stateGenerationCount" : 3,
+    "storageMode" : "private GPU state generations plus shared uniforms and explicit inspection staging",
+    "structureBytes" : 786432,
+    "uniformArenaBytes" : 2560
+  },
+  "metrics" : {
+    "activeFraction" : 0,
+    "bounded" : true,
+    "finite" : true,
+    "maximumExcitatory" : 0.08338422,
+    "maximumExcitatoryOutsideStimulus" : 0.08338422,
+    "meanAdaptation" : 0.05714376,
+    "meanAxonalRelay" : 0.054261003,
+    "meanExcitatory" : 0.05254108,
+    "meanExcitatoryOutsideStimulus" : 0.052831966,
+    "meanInhibitory" : 0.08030017,
+    "minimumExcitatory" : 0,
+    "recruitedOutsideStimulusFraction" : 0,
+    "stateHash" : "bf5eecda30bfe9d0",
+    "viableFraction" : 0.9687907
+  },
+  "model" : "heterogeneous Wilson-Cowan E/I field with adaptation and axonal relay",
+  "numericalScope" : "mesoscale neural population tissue; uncalibrated research scaffold",
+  "operatingSystem" : "Version 26.6 (Build 25G5028f)",
+  "parameters" : {
+    "adaptationStrength" : 2,
+    "adaptationTimeConstantMilliseconds" : 200,
+    "axonalRelayTimeConstantMilliseconds" : 8,
+    "excitatoryBias" : -2.5,
+    "excitatoryGain" : 1,
+    "excitatorySelfWeight" : 10,
+    "excitatorySpatialMix" : 0.75,
+    "excitatoryTimeConstantMilliseconds" : 10,
+    "excitatoryToInhibitoryWeight" : 10,
+    "inhibitoryBias" : -3,
+    "inhibitoryGain" : 1,
+    "inhibitorySelfWeight" : 2,
+    "inhibitorySpatialMix" : 0.15,
+    "inhibitoryTimeConstantMilliseconds" : 20,
+    "inhibitoryToExcitatoryWeight" : 12,
+    "timestepMilliseconds" : 1
+  },
+  "revision" : "77adca9583bc9e50487a7d6e5bbe57c85c1d4cef",
+  "rollbackRetryExact" : true,
+  "rootAbortExact" : true,
+  "schema" : "numibrain.tissue-simulation-evidence.v1",
+  "snapshotPath" : "evidence/tissue-v0.1/apple-m4-layered-lesion-256x192.png",
+  "stimulus" : {
+    "centerX" : 0.45,
+    "centerY" : 0.5,
+    "endMilliseconds" : 70,
+    "excitatoryDrive" : 7,
+    "inhibitoryDrive" : 0,
+    "radius" : 0.08,
+    "startMilliseconds" : 10
+  },
+  "structure" : {
+    "bytes" : 786432,
+    "hash" : "b6e62daa60fd9c99",
+    "interpretation" : "synthetic uncalibrated strata; viability gates activity and coupling",
+    "lesion" : {
+      "centerX" : 0.62,
+      "centerY" : 0.5,
+      "radius" : 0.1,
+      "viability" : 0
+    },
+    "profile" : "layered"
+  },
+  "timestepMilliseconds" : 1,
+  "timing" : {
+    "acceptedSubsteps" : 100,
+    "attemptedSubsteps" : 100,
+    "cellUpdatesPerSecond" : 78921318.72719464,
+    "gpuCellUpdatesPerSecond" : 1075869507.4201818,
+    "gpuSeconds" : 0.00456858379766345,
+    "rootTransactions" : 5,
+    "wallSeconds" : 0.06227975
+  },
+  "verification" : {
+    "cpuReferenceMaximumAbsoluteError" : 1.7881393e-07,
+    "cpuReferencePassed" : true,
+    "cpuReferenceTolerance" : 3e-05,
+    "replayExact" : true
+  }
+}
