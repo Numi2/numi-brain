@@ -46,6 +46,22 @@ static_assert(
 );
 static_assert(sizeof(NBJointCommitToken) == NB_JOINT_COMMIT_TOKEN_BYTE_COUNT);
 static_assert(sizeof(NBProtectiveCommand) == NB_PROTECTIVE_COMMAND_BYTE_COUNT);
+static_assert(
+    sizeof(NBMotorChannelDescriptor) == NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT
+);
+static_assert(sizeof(NBMotorOutputHeader) == NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT);
+static_assert(offsetof(NBMotorChannelDescriptor, muscle_id) == 0);
+static_assert(offsetof(NBMotorChannelDescriptor, resting_excitation) == 8);
+static_assert(offsetof(NBMotorChannelDescriptor, maximum_excitation) == 20);
+static_assert(offsetof(NBMotorChannelDescriptor, reserved0) == 24);
+static_assert(offsetof(NBMotorOutputHeader, format_version) == 0);
+static_assert(offsetof(NBMotorOutputHeader, timestamp_microseconds) == 8);
+static_assert(offsetof(NBMotorOutputHeader, brain_generation) == 16);
+static_assert(offsetof(NBMotorOutputHeader, profile_fingerprint) == 24);
+static_assert(offsetof(NBMotorOutputHeader, protective_command_fingerprint) == 32);
+static_assert(offsetof(NBMotorOutputHeader, muscle_count) == 40);
+static_assert(offsetof(NBMotorOutputHeader, motor_inhibition) == 48);
+static_assert(offsetof(NBMotorOutputHeader, output_fingerprint) == 56);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -209,6 +225,14 @@ size_t nb_brain_abi_joint_commit_token_size(void) {
 
 size_t nb_brain_abi_protective_command_size(void) {
   return sizeof(NBProtectiveCommand);
+}
+
+size_t nb_brain_abi_motor_channel_descriptor_size(void) {
+  return sizeof(NBMotorChannelDescriptor);
+}
+
+size_t nb_brain_abi_motor_output_header_size(void) {
+  return sizeof(NBMotorOutputHeader);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -1385,4 +1409,162 @@ uint32_t nb_brain_abi_validate_protective_command(
     return NB_PROTECTIVE_COMMAND_FINGERPRINT;
   }
   return NB_PROTECTIVE_COMMAND_VALID;
+}
+
+uint64_t nb_brain_abi_motor_profile_fingerprint(
+    const NBMotorChannelDescriptor *channels,
+    uint32_t channel_count
+) {
+  if (channels == nullptr || channel_count == 0) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_MOTOR_PROFILE_VERSION));
+  mix_little_endian(hash, channel_count);
+  for (uint32_t index = 0; index < channel_count; ++index) {
+    const NBMotorChannelDescriptor &channel = channels[index];
+    mix_little_endian(hash, channel.muscle_id);
+    mix_little_endian(hash, channel.flags);
+    mix_float(hash, channel.resting_excitation);
+    mix_float(hash, channel.withdrawal_gain);
+    mix_float(hash, channel.brace_gain);
+    mix_float(hash, channel.maximum_excitation);
+    mix_little_endian(hash, channel.reserved0);
+    mix_little_endian(hash, channel.reserved1);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_motor_profile(
+    const NBMotorChannelDescriptor *channels,
+    uint32_t channel_count
+) {
+  if (channels == nullptr) {
+    return NB_MOTOR_PROFILE_NULL;
+  }
+  if (channel_count == 0) {
+    return NB_MOTOR_PROFILE_COUNT;
+  }
+  constexpr uint32_t known_flags =
+      NB_MOTOR_CHANNEL_FLAG_VALID | NB_MOTOR_CHANNEL_FLAG_WITHDRAWAL
+      | NB_MOTOR_CHANNEL_FLAG_POSTURAL_BRACE;
+  for (uint32_t index = 0; index < channel_count; ++index) {
+    const NBMotorChannelDescriptor &channel = channels[index];
+    if ((channel.flags & NB_MOTOR_CHANNEL_FLAG_VALID) == 0
+        || (channel.flags & ~known_flags) != 0 || channel.reserved0 != 0
+        || channel.reserved1 != 0) {
+      return NB_MOTOR_PROFILE_FLAGS;
+    }
+    const float values[] = {
+        channel.resting_excitation,
+        channel.withdrawal_gain,
+        channel.brace_gain,
+        channel.maximum_excitation,
+    };
+    for (float value : values) {
+      if (!std::isfinite(value)) {
+        return NB_MOTOR_PROFILE_NONFINITE;
+      }
+      if (value < 0.0F || value > 1.0F) {
+        return NB_MOTOR_PROFILE_RANGE;
+      }
+    }
+    const bool withdrawal =
+        (channel.flags & NB_MOTOR_CHANNEL_FLAG_WITHDRAWAL) != 0;
+    const bool brace =
+        (channel.flags & NB_MOTOR_CHANNEL_FLAG_POSTURAL_BRACE) != 0;
+    if ((!withdrawal && channel.withdrawal_gain != 0.0F)
+        || (!brace && channel.brace_gain != 0.0F)
+        || (!withdrawal && !brace)
+        || channel.resting_excitation > channel.maximum_excitation
+        || channel.maximum_excitation == 0.0F) {
+      return NB_MOTOR_PROFILE_RELATION;
+    }
+    for (uint32_t prior = 0; prior < index; ++prior) {
+      if (channels[prior].muscle_id == channel.muscle_id) {
+        return NB_MOTOR_PROFILE_DUPLICATE;
+      }
+    }
+  }
+  return NB_MOTOR_PROFILE_VALID;
+}
+
+uint64_t nb_brain_abi_motor_output_fingerprint(
+    const NBMotorOutputHeader *header,
+    const float *muscle_excitations
+) {
+  if (header == nullptr || muscle_excitations == nullptr
+      || header->muscle_count == 0) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_MOTOR_OUTPUT_VERSION));
+  mix_little_endian(hash, header->format_version);
+  mix_little_endian(hash, header->flags);
+  mix_little_endian(hash, header->timestamp_microseconds);
+  mix_little_endian(hash, header->brain_generation);
+  mix_little_endian(hash, header->profile_fingerprint);
+  mix_little_endian(hash, header->protective_command_fingerprint);
+  mix_little_endian(hash, header->muscle_count);
+  mix_little_endian(hash, header->environment_identifier);
+  mix_float(hash, header->motor_inhibition);
+  mix_float(hash, header->autonomic_arousal);
+  for (uint32_t index = 0; index < header->muscle_count; ++index) {
+    mix_float(hash, muscle_excitations[index]);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_motor_output(
+    const NBMotorOutputHeader *header,
+    const float *muscle_excitations
+) {
+  if (header == nullptr || muscle_excitations == nullptr) {
+    return NB_MOTOR_OUTPUT_NULL;
+  }
+  if (header->format_version != NB_MOTOR_OUTPUT_VERSION) {
+    return NB_MOTOR_OUTPUT_FORMAT;
+  }
+  constexpr uint32_t known_flags =
+      NB_MOTOR_OUTPUT_FLAG_VALID | NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP;
+  if ((header->flags & NB_MOTOR_OUTPUT_FLAG_VALID) == 0
+      || (header->flags & ~known_flags) != 0) {
+    return NB_MOTOR_OUTPUT_FLAGS;
+  }
+  if (header->muscle_count == 0 || header->profile_fingerprint == 0
+      || header->protective_command_fingerprint == 0) {
+    return NB_MOTOR_OUTPUT_COUNT;
+  }
+  if (header->brain_generation == 0 && header->timestamp_microseconds != 0) {
+    return NB_MOTOR_OUTPUT_GENERATION;
+  }
+  if (!std::isfinite(header->motor_inhibition)
+      || !std::isfinite(header->autonomic_arousal)) {
+    return NB_MOTOR_OUTPUT_NONFINITE;
+  }
+  if (header->motor_inhibition < 0.0F || header->motor_inhibition > 1.0F
+      || header->autonomic_arousal < 0.0F
+      || header->autonomic_arousal > 1.0F) {
+    return NB_MOTOR_OUTPUT_RANGE;
+  }
+  const bool emergency =
+      (header->flags & NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP) != 0;
+  if (emergency != (header->motor_inhibition == 1.0F)) {
+    return NB_MOTOR_OUTPUT_RELATION;
+  }
+  for (uint32_t index = 0; index < header->muscle_count; ++index) {
+    const float excitation = muscle_excitations[index];
+    if (!std::isfinite(excitation)) {
+      return NB_MOTOR_OUTPUT_NONFINITE;
+    }
+    if (excitation < 0.0F || excitation > 1.0F) {
+      return NB_MOTOR_OUTPUT_RANGE;
+    }
+  }
+  if (header->output_fingerprint == 0
+      || header->output_fingerprint
+          != nb_brain_abi_motor_output_fingerprint(header, muscle_excitations)) {
+    return NB_MOTOR_OUTPUT_FINGERPRINT;
+  }
+  return NB_MOTOR_OUTPUT_VALID;
 }

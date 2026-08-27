@@ -1,4 +1,4 @@
-# Mesoscale neural tissue model v0.18
+# Mesoscale neural tissue model v0.19
 
 This is the first executable NumiBrain tissue slice. It models a two-dimensional cortical sheet of coupled excitatory and inhibitory population sites. It is intentionally a mesoscale neural-field model, matching NumiBrain v1.0's standard population representation.
 
@@ -22,13 +22,13 @@ S=(s_E,s_I,s_C,V),
 
 where `sE` and `sI` scale local excitatory and inhibitory response, `sC` scales outgoing short-range coupling, and viability `V` lies in `[0, 1]`. The default layered profile is a deterministic synthetic test morphology with four depth strata and slight lateral modulation. It is not a histological fit to a named cortical area.
 
-An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. The configured delay is `d_j` times the model's nominal base timestep. The v0.18 CPU and Metal paths resolve that interval against accepted physical timestamps and linearly interpolate bracketed relay samples. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
+An immutable `uint8` field stores outgoing local-conduction delay class `d_j` for every source site. The configured delay is `d_j` times the model's nominal base timestep. The v0.19 CPU and Metal paths resolve that interval against accepted physical timestamps and linearly interpolate bracketed relay samples. The synthetic layered profile assigns 1–4 ms classes to its four strata; these classes test causal delay handling and do not encode measured axon length, myelination, or conduction velocity.
 
 Long-range connections use a destination-major compressed sparse row graph. Every edge `e=(j,i,w_e,d_e)` names its source and destination sites, an FP32 weight, and its own delay class. Both runtimes convert that class to physical microseconds through the nominal timestep. The default bilateral profile mirrors two synthetic bands across the sheet with one incoming edge per participating site. It exists to exercise disconnected spatial recruitment, sparse GPU execution, and delayed transaction rollback; it is not a corpus callosum model or anatomical connectome.
 
 Runtime input uses an immutable canonical schedule of at most 64 receptor-derived events. Each compiled 64-byte event stores a unique schedule identifier, normalized center and radius, half-open physical-time interval, excitatory and inhibitory drive, bounded noise amplitude, flags, interrupt class, conduction latency, receptor identity, magnitude, and auxiliary metadata. The schedule is neural input after receptor transduction; it is not raw or privileged NumanX state. Before every attempted tissue substep, a Metal kernel compacts the due schedule indices into a private GPU buffer. A device barrier publishes that list before the tissue kernel, so each site scans only the active set. The CPU oracle constructs the same canonical active-index list. Future records may remain in the immutable schedule without entering tissue computation before their timestamps.
 
-After each physical acceptance, `transduce_receptor_interrupts` derives each due onset timestamp as start time plus conduction latency, merges accepted event records, canonically sorts the result, and leaves the compact queue and count in private GPU memory for `schedule_due_modules`. The first scheduler root includes its lower boundary; later roots exclude it to prevent duplicate onset delivery. The resulting fast regional shadow is reduced into a species-neutral protective command for the next candidate. That command is not yet mapped through body topology to muscle excitation or actuator output.
+After each physical acceptance, `transduce_receptor_interrupts` derives each due onset timestamp as start time plus conduction latency, merges accepted event records, canonically sorts the result, and leaves the compact queue and count in private GPU memory for `schedule_due_modules`. The first scheduler root includes its lower boundary; later roots exclude it to prevent duplicate onset delivery. The resulting fast regional shadow is reduced into a species-neutral protective command and mapped through a compiled synthetic muscle profile for the next candidate. A real body catalog, receptor localization, and live actuator consumer remain absent.
 
 The update is a normalized Wilson-Cowan-family system:
 
@@ -186,6 +186,9 @@ Wilson and Cowan introduced coupled excitatory/inhibitory population dynamics in
 57. Each accepted physical substep produces an inspectable scheduler/regional prefix before root finish, while a rejected event leaves that fast shadow exact and final commit publishes the accepted prefix.
 58. A compiled 64-byte protective-command ABI has exact C++, Swift, and Metal size, fingerprint, range, flag, timestamp, generation, and environment validation.
 59. Metal derives the next-candidate command from accepted interrupt invocations and emergency/spinal salience with exact CPU parity; rejected events and root abort alter no committed command history.
+60. A compiled immutable muscle profile rejects duplicate identities, nonfinite or out-of-range gains, unknown flags, and invalid excitation bounds.
+61. A 64-byte motor-output header fingerprints its source command, profile, timestamp, generation, environment, inhibition, arousal, and complete FP32 excitation array.
+62. CPU and Metal use the same explicit fused multiply-add order and produce exact protective excitation and fingerprint parity across accept, reject, abort, and commit.
 
 Passing these gates proves an executable replay-deterministic mesoscale tissue field with keyed stochastic input. It does not prove the complete NumiBrain architecture or biological realism.
 
@@ -195,7 +198,7 @@ The Metal implementation compiles `NeuralTissue.metal` as Metal language version
 
 Three private state generations preserve transactionality: committed, root shadow, and candidate/scratch. Private immutable buffers hold tissue structure, per-site delay classes, CSR destination offsets, packed `uint4` projection edges, and packed receptor events. A bounded `compact_receptor_events` dispatch writes one count and the due canonical event indices into a 260-byte private buffer. After an explicit device barrier, each Metal tissue thread gathers only the incoming edges for its destination site, samples edge-specific history by physical microseconds, and scans only those compacted event indices. Relay history uses two private 32-slot FP32 planes plus two matching UInt64 timestamp planes. A 32-bit owner mask selects the authoritative value and timestamp plane independently for each logical slot; an accepted candidate writes the opposite plane, while a rejected candidate writes a separate private relay scratch buffer and no timestamp. Commit publishes the shadow owner mask, accepted timestamps, and step together with state generation ownership. Abort discards those host-side generations and leaves every committed history slot authoritative. The host validates maximum-delay coverage before dispatch; the shader performs deterministic lower/upper timestamp selection and linear interpolation without a history readback.
 
-After each accepted physical token, a separate encoder dispatches `transduce_receptor_interrupts`, barriers its canonical private event queue, then dispatches `schedule_due_modules` over the complete accepted root prefix. The scheduler validates a private immutable parameter-version binding, reads private immutable module descriptors and the untouched committed clock generation, then writes the other clock generation plus a private due-invocation list. Prefix recomputation is the bounded correctness implementation for v0.18; rejected candidates launch no prefix work. Root commit publishes tissue, relay, final scheduler, and protective-command ownership together. Abort publishes none of their neural effects. Scheduler, regional, or command inspection is an explicit post-completion staging operation and is not part of the normal control path.
+After each accepted physical token, a separate encoder dispatches `transduce_receptor_interrupts`, barriers its canonical private event queue, then dispatches `schedule_due_modules` over the complete accepted root prefix. The scheduler validates a private immutable parameter-version binding, reads private immutable module descriptors and the untouched committed clock generation, then writes the other clock generation plus a private due-invocation list. Prefix recomputation is the bounded correctness implementation for v0.19; rejected candidates launch no prefix work. Root commit publishes tissue, relay, final scheduler, protective-command, and protective-muscle ownership together. Abort publishes none of their neural effects. Scheduler, regional, command, or motor-output inspection is an explicit post-completion staging operation and is not part of the normal control path.
 
 After another device barrier, `advance_due_regional_tokens` consumes the private result and due list with one 256-lane threadgroup. Lanes stride across 10,752 FP32 region-major token scalars and resolve delayed messages from per-route timestamp rings. At each due timestamp, one lane per receiver scores its causal candidate messages, compacts every emergency route plus the configured normal top-k, preserves active routes inside a 2 ms minimum interval, and normalizes selected strengths. Scalar lanes gather only those compacted indices before publishing the timestamp synchronously. The kernel writes the other private token, diagnostic, route-history, and per-agent routing-state generations. Regional ownership is published with scheduler clock and tissue generations. The factorized parameter and score fixtures have learned-model form but are not trained production models; learned/context-conditioned routing and its differentiable training form remain absent.
 
@@ -203,10 +206,14 @@ One final device barrier exposes the completed regional diagnostics to
 `derive_protective_command`. The kernel unions interrupt masks from the private
 due list, reduces interrupt salience across emergency and spinal clock classes,
 and writes bounded stop, withdrawal, brace, and autonomic drives to one of two
-private 64-byte command buffers. A shared 16-byte uniform binds the shadow brain
-generation and environment. The following candidate receives only the GPU
-buffer view and identity metadata; staging readback exists for tests and
-inspection. This is a protective adapter input, not final muscle control.
+private 64-byte command buffers. A shared 32-byte uniform binds the shadow brain
+generation, environment, profile, and counts. The following candidate receives
+the command GPU view and identity metadata; staging readback exists for tests.
+A second barrier exposes the command to `map_protective_motor_output`, which
+applies an immutable compiled muscle profile and writes a fingerprinted 64-byte
+header plus one FP32 excitation per channel. Both runtimes use the same explicit
+fused multiply-add order. The six-channel profile is synthetic, and the result
+is a protective residual rather than complete voluntary muscle control.
 
 The history allocation is
 

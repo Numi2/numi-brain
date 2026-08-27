@@ -5,8 +5,11 @@ import NumiBrainCore
 
 private struct ProtectiveCommandUniforms {
   var brainGeneration: UInt64 = 0
+  var motorProfileFingerprint: UInt64 = 0
   var moduleCount: UInt32 = 0
+  var muscleCount: UInt32 = 0
   var environmentIdentifier: UInt32 = 0
+  var reserved: UInt32 = 0
 }
 
 @available(macOS 26.0, *)
@@ -20,6 +23,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let schedulerDispatches: Int
     public let regionalDispatches: Int
     public let protectiveDispatches: Int
+    public let protectiveMotorDispatches: Int
     public let schedulerHostInputEventCount: Int
     public let schedulerReceptorInputEventCount: Int
     public let schedulerInputEventCount: Int
@@ -34,6 +38,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public struct FastSystemResult: Equatable, Sendable {
     public let substep: BrainJointSubstepToken
     public let protectiveCommand: ProtectiveCommandBufferView
+    public let protectiveMotorOutput: ProtectiveMotorOutputBufferView
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -47,6 +52,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let byteCount: Int
     public let timestamp: BrainTimestamp
     public let brainGeneration: UInt64
+  }
+
+  public struct ProtectiveMotorOutputBufferView: Equatable, Sendable {
+    public let headerGPUAddress: UInt64
+    public let muscleExcitationGPUAddress: UInt64
+    public let headerByteCount: Int
+    public let muscleExcitationByteCount: Int
+    public let muscleCount: Int
+    public let timestamp: BrainTimestamp
+    public let brainGeneration: UInt64
+    public let profileFingerprint: UInt64
   }
 
   public struct SchedulerInspection: Equatable, Sendable {
@@ -90,12 +106,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let schedulerPipeline: any MTLComputePipelineState
   private let regionalPipeline: any MTLComputePipelineState
   private let protectivePipeline: any MTLComputePipelineState
+  private let protectiveMotorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let eventArgumentTable: any MTL4ArgumentTable
   private let receptorInterruptArgumentTable: any MTL4ArgumentTable
   private let schedulerArgumentTable: any MTL4ArgumentTable
   private let regionalArgumentTable: any MTL4ArgumentTable
   private let protectiveArgumentTable: any MTL4ArgumentTable
+  private let protectiveMotorArgumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let structureBuffer: any MTLBuffer
@@ -134,6 +152,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let regionalSelectedRouteCountBuffer: any MTLBuffer
   private let protectiveCommandUniformBuffer: any MTLBuffer
   private let protectiveCommandBuffers: [any MTLBuffer]
+  private let protectiveMotorProfileBuffer: any MTLBuffer
+  private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
+  private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
   private let relayByteCount: Int
@@ -162,6 +183,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let regionalSelectedRouteCountByteCount: Int
   public let protectiveCommandByteCount = ProtectiveMotorCommand.byteCount
   public let protectiveCommandUniformByteCount = MemoryLayout<ProtectiveCommandUniforms>.stride
+  public let protectiveMotorProfile: ProtectiveMotorProfile
+  public let protectiveMotorProfileByteCount: Int
+  public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
+  public let protectiveMuscleExcitationByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -220,6 +245,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     parameterVersion requestedParameterVersion: BrainParameterVersion? = nil,
     initialRegionalTokenValues requestedInitialRegionalTokenValues: [Float]? = nil,
     initialRegionalRoutingState requestedInitialRegionalRoutingState: RegionalRoutingState? = nil,
+    protectiveMotorProfile requestedProtectiveMotorProfile: ProtectiveMotorProfile? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -326,6 +352,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     } catch {
       throw TissueError.metal("initial regional routing state is invalid: \(error)")
     }
+    let protectiveMotorProfile =
+      try requestedProtectiveMotorProfile
+      ?? ProtectiveMotorProfile.runtimeFoundationFixture()
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
     }
@@ -429,12 +458,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let protectiveFunction = library.makeFunction(name: "derive_protective_command") else {
       throw TissueError.metal("derive_protective_command is missing from the Metal library")
     }
+    guard
+      let protectiveMotorFunction = library.makeFunction(name: "map_protective_motor_output")
+    else {
+      throw TissueError.metal("map_protective_motor_output is missing from the Metal library")
+    }
     let tissuePipeline: any MTLComputePipelineState
     let eventCompactionPipeline: any MTLComputePipelineState
     let receptorInterruptTransductionPipeline: any MTLComputePipelineState
     let schedulerPipeline: any MTLComputePipelineState
     let regionalPipeline: any MTLComputePipelineState
     let protectivePipeline: any MTLComputePipelineState
+    let protectiveMotorPipeline: any MTLComputePipelineState
     do {
       tissuePipeline = try device.makeComputePipelineState(function: tissueFunction)
       eventCompactionPipeline = try device.makeComputePipelineState(
@@ -446,6 +481,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       schedulerPipeline = try device.makeComputePipelineState(function: schedulerFunction)
       regionalPipeline = try device.makeComputePipelineState(function: regionalFunction)
       protectivePipeline = try device.makeComputePipelineState(function: protectiveFunction)
+      protectiveMotorPipeline = try device.makeComputePipelineState(
+        function: protectiveMotorFunction
+      )
     } catch {
       throw TissueError.metal(
         "tissue, event/transduction, scheduler, or regional pipeline creation failed: \(error)"
@@ -513,6 +551,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     else {
       throw TissueError.metal("failed to create the protective-command argument table")
+    }
+    let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 5
+    protectiveMotorArgumentDescriptor.initializeBindings = true
+    guard
+      let protectiveMotorArgumentTable = try? device.makeArgumentTable(
+        descriptor: protectiveMotorArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the protective-motor argument table")
     }
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
@@ -637,7 +686,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         == Int(NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT),
       MemoryLayout<NBParameterComponent>.stride == Int(NB_PARAMETER_COMPONENT_BYTE_COUNT),
       MemoryLayout<NBParameterVersionBinding>.stride
-        == Int(NB_PARAMETER_VERSION_BINDING_BYTE_COUNT)
+        == Int(NB_PARAMETER_VERSION_BINDING_BYTE_COUNT),
+      MemoryLayout<NBMotorChannelDescriptor>.stride
+        == Int(NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT),
+      MemoryLayout<NBMotorOutputHeader>.stride == Int(NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT)
     else {
       throw TissueError.metal("Swift imported scheduler ABI does not match NumiBrainABI")
     }
@@ -685,6 +737,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       regionalTokenProgram.routes.count * MemoryLayout<UInt32>.stride
     let regionalSelectedRouteCountByteCount =
       regionalTokenProgram.layouts.count * MemoryLayout<UInt32>.stride
+    let (protectiveMotorProfileByteCount, protectiveProfileByteOverflow) =
+      protectiveMotorProfile.channels.count.multipliedReportingOverflow(
+        by: MemoryLayout<NBMotorChannelDescriptor>.stride
+      )
+    let (protectiveMuscleExcitationByteCount, protectiveExcitationByteOverflow) =
+      protectiveMotorProfile.channels.count.multipliedReportingOverflow(
+        by: MemoryLayout<Float>.stride
+      )
+    guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow else {
+      throw TissueError.metal("protective motor profile byte count overflows Int")
+    }
     guard
       let schedulerDescriptorBuffer = device.makeBuffer(
         length: schedulerDescriptorByteCount,
@@ -833,6 +896,26 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       let secondProtectiveCommandBuffer = device.makeBuffer(
         length: ProtectiveMotorCommand.byteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let protectiveMotorProfileBuffer = device.makeBuffer(
+        length: protectiveMotorProfileByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let firstProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
+        length: ProtectiveMotorOutput.headerByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
+        length: ProtectiveMotorOutput.headerByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let firstProtectiveMuscleExcitationBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondProtectiveMuscleExcitationBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate scheduler ABI buffers")
@@ -868,6 +951,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectiveCommandBuffers: [any MTLBuffer] = [
       firstProtectiveCommandBuffer,
       secondProtectiveCommandBuffer,
+    ]
+    let protectiveMotorOutputHeaderBuffers: [any MTLBuffer] = [
+      firstProtectiveMotorOutputHeaderBuffer,
+      secondProtectiveMotorOutputHeaderBuffer,
+    ]
+    let protectiveMuscleExcitationBuffers: [any MTLBuffer] = [
+      firstProtectiveMuscleExcitationBuffer,
+      secondProtectiveMuscleExcitationBuffer,
     ]
     schedulerDescriptorBuffer.label = "NumiBrain immutable module descriptors"
     firstSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 0"
@@ -911,6 +1002,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveCommandUniformBuffer.label = "NumiBrain protective-command uniforms"
     firstProtectiveCommandBuffer.label = "NumiBrain protective command generation 0"
     secondProtectiveCommandBuffer.label = "NumiBrain protective command generation 1"
+    protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
+    firstProtectiveMotorOutputHeaderBuffer.label =
+      "NumiBrain protective motor header generation 0"
+    secondProtectiveMotorOutputHeaderBuffer.label =
+      "NumiBrain protective motor header generation 1"
+    firstProtectiveMuscleExcitationBuffer.label =
+      "NumiBrain protective muscle excitation generation 0"
+    secondProtectiveMuscleExcitationBuffer.label =
+      "NumiBrain protective muscle excitation generation 1"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -948,7 +1048,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
               schedulerClockByteCount,
               max(
                 max(projectionOffsetByteCount, projectionEdgeByteCount),
-                regionalUploadByteCount
+                max(
+                  regionalUploadByteCount,
+                  max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount)
+                )
               )
             )
           )
@@ -962,7 +1065,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 45
+    residencyDescriptor.initialCapacity = stateBuffers.count + 50
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -1024,6 +1127,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for buffer in protectiveCommandBuffers {
       residencySet.addAllocation(buffer)
     }
+    residencySet.addAllocation(protectiveMotorProfileBuffer)
+    for buffer in protectiveMotorOutputHeaderBuffers {
+      residencySet.addAllocation(buffer)
+    }
+    for buffer in protectiveMuscleExcitationBuffers {
+      residencySet.addAllocation(buffer)
+    }
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
@@ -1043,6 +1153,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.brainSchedule = brainSchedule
     self.regionalTokenProgram = regionalTokenProgram
     self.parameterVersion = parameterVersion
+    self.protectiveMotorProfile = protectiveMotorProfile
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
     self.maxEncodedSubsteps = maxEncodedSubsteps
@@ -1057,12 +1168,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.schedulerPipeline = schedulerPipeline
     self.regionalPipeline = regionalPipeline
     self.protectivePipeline = protectivePipeline
+    self.protectiveMotorPipeline = protectiveMotorPipeline
     self.argumentTable = argumentTable
     self.eventArgumentTable = eventArgumentTable
     self.receptorInterruptArgumentTable = receptorInterruptArgumentTable
     self.schedulerArgumentTable = schedulerArgumentTable
     self.regionalArgumentTable = regionalArgumentTable
     self.protectiveArgumentTable = protectiveArgumentTable
+    self.protectiveMotorArgumentTable = protectiveMotorArgumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.structureBuffer = structureBuffer
@@ -1101,6 +1214,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalSelectedRouteCountBuffer = regionalSelectedRouteCountBuffer
     self.protectiveCommandUniformBuffer = protectiveCommandUniformBuffer
     self.protectiveCommandBuffers = protectiveCommandBuffers
+    self.protectiveMotorProfileBuffer = protectiveMotorProfileBuffer
+    self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
+    self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
@@ -1129,6 +1245,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalRouteRuntimeStateByteCount = regionalRouteRuntimeStateByteCount
     self.regionalSelectedRouteIndexByteCount = regionalSelectedRouteIndexByteCount
     self.regionalSelectedRouteCountByteCount = regionalSelectedRouteCountByteCount
+    self.protectiveMotorProfileByteCount = protectiveMotorProfileByteCount
+    self.protectiveMuscleExcitationByteCount = protectiveMuscleExcitationByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -1429,6 +1547,55 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         label: "NumiBrain protective command generation \(index) upload"
       )
     }
+    let protectiveMotorProfileRecords = protectiveMotorProfile.abiRecords
+    protectiveMotorProfileRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: protectiveMotorProfileByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: protectiveMotorProfileBuffer,
+      size: protectiveMotorProfileByteCount,
+      label: "NumiBrain protective motor-profile upload"
+    )
+    let initialProtectiveMotorOutput = try ProtectiveMotorOutput.reference(
+      command: initialProtectiveCommand,
+      profile: protectiveMotorProfile
+    )
+    var initialProtectiveMotorHeader = initialProtectiveMotorOutput.abiHeader
+    withUnsafeBytes(of: &initialProtectiveMotorHeader) { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: ProtectiveMotorOutput.headerByteCount
+      )
+    }
+    for (index, buffer) in protectiveMotorOutputHeaderBuffers.enumerated() {
+      try copy(
+        source: stagingBuffer,
+        destination: buffer,
+        size: ProtectiveMotorOutput.headerByteCount,
+        label: "NumiBrain protective motor header generation \(index) upload"
+      )
+    }
+    initialProtectiveMotorOutput.muscleExcitations.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: protectiveMuscleExcitationByteCount
+      )
+    }
+    for (index, buffer) in protectiveMuscleExcitationBuffers.enumerated() {
+      try copy(
+        source: stagingBuffer,
+        destination: buffer,
+        size: protectiveMuscleExcitationByteCount,
+        label: "NumiBrain protective muscle excitation generation \(index) upload"
+      )
+    }
   }
 
   deinit {
@@ -1671,6 +1838,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         timestamp: protectiveTimestamp,
         brainGeneration: protectiveGeneration
       ),
+      protectiveMotorOutput: ProtectiveMotorOutputBufferView(
+        headerGPUAddress: protectiveMotorOutputHeaderBuffers[protectiveStateIndex].gpuAddress,
+        muscleExcitationGPUAddress:
+          protectiveMuscleExcitationBuffers[protectiveStateIndex].gpuAddress,
+        headerByteCount: ProtectiveMotorOutput.headerByteCount,
+        muscleExcitationByteCount: protectiveMuscleExcitationByteCount,
+        muscleCount: protectiveMotorProfile.channels.count,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveGeneration,
+        profileFingerprint: protectiveMotorProfile.fingerprint
+      ),
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )
@@ -1841,6 +2019,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       schedulerDispatches: Int(transaction.acceptedSubstepCount) + finalizationDispatches,
       regionalDispatches: Int(transaction.acceptedSubstepCount) + finalizationDispatches,
       protectiveDispatches: Int(transaction.acceptedSubstepCount) + finalizationDispatches,
+      protectiveMotorDispatches: Int(transaction.acceptedSubstepCount)
+        + finalizationDispatches,
       schedulerHostInputEventCount: schedulerWindow.hostEventCount,
       schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
       schedulerInputEventCount: schedulerWindow.eventCount,
@@ -2179,6 +2359,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       schedulerDispatches: 1,
       regionalDispatches: 1,
       protectiveDispatches: 1,
+      protectiveMotorDispatches: 1,
       schedulerHostInputEventCount: schedulerWindow.hostEventCount,
       schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
       schedulerInputEventCount: schedulerWindow.eventCount,
@@ -2538,6 +2719,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
   }
 
+  public func snapshotCommittedProtectiveMotorOutput() throws -> ProtectiveMotorOutput {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading protective motor output")
+    }
+    return try snapshotProtectiveMotorOutput(
+      stateIndex: committedRegionalStateIndex,
+      timestamp: committedSchedulerTime ?? BrainTimestamp(microseconds: 0),
+      generation: committedSchedulerGeneration,
+      label: "NumiBrain committed protective-motor inspection"
+    )
+  }
+
+  /// Explicit inspection readback for tests and diagnostics. The normal
+  /// physics bridge consumes the paired GPU addresses in `FastSystemResult`.
+  public func snapshotInteractiveProtectiveMotorOutput() throws -> ProtectiveMotorOutput {
+    guard let root = interactiveJointRoot, root.candidate == nil,
+      let window = root.fastSchedulerWindow
+    else {
+      throw TissueError.transaction("there is no accepted protective motor output to inspect")
+    }
+    return try snapshotProtectiveMotorOutput(
+      stateIndex: window.outputClockIndex,
+      timestamp: root.acceptedTimestamp,
+      generation: root.transaction.token.shadowGeneration,
+      label: "NumiBrain interactive protective-motor inspection"
+    )
+  }
+
   private func snapshotProtectiveCommand(
     stateIndex: Int,
     timestamp: BrainTimestamp,
@@ -2558,6 +2767,45 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("protective command identity diverged from its state generation")
     }
     return command
+  }
+
+  private func snapshotProtectiveMotorOutput(
+    stateIndex: Int,
+    timestamp: BrainTimestamp,
+    generation: UInt64,
+    label: String
+  ) throws -> ProtectiveMotorOutput {
+    try copy(
+      source: protectiveMotorOutputHeaderBuffers[stateIndex],
+      destination: stagingBuffer,
+      size: ProtectiveMotorOutput.headerByteCount,
+      label: "\(label) header"
+    )
+    let header = stagingBuffer.contents().load(as: NBMotorOutputHeader.self)
+    try copy(
+      source: protectiveMuscleExcitationBuffers[stateIndex],
+      destination: stagingBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "\(label) excitations"
+    )
+    let pointer = stagingBuffer.contents().bindMemory(
+      to: Float.self,
+      capacity: protectiveMotorProfile.channels.count
+    )
+    let excitations = Array(
+      UnsafeBufferPointer(start: pointer, count: protectiveMotorProfile.channels.count)
+    )
+    let output = try ProtectiveMotorOutput(
+      validating: header,
+      muscleExcitations: excitations,
+      expectedProfile: protectiveMotorProfile
+    )
+    guard output.timestamp == timestamp, output.brainGeneration == generation,
+      output.environmentIdentifier == schedulerEnvironmentIdentifier
+    else {
+      throw TissueError.metal("protective motor output identity diverged from its state generation")
+    }
+    return output
   }
 
   private func snapshotRegionalState(
@@ -2904,6 +3152,31 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 0
+    )
+    protectiveMotorArgumentTable.setAddress(protectiveMotorProfileBuffer.gpuAddress, index: 1)
+    protectiveMotorArgumentTable.setAddress(protectiveCommandUniformBuffer.gpuAddress, index: 2)
+    protectiveMotorArgumentTable.setAddress(
+      protectiveMotorOutputHeaderBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 3
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveMuscleExcitationBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 4
+    )
+    encoder.setComputePipelineState(protectiveMotorPipeline)
+    encoder.setArgumentTable(protectiveMotorArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
   }
 
   private struct PreparedSchedulerWindow {
@@ -3033,8 +3306,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     var protectiveUniforms = ProtectiveCommandUniforms(
       brainGeneration: protectiveGeneration,
+      motorProfileFingerprint: protectiveMotorProfile.fingerprint,
       moduleCount: UInt32(brainSchedule.modules.count),
-      environmentIdentifier: schedulerEnvironmentIdentifier
+      muscleCount: UInt32(protectiveMotorProfile.channels.count),
+      environmentIdentifier: schedulerEnvironmentIdentifier,
+      reserved: 0
     )
     withUnsafeBytes(of: &protectiveUniforms) { bytes in
       guard let source = bytes.baseAddress else { return }

@@ -112,6 +112,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let runtime = try makeRuntime(maxEncodedSubsteps: 1)
     let before = try runtime.snapshotCommitted().stableHash()
     let beforeProtective = try runtime.snapshotCommittedProtectiveCommand()
+    let beforeProtectiveMotor = try runtime.snapshotCommittedProtectiveMotorOutput()
     var joint = try runtime.beginJointControl(
       controlStepIdentifier: 4,
       basePhysicsGeneration: 100,
@@ -163,9 +164,11 @@ final class MetalJointTransactionTests: XCTestCase {
       receptorEvents: [acceptedPain]
     )
     let shadowProtective = try runtime.snapshotInteractiveProtectiveCommand()
+    let shadowProtectiveMotor = try runtime.snapshotInteractiveProtectiveMotorOutput()
     XCTAssertTrue(shadowProtective.flags.contains(.emergencyStop))
     XCTAssertTrue(shadowProtective.flags.contains(.withdrawal))
     XCTAssertNotEqual(shadowProtective, beforeProtective)
+    XCTAssertNotEqual(shadowProtectiveMotor, beforeProtectiveMotor)
     try runtime.abortInteractiveJointControl()
 
     XCTAssertFalse(runtime.hasOpenInteractiveJointControl)
@@ -174,6 +177,10 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertNil(runtime.schedulerCommittedTimestamp)
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
     XCTAssertEqual(try runtime.snapshotCommittedProtectiveCommand(), beforeProtective)
+    XCTAssertEqual(
+      try runtime.snapshotCommittedProtectiveMotorOutput(),
+      beforeProtectiveMotor
+    )
 
     _ = try runtime.beginInteractiveJointControl(
       controlStepIdentifier: 6,
@@ -385,6 +392,17 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(firstCandidate.protectiveCommand.timestamp, BrainTimestamp(microseconds: 0))
     XCTAssertEqual(firstCandidate.protectiveCommand.brainGeneration, 0)
     XCTAssertNotEqual(firstCandidate.protectiveCommand.gpuAddress, 0)
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.timestamp, BrainTimestamp(microseconds: 0))
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.brainGeneration, 0)
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.muscleCount, 6)
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.headerByteCount, 64)
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.muscleExcitationByteCount, 24)
+    XCTAssertEqual(
+      firstCandidate.protectiveMotorOutput.profileFingerprint,
+      runtime.protectiveMotorProfile.fingerprint
+    )
+    XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.headerGPUAddress, 0)
+    XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress, 0)
     let firstPhysics = try AcceptedPhysicsStateToken(
       transaction: token,
       substep: firstCandidate.substep,
@@ -400,6 +418,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let firstFastScheduler = try runtime.inspectInteractiveFastScheduler()
     let firstFastRegional = try runtime.snapshotInteractiveFastRegionalState()
     let firstProtective = try runtime.snapshotInteractiveProtectiveCommand()
+    let firstProtectiveMotor = try runtime.snapshotInteractiveProtectiveMotorOutput()
     XCTAssertEqual(
       firstFastScheduler.snapshot.committedTime,
       BrainTimestamp(microseconds: 1_000)
@@ -438,6 +457,13 @@ final class MetalJointTransactionTests: XCTestCase {
         regionalStates: firstFastRegional.states
       )
     )
+    XCTAssertEqual(
+      firstProtectiveMotor,
+      try ProtectiveMotorOutput.reference(
+        command: firstProtective,
+        profile: runtime.protectiveMotorProfile
+      )
+    )
 
     let rejectedPain = try BrainInterruptEvent(
       timestamp: BrainTimestamp(microseconds: 1_500),
@@ -457,6 +483,22 @@ final class MetalJointTransactionTests: XCTestCase {
       rejectedCandidate.protectiveCommand.gpuAddress,
       firstCandidate.protectiveCommand.gpuAddress
     )
+    XCTAssertEqual(
+      rejectedCandidate.protectiveMotorOutput.timestamp,
+      BrainTimestamp(microseconds: 1_000)
+    )
+    XCTAssertEqual(
+      rejectedCandidate.protectiveMotorOutput.brainGeneration,
+      token.shadowGeneration
+    )
+    XCTAssertNotEqual(
+      rejectedCandidate.protectiveMotorOutput.headerGPUAddress,
+      firstCandidate.protectiveMotorOutput.headerGPUAddress
+    )
+    XCTAssertNotEqual(
+      rejectedCandidate.protectiveMotorOutput.muscleExcitationGPUAddress,
+      firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress
+    )
     try runtime.rejectPhysicsSubstep(
       rejectedCandidate.substep,
       receptorEvents: [rejectedPain]
@@ -467,6 +509,10 @@ final class MetalJointTransactionTests: XCTestCase {
       firstFastRegional
     )
     XCTAssertEqual(try runtime.snapshotInteractiveProtectiveCommand(), firstProtective)
+    XCTAssertEqual(
+      try runtime.snapshotInteractiveProtectiveMotorOutput(),
+      firstProtectiveMotor
+    )
 
     let retryCandidate = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_000)
     let secondPhysics = try AcceptedPhysicsStateToken(
@@ -479,6 +525,7 @@ final class MetalJointTransactionTests: XCTestCase {
     let finalFastScheduler = try runtime.inspectInteractiveFastScheduler()
     let finalFastRegional = try runtime.snapshotInteractiveFastRegionalState()
     let finalProtective = try runtime.snapshotInteractiveProtectiveCommand()
+    let finalProtectiveMotor = try runtime.snapshotInteractiveProtectiveMotorOutput()
     XCTAssertEqual(
       finalFastScheduler.snapshot.committedTime,
       BrainTimestamp(microseconds: 2_000)
@@ -503,15 +550,27 @@ final class MetalJointTransactionTests: XCTestCase {
         regionalStates: finalFastRegional.states
       )
     )
+    XCTAssertEqual(
+      finalProtectiveMotor,
+      try ProtectiveMotorOutput.reference(
+        command: finalProtective,
+        profile: runtime.protectiveMotorProfile
+      )
+    )
 
     let submission = try runtime.finishInteractiveJointControl()
     XCTAssertEqual(submission.schedulerDispatches, 2)
     XCTAssertEqual(submission.regionalDispatches, 2)
     XCTAssertEqual(submission.protectiveDispatches, 2)
+    XCTAssertEqual(submission.protectiveMotorDispatches, 2)
     _ = try runtime.commitJointRootTransaction()
     XCTAssertEqual(try runtime.inspectCommittedScheduler(), finalFastScheduler)
     XCTAssertEqual(try runtime.snapshotCommittedRegionalState(), finalFastRegional)
     XCTAssertEqual(try runtime.snapshotCommittedProtectiveCommand(), finalProtective)
+    XCTAssertEqual(
+      try runtime.snapshotCommittedProtectiveMotorOutput(),
+      finalProtectiveMotor
+    )
   }
 
   func testJointMetalBindingAcceptsCorrectedDurationAndRejectsStaleGeneration() throws {

@@ -393,8 +393,11 @@ struct NBRegionalModuleStateABI {
 
 struct NBProtectiveCommandUniformsABI {
     ulong brain_generation;
+    ulong motor_profile_fingerprint;
     uint module_count;
+    uint muscle_count;
     uint environment_identifier;
+    uint reserved;
 };
 
 struct NBProtectiveCommandABI {
@@ -410,6 +413,31 @@ struct NBProtectiveCommandABI {
     uint environment_identifier;
     uint reserved;
     ulong command_fingerprint;
+};
+
+struct NBMotorChannelDescriptorABI {
+    uint muscle_id;
+    uint flags;
+    float resting_excitation;
+    float withdrawal_gain;
+    float brace_gain;
+    float maximum_excitation;
+    uint reserved0;
+    uint reserved1;
+};
+
+struct NBMotorOutputHeaderABI {
+    uint format_version;
+    uint flags;
+    ulong timestamp_microseconds;
+    ulong brain_generation;
+    ulong profile_fingerprint;
+    ulong protective_command_fingerprint;
+    uint muscle_count;
+    uint environment_identifier;
+    float motor_inhibition;
+    float autonomic_arousal;
+    ulong output_fingerprint;
 };
 
 struct NBRegionalTokenLayoutABI {
@@ -503,8 +531,10 @@ static_assert(sizeof(NBDispatchTokenUniformsABI) == 32, "token uniform ABI drift
 static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
-static_assert(sizeof(NBProtectiveCommandUniformsABI) == 16, "protective uniforms drift");
+static_assert(sizeof(NBProtectiveCommandUniformsABI) == 32, "protective uniforms drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
+static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
+static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
@@ -537,6 +567,9 @@ constant uint NBProtectiveCommandFlagEmergencyStop = 1u << 1;
 constant uint NBProtectiveCommandFlagWithdrawal = 1u << 2;
 constant uint NBProtectiveCommandFlagPosturalBrace = 1u << 3;
 constant uint NBProtectiveCommandFlagAutonomicArousal = 1u << 4;
+constant uint NBMotorOutputVersion = 1u;
+constant uint NBMotorOutputFlagValid = 1u << 0;
+constant uint NBMotorOutputFlagEmergencyStop = 1u << 1;
 constant ulong NBInterruptPain = 1ul << 0;
 constant ulong NBInterruptDamagingContact = 1ul << 1;
 constant ulong NBInterruptLossOfSupport = 1ul << 2;
@@ -583,6 +616,28 @@ inline ulong protective_command_fingerprint(
     protective_mix_float(hash, command.autonomic_arousal);
     protective_mix_uint(hash, command.environment_identifier);
     protective_mix_uint(hash, command.reserved);
+    return hash;
+}
+
+inline ulong motor_output_fingerprint(
+    thread const NBMotorOutputHeaderABI &header,
+    device const float *muscleExcitations
+) {
+    ulong hash = 0xcbf29ce484222325ul;
+    protective_mix_uint(hash, NBMotorOutputVersion);
+    protective_mix_uint(hash, header.format_version);
+    protective_mix_uint(hash, header.flags);
+    protective_mix_ulong(hash, header.timestamp_microseconds);
+    protective_mix_ulong(hash, header.brain_generation);
+    protective_mix_ulong(hash, header.profile_fingerprint);
+    protective_mix_ulong(hash, header.protective_command_fingerprint);
+    protective_mix_uint(hash, header.muscle_count);
+    protective_mix_uint(hash, header.environment_identifier);
+    protective_mix_float(hash, header.motor_inhibition);
+    protective_mix_float(hash, header.autonomic_arousal);
+    for (uint index = 0u; index < header.muscle_count; ++index) {
+        protective_mix_float(hash, muscleExcitations[index]);
+    }
     return hash;
 }
 
@@ -2622,6 +2677,54 @@ kernel void derive_protective_command(
     command.reserved = 0u;
     command.command_fingerprint = protective_command_fingerprint(command);
     output[0] = command;
+}
+
+/// Maps the accepted species-neutral command through one immutable body
+/// profile. This first bounded kernel is serial so the output fingerprint is
+/// independent of reduction order; production profiles will use a parallel
+/// excitation pass followed by a canonical hash pass.
+kernel void map_protective_motor_output(
+    device const NBProtectiveCommandABI *commandBuffer [[buffer(0)]],
+    device const NBMotorChannelDescriptorABI *channels [[buffer(1)]],
+    constant NBProtectiveCommandUniformsABI *uniforms [[buffer(2)]],
+    device NBMotorOutputHeaderABI *outputHeader [[buffer(3)]],
+    device float *muscleExcitations [[buffer(4)]],
+    uint threadIndex [[thread_position_in_grid]]
+) {
+    if (threadIndex != 0u) {
+        return;
+    }
+    const NBProtectiveCommandABI command = commandBuffer[0];
+    for (uint index = 0u; index < uniforms->muscle_count; ++index) {
+        const NBMotorChannelDescriptorABI channel = channels[index];
+        const float withdrawalExcitation = fma(
+            command.withdrawal_drive,
+            channel.withdrawal_gain,
+            channel.resting_excitation
+        );
+        const float excitation = fma(
+            command.postural_stiffness,
+            channel.brace_gain,
+            withdrawalExcitation
+        );
+        muscleExcitations[index] = clamp(excitation, 0.0f, channel.maximum_excitation);
+    }
+    NBMotorOutputHeaderABI header;
+    header.format_version = NBMotorOutputVersion;
+    header.flags = NBMotorOutputFlagValid;
+    if ((command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u) {
+        header.flags |= NBMotorOutputFlagEmergencyStop;
+    }
+    header.timestamp_microseconds = command.timestamp_microseconds;
+    header.brain_generation = command.brain_generation;
+    header.profile_fingerprint = uniforms->motor_profile_fingerprint;
+    header.protective_command_fingerprint = command.command_fingerprint;
+    header.muscle_count = uniforms->muscle_count;
+    header.environment_identifier = command.environment_identifier;
+    header.motor_inhibition = command.motor_inhibition;
+    header.autonomic_arousal = command.autonomic_arousal;
+    header.output_fingerprint = motor_output_fingerprint(header, muscleExcitations);
+    outputHeader[0] = header;
 }
 
 kernel void neural_tissue_step(

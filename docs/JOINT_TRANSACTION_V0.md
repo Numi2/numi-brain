@@ -1,4 +1,4 @@
-# NumanX joint transaction contract v0.7
+# NumanX joint transaction contract v0.8
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
@@ -121,7 +121,7 @@ unchanged and the retry recomputes tissue from the previous accepted state.
 Neither path publishes committed state.
 
 Each accepted prefix includes all accepted substep events from the root start,
-so bounded v0.7 execution recomputes a canonical prefix rather than mutating
+so bounded v0.8 execution recomputes a canonical prefix rather than mutating
 the committed generation incrementally. After the final accepted physical
 token reaches the target, `finishInteractiveJointControl` binds that fast
 shadow and the accepted tissue shadow to the joint-only commit guard. A final
@@ -144,6 +144,18 @@ The command is deliberately species neutral. A body adapter must translate its
 drives into muscle excitation, autonomic input, or a robot actuator contract.
 The command does not write NumanX state directly.
 
+The first compiled adapter now maps that command through an immutable ordered
+muscle profile. Each 32-byte channel supplies a stable muscle identifier,
+resting excitation, withdrawal and brace gains, and a maximum. Metal writes a
+fingerprinted 64-byte header plus a private FP32 protective-excitation array
+paired with the command generation. The following candidate receives GPU
+addresses and identity metadata for both buffers. Rejection, abort, and commit
+apply to command and excitation generations together.
+
+The foundation profile has six synthetic channels and a global rather than
+body-local interrupt. It is an executable ABI fixture, not a real species body
+map or a NumanX muscle catalog.
+
 The reference implementation deliberately synchronizes the host after each
 candidate Metal submission so an external physical solver can return its
 acceptance token. This proves state ownership and retry semantics; it is not a
@@ -165,5 +177,6 @@ before the next candidate; they cannot alter the physical candidate that has
 already been accepted. The timestamped Metal history is bounded to 32 accepted
 samples; a corrected-duration candidate fails before dispatch if accepting it
 would erase the only bracket required by the maximum configured delay. A live
-cross-runtime consumer and the body-specific command-to-muscle mapping remain
-required before this boundary can claim working NumanX coupling.
+cross-runtime consumer, authoritative body catalog, receptor-localized reflex
+map, and composition with voluntary control remain required before this
+boundary can claim working NumanX coupling.

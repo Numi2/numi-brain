@@ -42,9 +42,13 @@ enum {
   NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT = 64,
   NB_JOINT_COMMIT_TOKEN_BYTE_COUNT = 64,
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
+  NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
+  NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 64,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
+  NB_MOTOR_PROFILE_VERSION = 1,
+  NB_MOTOR_OUTPUT_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -57,6 +61,11 @@ enum {
   NB_PROTECTIVE_COMMAND_FLAG_WITHDRAWAL = 1 << 2,
   NB_PROTECTIVE_COMMAND_FLAG_POSTURAL_BRACE = 1 << 3,
   NB_PROTECTIVE_COMMAND_FLAG_AUTONOMIC_AROUSAL = 1 << 4,
+  NB_MOTOR_CHANNEL_FLAG_VALID = 1 << 0,
+  NB_MOTOR_CHANNEL_FLAG_WITHDRAWAL = 1 << 1,
+  NB_MOTOR_CHANNEL_FLAG_POSTURAL_BRACE = 1 << 2,
+  NB_MOTOR_OUTPUT_FLAG_VALID = 1 << 0,
+  NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP = 1 << 1,
 };
 
 typedef struct NBModuleDescriptor {
@@ -415,6 +424,35 @@ typedef struct NBProtectiveCommand {
   uint64_t command_fingerprint;
 } NBProtectiveCommand;
 
+/// One immutable species/body mapping channel. Gains map the species-neutral
+/// protective command into a bounded muscle-excitation residual.
+typedef struct NBMotorChannelDescriptor {
+  uint32_t muscle_id;
+  uint32_t flags;
+  float resting_excitation;
+  float withdrawal_gain;
+  float brace_gain;
+  float maximum_excitation;
+  uint32_t reserved0;
+  uint32_t reserved1;
+} NBMotorChannelDescriptor;
+
+/// Header paired with a contiguous FP32 excitation array. The output remains
+/// neural control input to NumanX; it never authoritatively mutates physics.
+typedef struct NBMotorOutputHeader {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t timestamp_microseconds;
+  uint64_t brain_generation;
+  uint64_t profile_fingerprint;
+  uint64_t protective_command_fingerprint;
+  uint32_t muscle_count;
+  uint32_t environment_identifier;
+  float motor_inhibition;
+  float autonomic_arousal;
+  uint64_t output_fingerprint;
+} NBMotorOutputHeader;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -535,6 +573,30 @@ typedef enum NBProtectiveCommandValidation {
   NB_PROTECTIVE_COMMAND_FINGERPRINT = 8,
 } NBProtectiveCommandValidation;
 
+typedef enum NBMotorProfileValidation {
+  NB_MOTOR_PROFILE_VALID = 0,
+  NB_MOTOR_PROFILE_NULL = 1,
+  NB_MOTOR_PROFILE_COUNT = 2,
+  NB_MOTOR_PROFILE_FLAGS = 3,
+  NB_MOTOR_PROFILE_NONFINITE = 4,
+  NB_MOTOR_PROFILE_RANGE = 5,
+  NB_MOTOR_PROFILE_RELATION = 6,
+  NB_MOTOR_PROFILE_DUPLICATE = 7,
+} NBMotorProfileValidation;
+
+typedef enum NBMotorOutputValidation {
+  NB_MOTOR_OUTPUT_VALID = 0,
+  NB_MOTOR_OUTPUT_NULL = 1,
+  NB_MOTOR_OUTPUT_FORMAT = 2,
+  NB_MOTOR_OUTPUT_FLAGS = 3,
+  NB_MOTOR_OUTPUT_COUNT = 4,
+  NB_MOTOR_OUTPUT_GENERATION = 5,
+  NB_MOTOR_OUTPUT_NONFINITE = 6,
+  NB_MOTOR_OUTPUT_RANGE = 7,
+  NB_MOTOR_OUTPUT_RELATION = 8,
+  NB_MOTOR_OUTPUT_FINGERPRINT = 9,
+} NBMotorOutputValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -566,6 +628,8 @@ size_t nb_brain_abi_joint_substep_token_size(void);
 size_t nb_brain_abi_accepted_physics_state_token_size(void);
 size_t nb_brain_abi_joint_commit_token_size(void);
 size_t nb_brain_abi_protective_command_size(void);
+size_t nb_brain_abi_motor_channel_descriptor_size(void);
+size_t nb_brain_abi_motor_output_header_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -743,6 +807,26 @@ uint64_t nb_brain_abi_protective_command_fingerprint(
 
 uint32_t nb_brain_abi_validate_protective_command(
     const NBProtectiveCommand *command
+);
+
+uint64_t nb_brain_abi_motor_profile_fingerprint(
+    const NBMotorChannelDescriptor *channels,
+    uint32_t channel_count
+);
+
+uint32_t nb_brain_abi_validate_motor_profile(
+    const NBMotorChannelDescriptor *channels,
+    uint32_t channel_count
+);
+
+uint64_t nb_brain_abi_motor_output_fingerprint(
+    const NBMotorOutputHeader *header,
+    const float *muscle_excitations
+);
+
+uint32_t nb_brain_abi_validate_motor_output(
+    const NBMotorOutputHeader *header,
+    const float *muscle_excitations
 );
 
 #ifdef __cplusplus
