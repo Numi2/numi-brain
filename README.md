@@ -2,7 +2,7 @@
 
 NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
 
-> Status: formal architecture specification. The runtime is not implemented or qualified yet.
+> Status: formal architecture plus the first executable mesoscale neural-tissue vertical slice. The complete NumiBrain runtime is not implemented or qualified yet.
 
 The authoritative causal path is:
 
@@ -23,7 +23,27 @@ NumanX owns body, material, contact, muscle, organ, and environment physics. Num
 
 The system is a mesoscale hierarchical recurrent latent-state architecture: dense local computation, sparse long-range routing, event interrupts, explicit memory, multi-timescale plasticity, world-model planning, and structured motor control. Detailed spiking or compartmental neurons are optional local modules, not the default whole-brain representation.
 
-The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). Implementation claims and current readiness are tracked in [STATUS.md](STATUS.md).
+The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). The implemented tissue model and its scientific limits are defined in [TISSUE_MODEL_V0.md](docs/TISSUE_MODEL_V0.md). Implementation claims and current readiness are tracked in [STATUS.md](STATUS.md).
+
+## Run the tissue slice
+
+NumiBrain requires macOS 26, Swift 6.2 or later, and an Apple GPU with Metal 4 for the native path.
+
+```sh
+swift test
+swift run -c release numi-brain-tissue \
+  --backend metal \
+  --width 256 \
+  --height 256 \
+  --duration-ms 40 \
+  --control-ms 20 \
+  --verify-cpu \
+  --verify-replay \
+  --snapshot artifacts/tissue-activity.png \
+  --output artifacts/tissue-evidence.json
+```
+
+The executable also supports `--backend cpu` as a deterministic FP32 oracle. JSON evidence separates wall time from Metal 4 GPU time and records the state hash, device, execution path, memory footprint, boundedness, rollback/retry result, replay result, and CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
 
 ## Foundational invariants
 
@@ -38,6 +58,8 @@ The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). Impl
 
 ## Implementation order
 
-The first authoritative vertical slice is runtime foundation: state ABI, multi-rate scheduling, event queues, regional primitives, immutable parameter versions, deterministic random generation, nested transactions, and NumanX buffer interop. Later phases add causal receptors, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
+The first executable vertical slice now establishes one regional tissue primitive: FP32 excitatory/inhibitory population dynamics, short-range spatial coupling, adaptation, a CPU oracle, Metal 4 dispatch, and committed/root-shadow/candidate transaction generations. It does not yet implement multi-region routing, sensor transduction, NumanX interop, learning, memory, or motor control.
+
+The next runtime-foundation work is a stable brain-state ABI, multi-rate scheduler, event queue, immutable parameter versions, counter-based randomness, indirect active-region dispatch, nested NumanX transaction interop, and private-heap state storage. Later phases add causal receptors, body schema, protective and motor systems, world modeling, sparse routing, motivation, skills and planning, memory, development, communication, and persistent life mode.
 
 No phase is intended as a throwaway implementation.

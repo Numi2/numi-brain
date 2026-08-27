@@ -1,0 +1,73 @@
+public enum TissueUniformIndex: Int, Sendable {
+  case width = 0
+  case height = 1
+  case timestepMilliseconds = 2
+  case timeMilliseconds = 3
+  case excitatoryTimeConstant = 4
+  case inhibitoryTimeConstant = 5
+  case adaptationTimeConstant = 6
+  case excitatorySelfWeight = 8
+  case inhibitoryToExcitatoryWeight = 9
+  case excitatoryToInhibitoryWeight = 10
+  case inhibitorySelfWeight = 11
+  case excitatorySpatialMix = 12
+  case inhibitorySpatialMix = 13
+  case adaptationStrength = 14
+  case excitatoryBias = 16
+  case inhibitoryBias = 17
+  case excitatoryGain = 18
+  case inhibitoryGain = 19
+  case stimulusCenterX = 20
+  case stimulusCenterY = 21
+  case stimulusRadius = 22
+  case stimulusExcitatoryDrive = 23
+  case stimulusInhibitoryDrive = 24
+  case stimulusStartMilliseconds = 25
+  case stimulusEndMilliseconds = 26
+}
+
+public enum TissueUniforms {
+  public static let count = 32
+  public static let byteCount = count * MemoryLayout<Float>.stride
+
+  public static func encode(
+    width: Int,
+    height: Int,
+    timeMilliseconds: Float,
+    parameters: TissueParameters,
+    stimulus: TissueStimulus
+  ) -> [Float] {
+    var values = Array(repeating: Float.zero, count: count)
+    values[TissueUniformIndex.width.rawValue] = Float(width)
+    values[TissueUniformIndex.height.rawValue] = Float(height)
+    values[TissueUniformIndex.timestepMilliseconds.rawValue] = parameters.timestepMilliseconds
+    values[TissueUniformIndex.timeMilliseconds.rawValue] = timeMilliseconds
+    values[TissueUniformIndex.excitatoryTimeConstant.rawValue] =
+      parameters.excitatoryTimeConstantMilliseconds
+    values[TissueUniformIndex.inhibitoryTimeConstant.rawValue] =
+      parameters.inhibitoryTimeConstantMilliseconds
+    values[TissueUniformIndex.adaptationTimeConstant.rawValue] =
+      parameters.adaptationTimeConstantMilliseconds
+    values[TissueUniformIndex.excitatorySelfWeight.rawValue] = parameters.excitatorySelfWeight
+    values[TissueUniformIndex.inhibitoryToExcitatoryWeight.rawValue] =
+      parameters.inhibitoryToExcitatoryWeight
+    values[TissueUniformIndex.excitatoryToInhibitoryWeight.rawValue] =
+      parameters.excitatoryToInhibitoryWeight
+    values[TissueUniformIndex.inhibitorySelfWeight.rawValue] = parameters.inhibitorySelfWeight
+    values[TissueUniformIndex.excitatorySpatialMix.rawValue] = parameters.excitatorySpatialMix
+    values[TissueUniformIndex.inhibitorySpatialMix.rawValue] = parameters.inhibitorySpatialMix
+    values[TissueUniformIndex.adaptationStrength.rawValue] = parameters.adaptationStrength
+    values[TissueUniformIndex.excitatoryBias.rawValue] = parameters.excitatoryBias
+    values[TissueUniformIndex.inhibitoryBias.rawValue] = parameters.inhibitoryBias
+    values[TissueUniformIndex.excitatoryGain.rawValue] = parameters.excitatoryGain
+    values[TissueUniformIndex.inhibitoryGain.rawValue] = parameters.inhibitoryGain
+    values[TissueUniformIndex.stimulusCenterX.rawValue] = stimulus.centerX
+    values[TissueUniformIndex.stimulusCenterY.rawValue] = stimulus.centerY
+    values[TissueUniformIndex.stimulusRadius.rawValue] = stimulus.radius
+    values[TissueUniformIndex.stimulusExcitatoryDrive.rawValue] = stimulus.excitatoryDrive
+    values[TissueUniformIndex.stimulusInhibitoryDrive.rawValue] = stimulus.inhibitoryDrive
+    values[TissueUniformIndex.stimulusStartMilliseconds.rawValue] = stimulus.startMilliseconds
+    values[TissueUniformIndex.stimulusEndMilliseconds.rawValue] = stimulus.endMilliseconds
+    return values
+  }
+}
