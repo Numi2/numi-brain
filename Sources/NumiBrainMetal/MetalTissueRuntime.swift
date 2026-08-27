@@ -187,6 +187,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveCommandUniformBuffer: any MTLBuffer
   private let protectiveCommandBuffers: [any MTLBuffer]
   private let protectiveMotorProfileBuffer: any MTLBuffer
+  private let protectiveSourceInhibitionMaskBuffer: any MTLBuffer
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let stagingBuffer: any MTLBuffer
@@ -220,6 +221,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveMotorProfile: ProtectiveMotorProfile
   public let numanXMuscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
   public let protectiveMotorProfileByteCount: Int
+  public let protectiveSourceInhibitionMaskByteCount: Int
   public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
   public let protectiveMuscleExcitationByteCount: Int
 
@@ -602,7 +604,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 5
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 6
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -949,6 +951,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: protectiveMotorProfileByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let protectiveSourceInhibitionMaskBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
       let firstProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
         length: ProtectiveMotorOutput.headerByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1051,6 +1057,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     firstProtectiveCommandBuffer.label = "NumiBrain protective command generation 0"
     secondProtectiveCommandBuffer.label = "NumiBrain protective command generation 1"
     protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
+    protectiveSourceInhibitionMaskBuffer.label =
+      "NumiBrain transaction-local protective source-inhibition mask"
     firstProtectiveMotorOutputHeaderBuffer.label =
       "NumiBrain protective motor header generation 0"
     secondProtectiveMotorOutputHeaderBuffer.label =
@@ -1176,6 +1184,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       residencySet.addAllocation(buffer)
     }
     residencySet.addAllocation(protectiveMotorProfileBuffer)
+    residencySet.addAllocation(protectiveSourceInhibitionMaskBuffer)
     for buffer in protectiveMotorOutputHeaderBuffers {
       residencySet.addAllocation(buffer)
     }
@@ -1203,6 +1212,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.parameterVersion = parameterVersion
     self.protectiveMotorProfile = protectiveMotorProfile
     self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
+    self.protectiveSourceInhibitionMaskByteCount = protectiveMuscleExcitationByteCount
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
     self.maxEncodedSubsteps = maxEncodedSubsteps
@@ -1264,6 +1274,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveCommandUniformBuffer = protectiveCommandUniformBuffer
     self.protectiveCommandBuffers = protectiveCommandBuffers
     self.protectiveMotorProfileBuffer = protectiveMotorProfileBuffer
+    self.protectiveSourceInhibitionMaskBuffer = protectiveSourceInhibitionMaskBuffer
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.stagingBuffer = stagingBuffer
@@ -1610,6 +1621,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: protectiveMotorProfileByteCount,
       label: "NumiBrain protective motor-profile upload"
     )
+    protectiveSourceInhibitionMaskBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: protectiveMuscleExcitationByteCount
+    )
     let initialProtectiveMotorOutput = try ProtectiveMotorOutput.reference(
       command: initialProtectiveCommand,
       profile: protectiveMotorProfile
@@ -1925,6 +1941,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let acceptedEvents = transaction.resolutions.lazy
       .filter(\.isAccepted)
       .flatMap(\.receptorEvents)
+    let acceptedLocalizedObservations = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.localizedMuscleLoadObservations)
+    try writeProtectiveSourceInhibitionMask(
+      observations: Array(acceptedLocalizedObservations)
+    )
     let schedulerWindow = try prepareSchedulerWindow(
       startTime: transaction.token.committedTimestamp,
       targetTime: accepted.acceptedTimestamp,
@@ -2072,6 +2094,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       let acceptedEvents = transaction.resolutions.lazy
         .filter(\.isAccepted)
         .flatMap(\.receptorEvents)
+      let acceptedLocalizedObservations = transaction.resolutions.lazy
+        .filter(\.isAccepted)
+        .flatMap(\.localizedMuscleLoadObservations)
+      try writeProtectiveSourceInhibitionMask(
+        observations: Array(acceptedLocalizedObservations)
+      )
       schedulerWindow = try prepareSchedulerWindow(
         startTime: token.committedTimestamp,
         targetTime: token.targetTimestamp,
@@ -2198,6 +2226,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("joint accepted duration does not reach the root target")
     }
+    let acceptedLocalizedObservations = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.localizedMuscleLoadObservations)
+    let localizedObservations = Array(acceptedLocalizedObservations)
+    try validateLocalizedMuscleLoadObservations(localizedObservations)
     let submission = try runRootTransaction(
       startTime: token.committedTimestamp,
       candidateDurationsMicroseconds: transaction.resolutions.map(
@@ -2207,7 +2240,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       schedulerEvents: schedulerEvents
         + transaction.resolutions.lazy
         .filter(\.isAccepted)
-        .flatMap(\.receptorEvents)
+        .flatMap(\.receptorEvents),
+      localizedMuscleLoadObservations: localizedObservations
     )
     guard pendingSchedulerTargetTime == token.targetTimestamp else {
       try abortRootTransaction()
@@ -2241,7 +2275,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     startTime: BrainTimestamp,
     candidateDurationsMicroseconds: [UInt64],
     acceptedSubsteps: [Bool],
-    schedulerEvents: [BrainInterruptEvent]
+    schedulerEvents: [BrainInterruptEvent],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
   ) throws -> Submission {
     guard pendingRootShadowIndex == nil, interactiveJointRoot == nil else {
       throw TissueError.transaction("commit or abort the pending Metal root transaction first")
@@ -2295,6 +2330,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("root target time overflows UInt64")
     }
     let targetTime = BrainTimestamp(microseconds: targetValue)
+    try writeProtectiveSourceInhibitionMask(
+      observations: localizedMuscleLoadObservations
+    )
     let schedulerWindow = try prepareSchedulerWindow(
       startTime: startTime,
       targetTime: targetTime,
@@ -2524,6 +2562,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction(
         "localized muscle-load feedback does not match the bound attachment catalog"
       )
+    }
+  }
+
+  private func writeProtectiveSourceInhibitionMask(
+    observations: [LocalizedMuscleLoadReceptorObservation]
+  ) throws {
+    try validateLocalizedMuscleLoadObservations(observations)
+    let inhibitedMuscleIdentifiers = Set(
+      observations.map(\.attachment.muscleIdentifier)
+    )
+    let mask = protectiveSourceInhibitionMaskBuffer.contents().bindMemory(
+      to: UInt32.self,
+      capacity: protectiveMotorProfile.channels.count
+    )
+    for (index, channel) in protectiveMotorProfile.channels.enumerated() {
+      mask[index] = inhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) ? 1 : 0
     }
   }
 
@@ -3310,6 +3364,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorArgumentTable.setAddress(
       protectiveMuscleExcitationBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 4
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveSourceInhibitionMaskBuffer.gpuAddress,
+      index: 5
     )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)

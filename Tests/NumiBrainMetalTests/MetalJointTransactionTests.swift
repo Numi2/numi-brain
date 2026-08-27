@@ -192,6 +192,16 @@ final class MetalJointTransactionTests: XCTestCase {
     let shadowProtectiveMotor = try runtime.snapshotInteractiveProtectiveMotorOutput()
     XCTAssertTrue(shadowProtective.flags.contains(.emergencyStop))
     XCTAssertTrue(shadowProtective.flags.contains(.withdrawal))
+    XCTAssertTrue(shadowProtectiveMotor.flags.contains(.localizedSourceInhibition))
+    XCTAssertEqual(shadowProtectiveMotor.muscleExcitations[1], 0)
+    XCTAssertEqual(
+      shadowProtectiveMotor,
+      try ProtectiveMotorOutput.reference(
+        command: shadowProtective,
+        profile: runtime.protectiveMotorProfile,
+        sourceInhibitedMuscleIdentifiers: [101]
+      )
+    )
     XCTAssertNotEqual(shadowProtective, beforeProtective)
     XCTAssertNotEqual(shadowProtectiveMotor, beforeProtectiveMotor)
     try runtime.abortInteractiveJointControl()

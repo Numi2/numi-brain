@@ -59,6 +59,21 @@ final class ProtectiveMotorAdapterTests: XCTestCase {
         expectedCommand: command
       )
     )
+    let inhibited = try ProtectiveMotorOutput.reference(
+      command: command,
+      profile: profile,
+      sourceInhibitedMuscleIdentifiers: [100]
+    )
+    XCTAssertEqual(
+      inhibited.flags,
+      [.valid, .emergencyStop, .localizedSourceInhibition]
+    )
+    XCTAssertEqual(inhibited.muscleExcitations[0], 0)
+    XCTAssertEqual(
+      Array(inhibited.muscleExcitations.dropFirst()),
+      Array(output.muscleExcitations.dropFirst())
+    )
+    XCTAssertNotEqual(inhibited.fingerprint, output.fingerprint)
   }
 
   func testMotorProfileAndOutputRejectInvalidRelations() throws {
@@ -94,6 +109,13 @@ final class ProtectiveMotorAdapterTests: XCTestCase {
     let idle = try ProtectiveMotorOutput.reference(command: command, profile: profile)
     XCTAssertEqual(idle.flags, .valid)
     XCTAssertEqual(idle.muscleExcitations, [0.02, 0.02, 0.05, 0.05, 0.03, 0.03])
+    XCTAssertThrowsError(
+      try ProtectiveMotorOutput.reference(
+        command: command,
+        profile: profile,
+        sourceInhibitedMuscleIdentifiers: [999]
+      )
+    )
 
     var invalidHeader = idle.abiHeader
     invalidHeader.motor_inhibition = 1

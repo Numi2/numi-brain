@@ -570,6 +570,7 @@ constant uint NBProtectiveCommandFlagAutonomicArousal = 1u << 4;
 constant uint NBMotorOutputVersion = 1u;
 constant uint NBMotorOutputFlagValid = 1u << 0;
 constant uint NBMotorOutputFlagEmergencyStop = 1u << 1;
+constant uint NBMotorOutputFlagLocalizedSourceInhibition = 1u << 2;
 constant ulong NBInterruptPain = 1ul << 0;
 constant ulong NBInterruptDamagingContact = 1ul << 1;
 constant ulong NBInterruptLossOfSupport = 1ul << 2;
@@ -2689,12 +2690,14 @@ kernel void map_protective_motor_output(
     constant NBProtectiveCommandUniformsABI *uniforms [[buffer(2)]],
     device NBMotorOutputHeaderABI *outputHeader [[buffer(3)]],
     device float *muscleExcitations [[buffer(4)]],
+    device const uint *sourceInhibitionMask [[buffer(5)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
         return;
     }
     const NBProtectiveCommandABI command = commandBuffer[0];
+    bool hasLocalizedSourceInhibition = false;
     for (uint index = 0u; index < uniforms->muscle_count; ++index) {
         const NBMotorChannelDescriptorABI channel = channels[index];
         const float withdrawalExcitation = fma(
@@ -2707,13 +2710,20 @@ kernel void map_protective_motor_output(
             channel.brace_gain,
             withdrawalExcitation
         );
-        muscleExcitations[index] = clamp(excitation, 0.0f, channel.maximum_excitation);
+        const bool inhibitSource = sourceInhibitionMask[index] != 0u;
+        hasLocalizedSourceInhibition = hasLocalizedSourceInhibition || inhibitSource;
+        muscleExcitations[index] = inhibitSource
+            ? 0.0f
+            : clamp(excitation, 0.0f, channel.maximum_excitation);
     }
     NBMotorOutputHeaderABI header;
     header.format_version = NBMotorOutputVersion;
     header.flags = NBMotorOutputFlagValid;
     if ((command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u) {
         header.flags |= NBMotorOutputFlagEmergencyStop;
+    }
+    if (hasLocalizedSourceInhibition) {
+        header.flags |= NBMotorOutputFlagLocalizedSourceInhibition;
     }
     header.timestamp_microseconds = command.timestamp_microseconds;
     header.brain_generation = command.brain_generation;

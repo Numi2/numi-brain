@@ -164,6 +164,9 @@ public struct ProtectiveMotorOutputFlags: OptionSet, Codable, Hashable, Sendable
   public static let emergencyStop = Self(
     rawValue: UInt32(NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP)
   )
+  public static let localizedSourceInhibition = Self(
+    rawValue: UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION)
+  )
 }
 
 /// Bounded muscle-excitation residual plus the inhibition and autonomic values
@@ -256,9 +259,22 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
 
   public static func reference(
     command: ProtectiveMotorCommand,
-    profile: ProtectiveMotorProfile
+    profile: ProtectiveMotorProfile,
+    sourceInhibitedMuscleIdentifiers: Set<UInt32> = []
   ) throws -> Self {
+    guard
+      sourceInhibitedMuscleIdentifiers.isSubset(
+        of: Set(profile.channels.map(\.muscleIdentifier))
+      )
+    else {
+      throw BrainRuntimeError.transaction(
+        "protective source-inhibition identifiers are absent from the motor profile"
+      )
+    }
     let excitations = profile.channels.map { channel in
+      guard !sourceInhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) else {
+        return Float.zero
+      }
       let withdrawalExcitation = fmaf(
         command.withdrawalDrive,
         channel.withdrawalGain,
@@ -279,6 +295,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     header.flags = UInt32(NB_MOTOR_OUTPUT_FLAG_VALID)
     if command.flags.contains(.emergencyStop) {
       header.flags |= UInt32(NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP)
+    }
+    if !sourceInhibitedMuscleIdentifiers.isEmpty {
+      header.flags |= UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION)
     }
     header.timestamp_microseconds = command.timestamp.rawValue
     header.brain_generation = command.brainGeneration

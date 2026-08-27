@@ -476,6 +476,7 @@ private func run() throws {
   var retrySubstepFingerprint: UInt64 = 0
   var retryRandomCounterGeneration: UInt64 = 0
   var transducedMyoSimEventCount = 0
+  var localizedSourceInhibitionOutput: ProtectiveMotorOutput?
   for candidateIndex in 0..<3 {
     let fast = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1)
     let packet = try NumanXMotorCandidate(transaction: token, fastSystems: fast)
@@ -550,6 +551,10 @@ private func run() throws {
         localizedMuscleLoadObservations: localizedObservations
       )
       try bridge.acceptCandidate()
+      if candidateIndex == 0 {
+        localizedSourceInhibitionOutput =
+          try runtime.snapshotInteractiveProtectiveMotorOutput()
+      }
     } catch {
       bridge.rejectCandidate()
       throw error
@@ -568,7 +573,11 @@ private func run() throws {
       bridge.attachmentCatalog.attachment(forMuscleIdentifier: $0)
     }
 
-  guard let committedBodyLoadFrame = runtime.latestCommittedBodyLoadFrame,
+  guard let localizedSourceInhibitionOutput,
+    let overloadedMotorChannelIndex = motorProfile.channels.firstIndex(where: {
+      $0.muscleIdentifier == maximumForceMuscleIdentifiers[0]
+    }),
+    let committedBodyLoadFrame = runtime.latestCommittedBodyLoadFrame,
     let committedProtectiveSelection =
       runtime.latestCommittedProtectiveMuscleSelection,
     bridge.committedGeneration == 3,
@@ -612,6 +621,8 @@ private func run() throws {
     committedProtectiveSelection.overloadedSourceMuscleIdentifiers
       == [maximumForceMuscleIdentifiers[0]],
     !committedProtectiveSelection.candidates.isEmpty,
+    localizedSourceInhibitionOutput.flags.contains(.localizedSourceInhibition),
+    localizedSourceInhibitionOutput.muscleExcitations[overloadedMotorChannelIndex] == 0,
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -685,6 +696,10 @@ private func run() throws {
     "committed_protective_selection_count": committedProtectiveSelection.candidates.count,
     "committed_protective_source_muscle_identifiers":
       committedProtectiveSelection.overloadedSourceMuscleIdentifiers,
+    "localized_source_inhibition_output_fingerprint":
+      localizedSourceInhibitionOutput.fingerprint,
+    "localized_source_inhibition_excitation":
+      localizedSourceInhibitionOutput.muscleExcitations[overloadedMotorChannelIndex],
     "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,
