@@ -444,8 +444,9 @@ struct NBBodyLoadFieldUniformsABI {
     ulong attachment_catalog_fingerprint;
     uint body_count;
     uint update_count;
-    ulong reserved0;
-    ulong reserved1;
+    ulong target_timestamp_microseconds;
+    uint persistence_microseconds;
+    uint decay_microseconds;
 };
 
 struct NBBodyLoadFieldRecordABI {
@@ -455,6 +456,10 @@ struct NBBodyLoadFieldRecordABI {
     float maximum_absolute_muscle_force;
     ulong accepted_timestamp_microseconds;
     ulong accepted_physics_state_fingerprint;
+    float effective_absolute_muscle_force;
+    uint reserved;
+    ulong field_activation_timestamp_microseconds;
+    ulong field_state_timestamp_microseconds;
 };
 
 struct NBRegionalTokenLayoutABI {
@@ -553,7 +558,7 @@ static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drif
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
 static_assert(sizeof(NBBodyLoadFieldUniformsABI) == 32, "body-load uniforms drift");
-static_assert(sizeof(NBBodyLoadFieldRecordABI) == 32, "body-load record drift");
+static_assert(sizeof(NBBodyLoadFieldRecordABI) == 56, "body-load record drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
@@ -2710,6 +2715,8 @@ kernel void map_protective_motor_output(
     device NBMotorOutputHeaderABI *outputHeader [[buffer(3)]],
     device float *muscleExcitations [[buffer(4)]],
     device const uint *sourceInhibitionMask [[buffer(5)]],
+    constant NBBodyLoadFieldUniformsABI *bodyLoadUniforms [[buffer(6)]],
+    device const NBBodyLoadFieldRecordABI *bodyLoadField [[buffer(7)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -2729,7 +2736,18 @@ kernel void map_protective_motor_output(
             channel.brace_gain,
             withdrawalExcitation
         );
-        const bool inhibitSource = sourceInhibitionMask[index] != 0u;
+        bool retainedSourceInhibition = false;
+        for (uint bodyIndex = 0u;
+             bodyIndex < bodyLoadUniforms->body_count;
+             ++bodyIndex) {
+            const NBBodyLoadFieldRecordABI bodyLoad = bodyLoadField[bodyIndex];
+            retainedSourceInhibition = retainedSourceInhibition ||
+                (bodyLoad.endpoint_role != 0u &&
+                 bodyLoad.effective_absolute_muscle_force > 0.0f &&
+                 bodyLoad.source_muscle_identifier == channel.muscle_id);
+        }
+        const bool inhibitSource = sourceInhibitionMask[index] != 0u ||
+            retainedSourceInhibition;
         hasLocalizedSourceInhibition = hasLocalizedSourceInhibition || inhibitSource;
         muscleExcitations[index] = inhibitSource
             ? 0.0f
@@ -2768,6 +2786,40 @@ inline bool body_load_same_source(
             rhs.accepted_physics_state_fingerprint;
 }
 
+inline NBBodyLoadFieldRecordABI body_load_retained_at_target(
+    const NBBodyLoadFieldRecordABI previous,
+    constant NBBodyLoadFieldUniformsABI *uniforms
+) {
+    if (previous.endpoint_role == 0u ||
+        uniforms->target_timestamp_microseconds <
+            previous.field_activation_timestamp_microseconds ||
+        uniforms->target_timestamp_microseconds <
+            previous.field_state_timestamp_microseconds) {
+        NBBodyLoadFieldRecordABI empty{};
+        empty.body_identifier = previous.body_identifier;
+        return empty;
+    }
+    const ulong age = uniforms->target_timestamp_microseconds -
+        previous.field_activation_timestamp_microseconds;
+    const ulong persistence = ulong(uniforms->persistence_microseconds);
+    const ulong decay = ulong(uniforms->decay_microseconds);
+    const ulong expiry = persistence + decay;
+    if (age >= expiry) {
+        NBBodyLoadFieldRecordABI empty{};
+        empty.body_identifier = previous.body_identifier;
+        return empty;
+    }
+    NBBodyLoadFieldRecordABI retained = previous;
+    retained.effective_absolute_muscle_force =
+        age <= persistence
+        ? previous.maximum_absolute_muscle_force
+        : previous.maximum_absolute_muscle_force *
+            (float(expiry - age) / float(decay));
+    retained.field_state_timestamp_microseconds =
+        uniforms->target_timestamp_microseconds;
+    return retained;
+}
+
 inline bool body_load_is_stronger(
     const NBBodyLoadFieldRecordABI candidate,
     const NBBodyLoadFieldRecordABI current
@@ -2775,10 +2827,10 @@ inline bool body_load_is_stronger(
     if (current.endpoint_role == 0u) {
         return true;
     }
-    if (candidate.maximum_absolute_muscle_force !=
-        current.maximum_absolute_muscle_force) {
-        return candidate.maximum_absolute_muscle_force >
-            current.maximum_absolute_muscle_force;
+    if (candidate.effective_absolute_muscle_force !=
+        current.effective_absolute_muscle_force) {
+        return candidate.effective_absolute_muscle_force >
+            current.effective_absolute_muscle_force;
     }
     if (candidate.accepted_timestamp_microseconds !=
         current.accepted_timestamp_microseconds) {
@@ -2792,20 +2844,24 @@ inline bool body_load_is_stronger(
         current.accepted_physics_state_fingerprint;
 }
 
-/// Materializes one sparse peak-load cell per Core body. The field is rebuilt
-/// from the accepted root-local update list, so an empty committed root clears
-/// prior loads and a rejected physical candidate never enters device history.
+/// Materializes one temporally retained peak-load cell per Core body. The
+/// committed generation is decayed to the root target before accepted updates
+/// compete with it; rejected candidates never enter the update list.
 kernel void materialize_body_load_field(
     constant NBBodyLoadFieldUniformsABI *uniforms [[buffer(0)]],
     device const NBBodyLoadFieldRecordABI *updates [[buffer(1)]],
-    device NBBodyLoadFieldRecordABI *output [[buffer(2)]],
+    device const NBBodyLoadFieldRecordABI *previous [[buffer(2)]],
+    device NBBodyLoadFieldRecordABI *output [[buffer(3)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
         return;
     }
     for (uint bodyIndex = 0u; bodyIndex < uniforms->body_count; ++bodyIndex) {
-        NBBodyLoadFieldRecordABI selected{};
+        NBBodyLoadFieldRecordABI selected = body_load_retained_at_target(
+            previous[bodyIndex],
+            uniforms
+        );
         selected.body_identifier = bodyIndex;
         for (uint updateIndex = 0u;
              updateIndex < uniforms->update_count;
@@ -2815,7 +2871,13 @@ kernel void materialize_body_load_field(
                 continue;
             }
             if (body_load_same_source(candidate, selected)) {
-                selected.endpoint_role |= candidate.endpoint_role;
+                const uint combinedRole = selected.endpoint_role |
+                    candidate.endpoint_role;
+                if (candidate.field_activation_timestamp_microseconds >=
+                    selected.field_activation_timestamp_microseconds) {
+                    selected = candidate;
+                }
+                selected.endpoint_role = combinedRole;
             } else if (body_load_is_stronger(candidate, selected)) {
                 selected = candidate;
             }

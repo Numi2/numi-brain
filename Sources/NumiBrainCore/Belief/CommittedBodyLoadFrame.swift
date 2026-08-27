@@ -12,6 +12,161 @@ public struct BodyLoadEndpointRole: OptionSet, Codable, Hashable, Sendable {
   public static let terminalRouteEndpoint = Self(rawValue: 1 << 1)
 }
 
+/// Deterministic temporal policy for the accepted body-load field. Loads are
+/// held at their accepted magnitude before linearly decaying to zero. This is
+/// an initial runtime policy, not a calibrated tissue-damage model.
+@frozen
+public struct BodyLoadFieldDynamics: Codable, Equatable, Hashable, Sendable {
+  public let persistenceMicroseconds: UInt32
+  public let decayMicroseconds: UInt32
+
+  public init(
+    persistenceMicroseconds: UInt32,
+    decayMicroseconds: UInt32
+  ) throws {
+    guard decayMicroseconds > 0 else {
+      throw BrainRuntimeError.transaction("body-load decay duration must be positive")
+    }
+    self.persistenceMicroseconds = persistenceMicroseconds
+    self.decayMicroseconds = decayMicroseconds
+  }
+
+  public static var runtimeFoundationV0: Self {
+    get throws {
+      try Self(
+        persistenceMicroseconds: 40_000,
+        decayMicroseconds: 160_000
+      )
+    }
+  }
+
+  public func retaining(
+    _ cell: BodyLoadFieldCell,
+    at targetTimestamp: BrainTimestamp
+  ) throws -> BodyLoadFieldCell? {
+    guard targetTimestamp >= cell.fieldStateTimestamp,
+      targetTimestamp >= cell.fieldActivationTimestamp
+    else {
+      throw BrainRuntimeError.transaction("body-load field cannot move backward in time")
+    }
+    let age = targetTimestamp.rawValue - cell.fieldActivationTimestamp.rawValue
+    let persistence = UInt64(persistenceMicroseconds)
+    let decay = UInt64(decayMicroseconds)
+    let (expiry, overflow) = persistence.addingReportingOverflow(decay)
+    guard !overflow else {
+      throw BrainRuntimeError.transaction("body-load field lifetime overflow")
+    }
+    let effectiveForce: Float
+    if age <= persistence {
+      effectiveForce = cell.maximumAbsoluteMuscleForce
+    } else if age >= expiry {
+      return nil
+    } else {
+      let remaining = Float(expiry - age) / Float(decay)
+      effectiveForce = cell.maximumAbsoluteMuscleForce * remaining
+    }
+    return try BodyLoadFieldCell(
+      bodyIdentifier: cell.bodyIdentifier,
+      endpointRole: cell.endpointRole,
+      sourceMuscleIdentifier: cell.sourceMuscleIdentifier,
+      maximumAbsoluteMuscleForce: cell.maximumAbsoluteMuscleForce,
+      acceptedTimestamp: cell.acceptedTimestamp,
+      acceptedPhysicsStateFingerprint: cell.acceptedPhysicsStateFingerprint,
+      effectiveAbsoluteMuscleForce: effectiveForce,
+      fieldActivationTimestamp: cell.fieldActivationTimestamp,
+      fieldStateTimestamp: targetTimestamp
+    )
+  }
+
+  /// CPU oracle for the private Metal field update. Fresh updates are
+  /// activated at `targetTimestamp`; retained cells preserve their original
+  /// receptor and physical-state provenance.
+  public func advance(
+    previous: [BodyLoadFieldCell],
+    updates: [BodyLoadFieldCell],
+    bodyCount: UInt32,
+    targetTimestamp: BrainTimestamp
+  ) throws -> [BodyLoadFieldCell] {
+    guard previous.allSatisfy({ $0.bodyIdentifier < bodyCount }),
+      updates.allSatisfy({ $0.bodyIdentifier < bodyCount })
+    else {
+      throw BrainRuntimeError.transaction("body-load field body identifier is out of range")
+    }
+    var cells: [BodyLoadFieldCell] = []
+    cells.reserveCapacity(previous.count + updates.count)
+    for cell in previous {
+      if let retained = try retaining(cell, at: targetTimestamp) {
+        merge(retained, into: &cells)
+      }
+    }
+    for update in updates {
+      let activated = try BodyLoadFieldCell(
+        bodyIdentifier: update.bodyIdentifier,
+        endpointRole: update.endpointRole,
+        sourceMuscleIdentifier: update.sourceMuscleIdentifier,
+        maximumAbsoluteMuscleForce: update.maximumAbsoluteMuscleForce,
+        acceptedTimestamp: update.acceptedTimestamp,
+        acceptedPhysicsStateFingerprint: update.acceptedPhysicsStateFingerprint,
+        effectiveAbsoluteMuscleForce: update.maximumAbsoluteMuscleForce,
+        fieldActivationTimestamp: targetTimestamp,
+        fieldStateTimestamp: targetTimestamp
+      )
+      merge(activated, into: &cells)
+    }
+    return cells.sorted { $0.bodyIdentifier < $1.bodyIdentifier }
+  }
+
+  private func merge(
+    _ candidate: BodyLoadFieldCell,
+    into cells: inout [BodyLoadFieldCell]
+  ) {
+    guard let index = cells.firstIndex(where: {
+      $0.bodyIdentifier == candidate.bodyIdentifier
+    }) else {
+      cells.append(candidate)
+      return
+    }
+    let current = cells[index]
+    if Self.sameSource(candidate, current) {
+      let freshest = candidate.fieldActivationTimestamp >= current.fieldActivationTimestamp
+        ? candidate : current
+      cells[index] = BodyLoadFieldCell(
+        mergingEndpointRole: current.endpointRole.union(candidate.endpointRole),
+        from: freshest
+      )
+    } else if Self.stronger(candidate, than: current) {
+      cells[index] = candidate
+    }
+  }
+
+  private static func sameSource(
+    _ lhs: BodyLoadFieldCell,
+    _ rhs: BodyLoadFieldCell
+  ) -> Bool {
+    lhs.bodyIdentifier == rhs.bodyIdentifier
+      && lhs.sourceMuscleIdentifier == rhs.sourceMuscleIdentifier
+      && lhs.maximumAbsoluteMuscleForce == rhs.maximumAbsoluteMuscleForce
+      && lhs.acceptedTimestamp == rhs.acceptedTimestamp
+      && lhs.acceptedPhysicsStateFingerprint == rhs.acceptedPhysicsStateFingerprint
+  }
+
+  private static func stronger(
+    _ lhs: BodyLoadFieldCell,
+    than rhs: BodyLoadFieldCell
+  ) -> Bool {
+    if lhs.effectiveAbsoluteMuscleForce != rhs.effectiveAbsoluteMuscleForce {
+      return lhs.effectiveAbsoluteMuscleForce > rhs.effectiveAbsoluteMuscleForce
+    }
+    if lhs.acceptedTimestamp != rhs.acceptedTimestamp {
+      return lhs.acceptedTimestamp > rhs.acceptedTimestamp
+    }
+    if lhs.sourceMuscleIdentifier != rhs.sourceMuscleIdentifier {
+      return lhs.sourceMuscleIdentifier < rhs.sourceMuscleIdentifier
+    }
+    return lhs.acceptedPhysicsStateFingerprint < rhs.acceptedPhysicsStateFingerprint
+  }
+}
+
 @frozen
 public struct CommittedBodyLoadSample: Codable, Equatable, Hashable, Sendable {
   public let bodyIdentifier: UInt32
@@ -43,6 +198,9 @@ public struct BodyLoadFieldCell: Codable, Equatable, Hashable, Sendable {
   public let maximumAbsoluteMuscleForce: Float
   public let acceptedTimestamp: BrainTimestamp
   public let acceptedPhysicsStateFingerprint: UInt64
+  public let effectiveAbsoluteMuscleForce: Float
+  public let fieldActivationTimestamp: BrainTimestamp
+  public let fieldStateTimestamp: BrainTimestamp
 
   public init(
     bodyIdentifier: UInt32,
@@ -50,10 +208,22 @@ public struct BodyLoadFieldCell: Codable, Equatable, Hashable, Sendable {
     sourceMuscleIdentifier: UInt32,
     maximumAbsoluteMuscleForce: Float,
     acceptedTimestamp: BrainTimestamp,
-    acceptedPhysicsStateFingerprint: UInt64
+    acceptedPhysicsStateFingerprint: UInt64,
+    effectiveAbsoluteMuscleForce: Float? = nil,
+    fieldActivationTimestamp: BrainTimestamp? = nil,
+    fieldStateTimestamp: BrainTimestamp? = nil
   ) throws {
+    let effectiveAbsoluteMuscleForce =
+      effectiveAbsoluteMuscleForce ?? maximumAbsoluteMuscleForce
+    let fieldActivationTimestamp = fieldActivationTimestamp ?? acceptedTimestamp
+    let fieldStateTimestamp = fieldStateTimestamp ?? fieldActivationTimestamp
     guard !endpointRole.isEmpty, maximumAbsoluteMuscleForce.isFinite,
-      maximumAbsoluteMuscleForce >= 0, acceptedPhysicsStateFingerprint != 0
+      maximumAbsoluteMuscleForce >= 0, effectiveAbsoluteMuscleForce.isFinite,
+      effectiveAbsoluteMuscleForce > 0,
+      effectiveAbsoluteMuscleForce <= maximumAbsoluteMuscleForce,
+      acceptedPhysicsStateFingerprint != 0,
+      acceptedTimestamp <= fieldActivationTimestamp,
+      fieldActivationTimestamp <= fieldStateTimestamp
     else {
       throw BrainRuntimeError.transaction("body-load field cell is invalid")
     }
@@ -63,15 +233,24 @@ public struct BodyLoadFieldCell: Codable, Equatable, Hashable, Sendable {
     self.maximumAbsoluteMuscleForce = maximumAbsoluteMuscleForce
     self.acceptedTimestamp = acceptedTimestamp
     self.acceptedPhysicsStateFingerprint = acceptedPhysicsStateFingerprint
+    self.effectiveAbsoluteMuscleForce = effectiveAbsoluteMuscleForce
+    self.fieldActivationTimestamp = fieldActivationTimestamp
+    self.fieldStateTimestamp = fieldStateTimestamp
   }
 
-  fileprivate init(sample: CommittedBodyLoadSample) {
+  fileprivate init(
+    sample: CommittedBodyLoadSample,
+    fieldTimestamp: BrainTimestamp
+  ) {
     bodyIdentifier = sample.bodyIdentifier
     endpointRole = sample.endpointRole
     sourceMuscleIdentifier = sample.sourceMuscleIdentifier
     maximumAbsoluteMuscleForce = sample.maximumAbsoluteMuscleForce
     acceptedTimestamp = sample.acceptedTimestamp
     acceptedPhysicsStateFingerprint = sample.acceptedPhysicsStateFingerprint
+    effectiveAbsoluteMuscleForce = sample.maximumAbsoluteMuscleForce
+    fieldActivationTimestamp = fieldTimestamp
+    fieldStateTimestamp = fieldTimestamp
   }
 
   fileprivate init(
@@ -84,6 +263,9 @@ public struct BodyLoadFieldCell: Codable, Equatable, Hashable, Sendable {
     maximumAbsoluteMuscleForce = cell.maximumAbsoluteMuscleForce
     acceptedTimestamp = cell.acceptedTimestamp
     acceptedPhysicsStateFingerprint = cell.acceptedPhysicsStateFingerprint
+    effectiveAbsoluteMuscleForce = cell.effectiveAbsoluteMuscleForce
+    fieldActivationTimestamp = cell.fieldActivationTimestamp
+    fieldStateTimestamp = cell.fieldStateTimestamp
   }
 }
 
@@ -181,7 +363,10 @@ public struct CommittedBodyLoadFrame: Codable, Equatable, Hashable, Sendable {
   public var peakBodyLoadCells: [BodyLoadFieldCell] {
     var cells: [BodyLoadFieldCell] = []
     for sample in samples {
-      let candidate = BodyLoadFieldCell(sample: sample)
+      let candidate = BodyLoadFieldCell(
+        sample: sample,
+        fieldTimestamp: committedTimestamp
+      )
       guard let last = cells.last, last.bodyIdentifier == candidate.bodyIdentifier else {
         cells.append(candidate)
         continue

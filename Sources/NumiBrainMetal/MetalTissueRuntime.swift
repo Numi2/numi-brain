@@ -16,8 +16,9 @@ private struct BodyLoadFieldUniforms {
   var attachmentCatalogFingerprint: UInt64 = 0
   var bodyCount: UInt32 = 0
   var updateCount: UInt32 = 0
-  var reserved0: UInt64 = 0
-  var reserved1: UInt64 = 0
+  var targetTimestampMicroseconds: UInt64 = 0
+  var persistenceMicroseconds: UInt32 = 0
+  var decayMicroseconds: UInt32 = 0
 }
 
 private struct BodyLoadFieldRecord {
@@ -27,6 +28,10 @@ private struct BodyLoadFieldRecord {
   var maximumAbsoluteMuscleForce: Float = 0
   var acceptedTimestampMicroseconds: UInt64 = 0
   var acceptedPhysicsStateFingerprint: UInt64 = 0
+  var effectiveAbsoluteMuscleForce: Float = 0
+  var reserved: UInt32 = 0
+  var fieldActivationTimestampMicroseconds: UInt64 = 0
+  var fieldStateTimestampMicroseconds: UInt64 = 0
 
   init() {}
 
@@ -37,6 +42,9 @@ private struct BodyLoadFieldRecord {
     maximumAbsoluteMuscleForce = cell.maximumAbsoluteMuscleForce
     acceptedTimestampMicroseconds = cell.acceptedTimestamp.rawValue
     acceptedPhysicsStateFingerprint = cell.acceptedPhysicsStateFingerprint
+    effectiveAbsoluteMuscleForce = cell.effectiveAbsoluteMuscleForce
+    fieldActivationTimestampMicroseconds = cell.fieldActivationTimestamp.rawValue
+    fieldStateTimestampMicroseconds = cell.fieldStateTimestamp.rawValue
   }
 
   func value() throws -> BodyLoadFieldCell? {
@@ -47,7 +55,14 @@ private struct BodyLoadFieldRecord {
       sourceMuscleIdentifier: sourceMuscleIdentifier,
       maximumAbsoluteMuscleForce: maximumAbsoluteMuscleForce,
       acceptedTimestamp: BrainTimestamp(microseconds: acceptedTimestampMicroseconds),
-      acceptedPhysicsStateFingerprint: acceptedPhysicsStateFingerprint
+      acceptedPhysicsStateFingerprint: acceptedPhysicsStateFingerprint,
+      effectiveAbsoluteMuscleForce: effectiveAbsoluteMuscleForce,
+      fieldActivationTimestamp: BrainTimestamp(
+        microseconds: fieldActivationTimestampMicroseconds
+      ),
+      fieldStateTimestamp: BrainTimestamp(
+        microseconds: fieldStateTimestampMicroseconds
+      )
     )
   }
 }
@@ -265,6 +280,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveCommandUniformByteCount = MemoryLayout<ProtectiveCommandUniforms>.stride
   public let protectiveMotorProfile: ProtectiveMotorProfile
   public let numanXMuscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+  public let bodyLoadFieldDynamics: BodyLoadFieldDynamics
   public let protectiveMotorProfileByteCount: Int
   public let protectiveSourceInhibitionMaskByteCount: Int
   public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
@@ -333,6 +349,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorProfile requestedProtectiveMotorProfile: ProtectiveMotorProfile? = nil,
     numanXMuscleAttachmentCatalog requestedNumanXMuscleAttachmentCatalog:
       NumanXMuscleAttachmentCatalog? = nil,
+    bodyLoadFieldDynamics requestedBodyLoadFieldDynamics: BodyLoadFieldDynamics? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -442,6 +459,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectiveMotorProfile =
       try requestedProtectiveMotorProfile
       ?? ProtectiveMotorProfile.runtimeFoundationFixture()
+    let bodyLoadFieldDynamics =
+      try requestedBodyLoadFieldDynamics
+      ?? BodyLoadFieldDynamics.runtimeFoundationV0
     if let requestedNumanXMuscleAttachmentCatalog {
       do {
         try requestedNumanXMuscleAttachmentCatalog.validate(
@@ -661,7 +681,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 6
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 8
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -672,7 +692,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let bodyLoadFieldArgumentDescriptor = MTL4ArgumentTableDescriptor()
     bodyLoadFieldArgumentDescriptor.label = "NumiBrain body-load field arguments"
-    bodyLoadFieldArgumentDescriptor.maxBufferBindCount = 3
+    bodyLoadFieldArgumentDescriptor.maxBufferBindCount = 4
     bodyLoadFieldArgumentDescriptor.initializeBindings = true
     guard
       let bodyLoadFieldArgumentTable = try? device.makeArgumentTable(
@@ -867,7 +887,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("protective motor profile byte count overflows Int")
     }
     guard MemoryLayout<BodyLoadFieldUniforms>.stride == 32,
-      MemoryLayout<BodyLoadFieldRecord>.stride == 32
+      MemoryLayout<BodyLoadFieldRecord>.stride == 56
     else {
       throw TissueError.metal("body-load field ABI layout drift")
     }
@@ -1333,6 +1353,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.parameterVersion = parameterVersion
     self.protectiveMotorProfile = protectiveMotorProfile
     self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
+    self.bodyLoadFieldDynamics = bodyLoadFieldDynamics
     self.protectiveSourceInhibitionMaskByteCount = protectiveMuscleExcitationByteCount
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
@@ -1815,8 +1836,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       attachmentCatalogFingerprint: requestedNumanXMuscleAttachmentCatalog?.fingerprint ?? 0,
       bodyCount: UInt32(bodyLoadFieldBodyCount),
       updateCount: 0,
-      reserved0: 0,
-      reserved1: 0
+      targetTimestampMicroseconds: 0,
+      persistenceMicroseconds: bodyLoadFieldDynamics.persistenceMicroseconds,
+      decayMicroseconds: bodyLoadFieldDynamics.decayMicroseconds
     )
     withUnsafeBytes(of: &initialBodyLoadUniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -2114,7 +2136,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       .filter(\.isAccepted)
       .flatMap(\.localizedMuscleLoadObservations)
     try writeProtectiveSourceInhibitionMask(
-      observations: Array(acceptedLocalizedObservations)
+      observations: Array(acceptedLocalizedObservations),
+      targetTimestamp: accepted.acceptedTimestamp
     )
     let schedulerWindow = try prepareSchedulerWindow(
       startTime: transaction.token.committedTimestamp,
@@ -2267,7 +2290,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         .filter(\.isAccepted)
         .flatMap(\.localizedMuscleLoadObservations)
       try writeProtectiveSourceInhibitionMask(
-        observations: Array(acceptedLocalizedObservations)
+        observations: Array(acceptedLocalizedObservations),
+        targetTimestamp: token.targetTimestamp
       )
       schedulerWindow = try prepareSchedulerWindow(
         startTime: token.committedTimestamp,
@@ -2500,7 +2524,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let targetTime = BrainTimestamp(microseconds: targetValue)
     try writeProtectiveSourceInhibitionMask(
-      observations: localizedMuscleLoadObservations
+      observations: localizedMuscleLoadObservations,
+      targetTimestamp: targetTime
     )
     let schedulerWindow = try prepareSchedulerWindow(
       startTime: startTime,
@@ -2735,7 +2760,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   private func writeProtectiveSourceInhibitionMask(
-    observations: [LocalizedMuscleLoadReceptorObservation]
+    observations: [LocalizedMuscleLoadReceptorObservation],
+    targetTimestamp: BrainTimestamp
   ) throws {
     try validateLocalizedMuscleLoadObservations(observations)
     let inhibitedMuscleIdentifiers = Set(
@@ -2748,11 +2774,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for (index, channel) in protectiveMotorProfile.channels.enumerated() {
       mask[index] = inhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) ? 1 : 0
     }
-    try writeBodyLoadFieldUpdates(observations: observations)
+    try writeBodyLoadFieldUpdates(
+      observations: observations,
+      targetTimestamp: targetTimestamp
+    )
   }
 
   private func writeBodyLoadFieldUpdates(
-    observations: [LocalizedMuscleLoadReceptorObservation]
+    observations: [LocalizedMuscleLoadReceptorObservation],
+    targetTimestamp: BrainTimestamp
   ) throws {
     var records: [BodyLoadFieldRecord] = []
     records.reserveCapacity(observations.count * 2)
@@ -2764,7 +2794,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         sourceMuscleIdentifier: attachment.muscleIdentifier,
         maximumAbsoluteMuscleForce: observation.maximumAbsoluteMuscleForce,
         acceptedTimestamp: observation.event.timestamp,
-        acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint
+        acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint,
+        fieldActivationTimestamp: targetTimestamp,
+        fieldStateTimestamp: targetTimestamp
       )
       if attachment.firstBodyIdentifier == attachment.terminalBodyIdentifier {
         let mergedCell = try BodyLoadFieldCell(
@@ -2773,7 +2805,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
           sourceMuscleIdentifier: attachment.muscleIdentifier,
           maximumAbsoluteMuscleForce: observation.maximumAbsoluteMuscleForce,
           acceptedTimestamp: observation.event.timestamp,
-          acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint
+          acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint,
+          fieldActivationTimestamp: targetTimestamp,
+          fieldStateTimestamp: targetTimestamp
         )
         records.append(BodyLoadFieldRecord(cell: mergedCell))
       } else {
@@ -2786,7 +2820,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
               sourceMuscleIdentifier: attachment.muscleIdentifier,
               maximumAbsoluteMuscleForce: observation.maximumAbsoluteMuscleForce,
               acceptedTimestamp: observation.event.timestamp,
-              acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint
+              acceptedPhysicsStateFingerprint: observation.acceptedPhysicsStateFingerprint,
+              fieldActivationTimestamp: targetTimestamp,
+              fieldStateTimestamp: targetTimestamp
             )
           )
         )
@@ -2809,8 +2845,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       attachmentCatalogFingerprint: numanXMuscleAttachmentCatalog?.fingerprint ?? 0,
       bodyCount: numanXMuscleAttachmentCatalog?.bodyCount ?? 0,
       updateCount: UInt32(records.count),
-      reserved0: 0,
-      reserved1: 0
+      targetTimestampMicroseconds: targetTimestamp.rawValue,
+      persistenceMicroseconds: bodyLoadFieldDynamics.persistenceMicroseconds,
+      decayMicroseconds: bodyLoadFieldDynamics.decayMicroseconds
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -3643,6 +3680,27 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+    bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
+    bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
+    bodyLoadFieldArgumentTable.setAddress(
+      bodyLoadFieldStateBuffers[schedulerWindow.inputClockIndex].gpuAddress,
+      index: 2
+    )
+    bodyLoadFieldArgumentTable.setAddress(
+      bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 3
+    )
+    encoder.setComputePipelineState(bodyLoadFieldPipeline)
+    encoder.setArgumentTable(bodyLoadFieldArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
     protectiveMotorArgumentTable.setAddress(
       protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 0
@@ -3661,20 +3719,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveSourceInhibitionMaskBuffer.gpuAddress,
       index: 5
     )
+    protectiveMotorArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 6)
+    protectiveMotorArgumentTable.setAddress(
+      bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 7
+    )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
-    bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
-    bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
-    bodyLoadFieldArgumentTable.setAddress(
-      bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-      index: 2
-    )
-    encoder.setComputePipelineState(bodyLoadFieldPipeline)
-    encoder.setArgumentTable(bodyLoadFieldArgumentTable)
     encoder.dispatchThreads(
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)

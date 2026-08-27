@@ -128,7 +128,89 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.latestCommittedMuscleLoadObservations, [])
     XCTAssertEqual(runtime.latestCommittedBodyLoadFrame?.samples, [])
     XCTAssertEqual(runtime.latestCommittedProtectiveMuscleSelection?.candidates, [])
-    XCTAssertEqual(try runtime.snapshotCommittedBodyLoadField(), [])
+    let retainedBodyLoadField = try runtime.snapshotCommittedBodyLoadField()
+    XCTAssertEqual(retainedBodyLoadField.map(\.bodyIdentifier), [2, 5])
+    XCTAssertEqual(retainedBodyLoadField.map(\.sourceMuscleIdentifier), [100, 100])
+    XCTAssertEqual(
+      retainedBodyLoadField.map(\.effectiveAbsoluteMuscleForce),
+      committedBodyLoad.peakBodyLoadCells.map(\.maximumAbsoluteMuscleForce)
+    )
+    XCTAssertEqual(
+      retainedBodyLoadField.map(\.fieldStateTimestamp),
+      [nextCommit.committedTimestamp, nextCommit.committedTimestamp]
+    )
+    let retainedProtectiveMotor = try runtime.snapshotCommittedProtectiveMotorOutput()
+    XCTAssertTrue(retainedProtectiveMotor.flags.contains(.localizedSourceInhibition))
+    XCTAssertEqual(retainedProtectiveMotor.muscleExcitations[0], 0)
+  }
+
+  func testPrivateBodyLoadFieldPersistsDecaysAndReleasesSourceProtection() throws {
+    try requireMetal4()
+    let dynamics = try BodyLoadFieldDynamics(
+      persistenceMicroseconds: 1_000,
+      decayMicroseconds: 2_000
+    )
+    let runtime = try makeRuntime(
+      maxEncodedSubsteps: 1,
+      bodyLoadFieldDynamics: dynamics
+    )
+    var physicsGeneration: UInt64 = 100
+    var expectedField: [BodyLoadFieldCell] = []
+
+    for rootIndex in 0..<4 {
+      let start = BrainTimestamp(microseconds: UInt64(rootIndex) * 1_000)
+      let target = BrainTimestamp(microseconds: UInt64(rootIndex + 1) * 1_000)
+      var joint = try runtime.beginJointControl(
+        controlStepIdentifier: UInt64(40 + rootIndex),
+        basePhysicsGeneration: physicsGeneration,
+        committedTimestamp: start,
+        targetTimestamp: target
+      )
+      let substep = try joint.beginPhysicsSubstep(durationMicroseconds: 1_000)
+      physicsGeneration += 1
+      let physics = try AcceptedPhysicsStateToken(
+        transaction: joint.token,
+        substep: substep,
+        physicsStateFingerprint: UInt64(0xcafe + rootIndex),
+        physicsGeneration: physicsGeneration
+      )
+      var observations: [LocalizedMuscleLoadReceptorObservation] = []
+      if rootIndex == 0 {
+        observations = [
+          try makeLocalizedMuscleLoad(
+            acceptedPhysicsState: physics,
+            muscleIdentifier: 100,
+            attachmentCatalog: try XCTUnwrap(runtime.numanXMuscleAttachmentCatalog)
+          )
+        ]
+      }
+      try joint.acceptPhysicsSubstep(
+        physics,
+        for: substep,
+        receptorEvents: observations.map(\.event),
+        localizedMuscleLoadObservations: observations
+      )
+      _ = try runtime.runJointRootTransaction(joint)
+      _ = try runtime.commitJointRootTransaction()
+
+      let updates = runtime.latestCommittedBodyLoadFrame?.peakBodyLoadCells ?? []
+      expectedField = try dynamics.advance(
+        previous: expectedField,
+        updates: updates,
+        bodyCount: try XCTUnwrap(runtime.numanXMuscleAttachmentCatalog).bodyCount,
+        targetTimestamp: target
+      )
+      XCTAssertEqual(try runtime.snapshotCommittedBodyLoadField(), expectedField)
+      let motor = try runtime.snapshotCommittedProtectiveMotorOutput()
+      if rootIndex < 3 {
+        XCTAssertTrue(motor.flags.contains(.localizedSourceInhibition))
+        XCTAssertEqual(motor.muscleExcitations[0], 0)
+      } else {
+        XCTAssertFalse(motor.flags.contains(.localizedSourceInhibition))
+      }
+    }
+
+    XCTAssertEqual(expectedField, [])
   }
 
   func testJointMetalAbortPublishesNoBrainHistory() throws {
@@ -872,7 +954,10 @@ final class MetalJointTransactionTests: XCTestCase {
     )
   }
 
-  private func makeRuntime(maxEncodedSubsteps: Int) throws -> MetalTissueRuntime {
+  private func makeRuntime(
+    maxEncodedSubsteps: Int,
+    bodyLoadFieldDynamics: BodyLoadFieldDynamics? = nil
+  ) throws -> MetalTissueRuntime {
     let initial = try CPUTissueDynamics.makeRestingGrid(
       width: 8,
       height: 8,
@@ -903,6 +988,7 @@ final class MetalJointTransactionTests: XCTestCase {
       ),
       protectiveMotorProfile: protectiveMotorProfile,
       numanXMuscleAttachmentCatalog: attachmentCatalog,
+      bodyLoadFieldDynamics: bodyLoadFieldDynamics,
       schedulerEnvironmentIdentifier: 7,
       maxEncodedSubsteps: maxEncodedSubsteps
     )

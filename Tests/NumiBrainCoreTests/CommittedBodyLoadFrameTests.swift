@@ -109,6 +109,45 @@ final class CommittedBodyLoadFrameTests: XCTestCase {
       frame
     )
 
+    let dynamics = try BodyLoadFieldDynamics(
+      persistenceMicroseconds: 10_000,
+      decayMicroseconds: 20_000
+    )
+    let initialField = frame.peakBodyLoadCells
+    XCTAssertEqual(
+      initialField.map(\.fieldActivationTimestamp),
+      [frame.committedTimestamp, frame.committedTimestamp]
+    )
+    let heldField = try dynamics.advance(
+      previous: initialField,
+      updates: [],
+      bodyCount: frame.bodyCount,
+      targetTimestamp: BrainTimestamp(microseconds: 30_000)
+    )
+    XCTAssertEqual(
+      heldField.map(\.effectiveAbsoluteMuscleForce),
+      initialField.map(\.maximumAbsoluteMuscleForce)
+    )
+    let halfDecayedField = try dynamics.advance(
+      previous: heldField,
+      updates: [],
+      bodyCount: frame.bodyCount,
+      targetTimestamp: BrainTimestamp(microseconds: 40_000)
+    )
+    XCTAssertEqual(
+      halfDecayedField.map(\.effectiveAbsoluteMuscleForce),
+      initialField.map { $0.maximumAbsoluteMuscleForce * 0.5 }
+    )
+    XCTAssertEqual(
+      try dynamics.advance(
+        previous: halfDecayedField,
+        updates: [],
+        bodyCount: frame.bodyCount,
+        targetTimestamp: BrainTimestamp(microseconds: 50_000)
+      ),
+      []
+    )
+
     var serialized = try XCTUnwrap(
       JSONSerialization.jsonObject(with: JSONEncoder().encode(frame)) as? [String: Any]
     )
