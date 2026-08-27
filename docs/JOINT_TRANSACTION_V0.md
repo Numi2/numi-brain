@@ -152,11 +152,11 @@ paired with the command generation. The following candidate receives GPU
 addresses and identity metadata for both buffers. Rejection, abort, and commit
 apply to command and excitation generations together.
 
-The standalone interop executable binds the six foundation channels to the
-first six source-tendon identifiers loaded from the NumanX `.nhmyo` asset. The
-ordered identity and output fingerprint therefore match the physical consumer,
-but the gains remain fixtures and the selected subset is not a complete
-species body map.
+The standalone interop executable binds one ordered output channel to every
+source muscle loaded from the NumanX `.nhmyo` asset. The first six retain the
+foundation fixture gains; all later channels are explicit valid zero-rest,
+zero-gain entries. The full 416-record identity and output fingerprint match
+the physical consumer without claiming attachment-aware or learned control.
 
 For each candidate, `NBNumanXMotorCandidate` binds the root and substep
 fingerprints to the accepted brain time/generation and the private motor-header
@@ -187,10 +187,12 @@ covered by deterministic CPU and Metal tests. The interactive and batched
 paths produce exact matching committed tissue, scheduler, recurrent-token,
 delayed-route, and routing-state fingerprints.
 
-The joint-root executable at NumiBrain `20ca7ff` and isolated NumanX `cfcef81`
-passes the actual private excitation allocation to MyoSim, advances an
+The full-muscle joint-root executable at NumiBrain `e44009a` and isolated
+NumanX `949821f` passes the actual ordered 416-channel private excitation
+allocation to MyoSim, advances an
 articulated Core candidate, transduces the accepted peak actuator force with
-its source-tendon identity, changes the next neural output, rejects and exactly
+its source-tendon identity, grows commanded activation from a zero-activation
+start, changes the next neural output, rejects and exactly
 replays one physical candidate, and publishes both roots. Accepted receptor
 events reach the fast scheduler/regional shadow only after physical acceptance
 and before the next candidate; they cannot alter the candidate already
@@ -201,6 +203,7 @@ the only bracket required by the maximum configured delay.
 This remains a reference bridge rather than Phase 1 completion. NumiBrain and
 NumanX synchronize separate Metal queues, the MyoSim result is staged for
 diagnostics, Core articulated integration is CPU-side, and root publication is
-sequential rather than one atomic GPU pointer swap. A full body catalog,
-body-side receptor field, NumanX-generated adaptive substep rejection, shared
-GPU timeline, and composition with voluntary control remain required.
+sequential rather than one atomic GPU pointer swap. Tendon attachment and body
+mapping, a body-side receptor field, NumanX-generated adaptive substep
+rejection, shared GPU timeline, and composition with voluntary control remain
+required.

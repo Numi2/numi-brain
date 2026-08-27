@@ -60,10 +60,10 @@ u_i = \operatorname{clip}\left(
 \]
 
 where `h` is motor inhibition. The bounded joint-root executable connects
-`p_i` directly as the complete excitation for six selected NumanX muscles; it
-does not yet implement this composition with voluntary, CPG, cerebellar, or
-other protective terms. The current runtime owns only `p_i`, `h`, and
-autonomic arousal.
+`p_i` directly as the complete 416-channel NumanX excitation buffer; only its
+first six fixture channels can currently become nonzero. It does not yet
+implement this composition with voluntary, CPG, cerebellar, or other protective
+terms. The current runtime owns only `p_i`, `h`, and autonomic arousal.
 
 ## Metal ownership
 
@@ -102,12 +102,13 @@ accepted candidates, and performs no staging copy or readback. The handles
 remain process-local and transactional: retaining a lease does not authorize a
 consumer to reuse content after the owning generation is recycled.
 
-The standalone interop executable replaces the fixture identifiers with the
-first six source-tendon identifiers loaded from the NumanX `.nhmyo` asset. Its
-gains, flags, and overload threshold remain deterministic fixtures rather than
-anatomy or calibration. Peak actuator-force transduction identifies one tendon,
-but the global protective command still cannot express body-side withdrawal or
-a receptor field.
+The standalone interop executable replaces fixture identifiers with the full
+ordered source-muscle catalog loaded from the NumanX `.nhmyo` asset. The first
+six channels retain deterministic fixture gains; the remaining channels have
+zero neural output gain but retain NumanX passive force. Peak actuator-force
+transduction identifies one tendon, but the global protective command still
+cannot express attachment-aware or body-side withdrawal, and the overload
+threshold is not calibrated.
 
 ## Evidence boundary
 
@@ -115,7 +116,7 @@ Tests establish compiled ABI identity, validation and golden persistent-state fi
 exact CPU/Metal excitation output, accepted next-candidate mapping, rejected
 event silence, abort restoration, commit publication, and transaction-bound
 GPU-address packet validation, exact opaque-buffer identity, and stale-lease
-rejection. They do not establish a complete species catalog, body-side
+rejection. They do not establish tendon attachment/body mapping, a body-side
 localized reflex, species calibration, voluntary movement, motor learning,
 autonomic physiology, biological behavior, or performance qualification.
 
@@ -123,8 +124,8 @@ The isolated NumanX receiver revision recorded in
 `evidence/numanx-myosim-interop-v0.1` consumes a private borrowed excitation
 buffer before MyoSim force evaluation and demonstrates an activation, force,
 and articulated-state consequence on Apple M4 Pro. The later
-`evidence/numanx-joint-root-v0.2` artifact executes the actual NumiBrain producer
-and that receiving path in one Apple M4 process, including tendon-local
-accepted feedback and exact physical retry. It still uses separate command
-queues, staged diagnostics, CPU articulated integration, and sequential root
-publication.
+`evidence/numanx-joint-root-v0.3` artifact executes the actual 416-channel
+NumiBrain producer and that receiving path in one Apple M4 process, including
+tendon-local accepted feedback and exact physical retry. It still uses separate
+command queues, staged diagnostics, CPU articulated integration, and sequential
+root publication. The original selected six-muscle proof remains in v0.2.
