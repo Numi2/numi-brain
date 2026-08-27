@@ -219,6 +219,30 @@ private final class NumanXMyoSimBridge {
 }
 
 @available(macOS 26.0, *)
+private func transduceAcceptedMyoSimEvents(
+  maximumGeneralizedForce: Float,
+  timestamp: BrainTimestamp
+) throws -> [BrainInterruptEvent] {
+  let overloadThreshold: Float = 1
+  guard maximumGeneralizedForce.isFinite, maximumGeneralizedForce >= 0 else {
+    throw NSError(
+      domain: "NumiBrainNumanXInterop",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: "NumanX returned an invalid force observation"]
+    )
+  }
+  guard maximumGeneralizedForce > overloadThreshold else { return [] }
+  return [
+    try BrainInterruptEvent(
+      timestamp: timestamp,
+      mask: .muscleOverload,
+      identifier: 0x4d59_4f53,
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+    )
+  ]
+}
+
+@available(macOS 26.0, *)
 private func run() throws {
   guard CommandLine.arguments.count == 4 else {
     throw NSError(
@@ -288,6 +312,7 @@ private func run() throws {
   var maximumForces = [Float]()
   var retrySubstepFingerprint: UInt64 = 0
   var retryRandomCounterGeneration: UInt64 = 0
+  var transducedMyoSimEventCount = 0
   for candidateIndex in 0..<3 {
     let fast = try runtime.advanceFastSystems(candidateDurationMicroseconds: 1)
     let packet = try NumanXMotorCandidate(transaction: token, fastSystems: fast)
@@ -328,14 +353,11 @@ private func run() throws {
     )
     let events: [BrainInterruptEvent]
     if candidateIndex == 0 {
-      events = [
-        try BrainInterruptEvent(
-          timestamp: BrainTimestamp(microseconds: 1),
-          mask: .lossOfSupport,
-          identifier: 1_001,
-          flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
-        )
-      ]
+      events = try transduceAcceptedMyoSimEvents(
+        maximumGeneralizedForce: physical.force,
+        timestamp: fast.substep.candidateTimestamp
+      )
+      transducedMyoSimEventCount += events.count
     } else {
       events = []
     }
@@ -354,6 +376,7 @@ private func run() throws {
 
   guard bridge.committedGeneration == 3,
     bridge.committedFingerprint == physicalFingerprints.last,
+    transducedMyoSimEventCount == 1,
     maximumExcitations[1] > maximumExcitations[0],
     maximumForces[2] != maximumForces[0]
   else {
@@ -382,7 +405,9 @@ private func run() throws {
     "retry_random_counter_generation": retryRandomCounterGeneration,
     "rejected_candidate_replayed_exactly": true,
     "actual_borrowed_buffer": true,
-    "receptor_interrupt": "loss-of-support",
+    "receptor_interrupt": "muscle-overload",
+    "receptor_event_source": "accepted-numanx-myosim-generalized-force",
+    "receptor_event_threshold": 1,
   ]
   let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
   print(String(decoding: data, as: UTF8.self))
