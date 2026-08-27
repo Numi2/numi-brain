@@ -29,6 +29,12 @@ enum {
   NB_PARAMETER_COMPONENT_BYTE_COUNT = 32,
   NB_PARAMETER_VERSION_BINDING_BYTE_COUNT = 64,
   NB_PARAMETER_MANIFEST_VERSION = 1,
+  NB_COHORT_ENVIRONMENT_BYTE_COUNT = 40,
+  NB_DISPATCH_GROUP_BYTE_COUNT = 24,
+  NB_DISPATCH_ENTRY_BYTE_COUNT = 16,
+  NB_DISPATCH_PLAN_HEADER_BYTE_COUNT = 48,
+  NB_DISPATCH_PLAN_RESULT_BYTE_COUNT = 32,
+  NB_DISPATCH_PLAN_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -229,6 +235,56 @@ typedef struct NBParameterVersionBinding {
   uint64_t total_parameter_bytes;
 } NBParameterVersionBinding;
 
+/// Canonical source-transaction identity for one independent environment.
+typedef struct NBCohortEnvironment {
+  uint32_t environment_identifier;
+  uint32_t invocation_offset;
+  uint32_t invocation_count;
+  uint32_t reserved;
+  uint64_t base_generation;
+  uint64_t base_committed_time_microseconds;
+  uint64_t target_time_microseconds;
+} NBCohortEnvironment;
+
+/// One contiguous timestamp/module group in a flattened cohort plan.
+typedef struct NBDispatchGroup {
+  uint64_t timestamp_microseconds;
+  uint32_t entry_offset;
+  uint32_t entry_count;
+  uint16_t module_id;
+  uint16_t clock_class;
+  uint32_t reserved;
+} NBDispatchGroup;
+
+/// One independent environment contribution to a dispatch group.
+typedef struct NBDispatchEntry {
+  uint64_t interrupt_mask;
+  uint32_t environment_identifier;
+  uint32_t reason_flags;
+} NBDispatchEntry;
+
+/// Content-addressed flattened cohort plan. Source transactions remain
+/// independent; groups share one schedule and immutable parameter version.
+typedef struct NBDispatchPlanHeader {
+  uint64_t schedule_fingerprint;
+  uint64_t parameter_version_fingerprint;
+  uint64_t cohort_fingerprint;
+  uint64_t plan_fingerprint;
+  uint32_t group_count;
+  uint32_t entry_count;
+  uint32_t plan_version;
+  uint32_t flags;
+} NBDispatchPlanHeader;
+
+typedef struct NBDispatchPlanResult {
+  uint32_t group_count;
+  uint32_t entry_count;
+  uint32_t status;
+  uint32_t reserved;
+  uint64_t plan_fingerprint;
+  uint64_t parameter_version_fingerprint;
+} NBDispatchPlanResult;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -313,6 +369,18 @@ typedef enum NBParameterVersionValidation {
   NB_PARAMETER_VERSION_FINGERPRINT = 8,
 } NBParameterVersionValidation;
 
+typedef enum NBDispatchPlanValidation {
+  NB_DISPATCH_PLAN_VALID = 0,
+  NB_DISPATCH_PLAN_NULL = 1,
+  NB_DISPATCH_PLAN_FORMAT = 2,
+  NB_DISPATCH_PLAN_IDENTITY = 3,
+  NB_DISPATCH_PLAN_GROUP_ORDER = 4,
+  NB_DISPATCH_PLAN_ENTRY_LAYOUT = 5,
+  NB_DISPATCH_PLAN_ENTRY_ORDER = 6,
+  NB_DISPATCH_PLAN_ENTRY_VALUE = 7,
+  NB_DISPATCH_PLAN_FINGERPRINT = 8,
+} NBDispatchPlanValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -331,6 +399,11 @@ size_t nb_brain_abi_regional_route_history_state_size(void);
 size_t nb_brain_abi_regional_route_runtime_state_size(void);
 size_t nb_brain_abi_parameter_component_size(void);
 size_t nb_brain_abi_parameter_version_binding_size(void);
+size_t nb_brain_abi_cohort_environment_size(void);
+size_t nb_brain_abi_dispatch_group_size(void);
+size_t nb_brain_abi_dispatch_entry_size(void);
+size_t nb_brain_abi_dispatch_plan_header_size(void);
+size_t nb_brain_abi_dispatch_plan_result_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -391,6 +464,23 @@ uint64_t nb_brain_abi_parameter_version_fingerprint(
 uint32_t nb_brain_abi_validate_parameter_version(
     const NBParameterVersionBinding *binding,
     const NBParameterComponent *components
+);
+
+uint64_t nb_brain_abi_cohort_environment_fingerprint(
+    const NBCohortEnvironment *environments,
+    uint32_t environment_count
+);
+
+uint64_t nb_brain_abi_dispatch_plan_fingerprint(
+    const NBDispatchPlanHeader *header,
+    const NBDispatchGroup *groups,
+    const NBDispatchEntry *entries
+);
+
+uint32_t nb_brain_abi_validate_dispatch_plan(
+    const NBDispatchPlanHeader *header,
+    const NBDispatchGroup *groups,
+    const NBDispatchEntry *entries
 );
 
 #ifdef __cplusplus

@@ -258,6 +258,41 @@ struct NBParameterVersionBindingABI {
     ulong total_parameter_bytes;
 };
 
+struct NBDispatchPlanHeaderABI {
+    ulong schedule_fingerprint;
+    ulong parameter_version_fingerprint;
+    ulong cohort_fingerprint;
+    ulong plan_fingerprint;
+    uint group_count;
+    uint entry_count;
+    uint plan_version;
+    uint flags;
+};
+
+struct NBDispatchGroupABI {
+    ulong timestamp_microseconds;
+    uint entry_offset;
+    uint entry_count;
+    ushort module_id;
+    ushort clock_class;
+    uint reserved;
+};
+
+struct NBDispatchEntryABI {
+    ulong interrupt_mask;
+    uint environment_identifier;
+    uint reason_flags;
+};
+
+struct NBDispatchPlanResultABI {
+    uint group_count;
+    uint entry_count;
+    uint status;
+    uint reserved;
+    ulong plan_fingerprint;
+    ulong parameter_version_fingerprint;
+};
+
 struct NBSchedulerResultABI {
     uint invocation_count;
     uint status;
@@ -355,6 +390,10 @@ static_assert(
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
 static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
+static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI drift");
+static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
+static_assert(sizeof(NBDispatchEntryABI) == 16, "dispatch entry ABI drift");
+static_assert(sizeof(NBDispatchPlanResultABI) == 32, "dispatch result ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
@@ -374,6 +413,10 @@ constant uint NBSchedulerStatusEventTransduction = 3u;
 constant uint NBSchedulerStatusParameterVersion = 4u;
 constant uint NBSchedulerStatusRegionalProgram = 5u;
 constant uint NBParameterManifestVersion = 1u;
+constant uint NBDispatchPlanVersion = 1u;
+constant uint NBDispatchPlanStatusValid = 0u;
+constant uint NBDispatchPlanStatusIdentity = 1u;
+constant uint NBDispatchPlanStatusCapacity = 2u;
 constant uint NBReceptorTransductionStatusValid = 0u;
 constant uint NBReceptorTransductionStatusEventCapacity = 1u;
 constant uint NBReceptorTransductionStatusTimeOverflow = 2u;
@@ -393,6 +436,68 @@ inline bool interrupt_event_less(
         return lhs.interrupt_mask < rhs.interrupt_mask;
     }
     return lhs.flags < rhs.flags;
+}
+
+/// Materializes one already compiled active-module cohort plan into private
+/// region-major dispatch buffers. One grid row owns one timestamp/module group;
+/// columns copy its independent active-environment entries without atomics.
+kernel void materialize_dispatch_plan(
+    device const NBDispatchPlanHeaderABI *header [[buffer(0)]],
+    device const NBDispatchGroupABI *inputGroups [[buffer(1)]],
+    device const NBDispatchEntryABI *inputEntries [[buffer(2)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(3)]],
+    device NBDispatchGroupABI *outputGroups [[buffer(4)]],
+    device NBDispatchEntryABI *outputEntries [[buffer(5)]],
+    device NBDispatchPlanResultABI *result [[buffer(6)]],
+    uint2 position [[thread_position_in_grid]]
+) {
+    const uint groupIndex = position.y;
+    if (groupIndex >= header->group_count) {
+        return;
+    }
+    if (groupIndex == 0u && position.x == 0u) {
+        result->group_count = header->group_count;
+        result->entry_count = header->entry_count;
+        result->status = NBDispatchPlanStatusValid;
+        result->reserved = 0u;
+        result->plan_fingerprint = header->plan_fingerprint;
+        result->parameter_version_fingerprint = header->parameter_version_fingerprint;
+        if (header->plan_version != NBDispatchPlanVersion
+            || header->flags != 0u
+            || header->group_count == 0u
+            || header->entry_count == 0u
+            || header->plan_fingerprint == 0ul
+            || header->cohort_fingerprint == 0ul
+            || parameterVersion->format_version != NBParameterManifestVersion
+            || header->parameter_version_fingerprint
+                != parameterVersion->version_fingerprint
+            || header->schedule_fingerprint
+                != parameterVersion->schedule_fingerprint) {
+            result->status = NBDispatchPlanStatusIdentity;
+        } else {
+            for (uint index = 0u; index < header->group_count; ++index) {
+                const NBDispatchGroupABI candidate = inputGroups[index];
+                if (candidate.entry_offset > header->entry_count
+                    || candidate.entry_count
+                        > header->entry_count - candidate.entry_offset) {
+                    result->status = NBDispatchPlanStatusCapacity;
+                    break;
+                }
+            }
+        }
+    }
+    const NBDispatchGroupABI group = inputGroups[groupIndex];
+    if (position.x == 0u) {
+        outputGroups[groupIndex] = group;
+    }
+    if (group.entry_offset > header->entry_count
+        || group.entry_count > header->entry_count - group.entry_offset) {
+        return;
+    }
+    if (position.x < group.entry_count) {
+        const uint entryIndex = group.entry_offset + position.x;
+        outputEntries[entryIndex] = inputEntries[entryIndex];
+    }
 }
 
 /// Converts immutable receptor-event onsets into the scheduler's compact

@@ -30,6 +30,11 @@ static_assert(sizeof(NBRegionalRouteHistoryState) == NB_REGIONAL_ROUTE_HISTORY_S
 static_assert(sizeof(NBRegionalRouteRuntimeState) == NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT);
 static_assert(sizeof(NBParameterComponent) == NB_PARAMETER_COMPONENT_BYTE_COUNT);
 static_assert(sizeof(NBParameterVersionBinding) == NB_PARAMETER_VERSION_BINDING_BYTE_COUNT);
+static_assert(sizeof(NBCohortEnvironment) == NB_COHORT_ENVIRONMENT_BYTE_COUNT);
+static_assert(sizeof(NBDispatchGroup) == NB_DISPATCH_GROUP_BYTE_COUNT);
+static_assert(sizeof(NBDispatchEntry) == NB_DISPATCH_ENTRY_BYTE_COUNT);
+static_assert(sizeof(NBDispatchPlanHeader) == NB_DISPATCH_PLAN_HEADER_BYTE_COUNT);
+static_assert(sizeof(NBDispatchPlanResult) == NB_DISPATCH_PLAN_RESULT_BYTE_COUNT);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -141,6 +146,26 @@ size_t nb_brain_abi_parameter_component_size(void) {
 
 size_t nb_brain_abi_parameter_version_binding_size(void) {
   return sizeof(NBParameterVersionBinding);
+}
+
+size_t nb_brain_abi_cohort_environment_size(void) {
+  return sizeof(NBCohortEnvironment);
+}
+
+size_t nb_brain_abi_dispatch_group_size(void) {
+  return sizeof(NBDispatchGroup);
+}
+
+size_t nb_brain_abi_dispatch_entry_size(void) {
+  return sizeof(NBDispatchEntry);
+}
+
+size_t nb_brain_abi_dispatch_plan_header_size(void) {
+  return sizeof(NBDispatchPlanHeader);
+}
+
+size_t nb_brain_abi_dispatch_plan_result_size(void) {
+  return sizeof(NBDispatchPlanResult);
 }
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void) {
@@ -616,4 +641,132 @@ uint32_t nb_brain_abi_validate_parameter_version(
     return NB_PARAMETER_VERSION_FINGERPRINT;
   }
   return NB_PARAMETER_VERSION_VALID;
+}
+
+uint64_t nb_brain_abi_cohort_environment_fingerprint(
+    const NBCohortEnvironment *environments,
+    uint32_t environment_count
+) {
+  if (environment_count > 0 && environments == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_DISPATCH_PLAN_VERSION));
+  mix_little_endian(hash, environment_count);
+  for (uint32_t index = 0; index < environment_count; ++index) {
+    const NBCohortEnvironment &environment = environments[index];
+    mix_little_endian(hash, environment.environment_identifier);
+    mix_little_endian(hash, environment.invocation_offset);
+    mix_little_endian(hash, environment.invocation_count);
+    mix_little_endian(hash, environment.reserved);
+    mix_little_endian(hash, environment.base_generation);
+    mix_little_endian(hash, environment.base_committed_time_microseconds);
+    mix_little_endian(hash, environment.target_time_microseconds);
+  }
+  return hash;
+}
+
+uint64_t nb_brain_abi_dispatch_plan_fingerprint(
+    const NBDispatchPlanHeader *header,
+    const NBDispatchGroup *groups,
+    const NBDispatchEntry *entries
+) {
+  if (header == nullptr
+      || (header->group_count > 0 && groups == nullptr)
+      || (header->entry_count > 0 && entries == nullptr)) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, header->schedule_fingerprint);
+  mix_little_endian(hash, header->parameter_version_fingerprint);
+  mix_little_endian(hash, header->cohort_fingerprint);
+  mix_little_endian(hash, header->group_count);
+  mix_little_endian(hash, header->entry_count);
+  mix_little_endian(hash, header->plan_version);
+  mix_little_endian(hash, header->flags);
+  for (uint32_t index = 0; index < header->group_count; ++index) {
+    const NBDispatchGroup &group = groups[index];
+    mix_little_endian(hash, group.timestamp_microseconds);
+    mix_little_endian(hash, group.entry_offset);
+    mix_little_endian(hash, group.entry_count);
+    mix_little_endian(hash, group.module_id);
+    mix_little_endian(hash, group.clock_class);
+    mix_little_endian(hash, group.reserved);
+  }
+  for (uint32_t index = 0; index < header->entry_count; ++index) {
+    const NBDispatchEntry &entry = entries[index];
+    mix_little_endian(hash, entry.interrupt_mask);
+    mix_little_endian(hash, entry.environment_identifier);
+    mix_little_endian(hash, entry.reason_flags);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_dispatch_plan(
+    const NBDispatchPlanHeader *header,
+    const NBDispatchGroup *groups,
+    const NBDispatchEntry *entries
+) {
+  if (header == nullptr
+      || (header->group_count > 0 && groups == nullptr)
+      || (header->entry_count > 0 && entries == nullptr)) {
+    return NB_DISPATCH_PLAN_NULL;
+  }
+  if (header->plan_version != NB_DISPATCH_PLAN_VERSION || header->flags != 0) {
+    return NB_DISPATCH_PLAN_FORMAT;
+  }
+  if (header->schedule_fingerprint == 0
+      || header->parameter_version_fingerprint == 0
+      || header->cohort_fingerprint == 0) {
+    return NB_DISPATCH_PLAN_IDENTITY;
+  }
+  uint32_t expected_entry_offset = 0;
+  for (uint32_t group_index = 0; group_index < header->group_count; ++group_index) {
+    const NBDispatchGroup &group = groups[group_index];
+    if (group.module_id == 0 || group.entry_count == 0 || group.reserved != 0) {
+      return NB_DISPATCH_PLAN_ENTRY_LAYOUT;
+    }
+    if (group.entry_offset != expected_entry_offset
+        || group.entry_offset > header->entry_count
+        || group.entry_count > header->entry_count - group.entry_offset) {
+      return NB_DISPATCH_PLAN_ENTRY_LAYOUT;
+    }
+    if (group_index > 0) {
+      const NBDispatchGroup &previous = groups[group_index - 1];
+      const bool ordered = group.timestamp_microseconds > previous.timestamp_microseconds
+          || (group.timestamp_microseconds == previous.timestamp_microseconds
+              && (group.clock_class > previous.clock_class
+                  || (group.clock_class == previous.clock_class
+                      && group.module_id > previous.module_id)));
+      if (!ordered) {
+        return NB_DISPATCH_PLAN_GROUP_ORDER;
+      }
+    }
+    uint32_t previous_environment = 0;
+    for (uint32_t entry_index = group.entry_offset;
+         entry_index < group.entry_offset + group.entry_count;
+         ++entry_index) {
+      const NBDispatchEntry &entry = entries[entry_index];
+      if (entry_index > group.entry_offset
+          && entry.environment_identifier <= previous_environment) {
+        return NB_DISPATCH_PLAN_ENTRY_ORDER;
+      }
+      if (entry.reason_flags == 0 || (entry.reason_flags & ~3U) != 0U
+          || (((entry.reason_flags & 2U) != 0U) != (entry.interrupt_mask != 0))) {
+        return NB_DISPATCH_PLAN_ENTRY_VALUE;
+      }
+      previous_environment = entry.environment_identifier;
+    }
+    expected_entry_offset += group.entry_count;
+  }
+  if (expected_entry_offset != header->entry_count
+      || (header->group_count == 0 && header->entry_count != 0)) {
+    return NB_DISPATCH_PLAN_ENTRY_LAYOUT;
+  }
+  if (header->plan_fingerprint == 0
+      || header->plan_fingerprint
+          != nb_brain_abi_dispatch_plan_fingerprint(header, groups, entries)) {
+    return NB_DISPATCH_PLAN_FINGERPRINT;
+  }
+  return NB_DISPATCH_PLAN_VALID;
 }

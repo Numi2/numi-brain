@@ -663,6 +663,16 @@ public struct BrainDispatchEntry: Codable, Equatable, Sendable {
   public let environmentIdentifier: UInt32
   public let reasons: BrainInvocationReason
   public let interruptMask: BrainInterruptMask
+
+  public init(
+    environmentIdentifier: UInt32,
+    reasons: BrainInvocationReason,
+    interruptMask: BrainInterruptMask
+  ) {
+    self.environmentIdentifier = environmentIdentifier
+    self.reasons = reasons
+    self.interruptMask = interruptMask
+  }
 }
 
 @frozen
@@ -671,6 +681,18 @@ public struct BrainDispatchGroup: Codable, Equatable, Sendable {
   public let moduleIdentifier: UInt16
   public let clockClass: BrainClockClass
   public let entries: [BrainDispatchEntry]
+
+  public init(
+    timestamp: BrainTimestamp,
+    moduleIdentifier: UInt16,
+    clockClass: BrainClockClass,
+    entries: [BrainDispatchEntry]
+  ) {
+    self.timestamp = timestamp
+    self.moduleIdentifier = moduleIdentifier
+    self.clockClass = clockClass
+    self.entries = entries
+  }
 }
 
 public enum BrainSchedulerCohort {
