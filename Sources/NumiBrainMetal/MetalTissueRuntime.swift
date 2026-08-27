@@ -170,7 +170,6 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     var acceptedTimeMilliseconds: Float
     var candidate: InteractiveCandidate?
     var firstGPUStartSeconds: Double?
-    var lastGPUEndSeconds: Double?
   }
 
   private var interactiveJointRoot: InteractiveJointRoot?
@@ -1396,8 +1395,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       historyStep: committedStep,
       acceptedTimeMilliseconds: startMilliseconds,
       candidate: nil,
-      firstGPUStartSeconds: nil,
-      lastGPUEndSeconds: nil
+      firstGPUStartSeconds: nil
     )
     return transaction.token
   }
@@ -1415,6 +1413,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard root.candidate == nil else {
       throw TissueError.transaction("accept or reject the active neural candidate first")
     }
+    guard root.transaction.acceptedSubstepCount < UInt32(TissueDelayField.historyCapacity) else {
+      throw TissueError.transaction(
+        "interactive root exhausted its \(TissueDelayField.historyCapacity)-slot delayed history"
+      )
+    }
     let fixedDuration = try schedulerTimestamp(
       milliseconds: parameters.timestepMilliseconds
     ).rawValue
@@ -1427,6 +1430,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let substep = try transaction.beginPhysicsSubstep(
       durationMicroseconds: candidateDurationMicroseconds
     )
+    guard substep.candidateTimestamp <= transaction.token.targetTimestamp else {
+      throw TissueError.transaction("interactive candidate would overshoot the root target")
+    }
     guard
       substep.startTimestamp.rawValue
         == (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds).rawValue)
@@ -1501,7 +1507,6 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       historyWritePlane: historyWritePlane
     )
     root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartTime
-    root.lastGPUEndSeconds = feedback.gpuEndTime
     interactiveJointRoot = root
     return FastSystemResult(
       substep: substep,
@@ -1592,7 +1597,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         "an interactive root cannot accept more than \(TissueDelayField.historyCapacity) delayed substeps"
       )
     }
-    guard root.historyStep == committedStep + UInt64(transaction.acceptedSubstepCount),
+    let (expectedHistoryStep, historyOverflow) = committedStep.addingReportingOverflow(
+      UInt64(transaction.acceptedSubstepCount)
+    )
+    guard !historyOverflow, root.historyStep == expectedHistoryStep,
       (try schedulerTimestamp(milliseconds: root.acceptedTimeMilliseconds))
         == token.targetTimestamp
     else {
@@ -1781,7 +1789,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     var historyStep = committedStep
 
     for attempt in acceptedSubsteps.indices {
-      let nextHistoryStep = historyStep + 1
+      let (nextHistoryStep, historyOverflow) = historyStep.addingReportingOverflow(1)
+      guard !historyOverflow else {
+        throw TissueError.transaction("tissue history step overflows UInt64")
+      }
       let historyWriteSlot = Int(
         nextHistoryStep % UInt64(TissueDelayField.historyCapacity)
       )
@@ -1876,138 +1887,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
-      receptorInterruptArgumentTable.setAddress(
-        receptorEventTransductionUniformBuffer.gpuAddress,
-        index: 0
-      )
-      receptorInterruptArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
-      receptorInterruptArgumentTable.setAddress(
-        schedulerEventUploadBuffer.gpuAddress,
-        index: 2
-      )
-      receptorInterruptArgumentTable.setAddress(
-        transducedSchedulerEventBuffer.gpuAddress,
-        index: 3
-      )
-      receptorInterruptArgumentTable.setAddress(
-        receptorEventTransductionResultBuffer.gpuAddress,
-        index: 4
-      )
-      encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
-      encoder.setArgumentTable(receptorInterruptArgumentTable)
-      encoder.dispatchThreads(
-        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-      )
-      encoder.barrier(
-        afterEncoderStages: .dispatch,
-        beforeEncoderStages: .dispatch,
-        visibilityOptions: .device
-      )
-      schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
-      schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
-      schedulerArgumentTable.setAddress(
-        schedulerClockBuffers[schedulerWindow.inputClockIndex].gpuAddress,
-        index: 2
-      )
-      schedulerArgumentTable.setAddress(
-        schedulerClockBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 3
-      )
-      schedulerArgumentTable.setAddress(transducedSchedulerEventBuffer.gpuAddress, index: 4)
-      schedulerArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 5)
-      schedulerArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 6)
-      schedulerArgumentTable.setAddress(
-        receptorEventTransductionResultBuffer.gpuAddress,
-        index: 7
-      )
-      schedulerArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 8)
-      encoder.setComputePipelineState(schedulerPipeline)
-      encoder.setArgumentTable(schedulerArgumentTable)
-      encoder.dispatchThreads(
-        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-      )
-      encoder.barrier(
-        afterEncoderStages: .dispatch,
-        beforeEncoderStages: .dispatch,
-        visibilityOptions: .device
-      )
-      regionalArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
-      regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
-      regionalArgumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 2)
-      regionalArgumentTable.setAddress(regionalRouteBuffer.gpuAddress, index: 3)
-      regionalArgumentTable.setAddress(regionalParameterBuffer.gpuAddress, index: 4)
-      regionalArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 5)
-      regionalArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 6)
-      regionalArgumentTable.setAddress(
-        regionalStateBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 7
-      )
-      regionalArgumentTable.setAddress(
-        regionalStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 8
-      )
-      regionalArgumentTable.setAddress(
-        regionalTokenStateBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 9
-      )
-      regionalArgumentTable.setAddress(
-        regionalTokenStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 10
-      )
-      regionalArgumentTable.setAddress(regionalTokenCandidateBuffer.gpuAddress, index: 11)
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryStateBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 12
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 13
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryTimestampBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 14
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryTimestampBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 15
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryValueBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 16
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteHistoryValueBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 17
-      )
-      regionalArgumentTable.setAddress(
-        regionalResolvedRouteHistorySlotBuffer.gpuAddress,
-        index: 18
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteRuntimeStateBuffers[committedRegionalStateIndex].gpuAddress,
-        index: 19
-      )
-      regionalArgumentTable.setAddress(
-        regionalRouteRuntimeStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
-        index: 20
-      )
-      regionalArgumentTable.setAddress(
-        regionalSelectedRouteIndexBuffer.gpuAddress,
-        index: 21
-      )
-      regionalArgumentTable.setAddress(
-        regionalSelectedRouteCountBuffer.gpuAddress,
-        index: 22
-      )
-      regionalArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 23)
-      encoder.setComputePipelineState(regionalPipeline)
-      encoder.setArgumentTable(regionalArgumentTable)
-      encoder.dispatchThreads(
-        threadsPerGrid: regionalThreadgroupSize(),
-        threadsPerThreadgroup: regionalThreadgroupSize()
-      )
+      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     }
     pendingRootShadowIndex = finalRootShadowIndex
     pendingRootShadowOwnerMask = finalHistoryOwnerMask

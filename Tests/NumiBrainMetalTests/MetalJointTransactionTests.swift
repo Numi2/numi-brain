@@ -134,6 +134,45 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(runtime.schedulerCommittedGeneration, 0)
     XCTAssertNil(runtime.schedulerCommittedTimestamp)
     XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
+
+    let acceptedAbortToken = try runtime.beginInteractiveJointControl(
+      controlStepIdentifier: 5,
+      basePhysicsGeneration: 100,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 2_000)
+    )
+    let acceptedCandidate = try runtime.advanceFastSystems(
+      candidateDurationMicroseconds: 1_000
+    )
+    let acceptedPhysics = try AcceptedPhysicsStateToken(
+      transaction: acceptedAbortToken,
+      substep: acceptedCandidate.substep,
+      physicsStateFingerprint: 0xabc1,
+      physicsGeneration: 101
+    )
+    try runtime.acceptPhysicsSubstep(
+      acceptedPhysics,
+      for: acceptedCandidate.substep
+    )
+    try runtime.abortInteractiveJointControl()
+
+    XCTAssertFalse(runtime.hasOpenInteractiveJointControl)
+    XCTAssertEqual(runtime.committedStep, 0)
+    XCTAssertEqual(runtime.schedulerCommittedGeneration, 0)
+    XCTAssertNil(runtime.schedulerCommittedTimestamp)
+    XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
+
+    _ = try runtime.beginInteractiveJointControl(
+      controlStepIdentifier: 6,
+      basePhysicsGeneration: 100,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 500)
+    )
+    XCTAssertThrowsError(
+      try runtime.advanceFastSystems(candidateDurationMicroseconds: 1_000)
+    )
+    try runtime.abortInteractiveJointControl()
+    XCTAssertEqual(try runtime.snapshotCommitted().stableHash(), before)
   }
 
   func testInteractiveJointCandidatesMatchBatchedLedgerExactly() throws {
