@@ -429,6 +429,7 @@ private func run() throws {
       episodeIdentifier: 23
     ),
     protectiveMotorProfile: motorProfile,
+    numanXMuscleAttachmentCatalog: bridge.attachmentCatalog,
     schedulerEnvironmentIdentifier: 7,
     maxEncodedSubsteps: 3
   )
@@ -567,7 +568,8 @@ private func run() throws {
       bridge.attachmentCatalog.attachment(forMuscleIdentifier: $0)
     }
 
-  guard bridge.committedGeneration == 3,
+  guard let committedBodyLoadFrame = runtime.latestCommittedBodyLoadFrame,
+    bridge.committedGeneration == 3,
     bridge.committedFingerprint == physicalFingerprints.last,
     transducedMyoSimEventCount == 1,
     maximumExcitations[1] > maximumExcitations[0],
@@ -587,6 +589,22 @@ private func run() throws {
       == maximumForceAttachments[0],
     runtime.latestCommittedMuscleLoadObservations[0].maximumAbsoluteMuscleForce
       == maximumMuscleForces[0],
+    committedBodyLoadFrame.jointCommitFingerprint == brainCommit.fingerprint,
+    committedBodyLoadFrame.attachmentCatalogFingerprint
+      == bridge.attachmentCatalog.fingerprint,
+    committedBodyLoadFrame.samples.count == 2,
+    committedBodyLoadFrame.affectedBodyIdentifiers
+      == [
+        min(
+          maximumForceAttachments[0].firstBodyIdentifier,
+          maximumForceAttachments[0].terminalBodyIdentifier
+        ),
+        max(
+          maximumForceAttachments[0].firstBodyIdentifier,
+          maximumForceAttachments[0].terminalBodyIdentifier
+        ),
+      ],
+    committedBodyLoadFrame.maximumAbsoluteMuscleForce == maximumMuscleForces[0],
     maximumVelocityDeltas.allSatisfy({ $0 > 0 }),
     maximumConfigurationDeltas.allSatisfy({ $0 > 0 })
   else {
@@ -652,6 +670,10 @@ private func run() throws {
       runtime.latestCommittedMuscleLoadObservations.count,
     "committed_localized_muscle_load_catalog_fingerprint":
       runtime.latestCommittedMuscleLoadObservations[0].attachmentCatalogFingerprint,
+    "committed_body_load_frame_fingerprint": committedBodyLoadFrame.fingerprint,
+    "committed_body_load_sample_count": committedBodyLoadFrame.samples.count,
+    "committed_body_load_body_identifiers": committedBodyLoadFrame.affectedBodyIdentifiers,
+    "committed_body_load_maximum_force": committedBodyLoadFrame.maximumAbsoluteMuscleForce,
     "numanx_muscle_count": bridge.muscleIdentifiers.count,
     "numanx_muscle_identifiers": bridge.muscleIdentifiers,
     "numanx_motor_profile_fingerprint": motorProfile.fingerprint,

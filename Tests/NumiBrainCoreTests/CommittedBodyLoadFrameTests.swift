@@ -1,0 +1,121 @@
+import Foundation
+import XCTest
+
+@testable import NumiBrainCore
+
+final class CommittedBodyLoadFrameTests: XCTestCase {
+  func testFrameCanonicalizesEndpointLoadsAndRetainsCommitProvenance() throws {
+    let firstAttachment = try NumanXMuscleAttachment(
+      muscleIdentifier: 10,
+      firstBodyIdentifier: 4,
+      terminalBodyIdentifier: 2,
+      routeNodeCount: 3,
+      firstLocalPoint: try NumanXBodyLocalPoint(x: 0.1, y: 0.2, z: 0.3),
+      terminalLocalPoint: try NumanXBodyLocalPoint(x: 0.4, y: 0.5, z: 0.6)
+    )
+    let secondAttachment = try NumanXMuscleAttachment(
+      muscleIdentifier: 11,
+      firstBodyIdentifier: 2,
+      terminalBodyIdentifier: 2,
+      routeNodeCount: 2,
+      firstLocalPoint: try NumanXBodyLocalPoint(x: 0.7, y: 0.8, z: 0.9),
+      terminalLocalPoint: try NumanXBodyLocalPoint(x: 1, y: 1.1, z: 1.2)
+    )
+    let catalog = try NumanXMuscleAttachmentCatalog(
+      bodyCount: 6,
+      attachments: [firstAttachment, secondAttachment]
+    )
+    let root = try BrainJointTransactionToken(
+      environmentIdentifier: 7,
+      episodeIdentifier: 8,
+      controlStepIdentifier: 9,
+      parameterVersionFingerprint: 10,
+      baseBrainGeneration: 20,
+      basePhysicsGeneration: 30,
+      committedTimestamp: BrainTimestamp(microseconds: 0),
+      targetTimestamp: BrainTimestamp(microseconds: 20_000),
+      randomCounterGeneration: 40
+    )
+    var transaction = BrainJointTransaction(token: root)
+    let transducer = try MuscleLoadReceptorTransducer(overloadThreshold: 1)
+    var observations: [LocalizedMuscleLoadReceptorObservation] = []
+    for (index, muscleIdentifier, force) in [(1, UInt32(10), Float(8)), (2, 11, 5)] {
+      let substep = try transaction.beginPhysicsSubstep(durationMicroseconds: 10_000)
+      let accepted = try AcceptedPhysicsStateToken(
+        transaction: root,
+        substep: substep,
+        physicsStateFingerprint: UInt64(100 + index),
+        physicsGeneration: UInt64(30 + index)
+      )
+      let observation = try XCTUnwrap(
+        transducer.transduceLocalized(
+          maximumAbsoluteMuscleForce: force,
+          acceptedPhysicsState: accepted,
+          muscleIdentifier: muscleIdentifier,
+          attachmentCatalog: catalog
+        )
+      )
+      try transaction.acceptPhysicsSubstep(
+        accepted,
+        for: substep,
+        receptorEvents: [observation.event],
+        localizedMuscleLoadObservations: [observation]
+      )
+      observations.append(observation)
+    }
+    let commit = try transaction.commit()
+    let frame = try CommittedBodyLoadFrame(
+      commit: commit,
+      attachmentCatalog: catalog,
+      observations: Array(observations.reversed())
+    )
+
+    XCTAssertEqual(frame.jointCommitFingerprint, commit.fingerprint)
+    XCTAssertEqual(frame.committedTimestamp, BrainTimestamp(microseconds: 20_000))
+    XCTAssertEqual(frame.brainGeneration, 21)
+    XCTAssertEqual(frame.attachmentCatalogFingerprint, catalog.fingerprint)
+    XCTAssertEqual(frame.bodyCount, 6)
+    XCTAssertEqual(frame.affectedBodyIdentifiers, [2, 4])
+    XCTAssertEqual(frame.maximumAbsoluteMuscleForce, 8)
+    XCTAssertEqual(frame.samples.count, 3)
+    XCTAssertEqual(frame.samples.map(\.bodyIdentifier), [2, 2, 4])
+    XCTAssertEqual(frame.samples.map(\.sourceMuscleIdentifier), [10, 11, 10])
+    XCTAssertEqual(frame.samples[0].endpointRole, .terminalRouteEndpoint)
+    XCTAssertEqual(
+      frame.samples[1].endpointRole,
+      [.firstRouteEndpoint, .terminalRouteEndpoint]
+    )
+    XCTAssertEqual(frame.samples(forBodyIdentifier: 2).count, 2)
+    XCTAssertTrue(frame.samples(forBodyIdentifier: 3).isEmpty)
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        CommittedBodyLoadFrame.self,
+        from: JSONEncoder().encode(frame)
+      ),
+      frame
+    )
+
+    var serialized = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(frame)) as? [String: Any]
+    )
+    serialized["fingerprint"] = 1
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(
+        CommittedBodyLoadFrame.self,
+        from: JSONSerialization.data(withJSONObject: serialized)
+      )
+    )
+
+    let mismatchedCatalog = try NumanXMuscleAttachmentCatalog(
+      bodyCount: 6,
+      attachments: [firstAttachment]
+    )
+    XCTAssertThrowsError(
+      try CommittedBodyLoadFrame(
+        commit: commit,
+        attachmentCatalog: mismatchedCatalog,
+        observations: observations
+      )
+    )
+  }
+}

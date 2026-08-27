@@ -126,6 +126,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public private(set) var committedStep: UInt64 = 0
   public private(set) var latestCommittedMuscleLoadObservations:
     [LocalizedMuscleLoadReceptorObservation] = []
+  public private(set) var latestCommittedBodyLoadFrame: CommittedBodyLoadFrame?
 
   private let device: any MTLDevice
   private let commandQueue: any MTL4CommandQueue
@@ -215,6 +216,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveCommandByteCount = ProtectiveMotorCommand.byteCount
   public let protectiveCommandUniformByteCount = MemoryLayout<ProtectiveCommandUniforms>.stride
   public let protectiveMotorProfile: ProtectiveMotorProfile
+  public let numanXMuscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
   public let protectiveMotorProfileByteCount: Int
   public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
   public let protectiveMuscleExcitationByteCount: Int
@@ -277,6 +279,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     initialRegionalTokenValues requestedInitialRegionalTokenValues: [Float]? = nil,
     initialRegionalRoutingState requestedInitialRegionalRoutingState: RegionalRoutingState? = nil,
     protectiveMotorProfile requestedProtectiveMotorProfile: ProtectiveMotorProfile? = nil,
+    numanXMuscleAttachmentCatalog requestedNumanXMuscleAttachmentCatalog:
+      NumanXMuscleAttachmentCatalog? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -386,6 +390,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectiveMotorProfile =
       try requestedProtectiveMotorProfile
       ?? ProtectiveMotorProfile.runtimeFoundationFixture()
+    if let requestedNumanXMuscleAttachmentCatalog {
+      do {
+        try requestedNumanXMuscleAttachmentCatalog.validate(
+          profile: protectiveMotorProfile
+        )
+      } catch {
+        throw TissueError.metal(
+          "NumanX attachment catalog does not match the protective profile: \(error)"
+        )
+      }
+    }
     guard maxEncodedSubsteps > 0 else {
       throw TissueError.metal("maxEncodedSubsteps must be positive")
     }
@@ -1185,6 +1200,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalTokenProgram = regionalTokenProgram
     self.parameterVersion = parameterVersion
     self.protectiveMotorProfile = protectiveMotorProfile
+    self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
     self.maxEncodedSubsteps = maxEncodedSubsteps
@@ -1896,6 +1912,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("stale or missing interactive neural candidate")
     }
+    try validateLocalizedMuscleLoadObservations(localizedMuscleLoadObservations)
     var transaction = root.transaction
     try transaction.acceptPhysicsSubstep(
       accepted,
@@ -2457,10 +2474,46 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let localizedMuscleLoadObservations = transaction.resolutions.lazy
       .filter(\.isAccepted)
       .flatMap(\.localizedMuscleLoadObservations)
+    let localizedObservations = Array(localizedMuscleLoadObservations)
+    let bodyLoadFrame: CommittedBodyLoadFrame?
+    if let numanXMuscleAttachmentCatalog {
+      bodyLoadFrame = try CommittedBodyLoadFrame(
+        commit: receipt,
+        attachmentCatalog: numanXMuscleAttachmentCatalog,
+        observations: localizedObservations
+      )
+    } else {
+      guard localizedObservations.isEmpty else {
+        throw TissueError.transaction(
+          "localized muscle-load feedback requires a bound NumanX attachment catalog"
+        )
+      }
+      bodyLoadFrame = nil
+    }
     try publishRootTransaction()
-    latestCommittedMuscleLoadObservations = Array(localizedMuscleLoadObservations)
+    latestCommittedMuscleLoadObservations = localizedObservations
+    latestCommittedBodyLoadFrame = bodyLoadFrame
     pendingJointTransaction = nil
     return receipt
+  }
+
+  private func validateLocalizedMuscleLoadObservations(
+    _ observations: [LocalizedMuscleLoadReceptorObservation]
+  ) throws {
+    guard !observations.isEmpty else { return }
+    guard let numanXMuscleAttachmentCatalog,
+      observations.allSatisfy({ observation in
+        observation.attachmentCatalogFingerprint
+          == numanXMuscleAttachmentCatalog.fingerprint
+          && numanXMuscleAttachmentCatalog.attachment(
+            forMuscleIdentifier: observation.attachment.muscleIdentifier
+          ) == observation.attachment
+      })
+    else {
+      throw TissueError.transaction(
+        "localized muscle-load feedback does not match the bound attachment catalog"
+      )
+    }
   }
 
   private func publishRootTransaction() throws {
