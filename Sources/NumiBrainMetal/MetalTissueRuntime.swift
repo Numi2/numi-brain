@@ -31,6 +31,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let uniformBuffer: any MTLBuffer
+  private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
 
   private var committedIndex = 0
@@ -104,7 +105,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       guard
         let buffer = device.makeBuffer(
           length: stateByteCount,
-          options: [.storageModeShared, .hazardTrackingModeTracked]
+          options: [.storageModePrivate, .hazardTrackingModeTracked]
         )
       else {
         throw TissueError.metal("failed to allocate state generation \(index)")
@@ -122,10 +123,19 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to allocate the substep uniform arena")
     }
     uniformBuffer.label = "NumiBrain tissue substep uniforms"
+    guard
+      let stagingBuffer = device.makeBuffer(
+        length: stateByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate the explicit upload/inspection buffer")
+    }
+    stagingBuffer.label = "NumiBrain tissue upload and inspection staging"
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 1
+    residencyDescriptor.initialCapacity = stateBuffers.count + 2
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -136,6 +146,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       residencySet.addAllocation(buffer)
     }
     residencySet.addAllocation(uniformBuffer)
+    residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
 
@@ -154,14 +165,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.uniformBuffer = uniformBuffer
+    self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
 
-    for buffer in stateBuffers {
-      initialState.cells.withUnsafeBytes { sourceBytes in
-        guard let source = sourceBytes.baseAddress else { return }
-        buffer.contents().copyMemory(from: source, byteCount: stateByteCount)
-      }
+    initialState.cells.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: stateByteCount)
     }
+    try copy(
+      source: stagingBuffer,
+      destination: stateBuffers[committedIndex],
+      label: "NumiBrain tissue initial upload"
+    )
   }
 
   deinit {
@@ -216,65 +231,37 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       }
     }
 
-    commandAllocator.reset()
-    commandBuffer.beginCommandBuffer(allocator: commandAllocator)
-    commandBuffer.useResidencySet(residencySet)
-    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
-      commandBuffer.endCommandBuffer()
-      throw TissueError.metal("failed to create a Metal 4 compute command encoder")
-    }
-    encoder.label = "NumiBrain tissue root transaction"
-    encoder.setComputePipelineState(pipeline)
-
     rootShadowIndex = committedIndex
     acceptedCount = 0
     acceptedTime = timeMilliseconds
-    for attempt in acceptedSubsteps.indices {
-      let destination = destinationIndex(rootShadowIndex: rootShadowIndex)
-      argumentTable.setAddress(stateBuffers[rootShadowIndex].gpuAddress, index: 0)
-      argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
-      argumentTable.setAddress(
-        uniformBuffer.gpuAddress + UInt64(attempt * TissueUniforms.byteCount),
-        index: 2
-      )
-      encoder.setArgumentTable(argumentTable)
-      encoder.dispatchThreads(
-        threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
-        threadsPerThreadgroup: threadgroupSize()
-      )
-      if attempt != acceptedSubsteps.indices.last {
-        encoder.barrier(
-          afterEncoderStages: .dispatch,
-          beforeEncoderStages: .dispatch,
-          visibilityOptions: .device
+    let feedback = try submit(label: "NumiBrain tissue root transaction") { encoder in
+      encoder.setComputePipelineState(pipeline)
+      for attempt in acceptedSubsteps.indices {
+        let destination = destinationIndex(rootShadowIndex: rootShadowIndex)
+        argumentTable.setAddress(stateBuffers[rootShadowIndex].gpuAddress, index: 0)
+        argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
+        argumentTable.setAddress(
+          uniformBuffer.gpuAddress + UInt64(attempt * TissueUniforms.byteCount),
+          index: 2
         )
+        encoder.setArgumentTable(argumentTable)
+        encoder.dispatchThreads(
+          threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
+          threadsPerThreadgroup: threadgroupSize()
+        )
+        if attempt != acceptedSubsteps.indices.last {
+          encoder.barrier(
+            afterEncoderStages: .dispatch,
+            beforeEncoderStages: .dispatch,
+            visibilityOptions: .device
+          )
+        }
+        if acceptedSubsteps[attempt] {
+          rootShadowIndex = destination
+          acceptedCount += 1
+          acceptedTime += parameters.timestepMilliseconds
+        }
       }
-      if acceptedSubsteps[attempt] {
-        rootShadowIndex = destination
-        acceptedCount += 1
-        acceptedTime += parameters.timestepMilliseconds
-      }
-    }
-    encoder.endEncoding()
-    commandBuffer.endCommandBuffer()
-
-    let semaphore = DispatchSemaphore(value: 0)
-    let options = MTL4CommitOptions()
-    final class FeedbackBox: @unchecked Sendable {
-      var feedback: (any MTL4CommitFeedback)?
-    }
-    let box = FeedbackBox()
-    options.addFeedbackHandler { feedback in
-      box.feedback = feedback
-      semaphore.signal()
-    }
-    commandQueue.commit([commandBuffer], options: options)
-    semaphore.wait()
-    guard let feedback = box.feedback else {
-      throw TissueError.metal("Metal 4 submission completed without feedback")
-    }
-    if let error = feedback.error {
-      throw TissueError.metal("GPU execution failed: \(error)")
     }
     pendingRootShadowIndex = rootShadowIndex
     return Submission(
@@ -304,7 +291,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard pendingRootShadowIndex == nil else {
       throw TissueError.transaction("commit or abort before reading committed state")
     }
-    let pointer = stateBuffers[committedIndex].contents()
+    try copy(
+      source: stateBuffers[committedIndex],
+      destination: stagingBuffer,
+      label: "NumiBrain tissue committed inspection"
+    )
+    let pointer = stagingBuffer.contents()
       .bindMemory(to: TissueCell.self, capacity: width * height)
     let cells = Array(UnsafeBufferPointer(start: pointer, count: width * height))
     return try TissueGrid(width: width, height: height, cells: cells)
@@ -323,6 +315,67 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       guard let source = bytes.baseAddress else { return }
       destination.copyMemory(from: source, byteCount: TissueUniforms.byteCount)
     }
+  }
+
+  private struct FeedbackSnapshot {
+    let gpuStartTime: Double
+    let gpuEndTime: Double
+  }
+
+  private func copy(
+    source: any MTLBuffer,
+    destination: any MTLBuffer,
+    label: String
+  ) throws {
+    _ = try submit(label: label) { encoder in
+      encoder.copy(
+        sourceBuffer: source,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: 0,
+        size: stateByteCount
+      )
+    }
+  }
+
+  private func submit(
+    label: String,
+    encode: (any MTL4ComputeCommandEncoder) -> Void
+  ) throws -> FeedbackSnapshot {
+    commandAllocator.reset()
+    commandBuffer.beginCommandBuffer(allocator: commandAllocator)
+    commandBuffer.useResidencySet(residencySet)
+    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+      commandBuffer.endCommandBuffer()
+      throw TissueError.metal("failed to create a Metal 4 compute command encoder")
+    }
+    encoder.label = label
+    encode(encoder)
+    encoder.endEncoding()
+    commandBuffer.endCommandBuffer()
+
+    let semaphore = DispatchSemaphore(value: 0)
+    let options = MTL4CommitOptions()
+    final class FeedbackBox: @unchecked Sendable {
+      var feedback: (any MTL4CommitFeedback)?
+    }
+    let box = FeedbackBox()
+    options.addFeedbackHandler { feedback in
+      box.feedback = feedback
+      semaphore.signal()
+    }
+    commandQueue.commit([commandBuffer], options: options)
+    semaphore.wait()
+    guard let feedback = box.feedback else {
+      throw TissueError.metal("Metal 4 submission completed without feedback")
+    }
+    if let error = feedback.error {
+      throw TissueError.metal("GPU execution failed during \(label): \(error)")
+    }
+    return FeedbackSnapshot(
+      gpuStartTime: feedback.gpuStartTime,
+      gpuEndTime: feedback.gpuEndTime
+    )
   }
 
   private func threadgroupSize() -> MTLSize {

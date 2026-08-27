@@ -347,10 +347,10 @@ private struct NumiBrainTissueCommand {
         stateGenerationCount: 3,
         stateGenerationBytes: initialState.count * MemoryLayout<TissueCell>.stride * 3,
         uniformArenaBytes: max(substepsPerControl, 2) * TissueUniforms.byteCount,
-        residencyAllocatedBytes: result.residencyAllocatedBytes,
-        storageMode: options.backend == .metal
-          ? "MTLStorageMode.shared unified memory; no per-substep CPU access"
-          : "CPU reference arrays"
+                residencyAllocatedBytes: result.residencyAllocatedBytes,
+                storageMode: options.backend == .metal
+                    ? "private GPU state generations plus shared uniforms and explicit inspection staging"
+                    : "CPU reference arrays"
       ),
       metrics: metrics,
       rollbackRetryExact: rollback.retry,
