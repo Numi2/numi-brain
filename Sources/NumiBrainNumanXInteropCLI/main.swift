@@ -43,6 +43,9 @@ private final class NumanXMyoSimBridge {
   private let pendingFingerprintFunction: UInt64Function
   private let pendingBorrowedAddressFunction: UInt64Function
   private let pendingMaximumExcitationFunction: FloatFunction
+  private let pendingMaximumActivationFunction: FloatFunction
+  private let pendingMaximumCommandedMuscleForceFunction: FloatFunction
+  private let pendingMaximumCommandedForceMuscleIdentifierFunction: UInt32Function
   private let pendingMaximumForceFunction: FloatFunction
   private let pendingMaximumMuscleForceFunction: FloatFunction
   private let pendingMaximumForceMuscleIdentifierFunction: UInt32Function
@@ -107,6 +110,16 @@ private final class NumanXMyoSimBridge {
     )
     pendingMaximumExcitationFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_pending_maximum_excitation", from: library
+    )
+    pendingMaximumActivationFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_activation", from: library
+    )
+    pendingMaximumCommandedMuscleForceFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_commanded_muscle_force", from: library
+    )
+    pendingMaximumCommandedForceMuscleIdentifierFunction = try Self.symbol(
+      "mr_numibrain_myosim_bridge_pending_maximum_commanded_force_muscle_identifier",
+      from: library
     )
     pendingMaximumForceFunction = try Self.symbol(
       "mr_numibrain_myosim_bridge_pending_maximum_force", from: library
@@ -204,6 +217,9 @@ private final class NumanXMyoSimBridge {
   ) throws -> (
     fingerprint: UInt64,
     excitation: Float,
+    activation: Float,
+    commandedMuscleForce: Float,
+    commandedMuscleIdentifier: UInt32,
     force: Float,
     muscleForce: Float,
     muscleIdentifier: UInt32,
@@ -242,6 +258,9 @@ private final class NumanXMyoSimBridge {
     return (
       fingerprint,
       pendingMaximumExcitationFunction(bridge),
+      pendingMaximumActivationFunction(bridge),
+      pendingMaximumCommandedMuscleForceFunction(bridge),
+      pendingMaximumCommandedForceMuscleIdentifierFunction(bridge),
       pendingMaximumForceFunction(bridge),
       pendingMaximumMuscleForceFunction(bridge),
       pendingMaximumForceMuscleIdentifierFunction(bridge),
@@ -370,6 +389,9 @@ private func run() throws {
 
   var physicalFingerprints = [UInt64]()
   var maximumExcitations = [Float]()
+  var maximumActivations = [Float]()
+  var maximumCommandedMuscleForces = [Float]()
+  var maximumCommandedForceMuscleIdentifiers = [UInt32]()
   var maximumForces = [Float]()
   var maximumMuscleForces = [Float]()
   var maximumForceMuscleIdentifiers = [UInt32]()
@@ -394,6 +416,9 @@ private func run() throws {
         packet.randomCounterGeneration == rejectedPacket.randomCounterGeneration,
         physical.fingerprint == rejectedPhysical.fingerprint,
         physical.excitation == rejectedPhysical.excitation,
+        physical.activation == rejectedPhysical.activation,
+        physical.commandedMuscleForce == rejectedPhysical.commandedMuscleForce,
+        physical.commandedMuscleIdentifier == rejectedPhysical.commandedMuscleIdentifier,
         physical.force == rejectedPhysical.force,
         physical.muscleForce == rejectedPhysical.muscleForce,
         physical.muscleIdentifier == rejectedPhysical.muscleIdentifier,
@@ -413,6 +438,9 @@ private func run() throws {
     }
     physicalFingerprints.append(physical.fingerprint)
     maximumExcitations.append(physical.excitation)
+    maximumActivations.append(physical.activation)
+    maximumCommandedMuscleForces.append(physical.commandedMuscleForce)
+    maximumCommandedForceMuscleIdentifiers.append(physical.commandedMuscleIdentifier)
     maximumForces.append(physical.force)
     maximumMuscleForces.append(physical.muscleForce)
     maximumForceMuscleIdentifiers.append(physical.muscleIdentifier)
@@ -453,6 +481,11 @@ private func run() throws {
     bridge.committedFingerprint == physicalFingerprints.last,
     transducedMyoSimEventCount == 1,
     maximumExcitations[1] > maximumExcitations[0],
+    maximumActivations[0] > 0,
+    maximumActivations[1] > maximumActivations[0],
+    maximumActivations[2] > maximumActivations[1],
+    maximumCommandedMuscleForces[2] != maximumCommandedMuscleForces[0],
+    maximumCommandedForceMuscleIdentifiers.allSatisfy(bridge.muscleIdentifiers.contains),
     maximumForces[2] != maximumForces[0],
     maximumMuscleForces.allSatisfy({ $0 > 0 }),
     maximumForceMuscleIdentifiers.allSatisfy(bridge.muscleIdentifiers.contains),
@@ -476,6 +509,10 @@ private func run() throws {
     "numanx_generation": bridge.committedGeneration,
     "candidate_physical_fingerprints": physicalFingerprints,
     "candidate_maximum_excitations": maximumExcitations,
+    "candidate_maximum_activations": maximumActivations,
+    "candidate_maximum_commanded_muscle_forces": maximumCommandedMuscleForces,
+    "candidate_maximum_commanded_force_muscle_identifiers":
+      maximumCommandedForceMuscleIdentifiers,
     "candidate_maximum_generalized_forces": maximumForces,
     "candidate_maximum_muscle_forces": maximumMuscleForces,
     "candidate_maximum_force_muscle_identifiers": maximumForceMuscleIdentifiers,
