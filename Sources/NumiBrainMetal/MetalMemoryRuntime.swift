@@ -227,6 +227,9 @@ private struct CommittedTransitionUniforms {
   var eventQueueOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
+  var autonomicActionOffset: UInt64 = 0
+  var activeSensingActionOffset: UInt64 = 0
+  var internalActionOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
@@ -240,7 +243,9 @@ private struct CommittedTransitionUniforms {
   var recurrentScalarCount: UInt32 = 0
   var observationCount: UInt32 = 0
   var actionCount: UInt32 = 0
+  var autonomicActionCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
+  var internalActionCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
@@ -286,7 +291,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let segmentation: EpisodicSegmentationDynamics
   private let retrieval: MemoryRetrievalDynamics
   private let controlLayout: MetalActiveControlLayout
+  private let autonomicActionCount: Int
   private let activeSensingCount: Int
+  private let internalActionCount: Int
   private let segmentPipeline: any MTLComputePipelineState
   private let retrievalBeginPipeline: any MTLComputePipelineState
   private let archiveShortlistClearPipeline: any MTLComputePipelineState
@@ -323,7 +330,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 256,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 288,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -453,7 +460,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       arenaLayout: arena.layout,
       species: species
     )
+    self.autonomicActionCount = Int(species.physiology.autonomicActionDimension)
     self.activeSensingCount = Int(species.motor.activeSensingActionDimension)
+    self.internalActionCount = InternalActionKind.allCases.count
     self.segmentPipeline = pipelines[0]
     self.retrievalBeginPipeline = pipelines[1]
     self.archiveShortlistClearPipeline = pipelines[2]
@@ -506,6 +515,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let observations = layout.section(.sensoryObservations)
     let events = layout.section(.eventQueue)
     let somatic = layout.section(.somaticOutput)
+    let acceptedAutonomic = layout.section(.acceptedAutonomicOutput)
+    let acceptedActiveSensing = layout.section(.acceptedActiveSensingOutput)
+    let internalActions = controlLayout.section(.internalActions)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
     let fastPlasticity = layout.section(.fastPlasticity)
@@ -516,6 +528,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let counts = [
       regionalProgram.scalarCount, observations.elementCount,
       somatic.elementCount, drives.elementCount, neuromodulation.elementCount,
+      acceptedAutonomic.elementCount, acceptedActiveSensing.elementCount,
+      internalActions.elementCount,
       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
       transitions.elementCount, transitions.elementStride, journalEntryCapacity,
@@ -542,6 +556,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       eventQueueOffset: UInt64(events.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
+      autonomicActionOffset: UInt64(acceptedAutonomic.byteOffset),
+      activeSensingActionOffset: UInt64(acceptedActiveSensing.byteOffset),
+      internalActionOffset: UInt64(internalActions.byteOffset),
       activeSensingEfficacyOffset: UInt64(
         layout.section(.activeSensingEfficacy).byteOffset
       ),
@@ -559,7 +576,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       observationCount: UInt32(observations.elementCount),
       actionCount: UInt32(somatic.elementCount),
+      autonomicActionCount: UInt32(autonomicActionCount),
       activeSensingCount: UInt32(activeSensingCount),
+      internalActionCount: UInt32(internalActionCount),
       driveCount: UInt32(drives.elementCount),
       neuromodulatorCount: UInt32(neuromodulation.elementCount),
       fastPlasticityCount: UInt32(fastPlasticity.elementCount),

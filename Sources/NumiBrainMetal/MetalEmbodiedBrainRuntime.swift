@@ -875,6 +875,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let acceptedSomaticSection = agentStateRuntime.arena.layout.section(
       .acceptedSomaticOutput
     )
+    let acceptedAutonomicSection = agentStateRuntime.arena.layout.section(
+      .acceptedAutonomicOutput
+    )
+    let acceptedActiveSensingSection = agentStateRuntime.arena.layout.section(
+      .acceptedActiveSensingOutput
+    )
     let expectedReflexRuleCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
     }
@@ -897,6 +903,17 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       lease.acceptedSomaticOutputByteCount == acceptedSomaticSection.byteCount,
       lease.acceptedSomaticOutputBuffer.length
         >= lease.acceptedSomaticOutputByteCount,
+      lease.acceptedAutonomicOutputCount
+        == Int(species.physiology.autonomicActionDimension),
+      lease.acceptedAutonomicOutputByteCount == acceptedAutonomicSection.byteCount,
+      lease.acceptedAutonomicOutputBuffer.length
+        >= lease.acceptedAutonomicOutputByteCount,
+      lease.acceptedActiveSensingOutputCount
+        == Int(species.motor.activeSensingActionDimension),
+      lease.acceptedActiveSensingOutputByteCount
+        == acceptedActiveSensingSection.byteCount,
+      lease.acceptedActiveSensingOutputBuffer.length
+        >= lease.acceptedActiveSensingOutputByteCount,
       lease.actuatorCommandKind == species.motor.actuatorCommandKind
     else {
       throw TissueError.transaction(
@@ -907,10 +924,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       || lease.fastCerebellarStateByteCount > 0
       || lease.fastAutonomicStateByteCount > 0
       || lease.acceptedSomaticOutputByteCount > 0
+      || lease.acceptedAutonomicOutputByteCount > 0
+      || lease.acceptedActiveSensingOutputByteCount > 0
     else { return }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
-    descriptor.initialCapacity = 5
+    descriptor.initialCapacity = 7
     let borrowedResidency: any MTLResidencySet
     do {
       borrowedResidency = try device.makeResidencySet(descriptor: descriptor)
@@ -922,6 +941,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     borrowedResidency.addAllocation(lease.fastCerebellarStateBuffer)
     borrowedResidency.addAllocation(lease.fastAutonomicStateBuffer)
     borrowedResidency.addAllocation(lease.acceptedSomaticOutputBuffer)
+    borrowedResidency.addAllocation(lease.acceptedAutonomicOutputBuffer)
+    borrowedResidency.addAllocation(lease.acceptedActiveSensingOutputBuffer)
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
@@ -980,6 +1001,24 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         destinationBuffer: destination,
         destinationOffset: acceptedSomaticSection.byteOffset,
         size: lease.acceptedSomaticOutputByteCount
+      )
+    }
+    if lease.acceptedAutonomicOutputByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.acceptedAutonomicOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedAutonomicSection.byteOffset,
+        size: lease.acceptedAutonomicOutputByteCount
+      )
+    }
+    if lease.acceptedActiveSensingOutputByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.acceptedActiveSensingOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedActiveSensingSection.byteOffset,
+        size: lease.acceptedActiveSensingOutputByteCount
       )
     }
     encoder.endEncoding()

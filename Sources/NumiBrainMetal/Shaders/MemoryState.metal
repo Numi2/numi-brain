@@ -20,7 +20,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 3u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 4u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
@@ -378,6 +378,9 @@ struct NBCommittedTransitionUniforms {
   ulong event_queue_offset;
   ulong control_header_offset;
   ulong somatic_output_offset;
+  ulong autonomic_action_offset;
+  ulong active_sensing_action_offset;
+  ulong internal_action_offset;
   ulong active_sensing_efficacy_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
@@ -391,7 +394,9 @@ struct NBCommittedTransitionUniforms {
   uint recurrent_scalar_count;
   uint observation_count;
   uint action_count;
+  uint autonomic_action_count;
   uint active_sensing_count;
+  uint internal_action_count;
   uint drive_count;
   uint neuromodulator_count;
   uint fast_plasticity_count;
@@ -513,6 +518,20 @@ struct NBInternalActionRecord {
   float priority;
   float confidence;
   float parameters[6];
+};
+
+struct NBAutonomicCommandRecord {
+  float command;
+  float target;
+  float confidence;
+  uint flags;
+};
+
+struct NBActiveSensingCommandRecord {
+  float command;
+  float confidence;
+  uint attention_allocation_mask;
+  uint kind_and_flags;
 };
 
 struct NBDevelopmentalHeader {
@@ -785,6 +804,13 @@ struct NBCommittedTransitionRecord {
   float fast_plasticity_trace[16];
   float cerebellar_trace[16];
   float active_sensing_trace[4];
+  uint autonomic_action_sample_count;
+  uint active_sensing_action_sample_count;
+  uint internal_action_sample_count;
+  uint complete_action_flags;
+  float autonomic_action[16];
+  float active_sensing_action[16];
+  float internal_action[32];
 };
 
 /// Planning-only learner record. Its explicit imagined flag and disjoint
@@ -837,13 +863,15 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 256);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 288);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);
 static_assert(sizeof(NBInternalActionRecord) == 64);
+static_assert(sizeof(NBAutonomicCommandRecord) == 16);
+static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -861,7 +889,7 @@ static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
-static_assert(sizeof(NBCommittedTransitionRecord) == 768);
+static_assert(sizeof(NBCommittedTransitionRecord) == 1040);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
@@ -3722,6 +3750,18 @@ kernel void journal_committed_learning_transition(
   device const float *actions = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.somatic_output_offset
   );
+  device const NBAutonomicCommandRecord *autonomic_actions =
+    reinterpret_cast<device const NBAutonomicCommandRecord *>(
+      output_hot_state + uniforms.autonomic_action_offset
+    );
+  device const NBActiveSensingCommandRecord *active_sensing_actions =
+    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
+      output_hot_state + uniforms.active_sensing_action_offset
+    );
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      output_hot_state + uniforms.internal_action_offset
+    );
   device const NBActiveSensingEfficacyRecord *active_sensing_efficacy =
     reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
       output_hot_state + uniforms.active_sensing_efficacy_offset
@@ -3780,6 +3820,19 @@ kernel void journal_committed_learning_transition(
   record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 24u);
   record.observation_sample_count = min(uniforms.observation_count, 24u);
   record.action_sample_count = min(uniforms.action_count, 16u);
+  record.autonomic_action_sample_count = min(
+    uniforms.autonomic_action_count, 8u
+  );
+  record.active_sensing_action_sample_count = min(
+    uniforms.active_sensing_count, 8u
+  );
+  record.internal_action_sample_count = min(
+    uniforms.internal_action_count, 8u
+  );
+  record.complete_action_flags = 1u
+    | (record.autonomic_action_sample_count > 0u ? 2u : 0u)
+    | (record.active_sensing_action_sample_count > 0u ? 4u : 0u)
+    | (record.internal_action_sample_count > 0u ? 8u : 0u);
   record.event_count = min(
     atomic_load_explicit(&events->count, memory_order_relaxed), events->capacity
   );
@@ -3835,6 +3888,26 @@ kernel void journal_committed_learning_transition(
   }
   for (uint component = 0u; component < 16u; ++component) {
     record.action[component] = actions[component % uniforms.action_count];
+  }
+  for (uint sample = 0u; sample < 8u; ++sample) {
+    if (sample < record.autonomic_action_sample_count) {
+      const NBAutonomicCommandRecord autonomic = autonomic_actions[sample];
+      record.autonomic_action[2u * sample] = autonomic.command;
+      record.autonomic_action[2u * sample + 1u] = autonomic.target;
+    }
+    if (sample < record.active_sensing_action_sample_count) {
+      const NBActiveSensingCommandRecord sensing = active_sensing_actions[sample];
+      record.active_sensing_action[2u * sample] = sensing.command;
+      record.active_sensing_action[2u * sample + 1u] = sensing.confidence;
+    }
+    if (sample < record.internal_action_sample_count) {
+      const NBInternalActionRecord internal = internal_actions[sample];
+      record.internal_action[4u * sample] = float(internal.kind);
+      record.internal_action[4u * sample + 1u] = internal.priority;
+      record.internal_action[4u * sample + 2u] = internal.confidence;
+      record.internal_action[4u * sample + 3u] = internal.parameter_count > 0u
+        ? internal.parameters[0] : 0.0f;
+    }
   }
   record.factored_reinforcement[0] = -record.mean_drive_deficit;
   record.factored_reinforcement[1] = control->selected_score;

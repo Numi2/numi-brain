@@ -254,6 +254,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let acceptedSomaticOutputCount: Int
     let acceptedSomaticOutputByteCount: Int
     let acceptedSomaticOutputBuffer: any MTLBuffer
+    let acceptedAutonomicOutputCount: Int
+    let acceptedAutonomicOutputByteCount: Int
+    let acceptedAutonomicOutputBuffer: any MTLBuffer
+    let acceptedActiveSensingOutputCount: Int
+    let acceptedActiveSensingOutputByteCount: Int
+    let acceptedActiveSensingOutputBuffer: any MTLBuffer
     let actuatorCommandKind: ActuatorCommandKind
 
     fileprivate init(
@@ -274,6 +280,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       acceptedSomaticOutputCount: Int,
       acceptedSomaticOutputByteCount: Int,
       acceptedSomaticOutputBuffer: any MTLBuffer,
+      acceptedAutonomicOutputCount: Int,
+      acceptedAutonomicOutputByteCount: Int,
+      acceptedAutonomicOutputBuffer: any MTLBuffer,
+      acceptedActiveSensingOutputCount: Int,
+      acceptedActiveSensingOutputByteCount: Int,
+      acceptedActiveSensingOutputBuffer: any MTLBuffer,
       actuatorCommandKind: ActuatorCommandKind
     ) {
       self.transactionFingerprint = transactionFingerprint
@@ -293,6 +305,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.acceptedSomaticOutputCount = acceptedSomaticOutputCount
       self.acceptedSomaticOutputByteCount = acceptedSomaticOutputByteCount
       self.acceptedSomaticOutputBuffer = acceptedSomaticOutputBuffer
+      self.acceptedAutonomicOutputCount = acceptedAutonomicOutputCount
+      self.acceptedAutonomicOutputByteCount = acceptedAutonomicOutputByteCount
+      self.acceptedAutonomicOutputBuffer = acceptedAutonomicOutputBuffer
+      self.acceptedActiveSensingOutputCount = acceptedActiveSensingOutputCount
+      self.acceptedActiveSensingOutputByteCount = acceptedActiveSensingOutputByteCount
+      self.acceptedActiveSensingOutputBuffer = acceptedActiveSensingOutputBuffer
       self.actuatorCommandKind = actuatorCommandKind
     }
   }
@@ -565,6 +583,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let stagedAcceptedSomaticOutputBuffer: any MTLBuffer
+  private let stagedAcceptedAutonomicOutputBuffer: any MTLBuffer
+  private let stagedAcceptedActiveSensingOutputBuffer: any MTLBuffer
   private let bodyLoadFieldUniformBuffer: any MTLBuffer
   private let bodyLoadFieldUpdateBuffer: any MTLBuffer
   private let bodyLoadFieldStateBuffers: [any MTLBuffer]
@@ -1661,6 +1681,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: protectiveMuscleExcitationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let stagedAcceptedAutonomicOutputBuffer = device.makeBuffer(
+        length: fastAutonomicCommandByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedAcceptedActiveSensingOutputBuffer = device.makeBuffer(
+        length: activeSensingCommandByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let bodyLoadFieldUniformBuffer = device.makeBuffer(
         length: MemoryLayout<BodyLoadFieldUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -1835,6 +1863,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain protective muscle excitation generation 1"
     stagedAcceptedSomaticOutputBuffer.label =
       "NumiBrain last accepted physical somatic output"
+    stagedAcceptedAutonomicOutputBuffer.label =
+      "NumiBrain last accepted physical autonomic output"
+    stagedAcceptedActiveSensingOutputBuffer.label =
+      "NumiBrain accepted active sensing output"
     bodyLoadFieldUniformBuffer.label = "NumiBrain body-load field uniforms"
     bodyLoadFieldUpdateBuffer.label = "NumiBrain accepted body-load field updates"
     firstBodyLoadFieldStateBuffer.label = "NumiBrain body-load field generation 0"
@@ -1936,7 +1968,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 53
+    residencyDescriptor.initialCapacity = stateBuffers.count + 55
       + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
@@ -2033,6 +2065,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       residencySet.addAllocation(buffer)
     }
     residencySet.addAllocation(stagedAcceptedSomaticOutputBuffer)
+    residencySet.addAllocation(stagedAcceptedAutonomicOutputBuffer)
+    residencySet.addAllocation(stagedAcceptedActiveSensingOutputBuffer)
     residencySet.addAllocation(bodyLoadFieldUniformBuffer)
     residencySet.addAllocation(bodyLoadFieldUpdateBuffer)
     for buffer in bodyLoadFieldStateBuffers {
@@ -2166,6 +2200,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.stagedAcceptedSomaticOutputBuffer = stagedAcceptedSomaticOutputBuffer
+    self.stagedAcceptedAutonomicOutputBuffer = stagedAcceptedAutonomicOutputBuffer
+    self.stagedAcceptedActiveSensingOutputBuffer =
+      stagedAcceptedActiveSensingOutputBuffer
     self.bodyLoadFieldUniformBuffer = bodyLoadFieldUniformBuffer
     self.bodyLoadFieldUpdateBuffer = bodyLoadFieldUpdateBuffer
     self.bodyLoadFieldStateBuffers = bodyLoadFieldStateBuffers
@@ -3790,6 +3827,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destinationOffset: 0,
         size: protectiveMuscleExcitationByteCount
       )
+      encoder.copy(
+        sourceBuffer: stagedFastAutonomicOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagedAcceptedAutonomicOutputBuffer,
+        destinationOffset: 0,
+        size: fastAutonomicCommandByteCount
+      )
+      encoder.copy(
+        sourceBuffer: stagedActiveSensingCommandBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagedAcceptedActiveSensingOutputBuffer,
+        destinationOffset: 0,
+        size: activeSensingCommandByteCount
+      )
       encoder.barrier(
         afterEncoderStages: .blit,
         beforeEncoderStages: .dispatch,
@@ -4067,6 +4118,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       acceptedSomaticOutputCount: protectiveMotorProfile.channels.count,
       acceptedSomaticOutputByteCount: protectiveMuscleExcitationByteCount,
       acceptedSomaticOutputBuffer: stagedAcceptedSomaticOutputBuffer,
+      acceptedAutonomicOutputCount: boundFastAutonomicChannelCount,
+      acceptedAutonomicOutputByteCount:
+        max(boundFastAutonomicChannelCount, 1) * Self.autonomicCommandStride,
+      acceptedAutonomicOutputBuffer: stagedAcceptedAutonomicOutputBuffer,
+      acceptedActiveSensingOutputCount: boundActiveSensingChannelCount,
+      acceptedActiveSensingOutputByteCount:
+        max(boundActiveSensingChannelCount, 1) * Self.activeSensingCommandStride,
+      acceptedActiveSensingOutputBuffer:
+        stagedAcceptedActiveSensingOutputBuffer,
       actuatorCommandKind: boundActuatorCommandKind
     )
   }

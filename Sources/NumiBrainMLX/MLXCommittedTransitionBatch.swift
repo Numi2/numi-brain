@@ -3,10 +3,10 @@ import MLX
 import NumiBrainCore
 import NumiBrainMetal
 
-/// Zero-copy MLX view of the fixed 768-byte committed-transition slots. The
-/// accepted root now includes bounded local-plasticity, cerebellar, and active
-/// sensing traces; empty ring slots remain in the array but are excluded by
-/// `validMask`.
+/// Zero-copy MLX view of committed-transition slots. Every valid record carries
+/// accepted somatic, autonomic, active-sensing, and internal action features in
+/// addition to bounded plasticity and cerebellar traces; empty ring slots are
+/// excluded by `validMask`.
 @available(macOS 26.0, *)
 public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public static let transitionStride = MetalLearningBatch.transitionStride
@@ -23,6 +23,10 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let posteriorState: MLXArray
   public let observations: MLXArray
   public let actions: MLXArray
+  public let autonomicActions: MLXArray
+  public let activeSensingActions: MLXArray
+  public let internalActions: MLXArray
+  public let completeActions: MLXArray
   public let factoredReinforcement: MLXArray
   public let outcomeMetrics: MLXArray
   public let teacherState: MLXArray
@@ -83,6 +87,16 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     let rawFastPlasticityTrace = field(624, count: 16, dtype: .float32)
     let rawCerebellarTrace = field(688, count: 16, dtype: .float32)
     let rawActiveSensingTrace = field(752, count: 4, dtype: .float32)
+    let completeActionCounts = field(768, count: 4, dtype: .uint32)
+    let rawAutonomicActions = field(784, count: 16, dtype: .float32)
+    let rawActiveSensingActions = field(848, count: 16, dtype: .float32)
+    let rawInternalActions = field(912, count: 32, dtype: .float32)
+    let completeActionCountsValid = (
+      (completeActionCounts[0..., 0..<1] .<= UInt32(8))
+        * (completeActionCounts[0..., 1..<2] .<= UInt32(8))
+        * (completeActionCounts[0..., 2..<3] .<= UInt32(8))
+        * ((completeActionCounts[0..., 3..<4] & UInt32(1)) .== UInt32(1))
+    ).asType(.float32)
     let validMask = (
       (identifiers .> UInt64(0))
         * (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
@@ -101,9 +115,17 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       * allFinite(rawFastPlasticityTrace, count: 16)
       * allFinite(rawCerebellarTrace, count: 16)
       * allFinite(rawActiveSensingTrace, count: 4)
+      * allFinite(rawAutonomicActions, count: 16)
+      * allFinite(rawActiveSensingActions, count: 16)
+      * allFinite(rawInternalActions, count: 32)
+      * completeActionCountsValid
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
     let teacherFiniteMask = allFinite(rawTeacher, count: 24)
+    let somaticActions = finite(rawActions)
+    let autonomicActions = finite(rawAutonomicActions)
+    let activeSensingActions = finite(rawActiveSensingActions)
+    let internalActions = finite(rawInternalActions)
     self.source = source
     self.rawBytes = raw
     self.validMask = validMask
@@ -115,7 +137,17 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.priorState = finite(rawPrior)
     self.posteriorState = finite(rawPosterior)
     self.observations = finite(rawObservations)
-    self.actions = finite(rawActions)
+    self.actions = somaticActions
+    self.autonomicActions = autonomicActions
+    self.activeSensingActions = activeSensingActions
+    self.internalActions = internalActions
+    self.completeActions = concatenated(
+      [
+        somaticActions, autonomicActions,
+        activeSensingActions, internalActions,
+      ],
+      axis: 1
+    )
     self.factoredReinforcement = finite(rawReinforcement)
     self.outcomeMetrics = finite(rawMetrics)
     self.teacherState = finite(rawTeacher)

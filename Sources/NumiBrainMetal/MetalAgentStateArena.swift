@@ -66,6 +66,10 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case activeSensingEfficacy = 42
   /// Exact physical actuator command accepted by the fast NumanX substep loop.
   case acceptedSomaticOutput = 43
+  /// Exact autonomic command accepted by the fast physiological loop.
+  case acceptedAutonomicOutput = 44
+  /// Exact active-sensing command exposed during the accepted physical root.
+  case acceptedActiveSensingOutput = 45
 }
 
 @frozen
@@ -441,6 +445,16 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Int(species.motor.actuatorCount),
       stride: MemoryLayout<Float>.stride
     )
+    try builder.append(
+      .acceptedAutonomicOutput,
+      count: max(Int(species.physiology.autonomicActionDimension), 1),
+      stride: 16
+    )
+    try builder.append(
+      .acceptedActiveSensingOutput,
+      count: max(Int(species.motor.activeSensingActionDimension), 1),
+      stride: 16
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
@@ -487,7 +501,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 11
+  public static let recordLayoutVersion: UInt32 = 12
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
@@ -498,7 +512,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let proceduralSkillStride = 1_024
   public static let prospectiveIntentionStride = 640
   public static let replayQueueStride = 32
-  public static let committedTransitionStride = 768
+  public static let committedTransitionStride = 1_040
   public static let counterfactualRolloutStride = 256
 
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]

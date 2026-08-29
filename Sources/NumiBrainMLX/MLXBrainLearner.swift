@@ -303,6 +303,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let posterior = batch.posteriorState
     let observation = batch.observations
     let action = batch.actions
+    let completeAction = batch.completeActions
     let reward = batch.factoredReinforcement
     let metrics = batch.outcomeMetrics
     let replayTransitionWeights = clip(
@@ -333,10 +334,10 @@ public final class MLXBrainLearner: @unchecked Sendable {
     )
     let burnInState = stopGradient(posterior)
     let oneStepObservation = sequences.oneStepSuccessors(observation)
-    let oneStepAction = sequences.oneStepSuccessors(action)
+    let oneStepAction = sequences.oneStepSuccessors(completeAction)
     let oneStepTarget = sequences.oneStepSuccessors(posterior)
     let twoStepObservation = sequences.twoStepSuccessors(observation)
-    let twoStepAction = sequences.twoStepSuccessors(action)
+    let twoStepAction = sequences.twoStepSuccessors(completeAction)
     let twoStepTarget = sequences.twoStepSuccessors(posterior)
     let oneStepMask =
       sequences.oneStepMask
@@ -443,7 +444,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     )
     let riskLoss =
       batch.maskedMeanSquaredError(
-        abs(action).mean(axis: 1, keepDims: true) * value[4],
+        abs(completeAction).mean(axis: 1, keepDims: true) * value[4],
         metrics[0..., 1..<2],
         mask: riskTransitionMask
       )
