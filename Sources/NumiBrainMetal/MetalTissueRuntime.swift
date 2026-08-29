@@ -224,6 +224,17 @@ private struct TissueRegionalPlasticModulationRecord {
   var explorationTemperatureMultiplier: Float = 1
 }
 
+private struct TissueRegionalPlasticBasisUniforms {
+  var fastPlasticityCount: UInt32 = 0
+  var plasticityParameterCount: UInt32 = 0
+  var basisCapacityPerRegion: UInt32 = 0
+  var basisStride: UInt32 = 0
+  var operatorChannelCount: UInt32 = 0
+  var maximumFeatureCount: UInt32 = 0
+  var activeBasisCount: UInt32 = 0
+  var flags: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
   static let maximumFastCPGOscillatorCount = 64
@@ -604,6 +615,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
   private let stagedRegionalPlasticModulationBuffer: any MTLBuffer
+  private let defaultFastPlasticityBuffer: any MTLBuffer
+  private let stagedFastPlasticityBuffer: any MTLBuffer
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let stagedAcceptedSomaticOutputBuffer: any MTLBuffer
@@ -655,6 +668,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveMuscleExcitationByteCount: Int
   public let developmentalMaturationByteCount: Int
   public let regionalPlasticModulationByteCount: Int
+  public let fastPlasticityByteCount: Int
   public let fastCPGStateCapacityByteCount: Int
   public let fastReflexRuleCapacityByteCount: Int
   public let fastReflexStateCapacityByteCount: Int
@@ -1100,7 +1114,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 29
+    regionalArgumentDescriptor.maxBufferBindCount = 31
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -1119,6 +1133,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         minimumScalarCount: regionalTokenProgram.denseParameterCount
       ),
       index: 27
+    )
+    regionalArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(
+        .plasticity,
+        minimumScalarCount: sharedParameterBank.scalarCount(.plasticity)
+      ),
+      index: 30
     )
     let protectiveArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveArgumentDescriptor.label = "NumiBrain protective-command arguments"
@@ -1386,6 +1407,27 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       brainSchedule.modules.count.multipliedReportingOverflow(
         by: MemoryLayout<TissueRegionalPlasticModulationRecord>.stride
       )
+    let plasticityParameterCount = sharedParameterBank.scalarCount(.plasticity)
+    let plasticityReceptorScalarCount = brainSchedule.modules.count
+      * NeuromodulatorKind.allCases.count
+      * BrainSharedParameterArtifact.plasticityReceptorEffectCount
+    let plasticityBasisScalarCount = plasticityParameterCount
+      - BrainSharedParameterArtifact.plasticityHyperparameterCount
+      - plasticityReceptorScalarCount
+    let plasticityBasisBankStride = brainSchedule.modules.count
+      * BrainSharedParameterArtifact.plasticityBasisChannelCount
+    let plasticityBasisCapacityPerRegion = plasticityBasisBankStride > 0
+      ? plasticityBasisScalarCount / plasticityBasisBankStride
+      : 0
+    let fastPlasticityCapacity = brainSchedule.modules.count
+      * plasticityBasisCapacityPerRegion
+    let (fastPlasticityByteCount, fastPlasticityByteOverflow) =
+      fastPlasticityCapacity.multipliedReportingOverflow(
+        by: MetalAgentStateLayout.fastPlasticityStride
+      )
+    let (fastPlasticityStateByteCount, fastPlasticityStateByteOverflow) =
+      MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride
+        .addingReportingOverflow(fastPlasticityByteCount)
     let fastCPGStateCapacityByteCount = Self.maximumFastCPGOscillatorCount
       * Self.fastCPGStateStride
     let fastReflexRuleCapacityByteCount = Self.maximumFastReflexRuleCount
@@ -1414,10 +1456,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         + Self.maximumCognitiveEventCount * Self.cognitiveEventRecordStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
+      !fastPlasticityByteOverflow, !fastPlasticityStateByteOverflow,
+      plasticityBasisScalarCount > 0,
+      plasticityBasisBankStride > 0,
+      plasticityBasisScalarCount % plasticityBasisBankStride == 0,
+      plasticityBasisCapacityPerRegion > 0,
+      plasticityParameterCount <= Int(UInt32.max),
+      fastPlasticityCapacity <= Int(UInt32.max),
       !fastCerebellarStateByteOverflow, !stagedMotorCommandByteOverflow,
       MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
       MemoryLayout<TissueRegionalPlasticModulationRecord>.stride
         == MetalAgentStateLayout.regionalPlasticModulationStride,
+      MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride == 32,
       MemoryLayout<FastCPGUniforms>.stride == 24,
       MemoryLayout<FastAutonomicUniforms>.stride == 40,
       MemoryLayout<FastAutonomicChannelDescriptor>.stride
@@ -1712,6 +1762,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: regionalPlasticModulationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let defaultFastPlasticityBuffer = device.makeBuffer(
+        length: fastPlasticityStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedFastPlasticityBuffer = device.makeBuffer(
+        length: fastPlasticityStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let firstProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
         length: ProtectiveMotorOutput.headerByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1904,6 +1962,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain default zero regional fast plasticity"
     stagedRegionalPlasticModulationBuffer.label =
       "NumiBrain transaction regional fast plasticity"
+    defaultFastPlasticityBuffer.label =
+      "NumiBrain default zero fast-plastic coefficients"
+    stagedFastPlasticityBuffer.label =
+      "NumiBrain transaction fast-plastic coefficients"
     protectiveSourceInhibitionMaskBuffer.label =
       "NumiBrain transaction-local protective source-inhibition mask"
     firstProtectiveMotorOutputHeaderBuffer.label =
@@ -2005,8 +2067,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                     max(
                       developmentalMaturationByteCount,
                       max(
-                        max(bodyLoadFieldStateByteCount, bodySchemaStateByteCount),
-                        muscleAttachmentByteCount
+                        fastPlasticityStateByteCount,
+                        max(
+                          max(bodyLoadFieldStateByteCount, bodySchemaStateByteCount),
+                          muscleAttachmentByteCount
+                        )
                       )
                     )
                   )
@@ -2024,7 +2089,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 55
+    residencyDescriptor.initialCapacity = stateBuffers.count + 57
       + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
@@ -2115,6 +2180,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
     residencySet.addAllocation(stagedRegionalPlasticModulationBuffer)
+    residencySet.addAllocation(defaultFastPlasticityBuffer)
+    residencySet.addAllocation(stagedFastPlasticityBuffer)
     for buffer in protectiveMotorOutputHeaderBuffers {
       residencySet.addAllocation(buffer)
     }
@@ -2255,6 +2322,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       defaultRegionalPlasticModulationBuffer
     self.stagedRegionalPlasticModulationBuffer =
       stagedRegionalPlasticModulationBuffer
+    self.defaultFastPlasticityBuffer = defaultFastPlasticityBuffer
+    self.stagedFastPlasticityBuffer = stagedFastPlasticityBuffer
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.stagedAcceptedSomaticOutputBuffer = stagedAcceptedSomaticOutputBuffer
@@ -2301,6 +2370,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMuscleExcitationByteCount = protectiveMuscleExcitationByteCount
     self.developmentalMaturationByteCount = developmentalMaturationByteCount
     self.regionalPlasticModulationByteCount = regionalPlasticModulationByteCount
+    self.fastPlasticityByteCount = fastPlasticityByteCount
     self.fastCPGStateCapacityByteCount = fastCPGStateCapacityByteCount
     self.fastReflexRuleCapacityByteCount = fastReflexRuleCapacityByteCount
     self.fastReflexStateCapacityByteCount = fastReflexStateCapacityByteCount
@@ -2852,6 +2922,41 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: regionalPlasticModulationByteCount,
       label: "NumiBrain initial regional fast-plasticity upload"
     )
+    stagingBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: fastPlasticityStateByteCount
+    )
+    var plasticBasisUniforms = TissueRegionalPlasticBasisUniforms(
+      fastPlasticityCount: UInt32(fastPlasticityCapacity),
+      plasticityParameterCount: UInt32(plasticityParameterCount),
+      basisCapacityPerRegion: UInt32(plasticityBasisCapacityPerRegion),
+      basisStride: UInt32(BrainSharedParameterArtifact.plasticityBasisChannelCount),
+      operatorChannelCount: UInt32(
+        BrainSharedParameterArtifact.plasticityBasisOperatorChannelCount
+      ),
+      maximumFeatureCount: UInt32(
+        BrainSharedParameterArtifact.plasticityBasisMaximumFeatureCount
+      ),
+      activeBasisCount: 4,
+      flags: 1
+    )
+    withUnsafeBytes(of: &plasticBasisUniforms) { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: sourceBytes.count)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: defaultFastPlasticityBuffer,
+      size: fastPlasticityStateByteCount,
+      label: "NumiBrain default fast-plastic coefficient upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedFastPlasticityBuffer,
+      size: fastPlasticityStateByteCount,
+      label: "NumiBrain initial fast-plastic coefficient upload"
+    )
     let initialProtectiveMotorOutput = try ProtectiveMotorOutput.reference(
       command: initialProtectiveCommand,
       profile: protectiveMotorProfile
@@ -3306,6 +3411,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.regionalPlasticModulationCount == brainSchedule.modules.count,
       lease.decision.regionalPlasticModulationByteCount
         == regionalPlasticModulationByteCount,
+      lease.decision.fastPlasticityCount
+        <= fastPlasticityByteCount / MetalAgentStateLayout.fastPlasticityStride,
+      lease.decision.fastPlasticityByteCount
+        == lease.decision.fastPlasticityCount
+          * MetalAgentStateLayout.fastPlasticityStride,
+      lease.decision.fastPlasticityByteCount <= fastPlasticityByteCount,
       lease.decision.cpgStateCount <= Self.maximumFastCPGOscillatorCount,
       lease.decision.cpgStateByteCount
         == lease.decision.cpgStateCount * Self.fastCPGStateStride,
@@ -3340,6 +3451,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.plasticModulationSourceOffset <= lease.buffer.length,
       regionalPlasticModulationByteCount
         <= lease.buffer.length - lease.plasticModulationSourceOffset,
+      lease.fastPlasticitySourceOffset <= lease.buffer.length,
+      lease.decision.fastPlasticityByteCount
+        <= lease.buffer.length - lease.fastPlasticitySourceOffset,
       lease.cpgStateSourceOffset <= lease.buffer.length,
       lease.decision.cpgStateByteCount
         <= lease.buffer.length - lease.cpgStateSourceOffset,
@@ -3428,6 +3542,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destinationOffset: 0,
         size: regionalPlasticModulationByteCount
       )
+      encoder.copy(
+        sourceBuffer: defaultFastPlasticityBuffer,
+        sourceOffset: 0,
+        destinationBuffer: stagedFastPlasticityBuffer,
+        destinationOffset: 0,
+        size: MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride
+          + fastPlasticityByteCount
+      )
+      if lease.decision.fastPlasticityByteCount > 0 {
+        encoder.copy(
+          sourceBuffer: lease.buffer,
+          sourceOffset: lease.fastPlasticitySourceOffset,
+          destinationBuffer: stagedFastPlasticityBuffer,
+          destinationOffset: MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride,
+          size: lease.decision.fastPlasticityByteCount
+        )
+      }
       if lease.decision.cpgStateByteCount > 0 {
         encoder.copy(
           sourceBuffer: lease.buffer,
@@ -6078,6 +6209,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       regionalOutgoingRouteIndexBuffer.gpuAddress,
       index: 28
     )
+    let fastPlasticityBuffer =
+      descendingSomaticTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? stagedFastPlasticityBuffer
+      : defaultFastPlasticityBuffer
+    regionalArgumentTable.setAddress(fastPlasticityBuffer.gpuAddress, index: 29)
     encoder.setComputePipelineState(regionalPipeline)
     encoder.setArgumentTable(regionalArgumentTable)
     encoder.dispatchThreads(

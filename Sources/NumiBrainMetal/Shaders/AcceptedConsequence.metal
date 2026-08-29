@@ -1619,7 +1619,7 @@ kernel void update_fast_plasticity_from_accepted_error(
       hot_state + uniforms.regional_maturation_offset
     );
   constexpr uint hyperparameter_count = 8u;
-  constexpr uint basis_channel_count = 5u;
+  constexpr uint basis_stride = 517u;
   constexpr uint receptor_effect_count = 14u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
@@ -1629,10 +1629,10 @@ kernel void update_fast_plasticity_from_accepted_error(
         - receptor_scalar_count
     : 0u;
   const uint basis_capacity = uniforms.module_count > 0u
-    ? basis_scalar_count / (uniforms.module_count * basis_channel_count)
+    ? basis_scalar_count / (uniforms.module_count * basis_stride)
     : 0u;
   const uint receptor_offset = hyperparameter_count
-    + uniforms.module_count * basis_capacity * basis_channel_count;
+    + uniforms.module_count * basis_capacity * basis_stride;
   uint region_index = uniforms.module_count > 0u
     ? gid % uniforms.module_count : 0u;
   for (uint index = 0u; index < uniforms.module_count; ++index) {

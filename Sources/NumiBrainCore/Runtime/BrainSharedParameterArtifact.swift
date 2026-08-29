@@ -63,7 +63,11 @@ public struct BrainParameterPayload: Codable, Equatable, Sendable {
 public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
   public static let plasticityHyperparameterCount = 8
-  public static let plasticityBasisChannelCount = 5
+  public static let plasticityBasisOperatorChannelCount = 5
+  public static let plasticityBasisMaximumFeatureCount = 256
+  public static let plasticityBasisChannelCount =
+    plasticityBasisOperatorChannelCount
+    + 2 * plasticityBasisMaximumFeatureCount
   /// Learning plus recurrent, local, route, drive, gate, update-gain,
   /// timescale, route-threshold, inhibition, plasticity-decay, memory-write,
   /// vigor, and exploration-temperature effects.

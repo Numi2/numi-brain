@@ -348,6 +348,29 @@ struct NBRegionalPlasticModulationRecordABI {
     float exploration_temperature_multiplier;
 };
 
+struct NBFastPlasticityRecordABI {
+    float coefficient;
+    float eligibility;
+    float coefficient_retention;
+    float eligibility_retention;
+    float learning_rate;
+    float maximum_magnitude;
+    ushort region_identifier;
+    ushort basis_identifier;
+    uint flags;
+};
+
+struct NBRegionalPlasticBasisUniformsABI {
+    uint fast_plasticity_count;
+    uint plasticity_parameter_count;
+    uint basis_capacity_per_region;
+    uint basis_stride;
+    uint operator_channel_count;
+    uint maximum_feature_count;
+    uint active_basis_count;
+    uint flags;
+};
+
 struct NBParameterVersionBindingABI {
     uint format_version;
     uint component_count;
@@ -780,6 +803,10 @@ static_assert(sizeof(NBRegionalMaturationRecordABI) == 32,
               "regional maturation ABI drift");
 static_assert(sizeof(NBRegionalPlasticModulationRecordABI) == 64,
               "regional plastic modulation ABI drift");
+static_assert(sizeof(NBFastPlasticityRecordABI) == 32,
+              "fast plasticity ABI drift");
+static_assert(sizeof(NBRegionalPlasticBasisUniformsABI) == 32,
+              "regional plastic basis uniform ABI drift");
 static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
 static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI drift");
 static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
@@ -1853,16 +1880,48 @@ kernel void advance_due_regional_tokens(
     device const float *routeParameters [[buffer(26)]],
     device const float *denseParameters [[buffer(27)]],
     device const uint *outgoingRouteCSR [[buffer(28)]],
+    device const uchar *fastPlasticityState [[buffer(29)]],
+    device const float *plasticityParameters [[buffer(30)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
     const uint laneCount = lanesPerThreadgroup.x;
+    device const NBRegionalPlasticBasisUniformsABI *plasticBasisUniforms =
+        reinterpret_cast<device const NBRegionalPlasticBasisUniformsABI *>(
+            fastPlasticityState
+        );
+    device const NBFastPlasticityRecordABI *fastPlasticity =
+        reinterpret_cast<device const NBFastPlasticityRecordABI *>(
+            fastPlasticityState + sizeof(NBRegionalPlasticBasisUniformsABI)
+        );
+    constexpr ulong plasticityHyperparameterCount = 8ul;
+    constexpr uint maximumActivePlasticBases = 4u;
+    const ulong plasticityBasisScalarCount =
+        ulong(header->module_count)
+        * ulong(plasticBasisUniforms->basis_capacity_per_region)
+        * ulong(plasticBasisUniforms->basis_stride);
+    const bool invalidPlasticBasis =
+        (plasticBasisUniforms->flags & 1u) == 0u
+        || plasticBasisUniforms->basis_capacity_per_region == 0u
+        || plasticBasisUniforms->operator_channel_count == 0u
+        || plasticBasisUniforms->maximum_feature_count == 0u
+        || plasticBasisUniforms->basis_stride
+            != plasticBasisUniforms->operator_channel_count
+                + 2u * plasticBasisUniforms->maximum_feature_count
+        || plasticBasisUniforms->active_basis_count == 0u
+        || plasticBasisUniforms->active_basis_count > maximumActivePlasticBases
+        || plasticBasisUniforms->fast_plasticity_count
+            < header->module_count
+                * plasticBasisUniforms->basis_capacity_per_region
+        || ulong(plasticBasisUniforms->plasticity_parameter_count)
+            < plasticityHyperparameterCount + plasticityBasisScalarCount;
     if (lane == 0u
         && (parameterVersion->regional_program_fingerprint
                 != header->program_fingerprint
             || parameterVersion->schedule_fingerprint == 0ul
             || header->dense_parameter_count == 0u
-            || header->reserved != 0u)) {
+            || header->reserved != 0u
+            || invalidPlasticBasis)) {
         schedulerResult->status = NBSchedulerStatusRegionalProgram;
     }
     threadgroup_barrier(mem_flags::mem_device);
@@ -1909,6 +1968,9 @@ kernel void advance_due_regional_tokens(
     }
 
     const ulong neverUpdated = ~0ul;
+    threadgroup uint activePlasticBasisIdentifiers[maximumActivePlasticBases];
+    threadgroup float activePlasticBasisCoefficients[maximumActivePlasticBases];
+    threadgroup uint activePlasticBasisCount;
     uint cursor = 0u;
     while (cursor < schedulerResult->invocation_count) {
         const ulong timestamp = invocations[cursor].timestamp_microseconds;
@@ -2209,6 +2271,58 @@ kernel void advance_due_regional_tokens(
             const float drive = periodicDrive + interruptDrive;
             const uint dimension = uint(layout.token_dimension);
             const uint selectedCount = selectedRouteCounts[moduleIndex];
+            if (lane == 0u) {
+                activePlasticBasisCount = 0u;
+                const uint activeLimit = min(
+                    plasticBasisUniforms->active_basis_count,
+                    maximumActivePlasticBases
+                );
+                for (uint basisSlot = 0u;
+                     basisSlot < plasticBasisUniforms->basis_capacity_per_region;
+                     ++basisSlot) {
+                    const uint siteIndex =
+                        basisSlot * header->module_count + moduleIndex;
+                    if (siteIndex >= plasticBasisUniforms->fast_plasticity_count) {
+                        break;
+                    }
+                    const NBFastPlasticityRecordABI site =
+                        fastPlasticity[siteIndex];
+                    if ((site.flags & 1u) == 0u
+                        || uint(site.region_identifier) != uint(module.module_id)
+                        || !isfinite(site.coefficient)
+                        || site.coefficient == 0.0f) {
+                        continue;
+                    }
+                    const uint basisIdentifier = uint(site.basis_identifier)
+                        % plasticBasisUniforms->basis_capacity_per_region;
+                    const float magnitude = abs(site.coefficient);
+                    uint insertionIndex = activePlasticBasisCount;
+                    if (activePlasticBasisCount < activeLimit) {
+                        activePlasticBasisCount += 1u;
+                    } else {
+                        if (magnitude <= abs(
+                            activePlasticBasisCoefficients[activeLimit - 1u]
+                        )) {
+                            continue;
+                        }
+                        insertionIndex = activeLimit - 1u;
+                    }
+                    while (insertionIndex > 0u
+                           && magnitude > abs(
+                               activePlasticBasisCoefficients[insertionIndex - 1u]
+                           )) {
+                        activePlasticBasisIdentifiers[insertionIndex] =
+                            activePlasticBasisIdentifiers[insertionIndex - 1u];
+                        activePlasticBasisCoefficients[insertionIndex] =
+                            activePlasticBasisCoefficients[insertionIndex - 1u];
+                        insertionIndex -= 1u;
+                    }
+                    activePlasticBasisIdentifiers[insertionIndex] = basisIdentifier;
+                    activePlasticBasisCoefficients[insertionIndex] =
+                        site.coefficient;
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
             for (uint localScalar = lane;
                  localScalar < layout.scalar_count;
                  localScalar += laneCount) {
@@ -2225,6 +2339,34 @@ kernel void advance_due_regional_tokens(
                     ] * outputTokens[tokenStart + localFeature];
                 }
                 localProjection /= sqrt(float(dimension));
+                float plasticDenseResidual = 0.0f;
+                if (dimension <= plasticBasisUniforms->maximum_feature_count) {
+                    for (uint activeBasis = 0u;
+                         activeBasis < activePlasticBasisCount;
+                         ++activeBasis) {
+                        const uint basisOffset = uint(plasticityHyperparameterCount)
+                            + (moduleIndex
+                                * plasticBasisUniforms->basis_capacity_per_region
+                                + activePlasticBasisIdentifiers[activeBasis])
+                                * plasticBasisUniforms->basis_stride;
+                        const uint leftOffset = basisOffset
+                            + plasticBasisUniforms->operator_channel_count;
+                        const uint rightOffset = leftOffset
+                            + plasticBasisUniforms->maximum_feature_count;
+                        float rightProjection = 0.0f;
+                        for (uint localFeature = 0u;
+                             localFeature < dimension;
+                             ++localFeature) {
+                            rightProjection += plasticityParameters[
+                                rightOffset + localFeature
+                            ] * outputTokens[tokenStart + localFeature];
+                        }
+                        plasticDenseResidual +=
+                            activePlasticBasisCoefficients[activeBasis]
+                            * plasticityParameters[leftOffset + feature]
+                            * rightProjection / sqrt(float(dimension));
+                    }
+                }
                 float routedInput = 0.0f;
                 for (uint selectedIndex = 0u;
                      selectedIndex < selectedCount;
@@ -2258,6 +2400,7 @@ kernel void advance_due_regional_tokens(
                         + (validPlastic ? plastic.recurrent_delta : 0.0f)) * current
                     + (parameter.local_gain
                         + (validPlastic ? plastic.local_delta : 0.0f)) * localProjection
+                    + plasticDenseResidual
                     + (parameter.route_gain
                         + (validPlastic ? plastic.route_delta : 0.0f)) * routedInput
                     + (parameter.drive_gain
@@ -2273,6 +2416,7 @@ kernel void advance_due_regional_tokens(
                 candidateTokens[scalarIndex] = current
                     + alpha * gate * (candidate - current);
             }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
         }
         // Every same-timestamp candidate must finish reading the common prior
         // generation before any due module publishes its successor state.

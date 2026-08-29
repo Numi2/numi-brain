@@ -41,6 +41,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let regionalPlasticModulationGPUAddress: UInt64
     public let regionalPlasticModulationByteCount: Int
     public let regionalPlasticModulationCount: Int
+    public let fastPlasticityGPUAddress: UInt64
+    public let fastPlasticityByteCount: Int
+    public let fastPlasticityCount: Int
     public let cpgStateGPUAddress: UInt64
     public let cpgStateByteCount: Int
     public let cpgStateCount: Int
@@ -95,6 +98,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let internalActionSourceOffset: Int
     let maturationSourceOffset: Int
     let plasticModulationSourceOffset: Int
+    let fastPlasticitySourceOffset: Int
     let cpgStateSourceOffset: Int
     let reflexStateSourceOffset: Int
     let motorCommandSourceOffset: Int
@@ -113,6 +117,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       internalActionSourceOffset: Int,
       maturationSourceOffset: Int,
       plasticModulationSourceOffset: Int,
+      fastPlasticitySourceOffset: Int,
       cpgStateSourceOffset: Int,
       reflexStateSourceOffset: Int,
       motorCommandSourceOffset: Int,
@@ -130,6 +135,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.internalActionSourceOffset = internalActionSourceOffset
       self.maturationSourceOffset = maturationSourceOffset
       self.plasticModulationSourceOffset = plasticModulationSourceOffset
+      self.fastPlasticitySourceOffset = fastPlasticitySourceOffset
       self.cpgStateSourceOffset = cpgStateSourceOffset
       self.reflexStateSourceOffset = reflexStateSourceOffset
       self.motorCommandSourceOffset = motorCommandSourceOffset
@@ -580,6 +586,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       let plasticModulation = agentStateRuntime.arena.layout.section(
         .regionalPlasticModulation
       )
+      let fastPlasticity = agentStateRuntime.arena.layout.section(.fastPlasticity)
       let cpgState = agentStateRuntime.arena.layout.section(.cpgState)
       let descendingBaseline = agentStateRuntime.arena.layout.section(
         .descendingSomaticBaseline
@@ -635,6 +642,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         regionalPlasticModulationByteCount:
           plasticModulation.elementCount * plasticModulation.elementStride,
         regionalPlasticModulationCount: plasticModulation.elementCount,
+        fastPlasticityGPUAddress:
+          hot.outputGPUAddress + UInt64(fastPlasticity.byteOffset),
+        fastPlasticityByteCount: fastPlasticity.byteCount,
+        fastPlasticityCount: fastPlasticity.elementCount,
         cpgStateGPUAddress: hot.outputGPUAddress + UInt64(cpgState.byteOffset),
         cpgStateByteCount: species.cpg.oscillators.count
           * cpgState.elementStride,
@@ -1096,6 +1107,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let plasticModulation = agentStateRuntime.arena.layout.section(
       .regionalPlasticModulation
     )
+    let fastPlasticity = agentStateRuntime.arena.layout.section(.fastPlasticity)
     let cpgState = agentStateRuntime.arena.layout.section(.cpgState)
     let descendingBaseline = agentStateRuntime.arena.layout.section(
       .descendingSomaticBaseline
@@ -1158,6 +1170,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         <= buffer.length - plasticModulation.byteOffset,
       decision.regionalPlasticModulationGPUAddress
         == buffer.gpuAddress + UInt64(plasticModulation.byteOffset),
+      decision.fastPlasticityCount == fastPlasticity.elementCount,
+      decision.fastPlasticityByteCount == fastPlasticity.byteCount,
+      fastPlasticity.byteOffset <= buffer.length,
+      decision.fastPlasticityByteCount
+        <= buffer.length - fastPlasticity.byteOffset,
+      decision.fastPlasticityGPUAddress
+        == buffer.gpuAddress + UInt64(fastPlasticity.byteOffset),
       decision.cpgStateCount == species.cpg.oscillators.count,
       decision.cpgStateByteCount
         == decision.cpgStateCount * cpgState.elementStride,
@@ -1214,6 +1233,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       internalActionSourceOffset: internalActions.byteOffset,
       maturationSourceOffset: maturation.byteOffset,
       plasticModulationSourceOffset: plasticModulation.byteOffset,
+      fastPlasticitySourceOffset: fastPlasticity.byteOffset,
       cpgStateSourceOffset: cpgState.byteOffset,
       reflexStateSourceOffset: reflexState.byteOffset,
       motorCommandSourceOffset: motorCommands.byteOffset,

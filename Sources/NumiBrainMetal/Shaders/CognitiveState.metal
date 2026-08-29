@@ -348,7 +348,7 @@ inline float nb_regional_neuromodulator_effect(
   const uint effect_index)
 {
   constexpr uint hyperparameter_count = 8u;
-  constexpr uint basis_channel_count = 5u;
+  constexpr uint basis_stride = 517u;
   constexpr uint receptor_effect_count = 14u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
@@ -360,9 +360,9 @@ inline float nb_regional_neuromodulator_effect(
   const uint plasticity_scalar_count = uniforms.plasticity_parameter_count
     - hyperparameter_count - receptor_scalar_count;
   const uint basis_capacity = plasticity_scalar_count
-    / (uniforms.module_count * basis_channel_count);
+    / (uniforms.module_count * basis_stride);
   const uint receptor_offset = hyperparameter_count
-    + uniforms.module_count * basis_capacity * basis_channel_count;
+    + uniforms.module_count * basis_capacity * basis_stride;
   float effect = 0.0f;
   for (uint channel = 0u; channel < uniforms.neuromodulator_count; ++channel) {
     const uint weight_index = receptor_offset
@@ -2005,6 +2005,7 @@ kernel void advance_fast_plasticity_foundation(
     site.learning_rate = max(plasticity_parameters[0], 0.0f);
     site.maximum_magnitude = max(plasticity_parameters[7], 1.0e-4f);
   }
+  site.flags |= 1u;
   uint region_index = gid % uniforms.module_count;
   for (uint index = 0u; index < uniforms.module_count; ++index) {
     if (maturation[index].module_identifier == uint(site.region_identifier)) {
@@ -2099,7 +2100,8 @@ kernel void reduce_fast_plasticity_by_region(
     );
   const uint module_identifier = maturation[gid].module_identifier;
   constexpr uint hyperparameter_count = 8u;
-  constexpr uint basis_channel_count = 5u;
+  constexpr uint basis_operator_channel_count = 5u;
+  constexpr uint basis_stride = 517u;
   constexpr uint receptor_effect_count = 14u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
@@ -2109,8 +2111,8 @@ kernel void reduce_fast_plasticity_by_region(
         - receptor_scalar_count
     : 0u;
   const uint basis_capacity = basis_scalar_count
-    / (uniforms.module_count * basis_channel_count);
-  float projection[basis_channel_count] = {};
+    / (uniforms.module_count * basis_stride);
+  float projection[basis_operator_channel_count] = {};
   uint coefficient_count = 0u;
   for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
     const NBFastPlasticityStateRecord site = sites[index];
@@ -2118,8 +2120,9 @@ kernel void reduce_fast_plasticity_by_region(
     if (basis_capacity == 0u) continue;
     const uint basis_identifier = uint(site.basis_identifier) % basis_capacity;
     const uint basis_offset = hyperparameter_count
-      + (gid * basis_capacity + basis_identifier) * basis_channel_count;
-    for (uint channel = 0u; channel < basis_channel_count; ++channel) {
+      + (gid * basis_capacity + basis_identifier) * basis_stride;
+    for (uint channel = 0u;
+        channel < basis_operator_channel_count; ++channel) {
       projection[channel] += site.coefficient
         * plasticity_parameters[basis_offset + channel];
     }
@@ -2129,7 +2132,8 @@ kernel void reduce_fast_plasticity_by_region(
     reinterpret_cast<device const NBNeuromodulatorStateRecord *>(
       hot_state + uniforms.neuromodulation_offset
     );
-  for (uint channel = 0u; channel < basis_channel_count; ++channel) {
+  for (uint channel = 0u;
+      channel < basis_operator_channel_count; ++channel) {
     projection[channel] += nb_regional_neuromodulator_effect(
       plasticity_parameters,
       uniforms,
