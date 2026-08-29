@@ -414,6 +414,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
+  public static let recordLayoutVersion: UInt32 = 2
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
   public static let compressedEpisodeMetadataStride = 128
@@ -503,6 +504,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
       MetalAgentStateLayout.mix(UInt64(section.elementStride), into: &hash)
     }
     MetalAgentStateLayout.mix(UInt64(journalByteCount), into: &hash)
+    MetalAgentStateLayout.mix(UInt64(Self.recordLayoutVersion), into: &hash)
     fingerprint = hash
   }
 

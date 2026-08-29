@@ -575,18 +575,63 @@ kernel void propose_dynamic_options(
       ? memory_token.goal_identifier
       : control->active_goal_identifier;
     const uint workspace_base = workspace_slot * uniforms.workspace_dimension;
-    learned.task_value = workspace[
-      workspace_base % max(uniforms.workspace_scalar_count, 1u)
-    ];
-    learned.homeostatic_value = 0.0f;
-    learned.social_value = 0.0f;
-    learned.information_gain = 0.0f;
-    learned.damage_cvar = clamp(
-      1.0f - memory_token.confidence, 0.0f, 1.0f
-    );
-    learned.effort_cost = 0.02f;
+    const bool structured_skill = uniforms.workspace_dimension >= 76u;
+    float initiation_dot = 0.0f;
+    float initiation_norm = 1.0e-6f;
+    float recurrent_norm = 1.0e-6f;
+    for (uint component = 0u; component < 16u; ++component) {
+      const float initiation = structured_skill
+        ? workspace[workspace_base + 16u + component] : 0.0f;
+      const float state = recurrent[component % uniforms.recurrent_scalar_count];
+      initiation_dot += initiation * state;
+      initiation_norm += initiation * initiation;
+      recurrent_norm += state * state;
+    }
+    const float initiation_match = structured_skill
+      ? clamp(0.5f + 0.5f * initiation_dot
+          * rsqrt(initiation_norm * recurrent_norm), 0.0f, 1.0f)
+      : memory_token.confidence;
+    float termination_logit = 0.0f;
+    for (uint component = 0u; component < 8u; ++component) {
+      termination_logit += (structured_skill
+        ? workspace[workspace_base + 32u + component] : 0.0f)
+        * recurrent[component % uniforms.recurrent_scalar_count];
+    }
+    const float termination_probability = structured_skill
+      ? 1.0f / (1.0f + exp(-termination_logit / 8.0f)) : 0.0f;
+    learned.task_value = structured_skill
+      ? workspace[workspace_base + 59u] + workspace[workspace_base + 65u]
+      : workspace[workspace_base % max(uniforms.workspace_scalar_count, 1u)];
+    learned.homeostatic_value = structured_skill
+      ? workspace[workspace_base + 64u] : 0.0f;
+    learned.social_value = structured_skill
+      ? workspace[workspace_base + 66u] : 0.0f;
+    learned.information_gain = structured_skill
+      ? max(workspace[workspace_base + 67u], 0.0f)
+        + workspace[workspace_base + 62u]
+      : 0.0f;
+    learned.damage_cvar = structured_skill
+      ? clamp(workspace[workspace_base + 57u], 0.0f, 1.0f)
+      : clamp(1.0f - memory_token.confidence, 0.0f, 1.0f);
+    learned.effort_cost = structured_skill
+      ? max(workspace[workspace_base + 58u], 0.0f) : 0.02f;
     learned.switching_cost = 0.025f;
-    learned.competence = clamp(memory_token.confidence, 0.0f, 1.0f);
+    learned.competence = clamp(
+      memory_token.confidence
+        * (structured_skill ? workspace[workspace_base + 56u] : 1.0f)
+        * initiation_match,
+      0.0f,
+      1.0f
+    );
+    if (structured_skill
+        && control->active_option_identifier == learned.option_identifier) {
+      const float termination_confidence = clamp(
+        workspace[workspace_base + 61u], 0.0f, 1.0f
+      );
+      learned.task_value -= termination_probability * termination_confidence;
+      learned.competence *= 1.0f
+        - 0.5f * termination_probability * termination_confidence;
+    }
     learned.proposal_kind = 10u;
     learned.source_module = 60u;
     learned.flags = NB_CONTROL_FLAG_VALID;

@@ -15,6 +15,7 @@ constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
+constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 2u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
@@ -504,15 +505,28 @@ struct NBProceduralSkillSummaryRecord {
   ulong last_execution_timestamp_microseconds;
   ulong execution_count;
   ulong parent_skill_identifier;
+  ulong created_timestamp_microseconds;
+  ulong last_training_timestamp_microseconds;
+  ulong initiation_goal_identifier;
+  ulong outcome_event_identifier;
   uint format_version;
   uint flags;
   uint goal_parameter_dimension;
-  uint reserved;
+  uint phase_count;
   float competence;
   float damage_cvar;
   float expected_effort;
   float expected_value;
+  float initiation_confidence;
+  float termination_confidence;
+  float outcome_uncertainty;
+  float adaptation_rate;
+  float expected_factored_value[8];
+  float initiation_model[16];
   float policy_code[16];
+  float termination_model[8];
+  float outcome_model[16];
+  float adaptation_state[4];
 };
 
 struct NBProspectiveIntentionSummaryRecord {
@@ -614,7 +628,7 @@ static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
 static_assert(sizeof(NBArchivePageRequestRecord) == 32);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
-static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
+static_assert(sizeof(NBProceduralSkillSummaryRecord) == 384);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
 static_assert(sizeof(NBCommittedTransitionRecord) == 640);
@@ -1346,14 +1360,19 @@ kernel void score_memory_retrieval_candidates(
             persistent_memory + uniforms.procedural_memory_offset
               + ulong(local_index) * ulong(uniforms.procedural_stride)
           );
-        if (record->format_version == 1u && record->identifier != 0ul
+        if (record->format_version == NB_PROCEDURAL_SKILL_RECORD_VERSION
+            && record->identifier != 0ul
             && (record->flags & 4u) == 0u) {
           kind = 3u;
           identifier = record->identifier;
           score = uniforms.procedural_weight * max(memory_parameters[2], 0.0f) * (
-            retrieval_similarity(
+            0.55f * retrieval_similarity(
+              query, uniforms.recurrent_scalar_count,
+              record->initiation_model, 16u
+            ) + 0.45f * retrieval_similarity(
               query, uniforms.recurrent_scalar_count, record->policy_code, 16u
-            ) + record->competence - record->damage_cvar
+            ) + record->competence + 0.25f * record->initiation_confidence
+              - record->damage_cvar - 0.25f * record->outcome_uncertainty
           );
         }
         } else {
@@ -1424,6 +1443,7 @@ kernel void publish_memory_retrieval_winner(
   float score = 0.0f;
   device const float *value = nullptr;
   device const NBArchivedEpisodicRecord *archived_value = nullptr;
+  device const NBProceduralSkillSummaryRecord *procedural_value = nullptr;
   uint value_count = 0u;
   device const float *query = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
@@ -1515,8 +1535,8 @@ kernel void publish_memory_retrieval_winner(
         kind = 3u;
         identifier = record->identifier;
         score = record->competence;
-        value = record->policy_code;
-        value_count = 16u;
+        procedural_value = record;
+        value_count = 76u;
         } else {
           local_index -= uniforms.procedural_capacity;
           device const NBProspectiveIntentionSummaryRecord *record =
@@ -1547,6 +1567,38 @@ kernel void publish_memory_retrieval_winner(
         ? float(archived_value->quantized_retrieval_key[index])
           * archived_value->retrieval_key_scale
         : 0.0f;
+    } else if (kind == 3u && procedural_value != nullptr) {
+      float procedural_component = 0.0f;
+      if (index < 16u) {
+        procedural_component = procedural_value->policy_code[index];
+      } else if (index < 32u) {
+        procedural_component = procedural_value->initiation_model[index - 16u];
+      } else if (index < 40u) {
+        procedural_component = procedural_value->termination_model[index - 32u];
+      } else if (index < 56u) {
+        procedural_component = procedural_value->outcome_model[index - 40u];
+      } else if (index == 56u) {
+        procedural_component = procedural_value->competence;
+      } else if (index == 57u) {
+        procedural_component = procedural_value->damage_cvar;
+      } else if (index == 58u) {
+        procedural_component = procedural_value->expected_effort;
+      } else if (index == 59u) {
+        procedural_component = procedural_value->expected_value;
+      } else if (index == 60u) {
+        procedural_component = procedural_value->initiation_confidence;
+      } else if (index == 61u) {
+        procedural_component = procedural_value->termination_confidence;
+      } else if (index == 62u) {
+        procedural_component = procedural_value->outcome_uncertainty;
+      } else if (index == 63u) {
+        procedural_component = procedural_value->adaptation_rate;
+      } else if (index < 72u) {
+        procedural_component = procedural_value->expected_factored_value[index - 64u];
+      } else if (index < 76u) {
+        procedural_component = procedural_value->adaptation_state[index - 72u];
+      }
+      workspace[base + index] = procedural_component;
     } else {
       workspace[base + index] = index < value_count ? value[index] : 0.0f;
     }
@@ -1560,6 +1612,8 @@ kernel void publish_memory_retrieval_winner(
   token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   token.entity_identifier = identifier;
+  token.goal_identifier = kind == 3u && procedural_value != nullptr
+    ? procedural_value->initiation_goal_identifier : token.goal_identifier;
   token.provenance_record_identifier = identifier;
   const uint source_module = kind == 2u
     ? 58u
@@ -1925,7 +1979,7 @@ kernel void reconsolidate_retrieved_memory(
         hot_state + uniforms.control_header_offset
       );
     if (record->identifier != identifier
-        || record->format_version != NB_MEMORY_RECORD_VERSION
+        || record->format_version != NB_PROCEDURAL_SKILL_RECORD_VERSION
         || control->active_option_identifier != record->identifier) return;
     device const NBDriveRecord *drives =
       reinterpret_cast<device const NBDriveRecord *>(
@@ -1954,7 +2008,58 @@ kernel void reconsolidate_retrieved_memory(
     updated.expected_value = mix(
       record->expected_value, control->selected_score, rate
     );
+    updated.initiation_confidence = clamp(
+      record->initiation_confidence
+        + rate * (1.0f - record->initiation_confidence),
+      0.0f,
+      1.0f
+    );
+    updated.termination_confidence = mix(
+      record->termination_confidence,
+      clamp(control->progress, 0.0f, 1.0f),
+      rate
+    );
+    updated.outcome_uncertainty = mix(
+      record->outcome_uncertainty,
+      abs(control->selected_score - record->expected_value)
+        + abs(accepted_damage - record->damage_cvar),
+      rate
+    );
+    updated.adaptation_rate = rate;
+    updated.expected_factored_value[1] = mix(
+      record->expected_factored_value[1], control->selected_score, rate
+    );
+    updated.expected_factored_value[4] = mix(
+      record->expected_factored_value[4], -accepted_damage, rate
+    );
+    updated.expected_factored_value[5] = mix(
+      record->expected_factored_value[5], -max(control->predicted_effort, 0.0f), rate
+    );
+    updated.expected_factored_value[6] = mix(
+      record->expected_factored_value[6], -accepted_damage, rate
+    );
+    for (uint component = 0u; component < 16u; ++component) {
+      const float evidence = accepted_memory_evidence_component(
+        recurrent, uniforms.recurrent_scalar_count,
+        observations, uniforms.observation_count, component
+      );
+      updated.outcome_model[component] = mix(
+        record->outcome_model[component],
+        component < 10u ? evidence
+          : (component == 10u ? control->selected_score
+            : (component == 11u ? accepted_damage
+              : (component == 12u ? control->progress
+                : record->outcome_model[component]))),
+        rate
+      );
+    }
+    updated.adaptation_state[0] = updated.competence;
+    updated.adaptation_state[1] = updated.damage_cvar;
+    updated.adaptation_state[2] = updated.outcome_uncertainty;
+    updated.adaptation_state[3] = control->progress;
     updated.last_execution_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    updated.last_training_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     updated.execution_count = record->execution_count == ~0ul
       ? record->execution_count : record->execution_count + 1ul;
@@ -2217,7 +2322,7 @@ kernel void consolidate_lived_memory_during_rest(
           persistent_memory + uniforms.procedural_memory_offset
             + ulong(index) * ulong(uniforms.procedural_stride)
         );
-      if (skill->format_version == NB_MEMORY_RECORD_VERSION
+      if (skill->format_version == NB_PROCEDURAL_SKILL_RECORD_VERSION
           && skill->identifier == selected_replay->record_identifier) {
         target_option_identifier = skill->parent_skill_identifier;
         break;
@@ -2297,6 +2402,7 @@ kernel void consolidate_lived_memory_during_rest(
   float procedural_code[16] = {};
   float accumulated_damage = 0.0f;
   float accumulated_value = 0.0f;
+  float accumulated_procedural_uncertainty = 0.0f;
   for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
     device const NBEpisodicSummaryRecord *episode =
       reinterpret_cast<device const NBEpisodicSummaryRecord *>(
@@ -2326,6 +2432,7 @@ kernel void consolidate_lived_memory_during_rest(
       procedural_count += 1u;
       accumulated_damage += episode->damage_severity;
       accumulated_value += episode->factored_reinforcement;
+      accumulated_procedural_uncertainty += episode->epistemic_uncertainty;
       for (uint component = 0u; component < 10u; ++component) {
         procedural_code[component] += episode->retrieval_key[component];
       }
@@ -2346,7 +2453,8 @@ kernel void consolidate_lived_memory_during_rest(
       reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
         persistent_memory + destination
       );
-    const bool collision = existing->format_version == NB_MEMORY_RECORD_VERSION
+    const bool collision = existing->format_version
+        == NB_PROCEDURAL_SKILL_RECORD_VERSION
       && existing->identifier != 0ul
       && existing->identifier != semantic_identifier;
     if (!collision && (existing->identifier == 0ul
@@ -2493,7 +2601,11 @@ kernel void consolidate_lived_memory_during_rest(
       reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
         persistent_memory + destination
       );
-    const bool collision = existing->format_version == NB_MEMORY_RECORD_VERSION
+    const bool existing_skill = existing->format_version
+      == NB_PROCEDURAL_SKILL_RECORD_VERSION
+      && existing->identifier == procedural_identifier;
+    const bool collision = existing->format_version
+        == NB_PROCEDURAL_SKILL_RECORD_VERSION
       && existing->identifier != 0ul
       && existing->identifier != procedural_identifier;
     if (!collision && (existing->identifier == 0ul
@@ -2501,27 +2613,107 @@ kernel void consolidate_lived_memory_during_rest(
           < latest->end_timestamp_microseconds)) {
       const float divisor = 1.0f / float(procedural_count);
       const float mean_damage = accumulated_damage * divisor;
-      NBProceduralSkillSummaryRecord skill = {};
-      skill.identifier = procedural_identifier;
-      skill.last_execution_timestamp_microseconds =
-        latest->end_timestamp_microseconds;
-      skill.execution_count = ulong(procedural_count);
-      skill.parent_skill_identifier = latest->active_option_identifier;
-      skill.format_version = NB_MEMORY_RECORD_VERSION;
-      skill.flags = 1u;
-      skill.goal_parameter_dimension = 16u;
-      skill.competence = clamp(
+      const float mean_value = accumulated_value * divisor;
+      const float mean_uncertainty =
+        accumulated_procedural_uncertainty * divisor;
+      const float learned_competence = clamp(
         (1.0f - mean_damage)
           * (1.0f - exp(-procedural_learning_rate
             * float(procedural_count))),
         0.0f, 1.0f
       );
-      skill.damage_cvar = mean_damage;
-      skill.expected_effort = 0.0f;
-      skill.expected_value = accumulated_value * divisor;
-      for (uint component = 0u; component < 10u; ++component) {
-        skill.policy_code[component] = procedural_code[component] * divisor;
+      NBProceduralSkillSummaryRecord skill = {};
+      skill.identifier = procedural_identifier;
+      skill.last_execution_timestamp_microseconds =
+        latest->end_timestamp_microseconds;
+      skill.execution_count = existing_skill
+        ? max(existing->execution_count, ulong(procedural_count))
+        : ulong(procedural_count);
+      skill.parent_skill_identifier = latest->active_option_identifier;
+      skill.created_timestamp_microseconds = existing_skill
+        ? existing->created_timestamp_microseconds
+        : latest->start_timestamp_microseconds;
+      skill.last_training_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+      skill.initiation_goal_identifier = latest->active_goal_identifier;
+      skill.outcome_event_identifier =
+        (ulong(latest->event_kind) << 32) | ulong(latest->source_identifier);
+      skill.format_version = NB_PROCEDURAL_SKILL_RECORD_VERSION;
+      skill.flags = 1u;
+      skill.goal_parameter_dimension = 16u;
+      skill.phase_count = 1u;
+      skill.competence = existing_skill
+        ? mix(existing->competence, learned_competence,
+            procedural_learning_rate)
+        : learned_competence;
+      skill.damage_cvar = existing_skill
+        ? mix(existing->damage_cvar, mean_damage, procedural_learning_rate)
+        : mean_damage;
+      skill.expected_effort = existing_skill
+        ? mix(existing->expected_effort, mean_damage * 0.25f,
+            procedural_learning_rate)
+        : mean_damage * 0.25f;
+      skill.expected_value = existing_skill
+        ? mix(existing->expected_value, mean_value, procedural_learning_rate)
+        : mean_value;
+      skill.initiation_confidence = clamp(
+        1.0f - exp(-procedural_learning_rate * float(procedural_count)),
+        0.0f,
+        1.0f
+      );
+      skill.termination_confidence = clamp(
+        skill.initiation_confidence * (1.0f - mean_uncertainty),
+        0.0f,
+        1.0f
+      );
+      skill.outcome_uncertainty = max(mean_uncertainty, 0.0f);
+      skill.adaptation_rate = procedural_learning_rate;
+      skill.expected_factored_value[0] = -mean_damage;
+      skill.expected_factored_value[1] = mean_value;
+      skill.expected_factored_value[4] = -mean_damage;
+      skill.expected_factored_value[5] = -skill.expected_effort;
+      skill.expected_factored_value[6] = -mean_damage;
+      for (uint component = 0u; component < 16u; ++component) {
+        const float learned_code = component < 10u
+          ? procedural_code[component] * divisor
+          : latest->retrieval_key[component % 10u];
+        skill.initiation_model[component] = existing_skill
+          ? mix(existing->initiation_model[component], learned_code,
+              procedural_learning_rate)
+          : learned_code;
+        skill.policy_code[component] = existing_skill
+          ? mix(existing->policy_code[component], learned_code,
+              procedural_learning_rate)
+          : learned_code;
       }
+      for (uint component = 0u; component < 8u; ++component) {
+        const float termination_code = component == 0u
+          ? latest->salience
+          : (component == 1u ? latest->epistemic_uncertainty
+            : (component == 2u ? latest->damage_severity
+              : (component == 3u ? latest->factored_reinforcement
+                : latest->retrieval_key[(component - 4u) % 10u])));
+        skill.termination_model[component] = existing_skill
+          ? mix(existing->termination_model[component], termination_code,
+              procedural_learning_rate)
+          : termination_code;
+      }
+      for (uint component = 0u; component < 16u; ++component) {
+        const float outcome_code = component < 10u
+          ? latest->retrieval_key[component]
+          : (component == 10u ? mean_value
+            : (component == 11u ? mean_damage
+              : (component == 12u ? mean_uncertainty
+                : float((latest->event_kind + component) & 0xffu) / 255.0f)));
+        skill.outcome_model[component] = existing_skill
+          ? mix(existing->outcome_model[component], outcome_code,
+              procedural_learning_rate)
+          : outcome_code;
+      }
+      skill.adaptation_state[0] = skill.competence;
+      skill.adaptation_state[1] = skill.damage_cvar;
+      skill.adaptation_state[2] = skill.outcome_uncertainty;
+      skill.adaptation_state[3] = development->maturation_progress;
       if (append_memory_record(
           journal, uniforms, skill, destination,
           NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, skill.identifier
