@@ -16,12 +16,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let tissueConnectome: TissueConnectome?
   public let tissueEventSchedule: TissueEventSchedule?
   public let randomContext: TissueRandomContext
-  public let sensoryProfile: SensoryTransductionProfile
-  public let numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog
-  public let jointTopologyCatalog: NumanXJointTopologyCatalog
-  public let protectiveMotorProfile: ProtectiveMotorProfile?
-  public let muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
-  public let somaticSynergyCatalog: SomaticSynergyCatalog?
+  public let compiledSpeciesTemplate: CompiledSpeciesTemplate
   public let schedulerEnvironmentIdentifier: UInt32
   public let maximumSchedulerEvents: Int
   public let maximumSchedulerInvocations: Int
@@ -31,17 +26,12 @@ public struct MetalNumiBrainConfiguration: Sendable {
     initialTissueState: TissueGrid,
     tissueParameters: TissueParameters,
     tissueStimulus: TissueStimulus,
-    sensoryProfile: SensoryTransductionProfile,
-    numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog,
-    jointTopologyCatalog: NumanXJointTopologyCatalog,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
     tissueStructure: TissueStructure? = nil,
     tissueDelayField: TissueDelayField? = nil,
     tissueConnectome: TissueConnectome? = nil,
     tissueEventSchedule: TissueEventSchedule? = nil,
     randomContext: TissueRandomContext = .deterministicDefault,
-    protectiveMotorProfile: ProtectiveMotorProfile? = nil,
-    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog? = nil,
-    somaticSynergyCatalog: SomaticSynergyCatalog? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maximumSchedulerEvents: Int = 64,
     maximumSchedulerInvocations: Int = 4_096,
@@ -55,12 +45,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.tissueConnectome = tissueConnectome
     self.tissueEventSchedule = tissueEventSchedule
     self.randomContext = randomContext
-    self.sensoryProfile = sensoryProfile
-    self.numanXReceptorAnatomyCatalog = numanXReceptorAnatomyCatalog
-    self.jointTopologyCatalog = jointTopologyCatalog
-    self.protectiveMotorProfile = protectiveMotorProfile
-    self.muscleAttachmentCatalog = muscleAttachmentCatalog
-    self.somaticSynergyCatalog = somaticSynergyCatalog
+    self.compiledSpeciesTemplate = compiledSpeciesTemplate
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumSchedulerEvents = maximumSchedulerEvents
     self.maximumSchedulerInvocations = maximumSchedulerInvocations
@@ -70,19 +55,20 @@ public struct MetalNumiBrainConfiguration: Sendable {
 
 @available(macOS 26.0, *)
 extension MetalNumiBrainRuntime {
-  /// Creates the authoritative complete runtime from one species graph and one
-  /// immutable publication. Omitting the publication creates a content-
+  /// Creates the authoritative complete runtime from one compiled species and
+  /// one immutable publication. Omitting the publication creates a content-
   /// addressed foundation generation for the full species graph, never the
   /// reduced scheduler qualification fixture.
   public static func create(
     configuration: MetalNumiBrainConfiguration,
-    species: SpeciesTemplate,
     publication requestedPublication: BrainParameterPublication? = nil,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws -> MetalNumiBrainRuntime {
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
       throw TissueError.metal("no Metal device is available")
     }
+    let compiledSpeciesTemplate = configuration.compiledSpeciesTemplate
+    let species = compiledSpeciesTemplate.species
     let regionalProgram = try species.regionalProgram()
     let publication: BrainParameterPublication
     if let requestedPublication {
@@ -107,7 +93,7 @@ extension MetalNumiBrainRuntime {
     }
     let version = publication.version
     guard
-      configuration.sensoryProfile.speciesTemplateFingerprint
+      compiledSpeciesTemplate.sensoryProfile.speciesTemplateFingerprint
         == species.fingerprint,
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
       version.scheduleFingerprint == regionalProgram.scheduleFingerprint,
@@ -122,30 +108,30 @@ extension MetalNumiBrainRuntime {
         "complete brain configuration does not share one species and parameter identity"
       )
     }
-    let compiledBindings = try configuration.numanXReceptorAnatomyCatalog
+    let compiledBindings = try compiledSpeciesTemplate.numanXReceptorAnatomyCatalog
       .compiledBindings(for: species)
-    try configuration.jointTopologyCatalog.validate(species: species)
-    let compiledJointBindings = try configuration.numanXReceptorAnatomyCatalog
+    try compiledSpeciesTemplate.jointTopologyCatalog.validate(species: species)
+    let compiledJointBindings = try compiledSpeciesTemplate.numanXReceptorAnatomyCatalog
       .compiledJointBindings(
         for: species,
-        jointTopologyCatalog: configuration.jointTopologyCatalog
+        jointTopologyCatalog: compiledSpeciesTemplate.jointTopologyCatalog
       )
-    let compiledMuscleBindings = try configuration.numanXReceptorAnatomyCatalog
+    let compiledMuscleBindings = try compiledSpeciesTemplate.numanXReceptorAnatomyCatalog
       .compiledMuscleBindings(
         for: species,
-        muscleAttachmentCatalog: configuration.muscleAttachmentCatalog
+        muscleAttachmentCatalog: compiledSpeciesTemplate.muscleAttachmentCatalog
       )
-    guard compiledBindings == configuration.sensoryProfile.bodyReceptorBindings,
-      compiledJointBindings == configuration.sensoryProfile.jointReceptorBindings,
-      compiledMuscleBindings == configuration.sensoryProfile.muscleReceptorBindings
+    guard compiledBindings == compiledSpeciesTemplate.sensoryProfile.bodyReceptorBindings,
+      compiledJointBindings
+        == compiledSpeciesTemplate.sensoryProfile.jointReceptorBindings,
+      compiledMuscleBindings
+        == compiledSpeciesTemplate.sensoryProfile.muscleReceptorBindings
     else {
       throw TissueError.metal(
         "NumanX receptor anatomy catalog does not own all sensory profile bindings"
       )
     }
-    let protectiveProfile =
-      try configuration.protectiveMotorProfile
-      ?? ProtectiveMotorProfile.compiled(species: species)
+    let protectiveProfile = compiledSpeciesTemplate.protectiveMotorProfile
     guard protectiveProfile.channels.count == Int(species.motor.actuatorCount),
       protectiveProfile.channels.map(\.muscleIdentifier)
         == species.motor.actuatorChannels.map(\.identifier)
@@ -154,11 +140,7 @@ extension MetalNumiBrainRuntime {
         "protective actuator profile does not match the species motor topology"
       )
     }
-    guard let somaticSynergyCatalog = configuration.somaticSynergyCatalog else {
-      throw TissueError.metal(
-        "complete brain configuration requires a species somatic synergy catalog"
-      )
-    }
+    let somaticSynergyCatalog = compiledSpeciesTemplate.somaticSynergyCatalog
     try somaticSynergyCatalog.validate(motor: species.motor)
     let cognitive = try MetalEmbodiedBrainRuntime(
       device: device,
@@ -166,9 +148,9 @@ extension MetalNumiBrainRuntime {
       regionalProgram: regionalProgram,
       parameterVersion: version,
       sharedParameterArtifact: publication.sharedArtifact,
-      sensoryProfile: configuration.sensoryProfile,
-      jointTopologyCatalog: configuration.jointTopologyCatalog,
-      muscleAttachmentCatalog: configuration.muscleAttachmentCatalog,
+      sensoryProfile: compiledSpeciesTemplate.sensoryProfile,
+      jointTopologyCatalog: compiledSpeciesTemplate.jointTopologyCatalog,
+      muscleAttachmentCatalog: compiledSpeciesTemplate.muscleAttachmentCatalog,
       somaticSynergyCatalog: somaticSynergyCatalog
     )
     let fastTissue = try MetalTissueRuntime(
@@ -185,7 +167,7 @@ extension MetalNumiBrainRuntime {
       parameterVersion: version,
       sharedParameterArtifact: publication.sharedArtifact,
       protectiveMotorProfile: protectiveProfile,
-      numanXMuscleAttachmentCatalog: configuration.muscleAttachmentCatalog,
+      numanXMuscleAttachmentCatalog: compiledSpeciesTemplate.muscleAttachmentCatalog,
       somaticSynergyCatalog: somaticSynergyCatalog,
       schedulerEnvironmentIdentifier: configuration.schedulerEnvironmentIdentifier,
       maxSchedulerEvents: configuration.maximumSchedulerEvents,
