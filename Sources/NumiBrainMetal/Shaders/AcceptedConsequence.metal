@@ -18,6 +18,7 @@ constant uint NB_WORLD_HEAD_COUNT = 5u;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
 constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
+constant ulong NB_ACCEPTED_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -1378,8 +1379,41 @@ kernel void broadcast_accepted_prediction_error(
     mean_external_disturbance
   );
   if (!accepted_stop) {
-    control->progress = clamp(
-      control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f
+    const uint goal_origin = uint(control->active_goal_identifier >> 56u);
+    const ulong goal_code = control->active_goal_identifier
+      & NB_ACCEPTED_GOAL_SOURCE_MASK;
+    const uint drive_index = goal_code > 0ul ? uint(goal_code - 1ul) : ~0u;
+    const bool drive_bound_goal = drive_index < uniforms.drive_count
+      && (goal_origin == 1u || goal_origin == 2u || goal_origin == 4u
+        || goal_origin == 5u || goal_origin == 6u);
+    float satisfaction = 0.0f;
+    float progress_time_constant = 2.0f;
+    if (drive_bound_goal) {
+      const NBDriveStateRecord goal_drive = drives[drive_index];
+      const float viable_span = max(
+        abs(goal_drive.viable_maximum - goal_drive.viable_minimum), 0.1f
+      );
+      const float deficit = max(goal_drive.deficit, 0.0f);
+      satisfaction = viable_span / (viable_span + deficit);
+      progress_time_constant = 0.5f;
+    } else if (control->active_goal_identifier != 0ul) {
+      const float accepted_risk = max(
+        max(embodied_risk.x, embodied_risk.y), protective_risk
+      );
+      satisfaction = clamp(
+        (1.0f - clamp(error, 0.0f, 1.0f))
+          * (0.5f + 0.5f * clamp(mean_agency, 0.0f, 1.0f))
+          * (1.0f - clamp(accepted_risk, 0.0f, 1.0f)),
+        0.0f, 1.0f
+      );
+    }
+    const float progress_alpha = 1.0f - exp(
+      -max(elapsed_seconds, 1.0e-6f) / progress_time_constant
+    );
+    control->progress = mix(
+      clamp(control->progress, 0.0f, 1.0f),
+      satisfaction,
+      clamp(progress_alpha, 0.0f, 1.0f)
     );
   }
 }
