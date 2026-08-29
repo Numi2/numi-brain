@@ -17,6 +17,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let tissueEventSchedule: TissueEventSchedule?
   public let randomContext: TissueRandomContext
   public let sensoryProfile: SensoryTransductionProfile
+  public let numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog?
   public let protectiveMotorProfile: ProtectiveMotorProfile?
   public let muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
   public let schedulerEnvironmentIdentifier: UInt32
@@ -29,6 +30,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     tissueParameters: TissueParameters,
     tissueStimulus: TissueStimulus,
     sensoryProfile: SensoryTransductionProfile,
+    numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog? = nil,
     tissueStructure: TissueStructure? = nil,
     tissueDelayField: TissueDelayField? = nil,
     tissueConnectome: TissueConnectome? = nil,
@@ -50,6 +52,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.tissueEventSchedule = tissueEventSchedule
     self.randomContext = randomContext
     self.sensoryProfile = sensoryProfile
+    self.numanXReceptorAnatomyCatalog = numanXReceptorAnatomyCatalog
     self.protectiveMotorProfile = protectiveMotorProfile
     self.muscleAttachmentCatalog = muscleAttachmentCatalog
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
@@ -111,6 +114,14 @@ extension MetalNumiBrainRuntime {
       throw TissueError.metal(
         "complete brain configuration does not share one species and parameter identity"
       )
+    }
+    if let anatomyCatalog = configuration.numanXReceptorAnatomyCatalog {
+      let compiledBindings = try anatomyCatalog.compiledBindings(for: species)
+      guard compiledBindings == configuration.sensoryProfile.bodyReceptorBindings else {
+        throw TissueError.metal(
+          "NumanX receptor anatomy catalog does not own the sensory profile bindings"
+        )
+      }
     }
     let protectiveProfile = try configuration.protectiveMotorProfile
       ?? ProtectiveMotorProfile.compiled(species: species)

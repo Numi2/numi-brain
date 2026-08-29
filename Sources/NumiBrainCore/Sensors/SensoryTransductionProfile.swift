@@ -83,6 +83,8 @@ public enum BodyReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
 @frozen
 public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
   public let identifier: UInt32
+  public let sourceModelFingerprint: UInt64
+  public let sourceEndpointIdentifier: UInt64
   public let bodyIdentifier: UInt32
   public let modality: SensoryModality
   public let receptorIndex: UInt32
@@ -95,6 +97,8 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
 
   public init(
     identifier: UInt32,
+    sourceModelFingerprint: UInt64 = 0,
+    sourceEndpointIdentifier: UInt64? = nil,
     bodyIdentifier: UInt32,
     modality: SensoryModality,
     receptorIndex: UInt32,
@@ -105,7 +109,9 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
     bias: Float = 0,
     weight: Float = 1
   ) throws {
-    guard identifier > 0, scale.isFinite, bias.isFinite,
+    let sourceEndpointIdentifier = sourceEndpointIdentifier ?? UInt64(identifier)
+    guard identifier > 0, sourceEndpointIdentifier > 0,
+      scale.isFinite, bias.isFinite,
       weight.isFinite, weight > 0
     else {
       throw BrainRuntimeError.invalidDescriptor(
@@ -113,6 +119,8 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
       )
     }
     self.identifier = identifier
+    self.sourceModelFingerprint = sourceModelFingerprint
+    self.sourceEndpointIdentifier = sourceEndpointIdentifier
     self.bodyIdentifier = bodyIdentifier
     self.modality = modality
     self.receptorIndex = receptorIndex
@@ -126,6 +134,8 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case identifier
+    case sourceModelFingerprint
+    case sourceEndpointIdentifier
     case bodyIdentifier
     case modality
     case receptorIndex
@@ -141,6 +151,12 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
     let values = try decoder.container(keyedBy: CodingKeys.self)
     try self.init(
       identifier: values.decode(UInt32.self, forKey: .identifier),
+      sourceModelFingerprint: values.decodeIfPresent(
+        UInt64.self, forKey: .sourceModelFingerprint
+      ) ?? 0,
+      sourceEndpointIdentifier: values.decodeIfPresent(
+        UInt64.self, forKey: .sourceEndpointIdentifier
+      ),
       bodyIdentifier: values.decode(UInt32.self, forKey: .bodyIdentifier),
       modality: values.decode(SensoryModality.self, forKey: .modality),
       receptorIndex: values.decode(UInt32.self, forKey: .receptorIndex),
@@ -237,6 +253,8 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     }
     for binding in canonicalBindings {
       Self.mix(UInt64(binding.identifier), into: &hash)
+      Self.mix(binding.sourceModelFingerprint, into: &hash)
+      Self.mix(binding.sourceEndpointIdentifier, into: &hash)
       Self.mix(UInt64(binding.bodyIdentifier), into: &hash)
       Self.mix(UInt64(binding.modality.rawValue), into: &hash)
       Self.mix(UInt64(binding.receptorIndex), into: &hash)
