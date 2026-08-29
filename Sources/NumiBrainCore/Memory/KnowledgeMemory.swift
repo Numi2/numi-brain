@@ -168,7 +168,7 @@ public enum SemanticMutation: Codable, Equatable, Hashable, Sendable {
 public enum ProceduralSkillFlags: UInt32, Codable, Sendable {
   case trainable = 1
   case frozen = 2
-  case retired = 3
+  case retired = 4
 }
 
 @frozen

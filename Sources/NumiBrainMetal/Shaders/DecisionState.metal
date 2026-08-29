@@ -601,6 +601,7 @@ kernel void propose_dynamic_options(
       ? 1.0f / (1.0f + exp(-termination_logit / 8.0f)) : 0.0f;
     learned.task_value = structured_skill
       ? workspace[workspace_base + 59u] + workspace[workspace_base + 65u]
+        - max(workspace[workspace_base + 62u], 0.0f)
       : workspace[workspace_base % max(uniforms.workspace_scalar_count, 1u)];
     learned.homeostatic_value = structured_skill
       ? workspace[workspace_base + 64u] : 0.0f;
@@ -608,7 +609,6 @@ kernel void propose_dynamic_options(
       ? workspace[workspace_base + 66u] : 0.0f;
     learned.information_gain = structured_skill
       ? max(workspace[workspace_base + 67u], 0.0f)
-        + workspace[workspace_base + 62u]
       : 0.0f;
     learned.damage_cvar = structured_skill
       ? clamp(workspace[workspace_base + 57u], 0.0f, 1.0f)

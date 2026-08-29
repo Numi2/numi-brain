@@ -120,6 +120,13 @@ private struct MemoryConsolidationUniforms {
   var minimumSalience: Float = 0
   var proceduralLearningRate: Float = 0
   var semanticLearningRate: Float = 0
+  var freezeCompetence: Float = 0
+  var freezeMaximumDamage: Float = 0
+  var freezeMaximumUncertainty: Float = 0
+  var retireCompetence: Float = 0
+  var retireMinimumDamage: Float = 0
+  var degradationMargin: Float = 0
+  var mergeSimilarity: Float = 0
 }
 
 private struct MemoryReconsolidationUniforms {
@@ -135,6 +142,7 @@ private struct MemoryReconsolidationUniforms {
   var semanticMemoryOffset: UInt64 = 0
   var semanticRelationMemoryOffset: UInt64 = 0
   var proceduralMemoryOffset: UInt64 = 0
+  var replayMemoryOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
@@ -154,6 +162,8 @@ private struct MemoryReconsolidationUniforms {
   var semanticRelationStride: UInt32 = 0
   var proceduralCapacity: UInt32 = 0
   var proceduralStride: UInt32 = 0
+  var replayCapacity: UInt32 = 0
+  var replayStride: UInt32 = 0
   var driveCount: UInt32 = 0
   var maximumResults: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
@@ -161,6 +171,12 @@ private struct MemoryReconsolidationUniforms {
   var confirmationSimilarity: Float = 0
   var conflictSimilarity: Float = 0
   var maximumDamage: Float = 0
+  var freezeCompetence: Float = 0
+  var freezeMaximumDamage: Float = 0
+  var freezeMaximumUncertainty: Float = 0
+  var retireCompetence: Float = 0
+  var retireMinimumDamage: Float = 0
+  var degradationMargin: Float = 0
 }
 
 private struct ProspectiveLifecycleUniforms {
@@ -256,8 +272,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 192,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
-      MemoryLayout<MemoryReconsolidationUniforms>.stride == 216,
-      MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
+      MemoryLayout<MemoryReconsolidationUniforms>.stride == 256,
+      MemoryLayout<MemoryConsolidationUniforms>.stride == 216,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -579,13 +595,17 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let semantic = arena.memoryLayout.section(.semanticConcepts)
     let semanticRelations = arena.memoryLayout.section(.semanticRelations)
     let procedural = arena.memoryLayout.section(.proceduralSkills)
+    let replay = arena.memoryLayout.section(.replayQueue)
     let archiveClusterCount = 256
     let archiveSlotsPerCluster = archive.elementCount / archiveClusterCount
     let (archiveSearchCandidateCount, archiveSearchOverflow) =
       archiveSlotsPerCluster.multipliedReportingOverflow(by: 2)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
     let maximumResults = Int(retrieval.maximumResults)
-    let sections = [active, compressed, archive, semantic, semanticRelations, procedural]
+    let sections = [
+      active, compressed, archive, semantic, semanticRelations, procedural,
+      replay,
+    ]
     guard !archiveSearchOverflow, archiveSearchCandidateCount <= archive.elementCount,
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max),
       maximumResults > 0, maximumResults <= 4,
@@ -613,6 +633,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       semanticMemoryOffset: UInt64(semantic.byteOffset),
       semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
       proceduralMemoryOffset: UInt64(procedural.byteOffset),
+      replayMemoryOffset: UInt64(replay.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       driveOffset: UInt64(layout.section(.drives).byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
@@ -632,13 +653,21 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       semanticRelationStride: UInt32(semanticRelations.elementStride),
       proceduralCapacity: UInt32(procedural.elementCount),
       proceduralStride: UInt32(procedural.elementStride),
+      replayCapacity: UInt32(replay.elementCount),
+      replayStride: UInt32(replay.elementStride),
       driveCount: UInt32(layout.section(.drives).elementCount),
       maximumResults: UInt32(maximumResults),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       learningRate: 0.10,
       confirmationSimilarity: 0.50,
       conflictSimilarity: -0.10,
-      maximumDamage: 1.0
+      maximumDamage: 1.0,
+      freezeCompetence: 0.92,
+      freezeMaximumDamage: 0.08,
+      freezeMaximumUncertainty: 0.12,
+      retireCompetence: 0.15,
+      retireMinimumDamage: 0.6,
+      degradationMargin: 0.15
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -716,7 +745,14 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       maximumDamage: 0.25,
       minimumSalience: segmentation.boundaryThreshold,
       proceduralLearningRate: 0.25,
-      semanticLearningRate: 0.2
+      semanticLearningRate: 0.2,
+      freezeCompetence: 0.92,
+      freezeMaximumDamage: 0.08,
+      freezeMaximumUncertainty: 0.12,
+      retireCompetence: 0.15,
+      retireMinimumDamage: 0.6,
+      degradationMargin: 0.15,
+      mergeSimilarity: 0.92
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }

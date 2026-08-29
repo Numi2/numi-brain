@@ -16,6 +16,12 @@ constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 2u;
+constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
+constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
+constant uint NB_PROCEDURAL_SKILL_RETIRED = 4u;
+constant uint NB_PROCEDURAL_SKILL_RECONSOLIDATED = 8u;
+constant uint NB_PROCEDURAL_SKILL_MERGED = 16u;
+constant uint NB_PROCEDURAL_SKILL_LIFECYCLE_MASK = 7u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
@@ -258,6 +264,13 @@ struct NBMemoryConsolidationUniforms {
   float minimum_salience;
   float procedural_learning_rate;
   float semantic_learning_rate;
+  float freeze_competence;
+  float freeze_maximum_damage;
+  float freeze_maximum_uncertainty;
+  float retire_competence;
+  float retire_minimum_damage;
+  float degradation_margin;
+  float merge_similarity;
 };
 
 struct NBMemoryReconsolidationUniforms {
@@ -273,6 +286,7 @@ struct NBMemoryReconsolidationUniforms {
   ulong semantic_memory_offset;
   ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
+  ulong replay_memory_offset;
   ulong control_header_offset;
   ulong drive_offset;
   ulong persistent_memory_byte_count;
@@ -292,6 +306,8 @@ struct NBMemoryReconsolidationUniforms {
   uint semantic_relation_stride;
   uint procedural_capacity;
   uint procedural_stride;
+  uint replay_capacity;
+  uint replay_stride;
   uint drive_count;
   uint maximum_results;
   uint journal_entry_capacity;
@@ -299,6 +315,12 @@ struct NBMemoryReconsolidationUniforms {
   float confirmation_similarity;
   float conflict_similarity;
   float maximum_damage;
+  float freeze_competence;
+  float freeze_maximum_damage;
+  float freeze_maximum_uncertainty;
+  float retire_competence;
+  float retire_minimum_damage;
+  float degradation_margin;
 };
 
 struct NBProspectiveLifecycleUniforms {
@@ -613,8 +635,8 @@ static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
-static_assert(sizeof(NBMemoryConsolidationUniforms) == 184);
-static_assert(sizeof(NBMemoryReconsolidationUniforms) == 216);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 216);
+static_assert(sizeof(NBMemoryReconsolidationUniforms) == 256);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -1054,6 +1076,22 @@ inline float retrieval_similarity(
   return dot * rsqrt(query_norm * key_norm);
 }
 
+inline float procedural_similarity(
+  thread const float *query,
+  device const float *key,
+  uint count)
+{
+  float dot = 0.0f;
+  float query_norm = 1.0e-6f;
+  float key_norm = 1.0e-6f;
+  for (uint index = 0u; index < count; ++index) {
+    dot += query[index] * key[index];
+    query_norm += query[index] * query[index];
+    key_norm += key[index] * key[index];
+  }
+  return dot * rsqrt(query_norm * key_norm);
+}
+
 kernel void begin_memory_retrieval(
   device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
@@ -1362,7 +1400,7 @@ kernel void score_memory_retrieval_candidates(
           );
         if (record->format_version == NB_PROCEDURAL_SKILL_RECORD_VERSION
             && record->identifier != 0ul
-            && (record->flags & 4u) == 0u) {
+            && (record->flags & NB_PROCEDURAL_SKILL_RETIRED) == 0u) {
           kind = 3u;
           identifier = record->identifier;
           score = uniforms.procedural_weight * max(memory_parameters[2], 0.0f) * (
@@ -1999,44 +2037,60 @@ kernel void reconsolidate_retrieved_memory(
     const float success = clamp(
       control->progress * (1.0f - accepted_damage), 0.0f, 1.0f
     );
+    const bool was_frozen =
+      (record->flags & NB_PROCEDURAL_SKILL_FROZEN) != 0u;
+    const bool degraded = was_frozen && (
+      accepted_damage > record->damage_cvar + uniforms.degradation_margin
+      || success + uniforms.degradation_margin < record->competence
+    );
+    const float statistics_rate = was_frozen && !degraded
+      ? min(rate, 0.02f) : rate;
+    const float model_rate = was_frozen && !degraded ? 0.0f : rate;
     NBProceduralSkillSummaryRecord updated = *record;
-    updated.competence = mix(record->competence, success, rate);
-    updated.damage_cvar = mix(record->damage_cvar, accepted_damage, rate);
+    updated.competence = mix(
+      record->competence, success, statistics_rate
+    );
+    updated.damage_cvar = mix(
+      record->damage_cvar, accepted_damage, statistics_rate
+    );
     updated.expected_effort = mix(
-      record->expected_effort, max(control->predicted_effort, 0.0f), rate
+      record->expected_effort, max(control->predicted_effort, 0.0f),
+      statistics_rate
     );
     updated.expected_value = mix(
-      record->expected_value, control->selected_score, rate
+      record->expected_value, control->selected_score, statistics_rate
     );
     updated.initiation_confidence = clamp(
       record->initiation_confidence
-        + rate * (1.0f - record->initiation_confidence),
+        + statistics_rate * (1.0f - record->initiation_confidence),
       0.0f,
       1.0f
     );
     updated.termination_confidence = mix(
       record->termination_confidence,
       clamp(control->progress, 0.0f, 1.0f),
-      rate
+      statistics_rate
     );
     updated.outcome_uncertainty = mix(
       record->outcome_uncertainty,
       abs(control->selected_score - record->expected_value)
         + abs(accepted_damage - record->damage_cvar),
-      rate
+      statistics_rate
     );
-    updated.adaptation_rate = rate;
+    updated.adaptation_rate = model_rate;
     updated.expected_factored_value[1] = mix(
-      record->expected_factored_value[1], control->selected_score, rate
+      record->expected_factored_value[1], control->selected_score,
+      statistics_rate
     );
     updated.expected_factored_value[4] = mix(
-      record->expected_factored_value[4], -accepted_damage, rate
+      record->expected_factored_value[4], -accepted_damage, statistics_rate
     );
     updated.expected_factored_value[5] = mix(
-      record->expected_factored_value[5], -max(control->predicted_effort, 0.0f), rate
+      record->expected_factored_value[5],
+      -max(control->predicted_effort, 0.0f), statistics_rate
     );
     updated.expected_factored_value[6] = mix(
-      record->expected_factored_value[6], -accepted_damage, rate
+      record->expected_factored_value[6], -accepted_damage, statistics_rate
     );
     for (uint component = 0u; component < 16u; ++component) {
       const float evidence = accepted_memory_evidence_component(
@@ -2050,7 +2104,7 @@ kernel void reconsolidate_retrieved_memory(
             : (component == 11u ? accepted_damage
               : (component == 12u ? control->progress
                 : record->outcome_model[component]))),
-        rate
+        model_rate
       );
     }
     updated.adaptation_state[0] = updated.competence;
@@ -2063,11 +2117,50 @@ kernel void reconsolidate_retrieved_memory(
       uniforms.target_timestamp_microseconds;
     updated.execution_count = record->execution_count == ~0ul
       ? record->execution_count : record->execution_count + 1ul;
-    updated.flags = record->flags | 8u;
-    append_memory_record(
+    const bool harmful = updated.execution_count >= 8ul
+      && updated.competence <= uniforms.retire_competence
+      && updated.damage_cvar >= uniforms.retire_minimum_damage;
+    const bool mastered = updated.competence >= uniforms.freeze_competence
+      && updated.damage_cvar <= uniforms.freeze_maximum_damage
+      && updated.outcome_uncertainty <= uniforms.freeze_maximum_uncertainty;
+    const uint lifecycle = harmful
+      ? NB_PROCEDURAL_SKILL_RETIRED
+      : (mastered && !degraded
+        ? NB_PROCEDURAL_SKILL_FROZEN
+        : NB_PROCEDURAL_SKILL_TRAINABLE);
+    updated.flags = (record->flags & ~NB_PROCEDURAL_SKILL_LIFECYCLE_MASK)
+      | lifecycle | NB_PROCEDURAL_SKILL_RECONSOLIDATED;
+    const bool wrote_skill = append_memory_record(
       journal, uniforms, updated, destination,
       NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, updated.identifier
     );
+    if (wrote_skill && degraded && uniforms.replay_capacity > 0u) {
+      NBReplayQueueSummaryRecord replay = {};
+      replay.queue_kind = 2u;
+      replay.record_kind = 2u;
+      replay.record_identifier = updated.identifier;
+      replay.priority = clamp(
+        1.0f - updated.competence + updated.damage_cvar
+          + updated.outcome_uncertainty,
+        0.0f,
+        2.0f
+      );
+      replay.replay_count = 0u;
+      replay.enqueued_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+      const uint replay_slot = uint(
+        updated.identifier % ulong(uniforms.replay_capacity)
+      );
+      append_memory_record(
+        journal,
+        uniforms,
+        replay,
+        uniforms.replay_memory_offset
+          + ulong(replay_slot) * ulong(uniforms.replay_stride),
+        NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE,
+        updated.identifier
+      );
+    }
   }
 }
 
@@ -2454,7 +2547,7 @@ kernel void consolidate_lived_memory_during_rest(
         persistent_memory + destination
       );
     const bool collision = existing->format_version
-        == NB_PROCEDURAL_SKILL_RECORD_VERSION
+        == NB_MEMORY_RECORD_VERSION
       && existing->identifier != 0ul
       && existing->identifier != semantic_identifier;
     if (!collision && (existing->identifier == 0ul
@@ -2588,30 +2681,78 @@ kernel void consolidate_lived_memory_during_rest(
   }
 
   if (procedural_count >= uniforms.minimum_procedural_episodes) {
-    const ulong procedural_identity = consolidation_hash(
-      latest->active_option_identifier ^ 0x50524f4345445552ul
+    const float divisor = 1.0f / float(procedural_count);
+    float mean_procedural_code[16] = {};
+    for (uint component = 0u; component < 16u; ++component) {
+      mean_procedural_code[component] = component < 10u
+        ? procedural_code[component] * divisor
+        : latest->retrieval_key[component % 10u];
+    }
+    const ulong proposed_identity = consolidation_hash(
+      latest->active_option_identifier
+        ^ consolidation_hash(
+          latest->active_goal_identifier ^ 0x50524f4345445552ul
+        )
     ) & 0x3ffffffffffffffful;
-    const ulong procedural_identifier = max(procedural_identity, 1ul);
-    const uint procedural_slot = uint(
-      procedural_identifier % ulong(uniforms.procedural_capacity)
-    );
-    const ulong destination = uniforms.procedural_memory_offset
-      + ulong(procedural_slot) * ulong(uniforms.procedural_stride);
-    device const NBProceduralSkillSummaryRecord *existing =
-      reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
-        persistent_memory + destination
+    const ulong proposed_identifier = max(proposed_identity, 1ul);
+    uint exact_slot = uniforms.procedural_capacity;
+    uint available_slot = uniforms.procedural_capacity;
+    uint merge_slot = uniforms.procedural_capacity;
+    float best_merge_similarity = uniforms.merge_similarity;
+    ulong best_merge_identifier = ~0ul;
+    for (uint index = 0u; index < uniforms.procedural_capacity; ++index) {
+      device const NBProceduralSkillSummaryRecord *candidate =
+        reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+          persistent_memory + uniforms.procedural_memory_offset
+            + ulong(index) * ulong(uniforms.procedural_stride)
+        );
+      const bool valid = candidate->format_version
+          == NB_PROCEDURAL_SKILL_RECORD_VERSION
+        && candidate->identifier != 0ul;
+      if (valid && candidate->identifier == proposed_identifier) {
+        exact_slot = index;
+        continue;
+      }
+      if ((!valid
+          || (candidate->flags & NB_PROCEDURAL_SKILL_RETIRED) != 0u)
+          && available_slot == uniforms.procedural_capacity) {
+        available_slot = index;
+      }
+      if (!valid
+          || (candidate->flags & NB_PROCEDURAL_SKILL_RETIRED) != 0u
+          || candidate->parent_skill_identifier
+            != latest->active_option_identifier) continue;
+      const float similarity = procedural_similarity(
+        mean_procedural_code, candidate->policy_code, 16u
       );
-    const bool existing_skill = existing->format_version
-      == NB_PROCEDURAL_SKILL_RECORD_VERSION
-      && existing->identifier == procedural_identifier;
-    const bool collision = existing->format_version
+      if (similarity > best_merge_similarity
+          || (similarity == best_merge_similarity
+            && candidate->identifier < best_merge_identifier)) {
+        best_merge_similarity = similarity;
+        best_merge_identifier = candidate->identifier;
+        merge_slot = index;
+      }
+    }
+    const uint procedural_slot = exact_slot < uniforms.procedural_capacity
+      ? exact_slot
+      : (merge_slot < uniforms.procedural_capacity
+        ? merge_slot : available_slot);
+    if (procedural_slot < uniforms.procedural_capacity) {
+      const ulong destination = uniforms.procedural_memory_offset
+        + ulong(procedural_slot) * ulong(uniforms.procedural_stride);
+      device const NBProceduralSkillSummaryRecord *existing =
+        reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+          persistent_memory + destination
+        );
+      const bool merged_skill = exact_slot >= uniforms.procedural_capacity
+        && merge_slot < uniforms.procedural_capacity;
+      const ulong procedural_identifier = merged_skill
+        ? existing->identifier : proposed_identifier;
+      const bool existing_skill = existing->format_version
         == NB_PROCEDURAL_SKILL_RECORD_VERSION
-      && existing->identifier != 0ul
-      && existing->identifier != procedural_identifier;
-    if (!collision && (existing->identifier == 0ul
-        || existing->last_execution_timestamp_microseconds
-          < latest->end_timestamp_microseconds)) {
-      const float divisor = 1.0f / float(procedural_count);
+        && existing->identifier == procedural_identifier;
+      if (!existing_skill || existing->last_execution_timestamp_microseconds
+          < latest->end_timestamp_microseconds) {
       const float mean_damage = accumulated_damage * divisor;
       const float mean_value = accumulated_value * divisor;
       const float mean_uncertainty =
@@ -2622,6 +2763,16 @@ kernel void consolidate_lived_memory_during_rest(
             * float(procedural_count))),
         0.0f, 1.0f
       );
+      const float observed_competence = clamp(
+        1.0f - mean_damage - 0.25f * mean_uncertainty, 0.0f, 1.0f
+      );
+      const bool stable_frozen = existing_skill
+        && (existing->flags & NB_PROCEDURAL_SKILL_FROZEN) != 0u
+        && mean_damage <= existing->damage_cvar + uniforms.degradation_margin
+        && observed_competence + uniforms.degradation_margin
+          >= existing->competence;
+      const float skill_learning_rate = stable_frozen
+        ? 0.0f : procedural_learning_rate;
       NBProceduralSkillSummaryRecord skill = {};
       skill.identifier = procedural_identifier;
       skill.last_execution_timestamp_microseconds =
@@ -2629,61 +2780,82 @@ kernel void consolidate_lived_memory_during_rest(
       skill.execution_count = existing_skill
         ? max(existing->execution_count, ulong(procedural_count))
         : ulong(procedural_count);
-      skill.parent_skill_identifier = latest->active_option_identifier;
+      skill.parent_skill_identifier = existing_skill
+        ? existing->parent_skill_identifier
+        : latest->active_option_identifier;
       skill.created_timestamp_microseconds = existing_skill
         ? existing->created_timestamp_microseconds
         : latest->start_timestamp_microseconds;
       skill.last_training_timestamp_microseconds =
         uniforms.target_timestamp_microseconds;
-      skill.initiation_goal_identifier = latest->active_goal_identifier;
+      skill.initiation_goal_identifier = merged_skill
+          && existing->initiation_goal_identifier
+            != latest->active_goal_identifier
+        ? 0ul : latest->active_goal_identifier;
       skill.outcome_event_identifier =
         (ulong(latest->event_kind) << 32) | ulong(latest->source_identifier);
       skill.format_version = NB_PROCEDURAL_SKILL_RECORD_VERSION;
-      skill.flags = 1u;
       skill.goal_parameter_dimension = 16u;
       skill.phase_count = 1u;
       skill.competence = existing_skill
-        ? mix(existing->competence, learned_competence,
-            procedural_learning_rate)
+        ? mix(existing->competence, observed_competence,
+            stable_frozen ? min(procedural_learning_rate, 0.02f)
+              : procedural_learning_rate)
         : learned_competence;
       skill.damage_cvar = existing_skill
-        ? mix(existing->damage_cvar, mean_damage, procedural_learning_rate)
+        ? mix(existing->damage_cvar, mean_damage,
+            stable_frozen ? min(procedural_learning_rate, 0.02f)
+              : procedural_learning_rate)
         : mean_damage;
       skill.expected_effort = existing_skill
         ? mix(existing->expected_effort, mean_damage * 0.25f,
-            procedural_learning_rate)
+            skill_learning_rate)
         : mean_damage * 0.25f;
       skill.expected_value = existing_skill
-        ? mix(existing->expected_value, mean_value, procedural_learning_rate)
+        ? mix(existing->expected_value, mean_value, skill_learning_rate)
         : mean_value;
-      skill.initiation_confidence = clamp(
+      const float learned_initiation_confidence = clamp(
         1.0f - exp(-procedural_learning_rate * float(procedural_count)),
         0.0f,
         1.0f
       );
-      skill.termination_confidence = clamp(
-        skill.initiation_confidence * (1.0f - mean_uncertainty),
+      skill.initiation_confidence = existing_skill
+        ? mix(existing->initiation_confidence,
+            learned_initiation_confidence,
+            stable_frozen ? min(procedural_learning_rate, 0.02f)
+              : procedural_learning_rate)
+        : learned_initiation_confidence;
+      const float learned_termination_confidence = clamp(
+        learned_initiation_confidence * (1.0f - mean_uncertainty),
         0.0f,
         1.0f
       );
-      skill.outcome_uncertainty = max(mean_uncertainty, 0.0f);
-      skill.adaptation_rate = procedural_learning_rate;
+      skill.termination_confidence = existing_skill
+        ? mix(existing->termination_confidence,
+            learned_termination_confidence,
+            stable_frozen ? min(procedural_learning_rate, 0.02f)
+              : procedural_learning_rate)
+        : learned_termination_confidence;
+      skill.outcome_uncertainty = existing_skill
+        ? mix(existing->outcome_uncertainty, max(mean_uncertainty, 0.0f),
+            stable_frozen ? min(procedural_learning_rate, 0.02f)
+              : procedural_learning_rate)
+        : max(mean_uncertainty, 0.0f);
+      skill.adaptation_rate = skill_learning_rate;
       skill.expected_factored_value[0] = -mean_damage;
       skill.expected_factored_value[1] = mean_value;
       skill.expected_factored_value[4] = -mean_damage;
       skill.expected_factored_value[5] = -skill.expected_effort;
       skill.expected_factored_value[6] = -mean_damage;
       for (uint component = 0u; component < 16u; ++component) {
-        const float learned_code = component < 10u
-          ? procedural_code[component] * divisor
-          : latest->retrieval_key[component % 10u];
+        const float learned_code = mean_procedural_code[component];
         skill.initiation_model[component] = existing_skill
           ? mix(existing->initiation_model[component], learned_code,
-              procedural_learning_rate)
+              skill_learning_rate)
           : learned_code;
         skill.policy_code[component] = existing_skill
           ? mix(existing->policy_code[component], learned_code,
-              procedural_learning_rate)
+              skill_learning_rate)
           : learned_code;
       }
       for (uint component = 0u; component < 8u; ++component) {
@@ -2695,7 +2867,7 @@ kernel void consolidate_lived_memory_during_rest(
                 : latest->retrieval_key[(component - 4u) % 10u])));
         skill.termination_model[component] = existing_skill
           ? mix(existing->termination_model[component], termination_code,
-              procedural_learning_rate)
+              skill_learning_rate)
           : termination_code;
       }
       for (uint component = 0u; component < 16u; ++component) {
@@ -2707,40 +2879,59 @@ kernel void consolidate_lived_memory_during_rest(
                 : float((latest->event_kind + component) & 0xffu) / 255.0f)));
         skill.outcome_model[component] = existing_skill
           ? mix(existing->outcome_model[component], outcome_code,
-              procedural_learning_rate)
+              skill_learning_rate)
           : outcome_code;
       }
       skill.adaptation_state[0] = skill.competence;
       skill.adaptation_state[1] = skill.damage_cvar;
       skill.adaptation_state[2] = skill.outcome_uncertainty;
       skill.adaptation_state[3] = development->maturation_progress;
+      const bool harmful = skill.execution_count >= 8ul
+        && skill.competence <= uniforms.retire_competence
+        && skill.damage_cvar >= uniforms.retire_minimum_damage;
+      const bool mastered = skill.competence >= uniforms.freeze_competence
+        && skill.damage_cvar <= uniforms.freeze_maximum_damage
+        && skill.outcome_uncertainty <= uniforms.freeze_maximum_uncertainty;
+      const uint lifecycle = harmful
+        ? NB_PROCEDURAL_SKILL_RETIRED
+        : (mastered
+          ? NB_PROCEDURAL_SKILL_FROZEN
+          : NB_PROCEDURAL_SKILL_TRAINABLE);
+      skill.flags = lifecycle
+        | (merged_skill
+          || (existing_skill
+            && (existing->flags & NB_PROCEDURAL_SKILL_MERGED) != 0u)
+          ? NB_PROCEDURAL_SKILL_MERGED : 0u);
       if (append_memory_record(
           journal, uniforms, skill, destination,
           NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, skill.identifier
         )) {
-        NBReplayQueueSummaryRecord replay = {};
-        replay.queue_kind = 2u;
-        replay.record_kind = 2u;
-        replay.record_identifier = skill.identifier;
-        replay.priority = clamp(
-          development->replay_allocation_multiplier
-            * (1.0f - skill.competence + mean_damage),
-          0.0f, 2.0f
-        );
-        replay.replay_count = 0u;
-        replay.enqueued_timestamp_microseconds =
-          uniforms.target_timestamp_microseconds;
-        const uint replay_slot = uint(
-          skill.identifier % ulong(uniforms.replay_capacity)
-        );
-        const ulong replay_destination = uniforms.replay_memory_offset
-          + ulong(replay_slot) * ulong(uniforms.replay_stride);
-        append_memory_record(
-          journal, uniforms, replay, replay_destination,
-          NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, skill.identifier
-        );
+        if ((skill.flags & NB_PROCEDURAL_SKILL_TRAINABLE) != 0u) {
+          NBReplayQueueSummaryRecord replay = {};
+          replay.queue_kind = 2u;
+          replay.record_kind = 2u;
+          replay.record_identifier = skill.identifier;
+          replay.priority = clamp(
+            development->replay_allocation_multiplier
+              * (1.0f - skill.competence + mean_damage),
+            0.0f, 2.0f
+          );
+          replay.replay_count = 0u;
+          replay.enqueued_timestamp_microseconds =
+            uniforms.target_timestamp_microseconds;
+          const uint replay_slot = uint(
+            skill.identifier % ulong(uniforms.replay_capacity)
+          );
+          const ulong replay_destination = uniforms.replay_memory_offset
+            + ulong(replay_slot) * ulong(uniforms.replay_stride);
+          append_memory_record(
+            journal, uniforms, replay, replay_destination,
+            NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, skill.identifier
+          );
+        }
       }
     }
+  }
   }
 
   if (selected_replay != nullptr) {
