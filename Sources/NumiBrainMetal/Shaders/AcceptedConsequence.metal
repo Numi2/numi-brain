@@ -32,6 +32,8 @@ struct NBAcceptedConsequenceUniforms {
   ulong cerebellar_offset;
   ulong cerebellar_expert_memory_offset;
   ulong somatic_output_offset;
+  ulong active_sensing_command_offset;
+  ulong active_sensing_efficacy_offset;
   ulong physics_state_fingerprint;
   uint observation_count;
   uint body_count;
@@ -44,6 +46,7 @@ struct NBAcceptedConsequenceUniforms {
   uint workspace_dimension;
   uint active_cerebellar_count;
   uint actuator_count;
+  uint active_sensing_count;
   uint event_capacity;
   uint option_candidate_capacity;
   uint procedural_trace_record_capacity;
@@ -148,6 +151,24 @@ struct NBControlHeader {
   ulong reserved3;
 };
 
+struct NBActiveSensingCommandRecord {
+  float command;
+  float confidence;
+  uint attention_allocation_mask;
+  uint kind_and_flags;
+};
+
+struct NBActiveSensingEfficacyRecord {
+  float prior_uncertainty;
+  float accepted_uncertainty;
+  float efficacy;
+  float realized_information_gain;
+  uint sample_count;
+  uint flags;
+  float allocation;
+  float reserved;
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -220,13 +241,15 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 304);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 328);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
+static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
@@ -359,6 +382,67 @@ inline float nb_mean_aleatoric_uncertainty(
     total += max(world[8u * NB_WORLD_RECEPTOR_DIMENSION + index], 0.0f);
   }
   return sqrt(total / float(NB_WORLD_RECEPTOR_DIMENSION));
+}
+
+inline float nb_modality_epistemic_uncertainty(
+  device const float *world,
+  uint world_count,
+  uint modality)
+{
+  if (world_count < 8u * NB_WORLD_RECEPTOR_DIMENSION) return 0.0f;
+  uint begin = 0u;
+  uint end = 32u;
+  switch (modality) {
+    case 2u: begin = 32u; end = 48u; break;
+    case 3u: begin = 48u; end = 64u; break;
+    case 4u: begin = 64u; end = 80u; break;
+    case 5u: begin = 80u; end = 96u; break;
+    case 6u: begin = 96u; end = 108u; break;
+    case 7u: begin = 108u; end = 116u; break;
+    case 8u: begin = 116u; end = 128u; break;
+    default: break;
+  }
+  float total_variance = 0.0f;
+  for (uint index = begin; index < end; ++index) {
+    float mean = 0.0f;
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index]
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      const float difference = world[
+        (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+      ] - mean;
+      total_variance += difference * difference
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+  }
+  return sqrt(total_variance / float(max(end - begin, 1u)));
+}
+
+inline float nb_modality_aleatoric_uncertainty(
+  device const float *world,
+  uint world_count,
+  uint modality)
+{
+  if (world_count < 9u * NB_WORLD_RECEPTOR_DIMENSION) return 1.0f;
+  uint begin = 0u;
+  uint end = 32u;
+  switch (modality) {
+    case 2u: begin = 32u; end = 48u; break;
+    case 3u: begin = 48u; end = 64u; break;
+    case 4u: begin = 64u; end = 80u; break;
+    case 5u: begin = 80u; end = 96u; break;
+    case 6u: begin = 96u; end = 108u; break;
+    case 7u: begin = 108u; end = 116u; break;
+    case 8u: begin = 116u; end = 128u; break;
+    default: break;
+  }
+  float total = 0.0f;
+  for (uint index = begin; index < end; ++index) {
+    total += max(world[8u * NB_WORLD_RECEPTOR_DIMENSION + index], 0.0f);
+  }
+  return sqrt(total / float(max(end - begin, 1u)));
 }
 
 kernel void assimilate_accepted_body_and_physiology(
@@ -505,6 +589,11 @@ kernel void reconcile_accepted_world_model(
     0.0f,
     1.0f
   );
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    const uint head_index =
+      (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + gid;
+    world[head_index] = mix(world[head_index], observed, gain);
+  }
   world[gid] = mix(world[gid], observed, gain);
   world[NB_WORLD_RECEPTOR_DIMENSION + gid] = residual;
   const uint aleatoric_index = 8u * NB_WORLD_RECEPTOR_DIMENSION + gid;
@@ -512,6 +601,76 @@ kernel void reconcile_accepted_world_model(
     max(world[aleatoric_index], 0.0f), residual * residual,
     gain * clamp(world_parameters[152], 0.0f, 1.0f)
   );
+}
+
+/// Updates one mind's per-channel sensing efficacy from accepted receptor
+/// consequences. The pending bit is written during decision generation and is
+/// cleared only here, so a rejected physical trajectory cannot become a
+/// calibration sample.
+kernel void update_active_sensing_efficacy(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.active_sensing_count) return;
+  device const NBActiveSensingCommandRecord *commands =
+    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
+      hot_state + uniforms.active_sensing_command_offset
+    );
+  device NBActiveSensingEfficacyRecord *states =
+    reinterpret_cast<device NBActiveSensingEfficacyRecord *>(
+      hot_state + uniforms.active_sensing_efficacy_offset
+    );
+  NBActiveSensingEfficacyRecord state = states[gid];
+  const NBActiveSensingCommandRecord command = commands[gid];
+  const bool pending = (state.flags & (1u << 1u)) != 0u;
+  const bool command_valid = (command.kind_and_flags & (1u << 16u)) != 0u;
+  const float allocation = min(
+    clamp(state.allocation, 0.0f, 1.0f),
+    clamp(command.confidence, 0.0f, 1.0f)
+  );
+  if (!pending || !command_valid || allocation <= 0.0f) {
+    state.flags = NB_ACCEPTED_STATE_VALID;
+    state.allocation = 0.0f;
+    states[gid] = state;
+    return;
+  }
+  const uint modality = command.kind_and_flags & 0xffu;
+  device const float *world = reinterpret_cast<device const float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  const float accepted_uncertainty = nb_modality_epistemic_uncertainty(
+    world, uniforms.world_model_count, modality
+  );
+  const float aleatoric_uncertainty = clamp(
+    nb_modality_aleatoric_uncertainty(
+      world, uniforms.world_model_count, modality
+    ),
+    0.0f,
+    1.0f
+  );
+  const float epistemic_reduction = max(
+    state.prior_uncertainty - accepted_uncertainty, 0.0f
+  );
+  const float realized_information_gain = epistemic_reduction
+    * (1.0f - aleatoric_uncertainty) * allocation;
+  const float opportunity = max(state.prior_uncertainty * allocation, 1.0e-6f);
+  const float efficacy_target = clamp(
+    realized_information_gain / opportunity, 0.0f, 2.0f
+  );
+  const float retention = clamp(belief_parameters[7], 0.0f, 0.999f);
+  const float prior_efficacy = state.sample_count > 0u
+    ? clamp(state.efficacy, 0.0f, 2.0f) : 1.0f;
+  state.accepted_uncertainty = accepted_uncertainty;
+  state.efficacy = mix(prior_efficacy, efficacy_target, 1.0f - retention);
+  state.realized_information_gain = realized_information_gain;
+  state.sample_count = state.sample_count == 0xffffffffu
+    ? state.sample_count : state.sample_count + 1u;
+  state.flags = NB_ACCEPTED_STATE_VALID;
+  state.allocation = allocation;
+  state.reserved = aleatoric_uncertainty;
+  states[gid] = state;
 }
 
 kernel void broadcast_accepted_prediction_error(

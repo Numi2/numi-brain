@@ -16,6 +16,7 @@ constant ulong NB_REST_OPTION_IDENTIFIER = NB_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
 constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
+constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -85,6 +86,7 @@ struct NBDecisionUniforms {
   ulong somatic_effector_belief_offset;
   uint body_belief_count;
   uint somatic_effector_belief_count;
+  ulong active_sensing_efficacy_offset;
 };
 
 struct NBDriveRecord {
@@ -315,6 +317,17 @@ struct NBActiveSensingCommandRecord {
   uint kind_and_flags;
 };
 
+struct NBActiveSensingEfficacyRecord {
+  float prior_uncertainty;
+  float accepted_uncertainty;
+  float efficacy;
+  float realized_information_gain;
+  uint sample_count;
+  uint flags;
+  float allocation;
+  float reserved;
+};
+
 struct NBSpatialTransformRecord {
   uint source_frame;
   uint destination_frame;
@@ -377,7 +390,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 392);
+static_assert(sizeof(NBDecisionUniforms) == 400);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -398,6 +411,7 @@ static_assert(sizeof(NBFastCerebellarStateRecord) == 64);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
+static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBInternalActionRecord) == 64);
@@ -429,6 +443,42 @@ inline float3 nb_rotate_vector(float3 vector, float4 quaternion) {
   const float3 twice_cross = 2.0f * cross(normalized.xyz, vector);
   return vector + normalized.w * twice_cross
     + cross(normalized.xyz, twice_cross);
+}
+
+inline float nb_modality_epistemic_uncertainty(
+  device const float *world,
+  uint world_count,
+  uint modality)
+{
+  if (world_count < 8u * NB_WORLD_RECEPTOR_DIMENSION) return 0.0f;
+  uint begin = 0u;
+  uint end = 32u;
+  switch (modality) {
+    case 2u: begin = 32u; end = 48u; break;
+    case 3u: begin = 48u; end = 64u; break;
+    case 4u: begin = 64u; end = 80u; break;
+    case 5u: begin = 80u; end = 96u; break;
+    case 6u: begin = 96u; end = 108u; break;
+    case 7u: begin = 108u; end = 116u; break;
+    case 8u: begin = 116u; end = 128u; break;
+    default: break;
+  }
+  float total_variance = 0.0f;
+  for (uint index = begin; index < end; ++index) {
+    float mean = 0.0f;
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index]
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      const float difference = world[
+        (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+      ] - mean;
+      total_variance += difference * difference
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+  }
+  return sqrt(total_variance / float(max(end - begin, 1u)));
 }
 
 inline float nb_embodied_self_risk(
@@ -1996,7 +2046,23 @@ kernel void generate_motor_spinal_autonomic_state(
       : (gid + 8u) % parameter_count;
     const float epistemic = uniforms.neuromodulator_count > 3u
       ? clamp(neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
-    float modality_uncertainty = epistemic;
+    device const float *world = reinterpret_cast<device const float *>(
+      hot_state + uniforms.world_model_offset
+    );
+    const float prior_modality_uncertainty =
+      nb_modality_epistemic_uncertainty(
+        world, uniforms.world_model_scalar_count, sensing_descriptor.modality
+      );
+    device NBActiveSensingEfficacyRecord *sensing_efficacy =
+      reinterpret_cast<device NBActiveSensingEfficacyRecord *>(
+        hot_state + uniforms.active_sensing_efficacy_offset
+      );
+    NBActiveSensingEfficacyRecord efficacy_state = sensing_efficacy[gid];
+    const float learned_efficacy = efficacy_state.sample_count > 0u
+        && (efficacy_state.flags & NB_CONTROL_FLAG_VALID) != 0u
+      ? clamp(efficacy_state.efficacy, 0.0f, 2.0f)
+      : 1.0f;
+    float modality_uncertainty = max(epistemic, prior_modality_uncertainty);
     if (sensing_descriptor.modality == 1u) {
       device const NBObjectSlotRecord *object_slots =
         reinterpret_cast<device const NBObjectSlotRecord *>(
@@ -2069,7 +2135,9 @@ kernel void generate_motor_spinal_autonomic_state(
       0.0f, 1.0f
     );
     const float expected_sensing_value = clamp(
-      expected_information * max(policy_parameters[15], 0.0f), 0.0f, 1.0f
+      expected_information * max(policy_parameters[15], 0.0f)
+        * learned_efficacy,
+      0.0f, 1.0f
     );
     const float information_allocation = expected_sensing_value
         > max(policy_parameters[14], 0.0f)
@@ -2101,6 +2169,11 @@ kernel void generate_motor_spinal_autonomic_state(
       | ((communication_sensing ? communication_descriptor.effector_kind : 0u)
         << 24u);
     active_sensing[gid] = command;
+    efficacy_state.prior_uncertainty = prior_modality_uncertainty;
+    efficacy_state.allocation = allocation;
+    efficacy_state.flags = NB_CONTROL_FLAG_VALID
+      | (allocation > 0.0f ? (1u << 1u) : 0u);
+    sensing_efficacy[gid] = efficacy_state;
   }
 }
 

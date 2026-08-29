@@ -227,7 +227,7 @@ private struct CommittedTransitionUniforms {
   var eventQueueOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
-  var activeSensingOffset: UInt64 = 0
+  var activeSensingEfficacyOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
@@ -506,7 +506,6 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let observations = layout.section(.sensoryObservations)
     let events = layout.section(.eventQueue)
     let somatic = layout.section(.somaticOutput)
-    let activeSensing = controlLayout.section(.activeSensingCommands)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
     let fastPlasticity = layout.section(.fastPlasticity)
@@ -543,7 +542,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       eventQueueOffset: UInt64(events.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
-      activeSensingOffset: UInt64(activeSensing.byteOffset),
+      activeSensingEfficacyOffset: UInt64(
+        layout.section(.activeSensingEfficacy).byteOffset
+      ),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
       fastPlasticityOffset: UInt64(fastPlasticity.byteOffset),

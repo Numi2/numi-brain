@@ -22,6 +22,8 @@ private struct AcceptedConsequenceUniforms {
   var cerebellarOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
+  var activeSensingCommandOffset: UInt64 = 0
+  var activeSensingEfficacyOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
@@ -34,6 +36,7 @@ private struct AcceptedConsequenceUniforms {
   var workspaceDimension: UInt32 = 0
   var activeCerebellarCount: UInt32 = 0
   var actuatorCount: UInt32 = 0
+  var activeSensingCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
   var optionCandidateCapacity: UInt32 = 0
   var proceduralTraceRecordCapacity: UInt32 = 0
@@ -87,7 +90,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 304,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 328,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
@@ -133,6 +136,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let names = [
       "assimilate_accepted_body_and_physiology",
       "reconcile_accepted_world_model",
+      "update_active_sensing_efficacy",
       "broadcast_accepted_prediction_error",
       "adapt_cerebellar_experts_from_accepted_error",
       "update_fast_plasticity_from_accepted_error",
@@ -237,19 +241,29 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       count: min(arena.layout.section(.worldModel).elementCount, 128)
     )
     barrier(encoder)
-    dispatch(encoder, pipeline: pipelines[2], count: 1)
+    dispatch(
+      encoder,
+      pipeline: pipelines[2],
+      count: Int(species.motor.activeSensingActionDimension)
+    )
     barrier(encoder)
     dispatch(
       encoder,
       pipeline: pipelines[3],
+      count: 1
+    )
+    barrier(encoder)
+    dispatch(
+      encoder,
+      pipeline: pipelines[4],
       count: Int(species.capacities.activeCerebellarExpertCapacity)
     )
     dispatch(
       encoder,
-      pipeline: pipelines[4],
+      pipeline: pipelines[5],
       count: Int(species.capacities.fastPlasticityCapacity)
     )
-    dispatch(encoder, pipeline: pipelines[5], count: 1)
+    dispatch(encoder, pipeline: pipelines[6], count: 1)
   }
 
   private func makeUniforms(
@@ -275,6 +289,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let optionCandidates = controlLayout.section(.optionCandidates)
     let motor = controlLayout.section(.motorCommands)
     let cerebellar = controlLayout.section(.cerebellarExperts)
+    let activeSensing = controlLayout.section(.activeSensingCommands)
     let integerCounts = [
       hot(.sensoryObservations).elementCount,
       hot(.worldModel).elementCount,
@@ -307,6 +322,10 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         hot(.cerebellarExpertMemory).byteOffset
       ),
       somaticOutputOffset: UInt64(hot(.somaticOutput).byteOffset),
+      activeSensingCommandOffset: UInt64(activeSensing.byteOffset),
+      activeSensingEfficacyOffset: UInt64(
+        hot(.activeSensingEfficacy).byteOffset
+      ),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
@@ -321,6 +340,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         species.capacities.activeCerebellarExpertCapacity
       ),
       actuatorCount: species.motor.actuatorCount,
+      activeSensingCount: UInt32(species.motor.activeSensingActionDimension),
       eventCapacity: eventCapacity,
       optionCandidateCapacity: UInt32(optionCandidates.elementCount),
       proceduralTraceRecordCapacity: UInt32(

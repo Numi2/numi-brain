@@ -70,6 +70,7 @@ private struct DecisionUniforms {
   var somaticEffectorBeliefOffset: UInt64 = 0
   var bodyBeliefCount: UInt32 = 0
   var somaticEffectorBeliefCount: UInt32 = 0
+  var activeSensingEfficacyOffset: UInt64 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -175,7 +176,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 392,
+    guard MemoryLayout<DecisionUniforms>.stride == 400,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -700,6 +701,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       ),
       somaticEffectorBeliefCount: UInt32(
         arena.layout.section(.muscleBelief).elementCount
+      ),
+      activeSensingEfficacyOffset: UInt64(
+        arena.layout.section(.activeSensingEfficacy).byteOffset
       )
     )
   }

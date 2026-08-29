@@ -62,6 +62,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case fastCerebellarState = 40
   /// Accepted fast brainstem/autonomic integration state per output channel.
   case fastAutonomicState = 41
+  /// Accepted per-channel estimate of epistemic value from active sensing.
+  case activeSensingEfficacy = 42
 }
 
 @frozen
@@ -136,6 +138,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let physiologyScalarCapacity = 64
   public static let contextScalarCapacity = 512
   public static let fastPlasticityStride = 32
+  public static let activeSensingEfficacyStride = 32
   public static let eventTokenStride = 32
   public static let defaultEventTokenCapacity = 4_096
   public static let delayMessageStride = 320
@@ -425,6 +428,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       .fastAutonomicState,
       count: Int(species.physiology.autonomicActionDimension),
       stride: 64
+    )
+    try builder.append(
+      .activeSensingEfficacy,
+      count: max(Int(species.motor.activeSensingActionDimension), 1),
+      stride: Self.activeSensingEfficacyStride
     )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)

@@ -378,7 +378,7 @@ struct NBCommittedTransitionUniforms {
   ulong event_queue_offset;
   ulong control_header_offset;
   ulong somatic_output_offset;
-  ulong active_sensing_offset;
+  ulong active_sensing_efficacy_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
   ulong fast_plasticity_offset;
@@ -554,11 +554,15 @@ struct NBNeuromodulatorRecord {
   uint flags;
 };
 
-struct NBActiveSensingCommandRecord {
-  float command;
-  float confidence;
-  uint attention_allocation_mask;
-  uint kind_and_flags;
+struct NBActiveSensingEfficacyRecord {
+  float prior_uncertainty;
+  float accepted_uncertainty;
+  float efficacy;
+  float realized_information_gain;
+  uint sample_count;
+  uint flags;
+  float allocation;
+  float reserved;
 };
 
 struct NBFastPlasticityRecord {
@@ -843,7 +847,7 @@ static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
-static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
+static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
@@ -3718,9 +3722,9 @@ kernel void journal_committed_learning_transition(
   device const float *actions = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.somatic_output_offset
   );
-  device const NBActiveSensingCommandRecord *active_sensing =
-    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
-      output_hot_state + uniforms.active_sensing_offset
+  device const NBActiveSensingEfficacyRecord *active_sensing_efficacy =
+    reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
+      output_hot_state + uniforms.active_sensing_efficacy_offset
     );
   device const NBControlHeader *control =
     reinterpret_cast<device const NBControlHeader *>(
@@ -3737,10 +3741,6 @@ kernel void journal_committed_learning_transition(
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       output_hot_state + uniforms.neuromodulation_offset
-    );
-  device const NBNeuromodulatorRecord *prior_neuromodulators =
-    reinterpret_cast<device const NBNeuromodulatorRecord *>(
-      input_hot_state + uniforms.neuromodulation_offset
     );
   device const NBFastPlasticityRecord *prior_plasticity =
     reinterpret_cast<device const NBFastPlasticityRecord *>(
@@ -3798,22 +3798,30 @@ kernel void journal_committed_learning_transition(
   record.model_error = uniforms.neuromodulator_count > 1u
     ? neuromodulators[1].value : 0.0f;
   record.predicted_information_gain = control->predicted_information_gain;
-  const float prior_epistemic = uniforms.neuromodulator_count > 3u
-    ? clamp(prior_neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
-  const float accepted_epistemic = uniforms.neuromodulator_count > 3u
-    ? clamp(neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
+  float prior_epistemic = 0.0f;
+  float accepted_epistemic = 0.0f;
   float sensing_allocation = 0.0f;
+  float realized_information_gain = 0.0f;
+  uint sensing_sample_count = 0u;
   for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
-    const NBActiveSensingCommandRecord command = active_sensing[channel];
-    if ((command.kind_and_flags & (1u << 16u)) == 0u) continue;
-    sensing_allocation += clamp(command.confidence, 0.0f, 1.0f);
+    const NBActiveSensingEfficacyRecord sensing =
+      active_sensing_efficacy[channel];
+    if ((sensing.flags & 1u) == 0u || sensing.allocation <= 0.0f) continue;
+    prior_epistemic += clamp(sensing.prior_uncertainty, 0.0f, 1.0f);
+    accepted_epistemic += clamp(sensing.accepted_uncertainty, 0.0f, 1.0f);
+    sensing_allocation += clamp(sensing.allocation, 0.0f, 1.0f);
+    realized_information_gain += clamp(
+      sensing.realized_information_gain, 0.0f, 1.0f
+    );
+    sensing_sample_count += 1u;
   }
-  if (uniforms.active_sensing_count > 0u) {
-    sensing_allocation /= float(uniforms.active_sensing_count);
+  if (sensing_sample_count > 0u) {
+    const float inverse_count = 1.0f / float(sensing_sample_count);
+    prior_epistemic *= inverse_count;
+    accepted_epistemic *= inverse_count;
+    sensing_allocation *= inverse_count;
+    realized_information_gain *= inverse_count;
   }
-  const float realized_information_gain = clamp(
-    prior_epistemic - accepted_epistemic, 0.0f, 1.0f
-  ) * sensing_allocation;
   for (uint component = 0u; component < 24u; ++component) {
     record.prior_state[component] = prior[
       component % uniforms.recurrent_scalar_count
