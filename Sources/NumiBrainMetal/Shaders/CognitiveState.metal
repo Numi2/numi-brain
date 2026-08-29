@@ -25,6 +25,7 @@ struct NBCognitiveUniforms {
   ulong relation_slot_offset;
   ulong spatial_transform_offset;
   ulong physiology_belief_offset;
+  ulong active_sensing_efficacy_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -60,6 +61,7 @@ struct NBCognitiveUniforms {
   uint gustation_observation_count;
   uint interoception_observation_offset;
   uint interoception_observation_count;
+  uint active_sensing_count;
 };
 
 struct NBWorldModelLevelRecord {
@@ -102,6 +104,17 @@ struct NBFastPlasticityStateRecord {
   ushort region_identifier;
   ushort basis_identifier;
   uint flags;
+};
+
+struct NBActiveSensingEfficacyRecord {
+  float prior_uncertainty;
+  float accepted_uncertainty;
+  float efficacy;
+  float realized_information_gain;
+  uint sample_count;
+  uint flags;
+  float allocation;
+  float reserved;
 };
 
 struct NBReceptorEventStateRecord {
@@ -248,11 +261,12 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 328);
+static_assert(sizeof(NBCognitiveUniforms) == 336);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
 static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
+static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -674,6 +688,94 @@ kernel void advance_hierarchical_world_model(
       sqrt(max(epistemic_variance, 0.0f))
     );
   }
+}
+
+/// Converts predictive ensemble disagreement into an autonomous information
+/// drive after every due world-model level has advanced. Accepted per-channel
+/// efficacy determines whether uncertainty is actually actionable; pain,
+/// injury, fatigue, sleep pressure, and safety demand suppress exploration.
+kernel void update_curiosity_drive_from_world_model(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.drive_count <= 8u) return;
+  device const float *world = reinterpret_cast<device const float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  device NBDriveStateRecord *drives =
+    reinterpret_cast<device NBDriveStateRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBActiveSensingEfficacyRecord *sensing_efficacy =
+    reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
+      hot_state + uniforms.active_sensing_efficacy_offset
+    );
+  float epistemic_variance = 0.0f;
+  if (uniforms.world_model_scalar_count >= 9u * 128u) {
+    for (uint index = 0u; index < 128u; ++index) {
+      float mean = 0.0f;
+      for (uint head = 0u; head < 5u; ++head) {
+        mean += world[(3u + head) * 128u + index] * 0.2f;
+      }
+      for (uint head = 0u; head < 5u; ++head) {
+        const float difference = world[
+          (3u + head) * 128u + index
+        ] - mean;
+        epistemic_variance += difference * difference * 0.2f;
+      }
+    }
+    epistemic_variance /= 128.0f;
+  }
+  float best_sensing_efficacy =
+    uniforms.active_sensing_count == 0u ? 1.0f : 0.0f;
+  for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
+    const NBActiveSensingEfficacyRecord sensing = sensing_efficacy[channel];
+    const float efficacy = sensing.sample_count > 0u
+        && (sensing.flags & 1u) != 0u
+      ? clamp(sensing.efficacy, 0.0f, 1.0f)
+      : 1.0f;
+    best_sensing_efficacy = max(best_sensing_efficacy, efficacy);
+  }
+  const float fatigue = uniforms.drive_count > 4u
+    ? clamp(drives[4].level, 0.0f, 1.0f) : 0.0f;
+  const float pain = uniforms.drive_count > 5u
+    ? clamp(drives[5].level, 0.0f, 1.0f) : 0.0f;
+  const float injury = uniforms.drive_count > 6u
+    ? clamp(drives[6].level, 0.0f, 1.0f) : 0.0f;
+  const float sleep_pressure = uniforms.drive_count > 7u
+    ? clamp(drives[7].level, 0.0f, 1.0f) : 0.0f;
+  const float safety = uniforms.drive_count > 11u
+    ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
+  const float safe_capacity = (1.0f - max(max(pain, injury), safety))
+    * (1.0f - 0.5f * fatigue) * (1.0f - sleep_pressure);
+  NBDriveStateRecord curiosity = drives[8];
+  if (curiosity.kind == 0u) curiosity.kind = 9u;
+  if (curiosity.priority_weight <= 0.0f) curiosity.priority_weight = 1.0f;
+  curiosity.viable_minimum = 0.0f;
+  curiosity.viable_maximum = 0.1f;
+  const float previous = curiosity.level;
+  curiosity.level = development->stage > 0u
+    ? clamp(
+        sqrt(max(epistemic_variance, 0.0f))
+          * best_sensing_efficacy * safe_capacity,
+        0.0f,
+        1.0f
+      )
+    : 0.0f;
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  curiosity.estimated_rate = (curiosity.level - previous) / elapsed_seconds;
+  curiosity.deficit = curiosity.level > curiosity.viable_maximum
+    ? curiosity.level - curiosity.viable_maximum : 0.0f;
+  curiosity.potential = curiosity.priority_weight
+    * curiosity.deficit * curiosity.deficit;
+  drives[8] = curiosity;
 }
 
 /// Maintains causal latent object and other-agent factors. These records never

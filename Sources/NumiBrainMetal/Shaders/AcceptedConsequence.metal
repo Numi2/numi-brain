@@ -710,6 +710,27 @@ kernel void broadcast_accepted_prediction_error(
     reinterpret_cast<device NBNeuromodulatorRecord *>(
       hot_state + uniforms.neuromodulation_offset
     );
+  if (uniforms.neuromodulator_count > 2u) {
+    device const NBActiveSensingEfficacyRecord *sensing_states =
+      reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
+        hot_state + uniforms.active_sensing_efficacy_offset
+      );
+    float usable_information = 0.0f;
+    uint sensing_count = 0u;
+    for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
+      const NBActiveSensingEfficacyRecord sensing = sensing_states[channel];
+      if ((sensing.flags & NB_ACCEPTED_STATE_VALID) == 0u
+          || sensing.allocation <= 0.0f) continue;
+      usable_information += clamp(
+        sensing.realized_information_gain, 0.0f, 1.0f
+      );
+      sensing_count += 1u;
+    }
+    neuromodulators[2].value = sensing_count > 0u
+      ? usable_information / float(sensing_count) : 0.0f;
+    neuromodulators[2].kind = 3u;
+    neuromodulators[2].flags = NB_ACCEPTED_STATE_VALID;
+  }
   if (uniforms.neuromodulator_count > 1u) {
     neuromodulators[1].value = max(error, mean_external_disturbance);
     neuromodulators[1].kind = 2u;

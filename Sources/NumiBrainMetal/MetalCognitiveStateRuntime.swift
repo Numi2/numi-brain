@@ -26,6 +26,7 @@ private struct CognitiveUniforms {
   var relationSlotOffset: UInt64 = 0
   var spatialTransformOffset: UInt64 = 0
   var physiologyBeliefOffset: UInt64 = 0
+  var activeSensingEfficacyOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -61,6 +62,7 @@ private struct CognitiveUniforms {
   var gustationObservationCount: UInt32 = 0
   var interoceptionObservationOffset: UInt32 = 0
   var interoceptionObservationCount: UInt32 = 0
+  var activeSensingCount: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -117,6 +119,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let clearWorkspacePipeline: any MTLComputePipelineState
   private let workspacePipeline: any MTLComputePipelineState
   private let socialContextPipeline: any MTLComputePipelineState
+  private let curiosityPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let worldModelArgumentTables: [any MTL4ArgumentTable]
   private let uniformBuffer: any MTLBuffer
@@ -149,7 +152,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 328,
+    guard MemoryLayout<CognitiveUniforms>.stride == 336,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -190,6 +193,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "clear_requested_workspace_token",
       "broadcast_foundation_workspace",
       "broadcast_social_context",
+      "update_curiosity_drive_from_world_model",
     ]
     let functions = try functionNames.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -329,6 +333,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.clearWorkspacePipeline = pipelines[9]
     self.workspacePipeline = pipelines[10]
     self.socialContextPipeline = pipelines[11]
+    self.curiosityPipeline = pipelines[12]
     self.argumentTable = argumentTable
     self.worldModelArgumentTables = [
       firstWorldTable, secondWorldTable, thirdWorldTable,
@@ -441,6 +446,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    try dispatch(
+      encoder: encoder,
+      pipeline: curiosityPipeline,
+      threadCount: 1
+    )
+    barrier(encoder)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
@@ -545,6 +556,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       relationSlotOffset: offset(.relationSlots),
       spatialTransformOffset: offset(.spatialTransforms),
       physiologyBeliefOffset: offset(.physiologyBelief),
+      activeSensingEfficacyOffset: offset(.activeSensingEfficacy),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),
@@ -579,7 +591,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       gustationObservationOffset: gustationObservationOffset,
       gustationObservationCount: gustationObservationCount,
       interoceptionObservationOffset: interoceptionObservationOffset,
-      interoceptionObservationCount: interoceptionObservationCount
+      interoceptionObservationCount: interoceptionObservationCount,
+      activeSensingCount: UInt32(species.motor.activeSensingActionDimension)
     )
   }
 
