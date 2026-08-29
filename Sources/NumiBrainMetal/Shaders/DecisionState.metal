@@ -27,6 +27,7 @@ constant uint NB_BODY_ORIENTATION = 3u;
 constant uint NB_BODY_LINEAR_VELOCITY = 7u;
 constant uint NB_BODY_POSITION_VARIANCE = 13u;
 constant uint NB_BODY_ORIENTATION_VARIANCE = 16u;
+constant uint NB_BODY_CONTACT = 19u;
 constant uint NB_BODY_SUPPORT = 20u;
 constant uint NB_BODY_LOCAL_FORCE = 21u;
 constant uint NB_BODY_PAIN = 24u;
@@ -35,6 +36,8 @@ constant uint NB_BODY_REACHABILITY = 26u;
 constant uint NB_BODY_OWNERSHIP = 27u;
 constant uint NB_BODY_LOAD_VARIANCE = 29u;
 constant uint NB_BODY_DAMAGE_RISK = 30u;
+constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
+constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBDecisionUniforms {
@@ -600,6 +603,63 @@ inline float nb_motor_feature(
   return nb_uses_muscle_excitation(actuator_command_kind)
     ? clamp(drive, 0.0f, 1.0f)
     : clamp(fma(2.0f, drive, -1.0f), -1.0f, 1.0f);
+}
+
+inline float nb_normalized_body_feature_value(float value, uint feature) {
+  if (!isfinite(value)) return 0.0f;
+  if (feature >= NB_BODY_ORIENTATION
+      && feature < NB_BODY_ORIENTATION + 4u) {
+    return clamp(value, -1.0f, 1.0f);
+  }
+  if ((feature >= NB_BODY_POSITION_VARIANCE
+        && feature < NB_BODY_POSITION_VARIANCE + 3u)
+      || (feature >= NB_BODY_ORIENTATION_VARIANCE
+        && feature < NB_BODY_ORIENTATION_VARIANCE + 3u)
+      || feature == NB_BODY_LOAD_VARIANCE) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if (feature == NB_BODY_CONTACT || feature == NB_BODY_SUPPORT
+      || feature == NB_BODY_PAIN
+      || feature == NB_BODY_VULNERABILITY
+      || feature == NB_BODY_REACHABILITY || feature == NB_BODY_OWNERSHIP
+      || feature == NB_BODY_DAMAGE_RISK
+      || feature == NB_BODY_EXTERNAL_DISTURBANCE) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline float nb_motor_goal_body_feature(
+  device const NBMotorGoalRecord *goal,
+  uint feature,
+  float baseline)
+{
+  if (feature < NB_BODY_POSITION + 3u) {
+    return nb_normalized_body_feature_value(
+      goal->task_space_target[feature - NB_BODY_POSITION], feature
+    );
+  }
+  if (feature >= NB_BODY_ORIENTATION
+      && feature < NB_BODY_ORIENTATION + 4u) {
+    return goal->orientation_target[feature - NB_BODY_ORIENTATION];
+  }
+  if (feature >= NB_BODY_LINEAR_VELOCITY
+      && feature < NB_BODY_LINEAR_VELOCITY + 3u) {
+    return nb_normalized_body_feature_value(
+      goal->velocity_target[feature - NB_BODY_LINEAR_VELOCITY], feature
+    );
+  }
+  if (feature == NB_BODY_SUPPORT) return goal->support;
+  if (feature >= NB_BODY_LOCAL_FORCE
+      && feature < NB_BODY_LOCAL_FORCE + 3u) {
+    return nb_normalized_body_feature_value(
+      goal->force_target[feature - NB_BODY_LOCAL_FORCE], feature
+    );
+  }
+  if (feature == NB_BODY_DAMAGE_RISK) return goal->risk;
+  if (feature == NB_BODY_LOAD_VARIANCE) return goal->uncertainty;
+  return baseline;
 }
 
 inline uint nb_active_candidate_limit(
@@ -3347,10 +3407,9 @@ kernel void generate_motor_spinal_autonomic_state(
   }
 }
 
-/// Arms the active mixture experts with timestamped sensory predictions after
-/// the exact motor command has been generated. These records live only in the
-/// agent shadow generation; accepted feedback may adapt them, while a root
-/// abort discards the predictions without changing expert memory.
+/// Arms each expert with eight timestamped anatomical body-feature predictions
+/// after the exact motor command has been generated. The feature and body IDs
+/// are stored with the prediction so delayed feedback cannot alias anatomy.
 kernel void predict_delayed_cerebellar_consequences(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -3361,28 +3420,68 @@ kernel void predict_delayed_cerebellar_consequences(
   device NBCerebellarExpertRecord *experts =
     reinterpret_cast<device NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
-    );
+  );
   NBCerebellarExpertRecord expert = experts[gid];
   if ((expert.flags & NB_CONTROL_FLAG_VALID) == 0u) return;
-  device const float *observations = reinterpret_cast<device const float *>(
-    hot_state + uniforms.observation_offset
-  );
+  device const NBMotorGoalRecord *motor_goal =
+    reinterpret_cast<device const NBMotorGoalRecord *>(
+      hot_state + uniforms.motor_goal_offset
+    );
+  const bool motor_goal_valid =
+    (motor_goal->flags & NB_CONTROL_FLAG_VALID) != 0u
+      && motor_goal->timestamp_microseconds
+        == uniforms.target_timestamp_microseconds;
+  device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+  device const float *body = nullptr;
+  if (motor_goal_valid) {
+    for (uint body_index = 0u; body_index < uniforms.body_belief_count;
+        ++body_index) {
+      device const float *candidate_body = reinterpret_cast<device const float *>(
+        body_belief + ulong(body_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        candidate_body + NB_BODY_IDENTITY_FLOAT_OFFSET
+      );
+      if ((identity[3] & NB_CONTROL_FLAG_VALID) != 0ul
+          && uint(identity[0]) == motor_goal->target_body_identifier) {
+        body = candidate_body;
+        break;
+      }
+    }
+  }
+  if (body == nullptr) {
+    expert.prediction_count = 0u;
+    expert.flags &= ~NB_CEREBELLAR_PREDICTION_VALID;
+    experts[gid] = expert;
+    return;
+  }
   device const float *somatic_output = reinterpret_cast<device const float *>(
     hot_state + uniforms.somatic_output_offset
   );
-  const uint prediction_count = min(uniforms.observation_count, 8u);
+  const uint prediction_count = 8u;
   float mean_command = 0.0f;
   for (uint sample = 0u; sample < prediction_count; ++sample) {
-    const uint observation_index =
+    const uint body_feature =
       (expert.expert_identifier * 17u + sample * 31u)
-        % uniforms.observation_count;
+        % NB_BODY_SENSORIMOTOR_FEATURE_COUNT;
     const uint actuator_index = sample % max(uniforms.actuator_count, 1u);
-    const float command_feature = uniforms.actuator_count == 0u
+    const float actuator_feature = uniforms.actuator_count == 0u
       ? 0.0f
       : nb_motor_feature(
           somatic_output[actuator_index], uniforms.actuator_command_kind
         );
-    const float baseline = observations[observation_index];
+    const float baseline = nb_normalized_body_feature_value(
+      body[body_feature], body_feature
+    );
+    const float goal_feature = nb_motor_goal_body_feature(
+      motor_goal, body_feature, baseline
+    );
+    const float command_feature = clamp(
+      0.5f * actuator_feature
+        + 0.5f * (goal_feature - baseline) * motor_goal->confidence,
+      -1.0f,
+      1.0f
+    );
     const float learned_effect = clamp(
       cerebellar_parameters[4] + expert.state[28u + sample],
       -1.0f,
@@ -3392,6 +3491,7 @@ kernel void predict_delayed_cerebellar_consequences(
       + clamp(command_feature * learned_effect, -1.0f, 1.0f);
     expert.state[12u + sample] = baseline;
     expert.state[20u + sample] = command_feature;
+    expert.state[36u + sample] = float(body_feature);
     mean_command += command_feature;
   }
   expert.state[3] = prediction_count == 0u
@@ -3399,9 +3499,7 @@ kernel void predict_delayed_cerebellar_consequences(
   expert.prediction_timestamp_microseconds =
     uniforms.target_timestamp_microseconds;
   expert.prediction_count = prediction_count;
-  expert.reserved = 0u;
-  expert.flags = prediction_count == 0u
-    ? (expert.flags & ~NB_CEREBELLAR_PREDICTION_VALID)
-    : (expert.flags | NB_CEREBELLAR_PREDICTION_VALID);
+  expert.reserved = motor_goal->target_body_identifier;
+  expert.flags |= NB_CEREBELLAR_PREDICTION_VALID;
   experts[gid] = expert;
 }

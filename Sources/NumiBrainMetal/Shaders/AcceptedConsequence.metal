@@ -2104,9 +2104,6 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.active_cerebellar_count) return;
-  device const float *observations = reinterpret_cast<device const float *>(
-    hot_state + uniforms.observation_offset
-  );
   device NBCerebellarExpertRecord *experts =
     reinterpret_cast<device NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
@@ -2119,7 +2116,7 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   const bool prediction_is_causal =
     (expert.flags & NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID) != 0u
     && expert.prediction_count > 0u
-    && uniforms.observation_count > 0u
+    && uniforms.body_count > 0u
     && expert.prediction_timestamp_microseconds
       < uniforms.target_timestamp_microseconds
     && uniforms.target_timestamp_microseconds
@@ -2137,15 +2134,39 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   const uint prediction_count = min(expert.prediction_count, 8u);
   float absolute_error_sum = 0.0f;
   float command_error_sum = 0.0f;
+  uint accepted_count = 0u;
+  device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+  const uint body_identifier = expert.reserved;
+  device const float *accepted_body = nullptr;
+  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      body_belief + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & NB_ACCEPTED_STATE_VALID) != 0ul
+        && uint(identity[0]) == body_identifier) {
+      accepted_body = body;
+      break;
+    }
+  }
+  if (accepted_body == nullptr) {
+    expert.flags &= ~NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID;
+    experts[gid] = expert;
+    return;
+  }
   for (uint sample = 0u; sample < prediction_count; ++sample) {
-    const uint observation_index =
-      (expert.expert_identifier * 17u + sample * 31u)
-        % uniforms.observation_count;
-    const float signed_error = observations[observation_index]
-      - expert.state[4u + sample];
+    const uint body_feature = uint(expert.state[36u + sample]);
+    if (body_feature >= NB_BODY_SENSORIMOTOR_FEATURE_COUNT) continue;
+    const float accepted_feature = nb_body_sensorimotor_feature(
+      accepted_body, body_feature
+    );
+    const float signed_error = accepted_feature - expert.state[4u + sample];
     const float command_feature = expert.state[20u + sample];
     absolute_error_sum += abs(signed_error);
     command_error_sum += signed_error * command_feature;
+    accepted_count += 1u;
     expert.state[28u + sample] = clamp(
       expert.state[28u + sample]
         + learning_rate * signed_error * command_feature,
@@ -2153,14 +2174,19 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
       1.0f
     );
   }
-  const float error = absolute_error_sum / float(prediction_count);
+  if (accepted_count == 0u) {
+    expert.flags &= ~NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID;
+    experts[gid] = expert;
+    return;
+  }
+  const float error = absolute_error_sum / float(accepted_count);
   expert.prediction_error = error;
   expert.state[0] = mix(
     expert.state[0], error,
     learning_rate
   );
   const float inverse_correction = clamp(
-    -(command_error_sum / float(prediction_count))
+    -(command_error_sum / float(accepted_count))
       * cerebellar_parameters[3],
     -0.25f,
     0.25f
