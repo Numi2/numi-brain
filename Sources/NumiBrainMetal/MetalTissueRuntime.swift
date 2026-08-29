@@ -416,6 +416,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public struct FastSystemResult: Equatable, Sendable {
     public let substep: BrainJointSubstepToken
     public let speciesTemplateFingerprint: UInt64
+    public let compiledSpeciesTemplateFingerprint: UInt64
     public let protectiveCommand: ProtectiveCommandBufferView
     public let protectiveMotorOutput: ProtectiveMotorOutputBufferView
     public let fastAutonomicOutput: FastAutonomicOutputBufferView
@@ -712,6 +713,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var stagedFastCPGOscillatorCount: Int = 0
   private var stagedFastCPGSynergyCount: Int = 0
   private var boundFastReflexSpeciesFingerprint: UInt64?
+  private var boundCompiledSpeciesTemplateFingerprint: UInt64?
   private var boundFastReflexRuleCount: Int = 0
   private var boundFastAutonomicVitalGain: Float = 0
   private var boundFastAutonomicChannelCount: Int = 0
@@ -3231,10 +3233,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   /// Compiles the immutable species reflex graph into bounded receptor to
   /// actuator rules. Mutable rule history remains in the per-agent shadow
   /// state and is never shared across minds.
-  func bindSpeciesReflexProgram(_ species: SpeciesTemplate) throws {
+  func bindSpeciesReflexProgram(
+    _ compiledSpeciesTemplate: CompiledSpeciesTemplate
+  ) throws {
+    let species = compiledSpeciesTemplate.species
     guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
       interactiveJointRoot == nil,
       Int(species.motor.actuatorCount) == protectiveMotorProfile.channels.count,
+      compiledSpeciesTemplate.protectiveMotorProfile == protectiveMotorProfile,
+      compiledSpeciesTemplate.muscleAttachmentCatalog
+        == numanXMuscleAttachmentCatalog,
+      compiledSpeciesTemplate.somaticSynergyCatalog == somaticSynergyCatalog,
       Int(species.physiology.autonomicActionDimension)
         <= Self.maximumFastAutonomicChannelCount,
       Int(species.motor.activeSensingActionDimension)
@@ -3345,6 +3354,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       label: "NumiBrain species somatic actuator-contract upload"
     )
     boundFastReflexSpeciesFingerprint = species.fingerprint
+    boundCompiledSpeciesTemplateFingerprint = compiledSpeciesTemplate.fingerprint
     boundFastReflexRuleCount = rules.count
     boundFastAutonomicChannelCount = Int(
       species.physiology.autonomicActionDimension
@@ -4001,6 +4011,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     return FastSystemResult(
       substep: substep,
       speciesTemplateFingerprint: boundFastReflexSpeciesFingerprint ?? 0,
+      compiledSpeciesTemplateFingerprint:
+        boundCompiledSpeciesTemplateFingerprint ?? 0,
       protectiveCommand: ProtectiveCommandBufferView(
         gpuAddress: protectiveCommandBuffers[protectiveStateIndex].gpuAddress,
         byteCount: ProtectiveMotorCommand.byteCount,
@@ -4154,6 +4166,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let activeSensing = fastSystems.activeSensingOutput
     guard
       fastSystems.speciesTemplateFingerprint == boundFastReflexSpeciesFingerprint,
+      fastSystems.compiledSpeciesTemplateFingerprint
+        == boundCompiledSpeciesTemplateFingerprint,
       let headerBuffer = protectiveMotorOutputHeaderBuffers.first(where: {
         $0.gpuAddress == output.headerGPUAddress
       }),

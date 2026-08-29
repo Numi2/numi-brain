@@ -103,7 +103,10 @@ static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_byte_count
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_count) == 116);
 static_assert(offsetof(NBNumanXMotorCandidate, actuator_command_kind) == 120);
 static_assert(offsetof(NBNumanXMotorCandidate, species_template_fingerprint) == 128);
-static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 136);
+static_assert(
+    offsetof(NBNumanXMotorCandidate, compiled_species_template_fingerprint) == 136
+);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 144);
 static_assert(offsetof(NBNumanXSensorChannel, modality) == 0);
 static_assert(offsetof(NBNumanXSensorChannel, gpu_address) == 8);
 static_assert(
@@ -1704,6 +1707,7 @@ uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
   mix_little_endian(hash, candidate->actuator_command_kind);
   mix_little_endian(hash, candidate->reserved);
   mix_little_endian(hash, candidate->species_template_fingerprint);
+  mix_little_endian(hash, candidate->compiled_species_template_fingerprint);
   return hash;
 }
 
@@ -1734,6 +1738,7 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
       || candidate->environment_identifier != root->environment_identifier
       || candidate->motor_profile_fingerprint == 0
       || candidate->species_template_fingerprint == 0
+      || candidate->compiled_species_template_fingerprint == 0
       || candidate->actuator_command_kind < 1
       || candidate->actuator_command_kind > 7
       || candidate->reserved != 0) {

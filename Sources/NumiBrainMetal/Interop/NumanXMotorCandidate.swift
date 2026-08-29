@@ -16,6 +16,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public let acceptedBrainTimestamp: BrainTimestamp
   public let brainGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
+  public let compiledSpeciesTemplateFingerprint: UInt64
   public let motorProfileFingerprint: UInt64
   public let actuatorCommandKind: ActuatorCommandKind
   public let motorOutputHeaderGPUAddress: UInt64
@@ -70,6 +71,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.accepted_brain_timestamp_microseconds = output.timestamp.rawValue
     record.brain_generation = output.brainGeneration
     record.species_template_fingerprint = fastSystems.speciesTemplateFingerprint
+    record.compiled_species_template_fingerprint =
+      fastSystems.compiledSpeciesTemplateFingerprint
     record.motor_profile_fingerprint = output.profileFingerprint
     record.actuator_command_kind = UInt32(output.actuatorCommandKind.rawValue)
     record.reserved = 0
@@ -107,7 +110,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public init(
     validating record: NBNumanXMotorCandidate,
     transaction: BrainJointTransactionToken,
-    substep: BrainJointSubstepToken
+    substep: BrainJointSubstepToken,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate
   ) throws {
     var root = transaction.abiRecord
     var substepRecord = substep.abiRecord
@@ -124,6 +128,19 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
         "compiled NumanX motor candidate validation failed with code \(validation)"
       )
     }
+    guard record.species_template_fingerprint
+        == compiledSpeciesTemplate.species.fingerprint,
+      record.compiled_species_template_fingerprint
+        == compiledSpeciesTemplate.fingerprint,
+      record.motor_profile_fingerprint
+        == compiledSpeciesTemplate.protectiveMotorProfile.fingerprint,
+      record.muscle_count
+        == compiledSpeciesTemplate.somaticSynergyCatalog.actuatorCount
+    else {
+      throw TissueError.transaction(
+        "NumanX motor candidate belongs to a different compiled morphology"
+      )
+    }
     self.init(unchecked: record)
   }
 
@@ -135,6 +152,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     )
     brainGeneration = record.brain_generation
     speciesTemplateFingerprint = record.species_template_fingerprint
+    compiledSpeciesTemplateFingerprint =
+      record.compiled_species_template_fingerprint
     motorProfileFingerprint = record.motor_profile_fingerprint
     actuatorCommandKind = ActuatorCommandKind(
       rawValue: UInt16(record.actuator_command_kind)
@@ -164,6 +183,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.accepted_brain_timestamp_microseconds = acceptedBrainTimestamp.rawValue
     record.brain_generation = brainGeneration
     record.species_template_fingerprint = speciesTemplateFingerprint
+    record.compiled_species_template_fingerprint =
+      compiledSpeciesTemplateFingerprint
     record.motor_profile_fingerprint = motorProfileFingerprint
     record.actuator_command_kind = UInt32(actuatorCommandKind.rawValue)
     record.reserved = 0

@@ -82,7 +82,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         "cognitive and fast runtimes do not share one device and immutable brain version"
       )
     }
-    try fastTissue.bindSpeciesReflexProgram(cognitive.boundSpeciesTemplate)
+    try fastTissue.bindSpeciesReflexProgram(compiledSpeciesTemplate)
     self.cognitive = cognitive
     self.fastTissue = fastTissue
     self.parameterVersionFingerprint = cognitive.parameterVersionFingerprint

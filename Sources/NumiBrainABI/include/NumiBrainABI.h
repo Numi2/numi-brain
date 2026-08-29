@@ -46,7 +46,7 @@ enum {
   NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 80,
   NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
   NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT = 16,
-  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 144,
+  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 152,
   NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT = 56,
   NB_NUMANX_SENSOR_PACKET_BYTE_COUNT = 72,
   NB_DISPATCH_PLAN_VERSION = 1,
@@ -54,7 +54,7 @@ enum {
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 3,
-  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 5,
+  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 6,
   NB_NUMANX_SENSOR_PACKET_VERSION = 2,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
@@ -532,6 +532,9 @@ typedef struct NBNumanXMotorCandidate {
   uint32_t actuator_command_kind;
   uint32_t reserved;
   uint64_t species_template_fingerprint;
+  /// Exact compiled receptor, joint, muscle, reflex, and synergy generation
+  /// expected by the physical runtime consuming this candidate.
+  uint64_t compiled_species_template_fingerprint;
   uint64_t candidate_fingerprint;
 } NBNumanXMotorCandidate;
 
