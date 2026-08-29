@@ -13,6 +13,8 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let source: MetalLearningBatch
   public let rawBytes: MLXArray
   public let validMask: MLXArray
+  public let endTimestamps: MLXArray
+  public let activeOptionIdentifiers: MLXArray
   public let parameterVersionFingerprints: MLXArray
   public let priorState: MLXArray
   public let posteriorState: MLXArray
@@ -25,15 +27,20 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let imitationMask: MLXArray
 
   public init(_ source: MetalLearningBatch) throws {
-    guard source.transitionRecordVersion == MetalLearningBatch.transitionRecordVersion,
-      source.transitionStride == Self.transitionStride,
-      source.byteCount == source.transitionCapacity * source.transitionStride
+    guard source.formatVersion == MetalLearningBatch.formatVersion,
+      source.transitionRecordVersion == MetalLearningBatch.transitionRecordVersion,
+      source.transitionStride == Self.transitionStride
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "MLX committed-transition batch ABI is incompatible"
       )
     }
     let lease = try source.makeSharedStorageLease()
+    guard lease.byteCount == source.transitionCapacity * source.transitionStride else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX committed-transition section byte count is incompatible"
+      )
+    }
     let raw = MLXArray(
       rawPointer: lease.baseAddress,
       [source.transitionCapacity, source.transitionStride],
@@ -57,6 +64,8 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.source = source
     self.rawBytes = raw
     self.validMask = validMask
+    self.endTimestamps = field(16, count: 1, dtype: .uint64)
+    self.activeOptionIdentifiers = field(56, count: 1, dtype: .uint64)
     self.parameterVersionFingerprints = parameterVersionFingerprints
     self.priorState = field(128, count: 24, dtype: .float32)
     self.posteriorState = field(224, count: 24, dtype: .float32)

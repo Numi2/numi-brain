@@ -2,117 +2,222 @@ import Foundation
 @preconcurrency import Metal
 import NumiBrainCore
 
-/// Retains the immutable shared Metal allocation while an external batch
-/// learner imports its unified-memory address. The lease never exposes the
-/// mutable rollout ring from which the snapshot was frozen.
+/// Identifies one immutable committed-memory view carried into an off-rollout
+/// learner update. Imagined trajectories require a different provenance kind
+/// and are intentionally absent from this lived-experience batch.
+@frozen
+public enum MetalLearningBatchSection: UInt16, CaseIterable, Sendable {
+  case committedTransitions = 1
+  case activeEpisodes = 2
+  case warmEpisodes = 3
+  case proceduralSkills = 4
+  case replayQueue = 5
+}
+
+/// Retains one immutable shared Metal allocation while an external batch
+/// learner imports its unified-memory address. A lease never exposes the
+/// mutable persistent store from which the section was frozen.
 @available(macOS 26.0, *)
 public final class MetalLearningBatchStorageLease: @unchecked Sendable {
+  public let section: MetalLearningBatchSection
   public let baseAddress: UnsafeMutableRawPointer
   public let byteCount: Int
 
   private let buffer: any MTLBuffer
 
-  fileprivate init(buffer: any MTLBuffer) throws {
+  fileprivate init(
+    section: MetalLearningBatchSection,
+    buffer: any MTLBuffer
+  ) throws {
     guard buffer.storageMode == .shared, buffer.length > 0 else {
-      throw TissueError.transaction("learning batch is not shared unified memory")
+      throw TissueError.transaction("learning batch section is not shared unified memory")
     }
+    self.section = section
     self.baseAddress = buffer.contents()
     self.byteCount = buffer.length
     self.buffer = buffer
   }
 }
 
-/// Immutable GPU snapshot of committed rollout transitions from one parameter
-/// generation. A learner may retain this batch while rollout resumes because
-/// subsequent ring-buffer writes target a different allocation.
+/// Immutable, generation-consistent GPU snapshot of accepted transitions,
+/// lived episodic summaries, procedural skills, and replay priorities. A
+/// learner may retain it while rollout resumes because every section resides
+/// in a distinct frozen allocation.
 @available(macOS 26.0, *)
 public final class MetalLearningBatch: @unchecked Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
   public static let transitionRecordVersion: UInt32 = 1
+  public static let episodicRecordVersion: UInt32 = 1
+  public static let proceduralRecordVersion =
+    MetalAgentMemoryLayout.proceduralSkillRecordVersion
+  public static let replayRecordVersion: UInt32 = 1
   public static let transitionStride = MetalAgentMemoryLayout.committedTransitionStride
+  public static let episodicStride = MetalAgentMemoryLayout.activeEpisodeStride
+  public static let warmEpisodicStride =
+    MetalAgentMemoryLayout.compressedEpisodeMetadataStride
+  public static let proceduralStride = MetalAgentMemoryLayout.proceduralSkillStride
+  public static let replayStride = MetalAgentMemoryLayout.replayQueueStride
 
   public let formatVersion: UInt32
   public let transitionRecordVersion: UInt32
+  public let episodicRecordVersion: UInt32
+  public let proceduralRecordVersion: UInt32
+  public let replayRecordVersion: UInt32
   public let sourceGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
   public let transitionCapacity: Int
+  public let episodicCapacity: Int
+  public let warmEpisodicCapacity: Int
+  public let proceduralCapacity: Int
+  public let replayCapacity: Int
   public let transitionStride: Int
+  public let episodicStride: Int
+  public let warmEpisodicStride: Int
+  public let proceduralStride: Int
+  public let replayStride: Int
   public let byteCount: Int
   public let gpuAddress: UInt64
   public let metadataFingerprint: UInt64
   public let contentFingerprint: UInt64
   public let batchFingerprint: UInt64
-  let buffer: any MTLBuffer
+
+  private let buffers: [MetalLearningBatchSection: any MTLBuffer]
 
   init(
-    snapshot: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    transitions: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    livedEpisodes: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    warmEpisodes: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    proceduralSkills: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    replayQueue: MetalAgentStateRuntime.PersistentSectionSnapshot,
     speciesTemplateFingerprint: UInt64,
     regionalProgramFingerprint: UInt64,
     scheduleFingerprint: UInt64,
     parameterVersionFingerprint: UInt64
   ) throws {
-    let byteCount = snapshot.elementCount * snapshot.elementStride
-    guard snapshot.generation > 0, snapshot.elementCount > 0,
-      snapshot.elementStride == Self.transitionStride,
-      byteCount == snapshot.buffer.length,
+    let sections: [(
+      MetalLearningBatchSection,
+      MetalAgentStateRuntime.PersistentSectionSnapshot,
+      Int
+    )] = [
+      (.committedTransitions, transitions, Self.transitionStride),
+      (.activeEpisodes, livedEpisodes, Self.episodicStride),
+      (.warmEpisodes, warmEpisodes, Self.warmEpisodicStride),
+      (.proceduralSkills, proceduralSkills, Self.proceduralStride),
+      (.replayQueue, replayQueue, Self.replayStride),
+    ]
+    guard transitions.generation > 0,
+      sections.allSatisfy({ _, snapshot, stride in
+        snapshot.generation == transitions.generation
+          && snapshot.elementCount > 0
+          && snapshot.elementStride == stride
+          && snapshot.elementCount <= Int.max / snapshot.elementStride
+          && snapshot.elementCount * snapshot.elementStride == snapshot.buffer.length
+          && snapshot.buffer.storageMode == .shared
+      }),
       speciesTemplateFingerprint > 0, regionalProgramFingerprint > 0,
       scheduleFingerprint > 0, parameterVersionFingerprint > 0
     else {
-      throw TissueError.transaction("learning batch identity or layout is invalid")
+      throw TissueError.transaction("learning batch identity, generation, or layout is invalid")
     }
-    guard snapshot.buffer.storageMode == .shared else {
-      throw TissueError.transaction("learning batch snapshot is not unified memory")
-    }
-    var hash: UInt64 = 14_695_981_039_346_656_037
+
+    var metadataHash: UInt64 = 14_695_981_039_346_656_037
     for value in [
       UInt64(Self.formatVersion), UInt64(Self.transitionRecordVersion),
-      snapshot.generation, speciesTemplateFingerprint,
-      regionalProgramFingerprint, scheduleFingerprint,
-      parameterVersionFingerprint, UInt64(snapshot.elementCount),
-      UInt64(snapshot.elementStride), UInt64(byteCount),
+      UInt64(Self.episodicRecordVersion), UInt64(Self.proceduralRecordVersion),
+      UInt64(Self.replayRecordVersion), transitions.generation,
+      speciesTemplateFingerprint, regionalProgramFingerprint,
+      scheduleFingerprint, parameterVersionFingerprint,
     ] {
-      Self.mix(value, into: &hash)
+      Self.mix(value, into: &metadataHash)
     }
     var contentHash: UInt64 = 14_695_981_039_346_656_037
-    let bytes = UnsafeRawBufferPointer(
-      start: snapshot.buffer.contents(), count: byteCount
-    )
-    for byte in bytes {
-      contentHash ^= UInt64(byte)
-      contentHash &*= 1_099_511_628_211
+    var totalByteCount = 0
+    var sectionBuffers: [MetalLearningBatchSection: any MTLBuffer] = [:]
+    for (kind, snapshot, _) in sections {
+      Self.mix(UInt64(kind.rawValue), into: &metadataHash)
+      Self.mix(UInt64(snapshot.elementCount), into: &metadataHash)
+      Self.mix(UInt64(snapshot.elementStride), into: &metadataHash)
+      Self.mix(UInt64(snapshot.buffer.length), into: &metadataHash)
+      Self.mix(UInt64(kind.rawValue), into: &contentHash)
+      let bytes = UnsafeRawBufferPointer(
+        start: snapshot.buffer.contents(), count: snapshot.buffer.length
+      )
+      for byte in bytes {
+        contentHash ^= UInt64(byte)
+        contentHash &*= 1_099_511_628_211
+      }
+      let (nextByteCount, byteCountOverflow) = totalByteCount.addingReportingOverflow(
+        snapshot.buffer.length
+      )
+      guard !byteCountOverflow else {
+        throw TissueError.transaction("learning batch byte count overflows Int")
+      }
+      totalByteCount = nextByteCount
+      sectionBuffers[kind] = snapshot.buffer
     }
-    var batchHash = hash
+    var batchHash = metadataHash
     Self.mix(contentHash, into: &batchHash)
+
     self.formatVersion = Self.formatVersion
     self.transitionRecordVersion = Self.transitionRecordVersion
-    self.sourceGeneration = snapshot.generation
+    self.episodicRecordVersion = Self.episodicRecordVersion
+    self.proceduralRecordVersion = Self.proceduralRecordVersion
+    self.replayRecordVersion = Self.replayRecordVersion
+    self.sourceGeneration = transitions.generation
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
     self.regionalProgramFingerprint = regionalProgramFingerprint
     self.scheduleFingerprint = scheduleFingerprint
     self.parameterVersionFingerprint = parameterVersionFingerprint
-    self.transitionCapacity = snapshot.elementCount
-    self.transitionStride = snapshot.elementStride
-    self.byteCount = byteCount
-    self.gpuAddress = snapshot.buffer.gpuAddress
-    self.metadataFingerprint = hash
+    self.transitionCapacity = transitions.elementCount
+    self.episodicCapacity = livedEpisodes.elementCount
+    self.warmEpisodicCapacity = warmEpisodes.elementCount
+    self.proceduralCapacity = proceduralSkills.elementCount
+    self.replayCapacity = replayQueue.elementCount
+    self.transitionStride = transitions.elementStride
+    self.episodicStride = livedEpisodes.elementStride
+    self.warmEpisodicStride = warmEpisodes.elementStride
+    self.proceduralStride = proceduralSkills.elementStride
+    self.replayStride = replayQueue.elementStride
+    self.byteCount = totalByteCount
+    self.gpuAddress = transitions.buffer.gpuAddress
+    self.metadataFingerprint = metadataHash
     self.contentFingerprint = contentHash
     self.batchFingerprint = batchHash
-    self.buffer = snapshot.buffer
+    self.buffers = sectionBuffers
   }
 
-  public var residencyAllocation: any MTLAllocation { buffer }
+  /// Compatibility accessor for callers that only retain the transition
+  /// allocation. New learners should retain `residencyAllocations`.
+  public var residencyAllocation: any MTLAllocation {
+    buffers[.committedTransitions]!
+  }
+
+  public var residencyAllocations: [any MTLAllocation] {
+    MetalLearningBatchSection.allCases.compactMap { buffers[$0] }
+  }
 
   public var metalBufferObject: UnsafeMutableRawPointer {
-    Unmanaged.passUnretained(buffer as AnyObject).toOpaque()
+    Unmanaged.passUnretained(buffers[.committedTransitions]! as AnyObject).toOpaque()
+  }
+
+  public func metalBufferObject(
+    for section: MetalLearningBatchSection
+  ) -> UnsafeMutableRawPointer {
+    Unmanaged.passUnretained(buffers[section]! as AnyObject).toOpaque()
   }
 
   /// Creates a lifetime-safe zero-copy import lease for MLX. This is a learner
   /// synchronization boundary, never a production stepping-path readback.
-  public func makeSharedStorageLease() throws -> MetalLearningBatchStorageLease {
-    try MetalLearningBatchStorageLease(buffer: buffer)
+  public func makeSharedStorageLease(
+    for section: MetalLearningBatchSection = .committedTransitions
+  ) throws -> MetalLearningBatchStorageLease {
+    guard let buffer = buffers[section] else {
+      throw TissueError.transaction("learning batch section is absent")
+    }
+    return try MetalLearningBatchStorageLease(section: section, buffer: buffer)
   }
 
   private static func mix(_ value: UInt64, into hash: inout UInt64) {

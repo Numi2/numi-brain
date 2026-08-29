@@ -84,6 +84,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     }
     try parentArtifact.validate(parameterVersion: parentVersion)
     let batch = try MLXCommittedTransitionBatch(sourceBatch)
+    let replay = try MLXReplayLearningBatch(sourceBatch)
     let kinds = BrainSharedParameterArtifact.requiredKinds
     let parentParameters = kinds.map { kind -> MLXArray in
       let payload = parentArtifact.payload(kind)
@@ -97,7 +98,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       let terms = Self.lossTerms(
         parameters: parameters,
         parentParameters: parentParameters,
-        batch: batch
+        batch: batch,
+        replay: replay
       )
       var total = MLXArray(Float(0))
       for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
@@ -133,7 +135,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let updatedTerms = Self.lossTerms(
       parameters: updatedParameters,
       parentParameters: parentParameters,
-      batch: batch
+      batch: batch,
+      replay: replay
     )
     eval(updatedParameters + updatedTerms)
     let payloads = try zip(kinds, updatedParameters).map { kind, parameter in
@@ -167,7 +170,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
   private static func lossTerms(
     parameters: [MLXArray],
     parentParameters: [MLXArray],
-    batch: MLXCommittedTransitionBatch
+    batch: MLXCommittedTransitionBatch,
+    replay: MLXReplayLearningBatch
   ) -> [MLXArray] {
     let sensory = parameters[0]
     let belief = parameters[1]
@@ -185,17 +189,34 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let action = batch.actions
     let reward = batch.factoredReinforcement
     let metrics = batch.outcomeMetrics
+    let replayTransitionWeights = clip(
+      replay.transitionWeights(for: batch), min: 0, max: 4
+    )
+    let threatTransitionWeights = clip(
+      replay.transitionWeights(
+        for: batch, episodeWeights: replay.episodeThreatWeights
+      ),
+      min: 0,
+      max: 4
+    )
+    let transitionMask = batch.validMask
+      * (Float(1) + replayTransitionWeights)
+    let riskTransitionMask = batch.validMask
+      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
     let observationLoss = batch.maskedMeanSquaredError(
-      sensory[0] * posterior + sensory[1], observation
+      sensory[0] * posterior + sensory[1], observation,
+      mask: transitionMask
     )
     let beliefLoss = batch.maskedMeanSquaredError(
-      belief[7] * prior + belief[0] * observation, posterior
+      belief[7] * prior + belief[0] * observation, posterior,
+      mask: transitionMask
     )
     let worldLoss = batch.maskedMeanSquaredError(
-      tanh(world[0] * prior + world[1] * observation + world[5]), posterior
+      tanh(world[0] * prior + world[1] * observation + world[5]), posterior,
+      mask: transitionMask
     )
     let bodyLoss = batch.maskedMeanSquaredError(
       tanh(
@@ -204,55 +225,113 @@ public final class MLXBrainLearner: @unchecked Sendable {
           + belief[6] * action[0..., 0..<8]
           + belief[4]
       ),
-      posterior[0..., 0..<8]
+      posterior[0..., 0..<8],
+      mask: transitionMask
     )
     let agencyLoss = batch.maskedMeanSquaredError(
-      actionState * motor[0], action
+      actionState * motor[0], action,
+      mask: transitionMask
     )
     let eventLoss = batch.maskedMeanSquaredError(
       observation.mean(axis: 1, keepDims: true) * sensory[5],
-      metrics[0..., 6..<7]
+      metrics[0..., 6..<7],
+      mask: riskTransitionMask
     )
     let driveLoss = batch.maskedMeanSquaredError(
-      -reward[0..., 0..<1] * value[0], metrics[0..., 4..<5]
+      -reward[0..., 0..<1] * value[0], metrics[0..., 4..<5],
+      mask: transitionMask
     )
     let predictedValue = (
       reward * value[0..<8]
     ).sum(axis: 1, keepDims: true)
+    let replaySkillValue = (
+      replay.skillExpectedFactoredValue * value[0..<8]
+    ).sum(axis: 1, keepDims: true)
     let valueLoss = batch.maskedMeanSquaredError(
-      predictedValue, metrics[0..., 0..<1]
+      predictedValue, metrics[0..., 0..<1], mask: transitionMask
+    ) + replay.skillMaskedMeanSquaredError(
+      replaySkillValue, replay.skillExpectedValue
+    )
+    let replayEpisodeRisk = sigmoid(
+      abs(replay.episodeRetrievalKeys).mean(axis: 1, keepDims: true) * value[8]
+        + replay.episodeUncertainty * value[9]
+    )
+    let replaySkillRisk = sigmoid(
+      abs(replay.skillPolicyCode).mean(axis: 1, keepDims: true) * value[10]
+        + replay.skillOutcomeUncertainty * value[11]
     )
     let riskLoss = batch.maskedMeanSquaredError(
       abs(action).mean(axis: 1, keepDims: true) * value[4],
-      metrics[0..., 1..<2]
+      metrics[0..., 1..<2],
+      mask: riskTransitionMask
+    ) + replay.episodeMaskedMeanSquaredError(
+      replayEpisodeRisk,
+      replay.episodeDamage,
+      mask: replay.episodeReplayWeights + Float(2) * replay.episodeThreatWeights
+    ) + replay.skillMaskedMeanSquaredError(
+      replaySkillRisk, replay.skillDamageCVaR
     )
     let policyLoss = batch.maskedMeanSquaredError(
-      predictedPolicyAction, action
+      predictedPolicyAction, action,
+      mask: transitionMask
+    )
+    let replaySkillCompetence = sigmoid(
+      replay.skillInitiationModel.mean(axis: 1, keepDims: true) * policy[2]
+        + replay.skillExpectedValue * policy[3]
+        - replay.skillDamageCVaR * policy[4]
     )
     let optionLoss = batch.maskedMeanSquaredError(
-      sigmoid(predictedValue * policy[1]), metrics[0..., 2..<3]
+      sigmoid(predictedValue * policy[1]), metrics[0..., 2..<3],
+      mask: transitionMask
+    ) + replay.skillMaskedMeanSquaredError(
+      replaySkillCompetence, replay.skillCompetence
     )
     let cerebellarLoss = batch.maskedMeanSquaredError(
-      stateDelta[0..., 0..<16] * cerebellar[3], action
+      stateDelta[0..., 0..<16] * cerebellar[3], action,
+      mask: transitionMask
+    )
+    let replayEpisodeOutcome = tanh(
+      replay.episodeReinforcement - replay.episodeDamage
+        + replay.episodeSalience
+    )
+    let replayEpisodePrediction = tanh(
+      replay.episodeRetrievalKeys.mean(axis: 1, keepDims: true) * memory[8]
+        + replay.episodeUncertainty * memory[9]
+        + replay.episodeSalience * memory[10]
     )
     let episodicLoss = batch.maskedMean(
-      abs(stateDelta) * memory[0] + metrics[0..., 3..<4] * memory[6]
+      abs(stateDelta) * memory[0] + metrics[0..., 3..<4] * memory[6],
+      mask: transitionMask
+    ) + replay.episodeMaskedMeanSquaredError(
+      replayEpisodePrediction, replayEpisodeOutcome
     )
     let semanticLoss = batch.maskedMeanSquaredError(
       posterior.mean(axis: 1, keepDims: true) * memory[1],
-      observation.mean(axis: 1, keepDims: true)
+      observation.mean(axis: 1, keepDims: true),
+      mask: transitionMask
+    ) + replay.episodeMaskedMeanSquaredError(
+      replay.episodeRetrievalKeys.mean(axis: 1, keepDims: true) * memory[11],
+      replay.episodeReinforcement - replay.episodeUncertainty,
+      mask: replay.episodeReplayWeights + replay.episodeRareEventWeights
+    )
+    let replaySkillPolicy = tanh(
+      replay.skillInitiationModel * memory[16..<32] + memory[3]
     )
     let proceduralLoss = batch.maskedMeanSquaredError(
-      actionState * memory[2], action
+      actionState * memory[2], action,
+      mask: transitionMask
+    ) + replay.skillMaskedMeanSquaredError(
+      replaySkillPolicy, replay.skillPolicyCode
     )
     let imitationLoss = batch.maskedMeanSquaredError(
       predictedPolicyAction,
       batch.teacherState[0..., 0..<16],
-      mask: batch.imitationMask
+      mask: batch.imitationMask * (Float(1) + replayTransitionWeights)
     )
     let routeLoss = batch.maskedMean(
       square(metrics[0..., 3..<4] * route[0]
-        - metrics[0..., 7..<8] * route[1]) + square(route[4])
+        - metrics[0..., 7..<8] * route[1]) + square(route[4]),
+      mask: transitionMask
     )
     let sparsityLoss = parameters.reduce(MLXArray(Float(0))) {
       $0 + abs($1).mean()
@@ -263,7 +342,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       $0 + square($1.0 - $1.1).mean()
     } / Float(parameters.count)
     let plasticityLoss = batch.maskedMeanSquaredError(
-      prior + plasticity[0] * plasticity[3] * observation, posterior
+      prior + plasticity[0] * plasticity[3] * observation, posterior,
+      mask: transitionMask
     )
     return [
       observationLoss, beliefLoss, worldLoss, bodyLoss, agencyLoss,

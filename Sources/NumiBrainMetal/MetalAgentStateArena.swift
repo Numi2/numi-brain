@@ -425,6 +425,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let recordLayoutVersion: UInt32 = 3
+  public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
   public static let compressedEpisodeMetadataStride = 128

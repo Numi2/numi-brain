@@ -368,11 +368,27 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public func makeLearningBatch() throws -> MetalLearningBatch {
     lock.lock()
     defer { lock.unlock() }
-    let snapshot = try agentStateRuntime.snapshotPersistentSection(
+    let transitions = try agentStateRuntime.snapshotPersistentSection(
       .committedTransitions
     )
+    let livedEpisodes = try agentStateRuntime.snapshotPersistentSection(
+      .activeEpisodes
+    )
+    let warmEpisodes = try agentStateRuntime.snapshotPersistentSection(
+      .compressedEpisodeMetadata
+    )
+    let proceduralSkills = try agentStateRuntime.snapshotPersistentSection(
+      .proceduralSkills
+    )
+    let replayQueue = try agentStateRuntime.snapshotPersistentSection(
+      .replayQueue
+    )
     return try MetalLearningBatch(
-      snapshot: snapshot,
+      transitions: transitions,
+      livedEpisodes: livedEpisodes,
+      warmEpisodes: warmEpisodes,
+      proceduralSkills: proceduralSkills,
+      replayQueue: replayQueue,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
