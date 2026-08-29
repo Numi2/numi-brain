@@ -312,6 +312,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let completeAction = batch.completeActions
     let reward = batch.factoredReinforcement
     let metrics = batch.outcomeMetrics
+    let priorBody = batch.priorBodyState
+    let posteriorBody = batch.posteriorBodyState
     let replayTransitionWeights = clip(
       replay.transitionWeights(for: batch), min: 0, max: 4
     )
@@ -327,6 +329,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
       * (Float(1) + replayTransitionWeights)
     let riskTransitionMask =
       batch.validMask
+      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
+    let bodyTransitionMask =
+      batch.bodyStateMask
       * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
@@ -390,16 +395,27 @@ public final class MLXBrainLearner: @unchecked Sendable {
         twoStepWorld, twoStepTarget, mask: twoStepMask
       )
       + regional.predictionLoss(denseWeights: regionalDense)
-    let bodyLoss = batch.maskedMeanSquaredError(
-      tanh(
-        belief[7] * prior[0..., 0..<8]
-          + belief[0] * observation[0..., 0..<8]
-          + belief[6] * action[0..., 0..<8]
-          + belief[4]
-      ),
-      posterior[0..., 0..<8],
-      mask: transitionMask
-    )
+    let bodyLoss =
+      batch.maskedMeanSquaredError(
+        tanh(
+          belief[7] * prior[0..., 0..<8]
+            + belief[0] * observation[0..., 0..<8]
+            + belief[6] * action[0..., 0..<8]
+            + belief[4]
+        ),
+        posterior[0..., 0..<8],
+        mask: transitionMask
+      )
+      + batch.maskedMeanSquaredError(
+        sigmoid(
+          belief[7] * priorBody
+            + belief[0] * observation[0..., 0..<8]
+            + belief[6] * abs(action[0..., 0..<8])
+            + belief[4]
+        ),
+        posteriorBody,
+        mask: bodyTransitionMask
+      )
     let agencyLoss = batch.maskedMeanSquaredError(
       actionState * motor[0], action,
       mask: transitionMask
@@ -449,11 +465,24 @@ public final class MLXBrainLearner: @unchecked Sendable {
         + counterfactuals.epistemicUncertainty * value[17]
         + counterfactuals.predictedEffort * value[18]
     )
+    let acceptedBodyRisk = maximum(
+      posteriorBody[0..., 5..<6], posteriorBody[0..., 7..<8]
+    )
+    let predictedBodyRisk = sigmoid(
+      priorBody[0..., 5..<6] * value[8]
+        + priorBody[0..., 7..<8] * value[9]
+        + abs(completeAction).mean(axis: 1, keepDims: true) * value[4]
+    )
     let riskLoss =
       batch.maskedMeanSquaredError(
         abs(completeAction).mean(axis: 1, keepDims: true) * value[4],
         metrics[0..., 1..<2],
         mask: riskTransitionMask
+      )
+      + batch.maskedMeanSquaredError(
+        predictedBodyRisk,
+        acceptedBodyRisk,
+        mask: bodyTransitionMask
       )
       + replay.episodeMaskedMeanSquaredError(
         replayEpisodeRisk,

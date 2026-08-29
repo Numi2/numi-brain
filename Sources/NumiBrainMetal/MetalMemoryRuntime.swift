@@ -232,6 +232,7 @@ private struct CommittedTransitionUniforms {
   var activeSensingActionOffset: UInt64 = 0
   var internalActionOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
@@ -248,6 +249,8 @@ private struct CommittedTransitionUniforms {
   var autonomicActionCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
   var internalActionCount: UInt32 = 0
+  var bodyBeliefCount: UInt32 = 0
+  var reservedBodyBelief: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
@@ -336,7 +339,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 304,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 320,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -542,6 +545,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let acceptedAutonomic = layout.section(.acceptedAutonomicOutput)
     let acceptedActiveSensing = layout.section(.acceptedActiveSensingOutput)
     let internalActions = controlLayout.section(.internalActions)
+    let bodyBelief = layout.section(.bodyBelief)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
     let fastPlasticity = layout.section(.fastPlasticity)
@@ -554,6 +558,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       somatic.elementCount, drives.elementCount, neuromodulation.elementCount,
       acceptedAutonomic.elementCount, acceptedActiveSensing.elementCount,
       internalActions.elementCount,
+      bodyBelief.elementCount,
       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
       transitions.elementCount, transitions.elementStride, journalEntryCapacity,
@@ -561,7 +566,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalProgram.layouts.count,
     ]
     guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
-      transitions.elementStride >= 640,
+      transitions.elementStride == MetalAgentMemoryLayout.committedTransitionStride,
       regionalTransitions.elementStride
         == MetalAgentMemoryLayout.regionalTransitionStride,
       teacherState == nil
@@ -590,6 +595,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeSensingEfficacyOffset: UInt64(
         layout.section(.activeSensingEfficacy).byteOffset
       ),
+      bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
       fastPlasticityOffset: UInt64(fastPlasticity.byteOffset),
@@ -608,6 +614,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       autonomicActionCount: UInt32(autonomicActionCount),
       activeSensingCount: UInt32(activeSensingCount),
       internalActionCount: UInt32(internalActionCount),
+      bodyBeliefCount: UInt32(bodyBelief.elementCount),
       driveCount: UInt32(drives.elementCount),
       neuromodulatorCount: UInt32(neuromodulation.elementCount),
       fastPlasticityCount: UInt32(fastPlasticity.elementCount),

@@ -21,7 +21,8 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 4u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 5u;
+constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 1u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
@@ -384,6 +385,7 @@ struct NBCommittedTransitionUniforms {
   ulong active_sensing_action_offset;
   ulong internal_action_offset;
   ulong active_sensing_efficacy_offset;
+  ulong body_belief_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
   ulong fast_plasticity_offset;
@@ -400,6 +402,8 @@ struct NBCommittedTransitionUniforms {
   uint autonomic_action_count;
   uint active_sensing_count;
   uint internal_action_count;
+  uint body_belief_count;
+  uint reserved_body_belief;
   uint drive_count;
   uint neuromodulator_count;
   uint fast_plasticity_count;
@@ -833,6 +837,7 @@ struct NBCommittedTransitionRecord {
   float autonomic_action[16];
   float active_sensing_action[16];
   float internal_action[32];
+  float body_schema_trace[16];
 };
 
 /// One committed full-token sample for the exact dense matrix of one module.
@@ -908,7 +913,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 304);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 320);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -934,7 +939,7 @@ static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
-static_assert(sizeof(NBCommittedTransitionRecord) == 1040);
+static_assert(sizeof(NBCommittedTransitionRecord) == 1104);
 static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
 static_assert(sizeof(NBRegionalTransitionRecord) == 1104);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
@@ -3816,6 +3821,10 @@ kernel void journal_committed_learning_transition(
     reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
       output_hot_state + uniforms.active_sensing_efficacy_offset
     );
+  device const uchar *prior_body_belief =
+    input_hot_state + uniforms.body_belief_offset;
+  device const uchar *accepted_body_belief =
+    output_hot_state + uniforms.body_belief_offset;
   device const NBControlHeader *control =
     reinterpret_cast<device const NBControlHeader *>(
       output_hot_state + uniforms.control_header_offset
@@ -3959,6 +3968,76 @@ kernel void journal_committed_learning_transition(
         ? internal.parameters[0] : 0.0f;
     }
   }
+  uint prior_body_count = 0u;
+  uint accepted_body_count = 0u;
+  for (uint body_index = 0u;
+      body_index < uniforms.body_belief_count; ++body_index) {
+    device const float *prior_body = reinterpret_cast<device const float *>(
+      prior_body_belief + ulong(body_index) * 256ul
+    );
+    device const float *accepted_body = reinterpret_cast<device const float *>(
+      accepted_body_belief + ulong(body_index) * 256ul
+    );
+    device const ulong *prior_identity =
+      reinterpret_cast<device const ulong *>(prior_body + 16);
+    device const ulong *accepted_identity =
+      reinterpret_cast<device const ulong *>(accepted_body + 16);
+    if ((prior_identity[3] & 1ul) != 0ul
+        && isfinite(prior_body[8]) && isfinite(prior_body[9])
+        && isfinite(prior_body[10]) && isfinite(prior_body[11])) {
+      const float load = max(prior_body[8], 0.0f);
+      const float uncertainty = sqrt(max(prior_body[9], 0.0f));
+      const float values[4] = {
+        load / (1.0f + load), uncertainty / (1.0f + uncertainty),
+        clamp(prior_body[10], 0.0f, 1.0f),
+        clamp(prior_body[11], 0.0f, 1.0f)
+      };
+      for (uint value = 0u; value < 4u; ++value) {
+        record.body_schema_trace[2u * value] += values[value];
+        record.body_schema_trace[2u * value + 1u] = max(
+          record.body_schema_trace[2u * value + 1u], values[value]
+        );
+      }
+      prior_body_count += 1u;
+    }
+    if ((accepted_identity[3] & 1ul) != 0ul
+        && isfinite(accepted_body[8]) && isfinite(accepted_body[9])
+        && isfinite(accepted_body[10]) && isfinite(accepted_body[11])) {
+      const float load = max(accepted_body[8], 0.0f);
+      const float uncertainty = sqrt(max(accepted_body[9], 0.0f));
+      const float values[4] = {
+        load / (1.0f + load), uncertainty / (1.0f + uncertainty),
+        clamp(accepted_body[10], 0.0f, 1.0f),
+        clamp(accepted_body[11], 0.0f, 1.0f)
+      };
+      for (uint value = 0u; value < 4u; ++value) {
+        const uint base = 8u + 2u * value;
+        record.body_schema_trace[base] += values[value];
+        record.body_schema_trace[base + 1u] = max(
+          record.body_schema_trace[base + 1u], values[value]
+        );
+      }
+      accepted_body_count += 1u;
+    }
+  }
+  if (prior_body_count > 0u) {
+    const float inverse_count = 1.0f / float(prior_body_count);
+    for (uint value = 0u; value < 4u; ++value) {
+      record.body_schema_trace[2u * value] *= inverse_count;
+    }
+  }
+  if (accepted_body_count > 0u) {
+    const float inverse_count = 1.0f / float(accepted_body_count);
+    for (uint value = 0u; value < 4u; ++value) {
+      record.body_schema_trace[8u + 2u * value] *= inverse_count;
+    }
+  }
+  if (prior_body_count > 0u && accepted_body_count > 0u) {
+    record.flags |= NB_COMMITTED_TRANSITION_HAS_BODY_TRACE;
+  }
+  record.damage_cvar = max(
+    record.damage_cvar, record.body_schema_trace[15]
+  );
   record.factored_reinforcement[0] = -record.mean_drive_deficit;
   record.factored_reinforcement[1] = control->selected_score;
   record.factored_reinforcement[2] = uniforms.drive_count > 9u
@@ -3966,7 +4045,7 @@ kernel void journal_committed_learning_transition(
   record.factored_reinforcement[3] = realized_information_gain;
   record.factored_reinforcement[4] = -record.pain;
   record.factored_reinforcement[5] = -control->predicted_effort;
-  record.factored_reinforcement[6] = -control->selected_damage_cvar;
+  record.factored_reinforcement[6] = -record.damage_cvar;
   record.factored_reinforcement[7] = -record.model_error;
   record.teacher_content_fingerprint = uniforms.teacher_content_fingerprint;
   record.teacher_scalar_count = min(uniforms.teacher_scalar_count, 24u);

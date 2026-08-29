@@ -33,6 +33,9 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let fastPlasticityTrace: MLXArray
   public let cerebellarTrace: MLXArray
   public let activeSensingTrace: MLXArray
+  public let priorBodyState: MLXArray
+  public let posteriorBodyState: MLXArray
+  public let bodyStateMask: MLXArray
   public let teacherMask: MLXArray
   public let imitationMask: MLXArray
 
@@ -91,6 +94,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     let rawAutonomicActions = field(784, count: 16, dtype: .float32)
     let rawActiveSensingActions = field(848, count: 16, dtype: .float32)
     let rawInternalActions = field(912, count: 32, dtype: .float32)
+    let rawBodySchemaTrace = field(1040, count: 16, dtype: .float32)
     let completeActionCountsValid = (
       (completeActionCounts[0..., 0..<1] .<= UInt32(8))
         * (completeActionCounts[0..., 1..<2] .<= UInt32(8))
@@ -118,6 +122,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       * allFinite(rawAutonomicActions, count: 16)
       * allFinite(rawActiveSensingActions, count: 16)
       * allFinite(rawInternalActions, count: 32)
+      * allFinite(rawBodySchemaTrace, count: 16)
       * completeActionCountsValid
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
@@ -154,6 +159,10 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.fastPlasticityTrace = finite(rawFastPlasticityTrace)
     self.cerebellarTrace = finite(rawCerebellarTrace)
     self.activeSensingTrace = finite(rawActiveSensingTrace)
+    self.priorBodyState = finite(rawBodySchemaTrace[0..., 0..<8])
+    self.posteriorBodyState = finite(rawBodySchemaTrace[0..., 8..<16])
+    self.bodyStateMask = ((flags & UInt32(2)) .== UInt32(2)).asType(.float32)
+      * validMask
     self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32)
       * validMask * teacherFiniteMask
     let hasDemonstratedAction = (
