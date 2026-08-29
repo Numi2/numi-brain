@@ -16,6 +16,8 @@ constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
+constant uint NB_WORLD_SENSORIMOTOR_BASE = 9u * NB_WORLD_RECEPTOR_DIMENSION;
+constant uint NB_WORLD_SENSORIMOTOR_DIMENSION = 256u;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
 constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
@@ -42,6 +44,7 @@ constant uint NB_BODY_LOAD_VARIANCE = 29u;
 constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 31u;
 constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
+constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBAcceptedConsequenceUniforms {
@@ -664,6 +667,22 @@ inline float nb_mean_prediction_error(
   return total / float(sample_count);
 }
 
+inline float nb_mean_sensorimotor_prediction_error(
+  device const float *world,
+  uint world_count)
+{
+  const uint required_count = NB_WORLD_SENSORIMOTOR_BASE
+    + 9u * NB_WORLD_SENSORIMOTOR_DIMENSION;
+  if (world_count < required_count) return 0.0f;
+  float total = 0.0f;
+  const uint error_base = NB_WORLD_SENSORIMOTOR_BASE
+    + NB_WORLD_SENSORIMOTOR_DIMENSION;
+  for (uint index = 0u; index < NB_WORLD_SENSORIMOTOR_DIMENSION; ++index) {
+    total += abs(world[error_base + index]);
+  }
+  return total / float(NB_WORLD_SENSORIMOTOR_DIMENSION);
+}
+
 inline float nb_mean_epistemic_disagreement(
   device const float *world,
   uint world_count)
@@ -783,6 +802,74 @@ inline float nb_body_schema_epistemic_uncertainty(
     );
   }
   return uncertainty;
+}
+
+inline float nb_body_sensorimotor_feature(
+  device const float *body,
+  uint feature)
+{
+  const float value = body[feature];
+  if (!isfinite(value)) return 0.0f;
+  if (feature >= NB_BODY_ORIENTATION
+      && feature < NB_BODY_ORIENTATION + 4u) {
+    return clamp(value, -1.0f, 1.0f);
+  }
+  if ((feature >= NB_BODY_POSITION_VARIANCE
+        && feature < NB_BODY_POSITION_VARIANCE + 3u)
+      || (feature >= NB_BODY_ORIENTATION_VARIANCE
+        && feature < NB_BODY_ORIENTATION_VARIANCE + 3u)
+      || feature == NB_BODY_LOAD_VARIANCE) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if (feature == NB_BODY_CONTACT || feature == NB_BODY_SUPPORT
+      || feature == NB_BODY_PAIN || feature == NB_BODY_VULNERABILITY
+      || feature == NB_BODY_REACHABILITY || feature == NB_BODY_OWNERSHIP
+      || feature == NB_BODY_DAMAGE_RISK
+      || feature == NB_BODY_EXTERNAL_DISTURBANCE) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline float nb_body_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
+  if (uniforms.body_count == 0u) return 0.0f;
+  const uint body_index = min(
+    uint((ulong(component) * ulong(uniforms.body_count))
+      / ulong(NB_WORLD_SENSORIMOTOR_DIMENSION)),
+    uniforms.body_count - 1u
+  );
+  const uint projection = component;
+  device const float *body = reinterpret_cast<device const float *>(
+    hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+  );
+  device const ulong *identity = reinterpret_cast<device const ulong *>(
+    body + NB_BODY_IDENTITY_FLOAT_OFFSET
+  );
+  if ((identity[3] & NB_ACCEPTED_STATE_VALID) == 0ul) return 0.0f;
+  float total = 0.0f;
+  uint finite_count = 0u;
+  for (uint feature = 0u; feature < NB_BODY_SENSORIMOTOR_FEATURE_COUNT;
+      ++feature) {
+    if (!isfinite(body[feature])) continue;
+    uint hash = (feature + 1u) * 0x9e3779b9u
+      ^ (projection + 1u) * 0x85ebca6bu
+      ^ (body_index + 1u) * 0xc2b2ae35u;
+    hash ^= hash >> 16u;
+    const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+    total += sign * nb_body_sensorimotor_feature(body, feature);
+    finite_count += 1u;
+  }
+  has_evidence = finite_count > 0u;
+  return has_evidence ? clamp(
+    total * rsqrt(float(finite_count)), -1.0f, 1.0f
+  ) : 0.0f;
 }
 
 kernel void assimilate_accepted_body_and_physiology(
@@ -1386,6 +1473,57 @@ kernel void reconcile_accepted_world_model(
   );
 }
 
+/// Reconciles the level-1 prediction against the accepted full body posterior.
+/// This runs only after body assimilation and the accepted agency update, so a
+/// rejected physical candidate cannot alter sensorimotor dynamics or error.
+kernel void reconcile_accepted_sensorimotor_world_model(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *world_parameters [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const uint required_count = NB_WORLD_SENSORIMOTOR_BASE
+    + 9u * NB_WORLD_SENSORIMOTOR_DIMENSION;
+  if (gid >= NB_WORLD_SENSORIMOTOR_DIMENSION
+      || uniforms.world_model_count < required_count) return;
+  bool has_evidence = false;
+  const float observed = nb_body_sensorimotor_projection(
+    hot_state, uniforms, gid, has_evidence
+  );
+  if (!has_evidence) return;
+  device float *world = reinterpret_cast<device float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  float predicted_mean = 0.0f;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    predicted_mean += world[NB_WORLD_SENSORIMOTOR_BASE
+      + (3u + head) * NB_WORLD_SENSORIMOTOR_DIMENSION + gid]
+      / float(NB_WORLD_HEAD_COUNT);
+  }
+  const float residual = observed - predicted_mean;
+  const float gain = clamp(
+    min(uniforms.world_correction_gain, max(world_parameters[150], 0.0f)),
+    0.0f,
+    1.0f
+  );
+  world[NB_WORLD_SENSORIMOTOR_BASE + gid] = mix(
+    world[NB_WORLD_SENSORIMOTOR_BASE + gid], observed, gain
+  );
+  world[NB_WORLD_SENSORIMOTOR_BASE
+    + NB_WORLD_SENSORIMOTOR_DIMENSION + gid] = residual;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    const uint head_index = NB_WORLD_SENSORIMOTOR_BASE
+      + (3u + head) * NB_WORLD_SENSORIMOTOR_DIMENSION + gid;
+    world[head_index] = mix(world[head_index], observed, gain);
+  }
+  const uint aleatoric_index = NB_WORLD_SENSORIMOTOR_BASE
+    + 8u * NB_WORLD_SENSORIMOTOR_DIMENSION + gid;
+  world[aleatoric_index] = mix(
+    max(world[aleatoric_index], 0.0f), residual * residual,
+    gain * clamp(world_parameters[152], 0.0f, 1.0f)
+  );
+}
+
 /// Updates one mind's per-channel sensing efficacy from accepted receptor
 /// consequences. The pending bit is written during decision generation and is
 /// cleared only here, so a rejected physical trajectory cannot become a
@@ -1617,8 +1755,9 @@ kernel void broadcast_accepted_prediction_error(
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
-  const float error = nb_mean_prediction_error(
-    observations, world, uniforms
+  const float error = max(
+    nb_mean_prediction_error(observations, world, uniforms),
+    nb_mean_sensorimotor_prediction_error(world, uniforms.world_model_count)
   );
   const float epistemic = nb_mean_epistemic_disagreement(
     world, uniforms.world_model_count

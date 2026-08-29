@@ -133,6 +133,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let bodyReceptorBindingBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
   private let plasticityParameterCount: UInt32
+  private let sensorimotorWorldDimension: Int
 
   public init(
     device: any MTLDevice,
@@ -142,11 +143,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     sensoryProfile: SensoryTransductionProfile,
     sharedParameters: MetalSharedParameterBank
   ) throws {
+    let sensorimotorWorldDimension = Int(
+      try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
+        .latentDimension
+    )
     guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 408,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
       MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride == 32,
+      sensorimotorWorldDimension == 256,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       sensoryProfile.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -336,6 +342,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "update_accepted_procedural_trace",
       "assimilate_accepted_fast_body_schema",
       "update_accepted_embodied_self_model",
+      "reconcile_accepted_sensorimotor_world_model",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -416,6 +423,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.bodyReceptorBindingBuffer = bodyReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
     self.plasticityParameterCount = UInt32(plasticityScalarCount)
+    self.sensorimotorWorldDimension = sensorimotorWorldDimension
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -520,6 +528,12 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       encoder,
       pipeline: pipelines[8],
       count: Int(species.body.bodyCount)
+    )
+    barrier(encoder)
+    dispatch(
+      encoder,
+      pipeline: pipelines[9],
+      count: sensorimotorWorldDimension
     )
     barrier(encoder)
     dispatch(

@@ -2,8 +2,21 @@
 using namespace metal;
 
 constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
+constant uint NB_BODY_ORIENTATION = 3u;
+constant uint NB_BODY_POSITION_VARIANCE = 13u;
+constant uint NB_BODY_ORIENTATION_VARIANCE = 16u;
+constant uint NB_BODY_CONTACT = 19u;
+constant uint NB_BODY_SUPPORT = 20u;
+constant uint NB_BODY_PAIN = 24u;
+constant uint NB_BODY_VULNERABILITY = 25u;
+constant uint NB_BODY_REACHABILITY = 26u;
+constant uint NB_BODY_OWNERSHIP = 27u;
 constant uint NB_BODY_LOAD_VARIANCE = 29u;
+constant uint NB_BODY_DAMAGE_RISK = 30u;
+constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
+constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
+constant uint NB_WORLD_SENSORIMOTOR_DIMENSION = 256u;
 
 struct NBCognitiveUniforms {
   ulong target_timestamp_microseconds;
@@ -768,13 +781,82 @@ inline float nb_world_action_context(
   return isfinite(action_context) ? clamp(action_context, -1.0f, 1.0f) : 0.0f;
 }
 
+inline float nb_body_sensorimotor_feature(
+  device const float *body,
+  uint feature)
+{
+  const float value = body[feature];
+  if (!isfinite(value)) return 0.0f;
+  if (feature >= NB_BODY_ORIENTATION
+      && feature < NB_BODY_ORIENTATION + 4u) {
+    return clamp(value, -1.0f, 1.0f);
+  }
+  if ((feature >= NB_BODY_POSITION_VARIANCE
+        && feature < NB_BODY_POSITION_VARIANCE + 3u)
+      || (feature >= NB_BODY_ORIENTATION_VARIANCE
+        && feature < NB_BODY_ORIENTATION_VARIANCE + 3u)
+      || feature == NB_BODY_LOAD_VARIANCE) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if (feature == NB_BODY_CONTACT || feature == NB_BODY_SUPPORT
+      || feature == NB_BODY_PAIN || feature == NB_BODY_VULNERABILITY
+      || feature == NB_BODY_REACHABILITY || feature == NB_BODY_OWNERSHIP
+      || feature == NB_BODY_DAMAGE_RISK
+      || feature == NB_BODY_EXTERNAL_DISTURBANCE) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  return value / (1.0f + abs(value));
+}
+
+/// Gives every sensorimotor latent a deterministic projection of one full
+/// accepted body-node posterior. Repeated components form independent signed
+/// projections, preserving vector state without a scalar body summary.
+inline float nb_body_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  uint component)
+{
+  if (uniforms.body_belief_count == 0u) return 0.0f;
+  const uint body_index = min(
+    uint((ulong(component) * ulong(uniforms.body_belief_count))
+      / ulong(NB_WORLD_SENSORIMOTOR_DIMENSION)),
+    uniforms.body_belief_count - 1u
+  );
+  const uint projection = component;
+  device const float *body = reinterpret_cast<device const float *>(
+    hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+  );
+  device const ulong *identity = reinterpret_cast<device const ulong *>(
+    body + NB_BODY_IDENTITY_FLOAT_OFFSET
+  );
+  if ((identity[3] & 1ul) == 0ul) return 0.0f;
+  float total = 0.0f;
+  uint finite_count = 0u;
+  for (uint feature = 0u; feature < NB_BODY_SENSORIMOTOR_FEATURE_COUNT;
+      ++feature) {
+    if (!isfinite(body[feature])) continue;
+    uint hash = (feature + 1u) * 0x9e3779b9u
+      ^ (projection + 1u) * 0x85ebca6bu
+      ^ (body_index + 1u) * 0xc2b2ae35u;
+    hash ^= hash >> 16u;
+    const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+    total += sign * nb_body_sensorimotor_feature(body, feature);
+    finite_count += 1u;
+  }
+  return finite_count == 0u ? 0.0f : clamp(
+    total * rsqrt(float(finite_count)), -1.0f, 1.0f
+  );
+}
+
 /// Projects the explicit compatible belief factors into the matching world
 /// level. The world update runs before this tick's posterior slot correction,
 /// so these are strictly X_t priors used to predict X_t+1.
 inline float nb_world_structured_belief_context(
   device const uchar *hot_state,
   constant NBCognitiveUniforms &uniforms,
-  const uint level)
+  const uint level,
+  const uint component)
 {
   float total = 0.0f;
   uint count = 0u;
@@ -794,6 +876,9 @@ inline float nb_world_structured_belief_context(
       count += 1u;
     }
   } else if (level == 1u || level == 2u) {
+    const float body_context = level == 1u
+      ? nb_body_sensorimotor_projection(hot_state, uniforms, component)
+      : 0.0f;
     device const NBObjectSlotRecord *objects =
       reinterpret_cast<device const NBObjectSlotRecord *>(
         hot_state + uniforms.object_slot_offset
@@ -819,6 +904,10 @@ inline float nb_world_structured_belief_context(
         );
       }
       count += 1u;
+    }
+    if (level == 1u) {
+      const float object_context = count == 0u ? 0.0f : total / float(count);
+      return clamp(0.75f * body_context + 0.25f * object_context, -1.0f, 1.0f);
     }
   } else if (level == 3u) {
     device const NBRelationSlotRecord *relations =
@@ -926,7 +1015,7 @@ kernel void advance_hierarchical_world_model(
     hot_state, uniforms, level.level, gid
   );
   const float structured_context = nb_world_structured_belief_context(
-    hot_state, uniforms, level.level
+    hot_state, uniforms, level.level, gid
   );
   float mean_prediction = 0.0f;
   float head_predictions[5];
