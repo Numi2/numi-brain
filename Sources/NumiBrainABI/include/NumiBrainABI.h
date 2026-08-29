@@ -47,12 +47,15 @@ enum {
   NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
   NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT = 16,
   NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 144,
+  NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT = 40,
+  NB_NUMANX_SENSOR_PACKET_BYTE_COUNT = 72,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 3,
   NB_NUMANX_MOTOR_CANDIDATE_VERSION = 5,
+  NB_NUMANX_SENSOR_PACKET_VERSION = 1,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 3,
@@ -78,6 +81,9 @@ enum {
   NB_ACTIVE_SENSING_COMMAND_FLAG_VALID = 1 << 16,
   NB_ACTIVE_SENSING_COMMAND_FLAG_COMMUNICATION = 1 << 17,
   NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID = 1 << 0,
+  NB_NUMANX_SENSOR_PACKET_FLAG_VALID = 1 << 0,
+  NB_NUMANX_SENSOR_PACKET_FLAG_ACCEPTED_STATE = 1 << 1,
+  NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID = 1 << 0,
 };
 
 typedef struct NBModuleDescriptor {
@@ -528,6 +534,38 @@ typedef struct NBNumanXMotorCandidate {
   uint64_t candidate_fingerprint;
 } NBNumanXMotorCandidate;
 
+/// One causal, GPU-resident receptor view exported by NumanX. Channels are
+/// canonical ascending by modality. The buffer contains raw receptor features
+/// sampled at receptor_timestamp_microseconds, never privileged body state.
+typedef struct NBNumanXSensorChannel {
+  uint32_t modality;
+  uint32_t flags;
+  uint64_t gpu_address;
+  uint64_t receptor_timestamp_microseconds;
+  uint32_t byte_count;
+  uint32_t receptor_count;
+  uint32_t feature_dimension;
+  uint32_t latency_microseconds;
+} NBNumanXSensorChannel;
+
+/// Transaction-bound NumanX sensor handoff. A committed-state packet is tied
+/// to the root base physics generation; an accepted-state packet is tied to
+/// the final accepted physics token. Channel data remain in their owning GPU
+/// allocations and are authenticated by the canonical channel metadata.
+typedef struct NBNumanXSensorPacket {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t transaction_fingerprint;
+  uint64_t accepted_physics_token_fingerprint;
+  uint64_t delivery_timestamp_microseconds;
+  uint64_t physics_generation;
+  uint64_t species_template_fingerprint;
+  uint64_t sensory_profile_fingerprint;
+  uint32_t environment_identifier;
+  uint32_t channel_count;
+  uint64_t packet_fingerprint;
+} NBNumanXSensorPacket;
+
 typedef enum NBParameterComponentKind {
   NB_PARAMETER_COMPONENT_SENSORY = 1,
   NB_PARAMETER_COMPONENT_BELIEF = 2,
@@ -685,6 +723,20 @@ typedef enum NBNumanXMotorCandidateValidation {
   NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT = 8,
 } NBNumanXMotorCandidateValidation;
 
+typedef enum NBNumanXSensorPacketValidation {
+  NB_NUMANX_SENSOR_PACKET_VALID = 0,
+  NB_NUMANX_SENSOR_PACKET_NULL = 1,
+  NB_NUMANX_SENSOR_PACKET_FORMAT = 2,
+  NB_NUMANX_SENSOR_PACKET_FLAGS = 3,
+  NB_NUMANX_SENSOR_PACKET_IDENTITY = 4,
+  NB_NUMANX_SENSOR_PACKET_GENERATION = 5,
+  NB_NUMANX_SENSOR_PACKET_CHANNEL = 6,
+  NB_NUMANX_SENSOR_PACKET_ADDRESS = 7,
+  NB_NUMANX_SENSOR_PACKET_SIZE = 8,
+  NB_NUMANX_SENSOR_PACKET_LATENCY = 9,
+  NB_NUMANX_SENSOR_PACKET_FINGERPRINT = 10,
+} NBNumanXSensorPacketValidation;
+
 size_t nb_brain_abi_module_descriptor_size(void);
 size_t nb_brain_abi_module_clock_state_size(void);
 size_t nb_brain_abi_receptor_event_size(void);
@@ -719,6 +771,8 @@ size_t nb_brain_abi_protective_command_size(void);
 size_t nb_brain_abi_motor_channel_descriptor_size(void);
 size_t nb_brain_abi_motor_output_header_size(void);
 size_t nb_brain_abi_numanx_motor_candidate_size(void);
+size_t nb_brain_abi_numanx_sensor_channel_size(void);
+size_t nb_brain_abi_numanx_sensor_packet_size(void);
 
 size_t nb_brain_abi_module_descriptor_offset_module_id(void);
 size_t nb_brain_abi_module_descriptor_offset_interrupt_mask(void);
@@ -926,6 +980,18 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
     const NBJointTransactionToken *root,
     const NBJointSubstepToken *substep,
     const NBNumanXMotorCandidate *candidate
+);
+
+uint64_t nb_brain_abi_numanx_sensor_packet_fingerprint(
+    const NBNumanXSensorPacket *packet,
+    const NBNumanXSensorChannel *channels
+);
+
+uint32_t nb_brain_abi_validate_numanx_sensor_packet(
+    const NBJointTransactionToken *root,
+    const NBAcceptedPhysicsStateToken *accepted,
+    const NBNumanXSensorPacket *packet,
+    const NBNumanXSensorChannel *channels
 );
 
 #ifdef __cplusplus

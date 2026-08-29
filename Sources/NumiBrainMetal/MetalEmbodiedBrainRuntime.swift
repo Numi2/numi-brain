@@ -494,6 +494,34 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   public func inferAndDecide(
     transaction: MetalJointAgentStateTransaction,
+    numanXSensors: NumanXSensorPacketLease,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    externalGoal: ActiveGoal? = nil
+  ) throws -> DecisionBufferView {
+    let packet = numanXSensors.packet
+    guard packet.transactionFingerprint == transaction.jointToken.fingerprint,
+      !packet.isAcceptedState,
+      packet.deliveryTimestamp == transaction.jointToken.committedTimestamp,
+      packet.physicsGeneration == transaction.jointToken.basePhysicsGeneration,
+      packet.environmentIdentifier
+        == transaction.jointToken.environmentIdentifier,
+      packet.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      packet.sensoryProfileFingerprint == sensoryRuntime.profileFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX committed sensor packet does not belong to this control root"
+      )
+    }
+    return try inferAndDecide(
+      transaction: transaction,
+      rawSensors: numanXSensors.rawSensors,
+      regionalRecurrentInput: regionalRecurrentInput,
+      externalGoal: externalGoal
+    )
+  }
+
+  public func inferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
     rawSensors: [MetalRawSensorBufferLease],
     regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
     externalGoal: ActiveGoal? = nil
@@ -701,6 +729,38 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   /// Assimilates only receptor signals generated from the accepted physical
   /// root, then seals hot state and memory for an atomic joint commit.
+  public func finalizeAcceptedControl(
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    numanXSensors: NumanXSensorPacketLease,
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
+    teacherState: MetalTeacherStateBufferLease? = nil
+  ) throws -> AcceptedConsequenceView {
+    let packet = numanXSensors.packet
+    guard packet.transactionFingerprint == transaction.jointToken.fingerprint,
+      packet.isAcceptedState,
+      packet.acceptedPhysicsTokenFingerprint == acceptedPhysicsState.fingerprint,
+      packet.deliveryTimestamp == acceptedPhysicsState.acceptedTimestamp,
+      packet.physicsGeneration == acceptedPhysicsState.physicsGeneration,
+      packet.environmentIdentifier == acceptedPhysicsState.environmentIdentifier,
+      packet.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      packet.sensoryProfileFingerprint == sensoryRuntime.profileFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX accepted sensor packet does not belong to this physical state"
+      )
+    }
+    return try finalizeAcceptedControl(
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      rawSensors: numanXSensors.rawSensors,
+      acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
+      developmentalEvidence: developmentalEvidence,
+      teacherState: teacherState
+    )
+  }
+
   public func finalizeAcceptedControl(
     transaction: MetalJointAgentStateTransaction,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
