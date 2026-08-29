@@ -25,10 +25,11 @@ public struct NumanXSensorPacket: Equatable, Sendable {
   public init(
     transaction: BrainJointTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
-    species: SpeciesTemplate,
-    profile: SensoryTransductionProfile,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
     rawSensorViews: [MetalRawSensorBufferView]
   ) throws {
+    let species = compiledSpeciesTemplate.species
+    let profile = compiledSpeciesTemplate.sensoryProfile
     let deliveryTimestamp = acceptedPhysicsState?.acceptedTimestamp
       ?? transaction.committedTimestamp
     let physicsGeneration = acceptedPhysicsState?.physicsGeneration
@@ -130,7 +131,8 @@ public struct NumanXSensorPacket: Equatable, Sendable {
     validating record: NBNumanXSensorPacket,
     channels: [NBNumanXSensorChannel],
     transaction: BrainJointTransactionToken,
-    acceptedPhysicsState: AcceptedPhysicsStateToken? = nil
+    acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate
   ) throws {
     guard channels.count == Int(record.channel_count) else {
       throw TissueError.transaction("NumanX sensor channel count is inconsistent")
@@ -158,6 +160,15 @@ public struct NumanXSensorPacket: Equatable, Sendable {
     guard validation == UInt32(NB_NUMANX_SENSOR_PACKET_VALID.rawValue) else {
       throw TissueError.transaction(
         "compiled NumanX sensor packet validation failed with code \(validation)"
+      )
+    }
+    guard record.species_template_fingerprint
+        == compiledSpeciesTemplate.species.fingerprint,
+      record.sensory_profile_fingerprint
+        == compiledSpeciesTemplate.sensoryProfile.fingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX sensor packet belongs to a different compiled morphology"
       )
     }
     let views = try channels.map { channel -> MetalRawSensorBufferView in
@@ -292,15 +303,13 @@ public final class NumanXSensorPacketLease: @unchecked Sendable {
   public init(
     transaction: BrainJointTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
-    species: SpeciesTemplate,
-    profile: SensoryTransductionProfile,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
     rawSensors: [MetalRawSensorBufferLease]
   ) throws {
     packet = try NumanXSensorPacket(
       transaction: transaction,
       acceptedPhysicsState: acceptedPhysicsState,
-      species: species,
-      profile: profile,
+      compiledSpeciesTemplate: compiledSpeciesTemplate,
       rawSensorViews: rawSensors.map(\.view)
     )
     self.rawSensors = rawSensors.sorted {
@@ -316,13 +325,15 @@ public final class NumanXSensorPacketLease: @unchecked Sendable {
     channels: [NBNumanXSensorChannel],
     transaction: BrainJointTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
     rawSensors: [MetalRawSensorBufferLease]
   ) throws {
     let packet = try NumanXSensorPacket(
       validating: record,
       channels: channels,
       transaction: transaction,
-      acceptedPhysicsState: acceptedPhysicsState
+      acceptedPhysicsState: acceptedPhysicsState,
+      compiledSpeciesTemplate: compiledSpeciesTemplate
     )
     let sortedSensors = rawSensors.sorted {
       $0.view.modality.rawValue < $1.view.modality.rawValue

@@ -370,7 +370,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   @discardableResult
   public func inferAndDecide(
     _ transaction: ControlTransaction,
-    rawSensors: [MetalRawSensorBufferLease],
+    numanXSensors: NumanXSensorPacketLease,
     externalGoal: ActiveGoal? = nil
   ) throws -> MetalEmbodiedBrainRuntime.DecisionBufferView {
     lock.lock()
@@ -380,7 +380,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       let recurrence = try fastTissue.committedRegionalRecurrentBufferView()
       let decision = try cognitive.inferAndDecide(
         transaction: transaction.cognitiveTransaction,
-        rawSensors: rawSensors,
+        numanXSensors: numanXSensors,
         regionalRecurrentInput: recurrence,
         externalGoal: externalGoal
       )
@@ -490,7 +490,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   /// fast and complete-agent generations from the same joint receipt.
   public func commitControl(
     _ transaction: ControlTransaction,
-    acceptedSensors: [MetalRawSensorBufferLease],
+    acceptedSensors: NumanXSensorPacketLease,
     schedulerEvents: [BrainInterruptEvent] = [],
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil
@@ -524,7 +524,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       let consequence = try cognitive.finalizeAcceptedControl(
         transaction: transaction.cognitiveTransaction,
         acceptedPhysicsState: accepted,
-        rawSensors: acceptedSensors,
+        numanXSensors: acceptedSensors,
         acceptedRegionalRecurrentInput: acceptedRegionalRecurrent,
         developmentalEvidence: developmentalEvidence,
         teacherState: teacherState
