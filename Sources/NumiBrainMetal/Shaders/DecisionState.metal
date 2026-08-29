@@ -745,6 +745,41 @@ inline NBSemanticGoalOutcome nb_retrieved_semantic_goal_outcome(
     );
     outcome.damage = clamp(workspace[memory_base + 13u], 0.0f, 1.0f);
   }
+  // Resolve an explicit goal-to-event relation only when the related event
+  // concept is present in the same bounded retrieval set. This preserves the
+  // graph edge, its contradiction evidence, and the destination outcome as
+  // one joined planning fact instead of treating a relation embedding as an
+  // ungrounded scalar preference.
+  for (uint relation_slot = 3u;
+      relation_slot < min(uniforms.workspace_capacity, 7u); ++relation_slot) {
+    const NBWorkspaceMetadataRecord relation_token =
+      workspace_metadata[relation_slot];
+    const uint relation_source = relation_token.kind_and_source >> 16u;
+    if (relation_source != 59u
+        || relation_token.goal_identifier != semantic_goal_identifier
+        || relation_token.bound_token_identifier == 0ul) continue;
+    const uint relation_base = relation_slot * uniforms.workspace_dimension;
+    const float relation_support = clamp(relation_token.confidence, 0.0f, 1.0f)
+      * (1.0f - clamp(workspace[relation_base + 11u], 0.0f, 1.0f));
+    for (uint concept_slot = 3u;
+        concept_slot < min(uniforms.workspace_capacity, 7u); ++concept_slot) {
+      const NBWorkspaceMetadataRecord concept_token =
+        workspace_metadata[concept_slot];
+      const uint concept_source = concept_token.kind_and_source >> 16u;
+      if (concept_source != 58u
+          || concept_token.entity_identifier
+            != relation_token.bound_token_identifier) continue;
+      const float joined_support = relation_support
+        * clamp(concept_token.confidence, 0.0f, 1.0f);
+      if (joined_support <= outcome.support) continue;
+      const uint concept_base = concept_slot * uniforms.workspace_dimension;
+      outcome.support = joined_support;
+      outcome.reinforcement = clamp(
+        workspace[concept_base + 13u], -1.0f, 1.0f
+      );
+      outcome.damage = clamp(workspace[concept_base + 12u], 0.0f, 1.0f);
+    }
+  }
   return outcome;
 }
 

@@ -2238,6 +2238,23 @@ kernel void publish_memory_retrieval_winner(
         archived_component = archived_value->factored_reinforcement;
       }
       workspace[base + index] = archived_component;
+    } else if (kind == 5u && semantic_relation_value != nullptr) {
+      float relation_component = 0.0f;
+      if (index < 10u) {
+        relation_component =
+          semantic_relation_value->evidence_embedding[index];
+      } else if (index == 10u) {
+        relation_component = semantic_relation_value->confidence;
+      } else if (index == 11u) {
+        relation_component = semantic_relation_value->contradiction;
+      } else if (index == 12u) {
+        relation_component = float(semantic_relation_value->kind) / 32.0f;
+      } else if (index == 13u) {
+        relation_component = 1.0f - exp(
+          -float(semantic_relation_value->supporting_episode_count) / 8.0f
+        );
+      }
+      workspace[base + index] = relation_component;
     } else if (kind == 3u && procedural_value != nullptr) {
       float procedural_component = 0.0f;
       if (index < 16u) {
