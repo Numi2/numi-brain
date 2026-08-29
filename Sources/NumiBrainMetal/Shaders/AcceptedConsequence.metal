@@ -1078,8 +1078,12 @@ kernel void broadcast_accepted_prediction_error(
   const float protective_risk = nb_accepted_protective_command_risk(
     protective_command, uniforms
   );
-  if (nb_has_accepted_protective_reflex(hot_state, uniforms)
-      || physiological_critical > 0.0f || protective_risk > 0.0f) {
+  const bool protective_reflex = nb_has_accepted_protective_reflex(
+    hot_state, uniforms
+  );
+  const bool accepted_stop = protective_reflex
+    || physiological_critical > 0.0f || protective_risk > 0.0f;
+  if (accepted_stop) {
     // Preserve the cached option identifier as causal provenance while
     // recording that accepted fast protection interrupted its execution.
     control->flags |= NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP;
@@ -1219,22 +1223,47 @@ kernel void broadcast_accepted_prediction_error(
     if (uniforms.workspace_dimension > 3u) {
       workspace[base + 3u] = mean_external_disturbance;
     }
+    if (uniforms.workspace_dimension > 4u) {
+      workspace[base + 4u] = embodied_risk.x;
+    }
+    if (uniforms.workspace_dimension > 5u) {
+      workspace[base + 5u] = embodied_risk.y;
+    }
+    if (uniforms.workspace_dimension > 6u) {
+      workspace[base + 6u] = accepted_stop ? 1.0f : 0.0f;
+    }
+    if (uniforms.workspace_dimension > 7u) {
+      workspace[base + 7u] = protective_risk;
+    }
+    if (uniforms.workspace_dimension > 8u) {
+      workspace[base + 8u] = physiological_critical;
+    }
     NBWorkspaceMetadataRecord token = metadata[2];
     token.identifier = (uniforms.target_timestamp_microseconds << 8) | 3ul;
     token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    token.entity_identifier = control->active_option_identifier;
+    token.goal_identifier = control->active_goal_identifier;
     token.provenance_record_identifier = uniforms.physics_state_fingerprint;
     token.kind_and_source = 7u | (50u << 16);
-    token.confidence = clamp(
-      min(1.0f - error, mean_agency), 0.0f, 1.0f
-    );
+    token.confidence = accepted_stop
+      ? max(
+          0.5f,
+          protective_reflex
+            ? 1.0f : max(protective_risk, physiological_critical)
+        )
+      : clamp(min(1.0f - error, mean_agency), 0.0f, 1.0f);
     metadata[2] = token;
   }
   control->unsupported_uncertainty = max(
     max(epistemic * max(world_parameters[157], 0.0f), aleatoric),
     mean_external_disturbance
   );
-  control->progress = clamp(control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f);
+  if (!accepted_stop) {
+    control->progress = clamp(
+      control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f
+    );
+  }
 }
 
 kernel void adapt_cerebellar_experts_from_accepted_error(
