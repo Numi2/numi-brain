@@ -215,6 +215,7 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
           (0.04 / Float(level + 1)) * (1 + 0.05 * Float(head - 2))
       }
     }
+    world.replaceSubrange(185...189, with: [0.025, 0.04, 0.08, 0.06, 0.08])
     var route = [Float](repeating: 0, count: 64)
     route.replaceSubrange(0...7, with: [1, 1, 1, 1, 0.1, 0.25, 0.01, 0.99])
     var memory = [Float](repeating: 0, count: 64)

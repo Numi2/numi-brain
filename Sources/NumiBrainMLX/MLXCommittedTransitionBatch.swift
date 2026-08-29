@@ -4,9 +4,10 @@ import NumiBrainCore
 import NumiBrainMetal
 
 /// Zero-copy MLX view of committed-transition slots. Every valid record carries
-/// accepted somatic, autonomic, active-sensing, and internal action features in
-/// addition to bounded plasticity and cerebellar traces; empty ring slots are
-/// excluded by `validMask`.
+/// 19 recurrent features, five exact structured world-context features,
+/// accepted somatic, autonomic, active-sensing, and internal action features,
+/// and bounded plasticity/cerebellar traces; empty ring slots are excluded by
+/// `validMask`.
 @available(macOS 26.0, *)
 public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public static let transitionStride = MetalLearningBatch.transitionStride

@@ -689,6 +689,90 @@ inline float nb_world_action_context(
   return isfinite(action_context) ? clamp(action_context, -1.0f, 1.0f) : 0.0f;
 }
 
+/// Projects the explicit compatible belief factors into the matching world
+/// level. The world update runs before this tick's posterior slot correction,
+/// so these are strictly X_t priors used to predict X_t+1.
+inline float nb_world_structured_belief_context(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  const uint level)
+{
+  float total = 0.0f;
+  uint count = 0u;
+  if (level == 0u) {
+    device const NBSpatialTransformRecord *transforms =
+      reinterpret_cast<device const NBSpatialTransformRecord *>(
+        hot_state + uniforms.spatial_transform_offset
+      );
+    for (uint index = 0u; index < min(uniforms.spatial_transform_count, 5u);
+        ++index) {
+      const NBSpatialTransformRecord transform = transforms[index];
+      if ((transform.flags & 1u) == 0u) continue;
+      const float motion = (transform.linear_velocity[0]
+        + transform.linear_velocity[1] + transform.linear_velocity[2]) / 3.0f;
+      total += transform.confidence
+        * (0.5f * tanh(motion) + 0.5f * (1.0f - transform.uncertainty));
+      count += 1u;
+    }
+  } else if (level == 1u || level == 2u) {
+    device const NBObjectSlotRecord *objects =
+      reinterpret_cast<device const NBObjectSlotRecord *>(
+        hot_state + uniforms.object_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.object_slot_count; ++index) {
+      const NBObjectSlotRecord object = objects[index];
+      if (object.identifier == 0ul || object.existence_probability <= 0.0f) {
+        continue;
+      }
+      const float certainty = object.existence_probability
+        * (1.0f - object.uncertainty);
+      if (level == 1u) {
+        const float motion = (object.velocity[0] + object.velocity[1]
+          + object.velocity[2]) / 3.0f;
+        total += certainty
+          * (0.5f * tanh(motion) + 0.5f * object.affordances[0]);
+      } else {
+        const float position = (object.pose[0] + object.pose[1]
+          + object.pose[2]) / 3.0f;
+        total += certainty * (
+          0.25f * tanh(position) + 0.25f * object.identity_confidence
+            + 0.25f * object.visibility + 0.25f * object.affordances[0]
+        );
+      }
+      count += 1u;
+    }
+  } else if (level == 3u) {
+    device const NBRelationSlotRecord *relations =
+      reinterpret_cast<device const NBRelationSlotRecord *>(
+        hot_state + uniforms.relation_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.relation_slot_count; ++index) {
+      const NBRelationSlotRecord relation = relations[index];
+      if ((relation.flags & 1u) == 0u || relation.probability <= 0.0f) continue;
+      total += relation.probability * (1.0f - relation.uncertainty)
+        * tanh(relation.latent[0]);
+      count += 1u;
+    }
+  } else {
+    device const NBOtherAgentSlotRecord *agents =
+      reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+        hot_state + uniforms.other_agent_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.other_agent_slot_count; ++index) {
+      const NBOtherAgentSlotRecord agent = agents[index];
+      if (agent.identifier == 0ul || agent.existence_probability <= 0.0f) continue;
+      const float social = 0.25f * (
+        agent.predicted_action + agent.social_relation
+          + agent.communication_evidence + agent.goal_confidence
+      );
+      total += agent.existence_probability * (1.0f - agent.uncertainty)
+        * tanh(social);
+      count += 1u;
+    }
+  }
+  return count == 0u ? 0.0f : clamp(total / float(count), -1.0f, 1.0f);
+}
+
 kernel void advance_hierarchical_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
@@ -762,6 +846,9 @@ kernel void advance_hierarchical_world_model(
   const float action_context = nb_world_action_context(
     hot_state, uniforms, level.level, gid
   );
+  const float structured_context = nb_world_structured_belief_context(
+    hot_state, uniforms, level.level
+  );
   float mean_prediction = 0.0f;
   float head_predictions[5];
   for (uint head = 0u; head < 5u; ++head) {
@@ -773,6 +860,7 @@ kernel void advance_hierarchical_world_model(
         + world_parameters[parameter_base + 3u] * drive
         + world_parameters[parameter_base + 4u] * modulation
         + world_parameters[160u + level.level * 5u + head] * action_context
+        + world_parameters[185u + level.level] * structured_context
         + world_parameters[parameter_base + 5u]
     );
     head_predictions[head] = prediction;

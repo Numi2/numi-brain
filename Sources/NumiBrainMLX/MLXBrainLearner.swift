@@ -365,6 +365,10 @@ public final class MLXBrainLearner: @unchecked Sendable {
       Float(0.25) * autonomicWorldAction + Float(0.75) * internalWorldAction,
     ]
     let worldActionGain = world[160..<185].mean()
+    let structuredWorldContexts = (0..<5).map { level in
+      prior[0..., (19 + level)..<(20 + level)]
+    }
+    let structuredWorldGain = world[185..<190].mean()
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
     let activeSensingTrace = batch.activeSensingTrace
     let predictedActiveSensingGain = clip(
@@ -376,9 +380,11 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let burnInState = stopGradient(posterior)
     let oneStepObservation = sequences.oneStepSuccessors(observation)
     let oneStepAction = sequences.oneStepSuccessors(completeAction)
+    let oneStepPrior = sequences.oneStepSuccessors(prior)
     let oneStepTarget = sequences.oneStepSuccessors(posterior)
     let twoStepObservation = sequences.twoStepSuccessors(observation)
     let twoStepAction = sequences.twoStepSuccessors(completeAction)
+    let twoStepPrior = sequences.twoStepSuccessors(prior)
     let twoStepTarget = sequences.twoStepSuccessors(posterior)
     let oneStepMask =
       sequences.oneStepMask
@@ -407,12 +413,16 @@ public final class MLXBrainLearner: @unchecked Sendable {
       world[0] * burnInState + world[1] * oneStepObservation
         + world[2] * oneStepAction.mean(axis: 1, keepDims: true)
         + worldActionGain * oneStepAction.mean(axis: 1, keepDims: true)
+        + structuredWorldGain
+          * oneStepPrior[0..., 19..<24].mean(axis: 1, keepDims: true)
         + world[5]
     )
     let twoStepWorld = tanh(
       world[0] * oneStepWorld + world[1] * twoStepObservation
         + world[2] * twoStepAction.mean(axis: 1, keepDims: true)
         + worldActionGain * twoStepAction.mean(axis: 1, keepDims: true)
+        + structuredWorldGain
+          * twoStepPrior[0..., 19..<24].mean(axis: 1, keepDims: true)
         + world[5]
     )
     var eventRiskHeads: [MLXArray] = []
@@ -440,6 +450,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
             + world[base + 3] * metrics[0..., 4..<5]
             + world[base + 4] * metrics[0..., 6..<7]
             + world[160 + level * 5 + head] * worldActionContexts[level]
+            + world[185 + level] * structuredWorldContexts[level]
             + world[base + 5]
         )
         actionConditionedWorldLoss = actionConditionedWorldLoss

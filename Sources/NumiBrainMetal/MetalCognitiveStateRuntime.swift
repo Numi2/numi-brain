@@ -379,7 +379,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       .belief, minimumScalarCount: 8
     )
     self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
-      .world, minimumScalarCount: 185
+      .world, minimumScalarCount: 190
     )
     self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
       .memory, minimumScalarCount: 8

@@ -240,6 +240,10 @@ private struct CommittedTransitionUniforms {
   var internalActionOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var objectSlotOffset: UInt64 = 0
+  var otherAgentSlotOffset: UInt64 = 0
+  var relationSlotOffset: UInt64 = 0
+  var spatialTransformOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
@@ -257,7 +261,10 @@ private struct CommittedTransitionUniforms {
   var activeSensingCount: UInt32 = 0
   var internalActionCount: UInt32 = 0
   var bodyBeliefCount: UInt32 = 0
-  var reservedBodyBelief: UInt32 = 0
+  var objectSlotCount: UInt32 = 0
+  var otherAgentSlotCount: UInt32 = 0
+  var relationSlotCount: UInt32 = 0
+  var spatialTransformCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
@@ -346,7 +353,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 320,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 368,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -553,6 +560,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let acceptedActiveSensing = layout.section(.acceptedActiveSensingOutput)
     let internalActions = controlLayout.section(.internalActions)
     let bodyBelief = layout.section(.bodyBelief)
+    let objectSlots = layout.section(.objectSlots)
+    let otherAgentSlots = layout.section(.otherAgentSlots)
+    let relationSlots = layout.section(.relationSlots)
+    let spatialTransforms = layout.section(.spatialTransforms)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
     let fastPlasticity = layout.section(.fastPlasticity)
@@ -573,6 +584,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalProgram.layouts.count,
     ]
     guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+      [objectSlots, otherAgentSlots, relationSlots, spatialTransforms]
+        .allSatisfy({ $0.elementCount <= Int(UInt32.max) }),
       transitions.elementStride == MetalAgentMemoryLayout.committedTransitionStride,
       regionalTransitions.elementStride
         == MetalAgentMemoryLayout.regionalTransitionStride,
@@ -603,6 +616,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         layout.section(.activeSensingEfficacy).byteOffset
       ),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
+      objectSlotOffset: UInt64(objectSlots.byteOffset),
+      otherAgentSlotOffset: UInt64(otherAgentSlots.byteOffset),
+      relationSlotOffset: UInt64(relationSlots.byteOffset),
+      spatialTransformOffset: UInt64(spatialTransforms.byteOffset),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
       fastPlasticityOffset: UInt64(fastPlasticity.byteOffset),
@@ -622,6 +639,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeSensingCount: UInt32(activeSensingCount),
       internalActionCount: UInt32(internalActionCount),
       bodyBeliefCount: UInt32(bodyBelief.elementCount),
+      objectSlotCount: UInt32(objectSlots.elementCount),
+      otherAgentSlotCount: UInt32(otherAgentSlots.elementCount),
+      relationSlotCount: UInt32(relationSlots.elementCount),
+      spatialTransformCount: UInt32(spatialTransforms.elementCount),
       driveCount: UInt32(drives.elementCount),
       neuromodulatorCount: UInt32(neuromodulation.elementCount),
       fastPlasticityCount: UInt32(fastPlasticity.elementCount),

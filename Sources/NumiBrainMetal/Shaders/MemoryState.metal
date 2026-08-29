@@ -21,7 +21,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 5u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 6u;
 constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 1u;
@@ -396,6 +396,10 @@ struct NBCommittedTransitionUniforms {
   ulong internal_action_offset;
   ulong active_sensing_efficacy_offset;
   ulong body_belief_offset;
+  ulong object_slot_offset;
+  ulong other_agent_slot_offset;
+  ulong relation_slot_offset;
+  ulong spatial_transform_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
   ulong fast_plasticity_offset;
@@ -413,7 +417,10 @@ struct NBCommittedTransitionUniforms {
   uint active_sensing_count;
   uint internal_action_count;
   uint body_belief_count;
-  uint reserved_body_belief;
+  uint object_slot_count;
+  uint other_agent_slot_count;
+  uint relation_slot_count;
+  uint spatial_transform_count;
   uint drive_count;
   uint neuromodulator_count;
   uint fast_plasticity_count;
@@ -618,6 +625,64 @@ struct NBActiveSensingEfficacyRecord {
   uint flags;
   float allocation;
   float reserved;
+};
+
+struct NBObjectSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float visibility;
+  float uncertainty;
+  float pose[4];
+  float velocity[4];
+  float affordances[8];
+  float latent[102];
+};
+
+struct NBOtherAgentSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float gaze_confidence;
+  float goal_confidence;
+  float social_relation;
+  float predicted_action;
+  float uncertainty;
+  float communication_evidence;
+  float body_pose[8];
+  float gaze[4];
+  float latent[102];
+};
+
+struct NBRelationSlotRecord {
+  ulong subject_identifier;
+  ulong object_identifier;
+  ulong last_evidence_timestamp_microseconds;
+  uint relation_kind;
+  uint flags;
+  float probability;
+  float uncertainty;
+  float latent[6];
+};
+
+struct NBSpatialTransformRecord {
+  uint source_frame;
+  uint destination_frame;
+  uint flags;
+  uint reserved;
+  float translation[4];
+  float rotation[4];
+  float linear_velocity[4];
+  float angular_velocity[4];
+  float uncertainty;
+  float confidence;
+  ulong last_evidence_timestamp_microseconds;
 };
 
 struct NBFastPlasticityRecord {
@@ -923,7 +988,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 288);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 320);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 368);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -936,6 +1001,10 @@ static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
+static_assert(sizeof(NBObjectSlotRecord) == 512);
+static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
+static_assert(sizeof(NBRelationSlotRecord) == 64);
+static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
@@ -961,6 +1030,90 @@ inline ulong consolidation_hash(ulong value) {
   value ^= value >> 27;
   value *= 0x94d049bb133111ebul;
   return value ^ (value >> 31);
+}
+
+/// Must remain numerically identical to CognitiveState.metal's structured
+/// world context projection. It records X_t and accepted X_t+1 summaries in
+/// the final five learner-state features without exposing teacher state.
+inline float committed_structured_world_context(
+  device const uchar *hot_state,
+  constant NBCommittedTransitionUniforms &uniforms,
+  const uint level)
+{
+  float total = 0.0f;
+  uint count = 0u;
+  if (level == 0u) {
+    device const NBSpatialTransformRecord *transforms =
+      reinterpret_cast<device const NBSpatialTransformRecord *>(
+        hot_state + uniforms.spatial_transform_offset
+      );
+    for (uint index = 0u; index < min(uniforms.spatial_transform_count, 5u);
+        ++index) {
+      const NBSpatialTransformRecord transform = transforms[index];
+      if ((transform.flags & 1u) == 0u) continue;
+      const float motion = (transform.linear_velocity[0]
+        + transform.linear_velocity[1] + transform.linear_velocity[2]) / 3.0f;
+      total += transform.confidence
+        * (0.5f * tanh(motion) + 0.5f * (1.0f - transform.uncertainty));
+      count += 1u;
+    }
+  } else if (level == 1u || level == 2u) {
+    device const NBObjectSlotRecord *objects =
+      reinterpret_cast<device const NBObjectSlotRecord *>(
+        hot_state + uniforms.object_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.object_slot_count; ++index) {
+      const NBObjectSlotRecord object = objects[index];
+      if (object.identifier == 0ul || object.existence_probability <= 0.0f) {
+        continue;
+      }
+      const float certainty = object.existence_probability
+        * (1.0f - object.uncertainty);
+      if (level == 1u) {
+        const float motion = (object.velocity[0] + object.velocity[1]
+          + object.velocity[2]) / 3.0f;
+        total += certainty
+          * (0.5f * tanh(motion) + 0.5f * object.affordances[0]);
+      } else {
+        const float position = (object.pose[0] + object.pose[1]
+          + object.pose[2]) / 3.0f;
+        total += certainty * (
+          0.25f * tanh(position) + 0.25f * object.identity_confidence
+            + 0.25f * object.visibility + 0.25f * object.affordances[0]
+        );
+      }
+      count += 1u;
+    }
+  } else if (level == 3u) {
+    device const NBRelationSlotRecord *relations =
+      reinterpret_cast<device const NBRelationSlotRecord *>(
+        hot_state + uniforms.relation_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.relation_slot_count; ++index) {
+      const NBRelationSlotRecord relation = relations[index];
+      if ((relation.flags & 1u) == 0u || relation.probability <= 0.0f) continue;
+      total += relation.probability * (1.0f - relation.uncertainty)
+        * tanh(relation.latent[0]);
+      count += 1u;
+    }
+  } else {
+    device const NBOtherAgentSlotRecord *agents =
+      reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+        hot_state + uniforms.other_agent_slot_offset
+      );
+    for (uint index = 0u; index < uniforms.other_agent_slot_count; ++index) {
+      const NBOtherAgentSlotRecord agent = agents[index];
+      if (agent.identifier == 0ul || agent.existence_probability <= 0.0f) continue;
+      const float social = 0.25f * (
+        agent.predicted_action + agent.social_relation
+          + agent.communication_evidence + agent.goal_confidence
+      );
+      total += agent.existence_probability * (1.0f - agent.uncertainty)
+        * tanh(social);
+      count += 1u;
+    }
+  }
+  return count == 0u ? 0.0f : clamp(total / float(count), -1.0f, 1.0f);
 }
 
 inline void advance_archive_page_epoch(
@@ -3920,7 +4073,7 @@ kernel void journal_committed_learning_transition(
   record.flags = 1u
     | ((control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
       ? NB_COMMITTED_TRANSITION_ACCEPTED_STOP : 0u);
-  record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 24u);
+  record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 19u) + 5u;
   record.observation_sample_count = min(uniforms.observation_count, 24u);
   record.action_sample_count = min(uniforms.action_count, 16u);
   record.autonomic_action_sample_count = min(
@@ -3979,12 +4132,22 @@ kernel void journal_committed_learning_transition(
     realized_information_gain *= inverse_count;
   }
   for (uint component = 0u; component < 24u; ++component) {
-    record.prior_state[component] = prior[
-      component % uniforms.recurrent_scalar_count
-    ];
-    record.posterior_state[component] = posterior[
-      component % uniforms.recurrent_scalar_count
-    ];
+    if (component < 19u) {
+      record.prior_state[component] = prior[
+        component % uniforms.recurrent_scalar_count
+      ];
+      record.posterior_state[component] = posterior[
+        component % uniforms.recurrent_scalar_count
+      ];
+    } else {
+      const uint level = component - 19u;
+      record.prior_state[component] = committed_structured_world_context(
+        input_hot_state, uniforms, level
+      );
+      record.posterior_state[component] = committed_structured_world_context(
+        output_hot_state, uniforms, level
+      );
+    }
     record.observation[component] = observations[
       component % uniforms.observation_count
     ];
