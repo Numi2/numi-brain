@@ -436,19 +436,25 @@ uint32_t nb_brain_abi_validate_regional_program(
   }
   uint32_t expected_scalar_offset = 0;
   uint32_t expected_route_offset = 0;
+  uint32_t expected_dense_weight_offset = 0;
   for (uint32_t index = 0; index < module_count; ++index) {
     const NBModuleDescriptor &descriptor = descriptors[index];
     const NBRegionalTokenLayout &layout = layouts[index];
     const uint64_t scalar_count = static_cast<uint64_t>(descriptor.token_count)
         * static_cast<uint64_t>(descriptor.token_dimension);
-    if (scalar_count > UINT32_MAX
+    const uint64_t dense_weight_count =
+        static_cast<uint64_t>(descriptor.token_dimension)
+        * static_cast<uint64_t>(descriptor.token_dimension);
+    if (scalar_count > UINT32_MAX || dense_weight_count > UINT32_MAX
         || layout.module_id != descriptor.module_id
         || layout.token_count != descriptor.token_count
         || layout.token_dimension != descriptor.token_dimension
         || layout.scalar_offset != expected_scalar_offset
         || layout.parameter_offset != expected_scalar_offset
         || layout.scalar_count != scalar_count
-        || layout.incoming_route_offset != expected_route_offset) {
+        || layout.incoming_route_offset != expected_route_offset
+        || layout.dense_weight_offset != expected_dense_weight_offset
+        || layout.dense_weight_count != dense_weight_count) {
       return NB_REGIONAL_PROGRAM_LAYOUT_MISMATCH;
     }
     if (layout.incoming_route_offset > route_count
@@ -475,6 +481,10 @@ uint32_t nb_brain_abi_validate_regional_program(
     }
     expected_scalar_offset += layout.scalar_count;
     expected_route_offset += layout.incoming_route_count;
+    if (layout.dense_weight_count > UINT32_MAX - expected_dense_weight_offset) {
+      return NB_REGIONAL_PROGRAM_COUNT_MISMATCH;
+    }
+    expected_dense_weight_offset += layout.dense_weight_count;
   }
   if (expected_scalar_offset != parameter_count || expected_route_offset != route_count) {
     return NB_REGIONAL_PROGRAM_COUNT_MISMATCH;
@@ -577,6 +587,8 @@ uint64_t nb_brain_abi_regional_program_fingerprint(
     mix_little_endian(hash, value.scalar_count);
     mix_little_endian(hash, value.parameter_offset);
     mix_little_endian(hash, value.incoming_route_offset);
+    mix_little_endian(hash, value.dense_weight_offset);
+    mix_little_endian(hash, value.dense_weight_count);
     mix_little_endian(hash, value.module_id);
     mix_little_endian(hash, value.token_count);
     mix_little_endian(hash, value.token_dimension);
@@ -641,6 +653,8 @@ uint64_t nb_brain_abi_regional_program_shape_fingerprint(
     mix_little_endian(hash, value.scalar_count);
     mix_little_endian(hash, value.parameter_offset);
     mix_little_endian(hash, value.incoming_route_offset);
+    mix_little_endian(hash, value.dense_weight_offset);
+    mix_little_endian(hash, value.dense_weight_count);
     mix_little_endian(hash, value.module_id);
     mix_little_endian(hash, value.token_count);
     mix_little_endian(hash, value.token_dimension);

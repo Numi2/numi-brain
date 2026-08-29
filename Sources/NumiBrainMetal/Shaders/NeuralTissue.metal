@@ -685,6 +685,8 @@ struct NBRegionalTokenLayoutABI {
     uint scalar_count;
     uint parameter_offset;
     uint incoming_route_offset;
+    uint dense_weight_offset;
+    uint dense_weight_count;
     ushort module_id;
     ushort token_count;
     ushort token_dimension;
@@ -728,6 +730,8 @@ struct NBRegionalProgramHeaderABI {
     uint minimum_route_persistence_microseconds;
     float salience_gain;
     float persistence_bonus;
+    uint dense_parameter_count;
+    uint reserved;
 };
 
 struct NBRegionalRouteHistoryStateABI {
@@ -804,10 +808,10 @@ static_assert(sizeof(NBBodyLoadFieldRecordABI) == 56, "body-load record drift");
 static_assert(sizeof(NBBodySchemaUniformsABI) == 56, "body-schema uniforms drift");
 static_assert(sizeof(NBBodySchemaRecordABI) == 48, "body-schema record drift");
 static_assert(sizeof(NBMuscleAttachmentRecordABI) == 16, "attachment record drift");
-static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
+static_assert(sizeof(NBRegionalTokenLayoutABI) == 40, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
-static_assert(sizeof(NBRegionalProgramHeaderABI) == 48, "regional header ABI drift");
+static_assert(sizeof(NBRegionalProgramHeaderABI) == 56, "regional header ABI drift");
 static_assert(sizeof(NBRegionalRouteHistoryStateABI) == 16, "route history ABI drift");
 static_assert(sizeof(NBRegionalRouteRuntimeStateABI) == 32, "route state ABI drift");
 
@@ -1240,6 +1244,7 @@ kernel void advance_cohort_regional_tokens_unrouted(
     device float *outputTokens [[buffer(13)]],
     device float *candidateTokens [[buffer(14)]],
     device ulong *tokenLastUpdates [[buffer(15)]],
+    device const float *denseParameters [[buffer(16)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
     uint3 threadgroupPosition [[threadgroup_position_in_grid]]
@@ -1251,6 +1256,8 @@ kernel void advance_cohort_regional_tokens_unrouted(
         || programHeader->token_scalar_count
             != tokenUniforms->scalar_count_per_environment
         || programHeader->parameter_count != programHeader->token_scalar_count
+        || programHeader->dense_parameter_count == 0u
+        || programHeader->reserved != 0u
         || programHeader->program_fingerprint
             != tokenUniforms->regional_program_fingerprint
         || programHeader->program_fingerprint
@@ -1347,15 +1354,18 @@ kernel void advance_cohort_regional_tokens_unrouted(
             const uint dimension = uint(layout.token_dimension);
             const uint tokenStart = layout.scalar_offset
                 + (localScalar / dimension) * dimension;
-            float localSum = 0.0f;
+            const uint feature = localScalar % dimension;
+            float localProjection = 0.0f;
             for (uint localFeature = 0u;
                  localFeature < dimension;
                  ++localFeature) {
-                localSum += outputTokens[
+                localProjection += denseParameters[
+                    layout.dense_weight_offset + feature * dimension + localFeature
+                ] * outputTokens[
                     tokenBase + ulong(tokenStart + localFeature)
                 ];
             }
-            const float localMean = localSum / float(dimension);
+            localProjection /= sqrt(float(dimension));
             const NBRegionalTokenParametersABI parameter = parameters[
                 layout.parameter_offset + localScalar
             ];
@@ -1363,7 +1373,7 @@ kernel void advance_cohort_regional_tokens_unrouted(
             const float current = outputTokens[absoluteScalar];
             const float candidate = tanh(
                 parameter.recurrent_gain * current
-                + parameter.local_gain * localMean
+                + parameter.local_gain * localProjection
                 + parameter.drive_gain * activeDrive
                 + parameter.bias
             );
@@ -1801,7 +1811,7 @@ inline float cohort_regional_route_message_value(
     ];
 }
 
-/// Executable factorized recurrent token operator. Exactly one threadgroup owns
+/// Executable dense-local recurrent token operator. Exactly one threadgroup owns
 /// an agent. All due modules at one timestamp read the same pre-timestamp state,
 /// then publish together, preventing route cycles from observing partial peers.
 kernel void advance_due_regional_tokens(
@@ -1833,6 +1843,7 @@ kernel void advance_due_regional_tokens(
         [[buffer(24)]],
     device const NBRegionalMaturationRecordABI *maturation [[buffer(25)]],
     device const float *routeParameters [[buffer(26)]],
+    device const float *denseParameters [[buffer(27)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
@@ -1840,7 +1851,9 @@ kernel void advance_due_regional_tokens(
     if (lane == 0u
         && (parameterVersion->regional_program_fingerprint
                 != header->program_fingerprint
-            || parameterVersion->schedule_fingerprint == 0ul)) {
+            || parameterVersion->schedule_fingerprint == 0ul
+            || header->dense_parameter_count == 0u
+            || header->reserved != 0u)) {
         schedulerResult->status = NBSchedulerStatusRegionalProgram;
     }
     threadgroup_barrier(mem_flags::mem_device);
@@ -2180,11 +2193,13 @@ kernel void advance_due_regional_tokens(
             const uint dimension = uint(layout.token_dimension);
             const uint tokenStart = layout.scalar_offset + (localScalar / dimension) * dimension;
             const uint feature = localScalar % dimension;
-            float localSum = 0.0f;
+            float localProjection = 0.0f;
             for (uint localFeature = 0u; localFeature < dimension; ++localFeature) {
-                localSum += outputTokens[tokenStart + localFeature];
+                localProjection += denseParameters[
+                    layout.dense_weight_offset + feature * dimension + localFeature
+                ] * outputTokens[tokenStart + localFeature];
             }
-            const float localMean = localSum / float(dimension);
+            localProjection /= sqrt(float(dimension));
             float routedInput = 0.0f;
             const uint selectedCount = selectedRouteCounts[moduleIndex];
             for (uint selectedIndex = 0u;
@@ -2216,7 +2231,7 @@ kernel void advance_due_regional_tokens(
                 (parameter.recurrent_gain
                     + (validPlastic ? plastic.recurrent_delta : 0.0f)) * current
                 + (parameter.local_gain
-                    + (validPlastic ? plastic.local_delta : 0.0f)) * localMean
+                    + (validPlastic ? plastic.local_delta : 0.0f)) * localProjection
                 + (parameter.route_gain
                     + (validPlastic ? plastic.route_delta : 0.0f)) * routedInput
                 + (parameter.drive_gain
@@ -2503,6 +2518,7 @@ kernel void advance_cohort_regional_tokens_routed(
     device uint *selectedRouteIndices [[buffer(26)]],
     device uint *selectedRouteCounts [[buffer(27)]],
     device const float *routeParameters [[buffer(28)]],
+    device const float *denseParameters [[buffer(29)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
     uint3 threadgroupPosition [[threadgroup_position_in_grid]]
@@ -2514,6 +2530,8 @@ kernel void advance_cohort_regional_tokens_routed(
         || header->token_scalar_count
             != tokenUniforms->scalar_count_per_environment
         || header->parameter_count != header->token_scalar_count
+        || header->dense_parameter_count == 0u
+        || header->reserved != 0u
         || header->program_fingerprint
             != tokenUniforms->regional_program_fingerprint
         || header->program_fingerprint
@@ -2865,15 +2883,17 @@ kernel void advance_cohort_regional_tokens_routed(
             const uint tokenStart = layout.scalar_offset
                 + (localScalar / dimension) * dimension;
             const uint feature = localScalar % dimension;
-            float localSum = 0.0f;
+            float localProjection = 0.0f;
             for (uint localFeature = 0u;
                  localFeature < dimension;
                  ++localFeature) {
-                localSum += outputTokens[
+                localProjection += denseParameters[
+                    layout.dense_weight_offset + feature * dimension + localFeature
+                ] * outputTokens[
                     tokenBase + ulong(tokenStart + localFeature)
                 ];
             }
-            const float localMean = localSum / float(dimension);
+            localProjection /= sqrt(float(dimension));
             float routedInput = 0.0f;
             const uint selectedCount =
                 selectedRouteCounts[diagnosticBase + moduleIndex];
@@ -2906,7 +2926,7 @@ kernel void advance_cohort_regional_tokens_routed(
             const float current = outputTokens[absoluteScalar];
             const float candidate = tanh(
                 parameter.recurrent_gain * current
-                + parameter.local_gain * localMean
+                + parameter.local_gain * localProjection
                 + parameter.route_gain * routedInput
                 + parameter.drive_gain * drive
                 + parameter.bias

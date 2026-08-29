@@ -20,10 +20,10 @@ enum {
   NB_SCHEDULER_UNIFORMS_BYTE_COUNT = 56,
   NB_SCHEDULER_RESULT_BYTE_COUNT = 16,
   NB_REGIONAL_MODULE_STATE_BYTE_COUNT = 32,
-  NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT = 32,
+  NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT = 40,
   NB_REGIONAL_ROUTE_BYTE_COUNT = 24,
   NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT = 32,
-  NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT = 48,
+  NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT = 56,
   NB_REGIONAL_ROUTE_HISTORY_STATE_BYTE_COUNT = 16,
   NB_REGIONAL_ROUTE_RUNTIME_STATE_BYTE_COUNT = 32,
   NB_PARAMETER_COMPONENT_BYTE_COUNT = 32,
@@ -55,7 +55,7 @@ enum {
   NB_NUMANX_MOTOR_CANDIDATE_VERSION = 5,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
-  NB_REGIONAL_PROGRAM_VERSION = 2,
+  NB_REGIONAL_PROGRAM_VERSION = 3,
   NB_REGIONAL_MIN_ROUTE_PERSISTENCE_MICROSECONDS = 2000,
   NB_RECEPTOR_EVENT_ABI_VERSION = 1,
   NB_RECEPTOR_MAX_CONDUCTION_LATENCY_MICROSECONDS = 500000,
@@ -186,6 +186,8 @@ typedef struct NBRegionalTokenLayout {
   uint32_t scalar_count;
   uint32_t parameter_offset;
   uint32_t incoming_route_offset;
+  uint32_t dense_weight_offset;
+  uint32_t dense_weight_count;
   uint16_t module_id;
   uint16_t token_count;
   uint16_t token_dimension;
@@ -229,6 +231,8 @@ typedef struct NBRegionalProgramHeader {
   uint32_t minimum_route_persistence_microseconds;
   float salience_gain;
   float persistence_bonus;
+  uint32_t dense_parameter_count;
+  uint32_t reserved;
 } NBRegionalProgramHeader;
 
 typedef struct NBRegionalRouteHistoryState {

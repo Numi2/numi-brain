@@ -15,6 +15,7 @@ public enum BrainParameterComponentKind: UInt16, Codable, CaseIterable, Sendable
   case plasticity = 10
   case tissueDynamics = 11
   case regionalOperator = 12
+  case regionalDense = 13
 }
 
 @frozen
@@ -248,7 +249,9 @@ public struct BrainParameterVersion: Codable, Equatable, Hashable, Sendable {
       byteCount: UInt64(regionalBytes),
       contentFingerprint: regionalProgram.fingerprint
     )
-    let sharedComponents = try BrainSharedParameterArtifact.foundationPayloads().map {
+    let sharedComponents = try BrainSharedParameterArtifact.foundationPayloads(
+      regionalDenseElementCount: regionalProgram.denseParameterCount
+    ).map {
       try $0.component
     }
     return try BrainParameterVersion(

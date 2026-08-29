@@ -1067,7 +1067,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 27
+    regionalArgumentDescriptor.maxBufferBindCount = 28
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -1079,6 +1079,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     regionalArgumentTable.setAddress(
       try sharedParameterBank.gpuAddress(.route, minimumScalarCount: 8),
       index: 26
+    )
+    regionalArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(
+        .regionalDense,
+        minimumScalarCount: regionalTokenProgram.denseParameterCount
+      ),
+      index: 27
     )
     let protectiveArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveArgumentDescriptor.label = "NumiBrain protective-command arguments"

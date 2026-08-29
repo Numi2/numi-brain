@@ -574,7 +574,7 @@ public enum MetalDispatchPlanRuntime {
     }
     let tokenArgumentDescriptor = MTL4ArgumentTableDescriptor()
     tokenArgumentDescriptor.label = "NumiBrain cohort regional-token arguments"
-    tokenArgumentDescriptor.maxBufferBindCount = 29
+    tokenArgumentDescriptor.maxBufferBindCount = 30
     tokenArgumentDescriptor.initializeBindings = true
     guard
       let tokenArgumentTable = try? device.makeArgumentTable(
@@ -1191,6 +1191,13 @@ public enum MetalDispatchPlanRuntime {
     tokenArgumentTable.setAddress(
       try sharedParameterBank.gpuAddress(.route, minimumScalarCount: 8),
       index: 28
+    )
+    tokenArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(
+        .regionalDense,
+        minimumScalarCount: regionalProgram.denseParameterCount
+      ),
+      index: 29
     )
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)

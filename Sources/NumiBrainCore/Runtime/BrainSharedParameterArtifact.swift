@@ -64,7 +64,7 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
   public static let requiredKinds: [BrainParameterComponentKind] = [
     .sensory, .belief, .world, .route, .memory, .value, .policy,
-    .motor, .cerebellar, .plasticity,
+    .motor, .cerebellar, .plasticity, .regionalDense,
   ]
 
   public let formatVersion: UInt32
@@ -81,7 +81,7 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
       Set(canonical.map(\.kind)) == Set(Self.requiredKinds)
     else {
       throw BrainRuntimeError.invalidParameterVersion(
-        "shared parameter artifact does not contain the ten required components"
+        "shared parameter artifact does not contain every required component"
       )
     }
     for payload in canonical {
@@ -176,7 +176,14 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     try encoded(parameterVersion: parameterVersion).write(to: url, options: options)
   }
 
-  public static func foundationPayloads() throws -> [BrainParameterPayload] {
+  public static func foundationPayloads(
+    regionalDenseElementCount: Int = 1
+  ) throws -> [BrainParameterPayload] {
+    guard regionalDenseElementCount > 0 else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "regional dense parameter count must be positive"
+      )
+    }
     func payload(
       _ kind: BrainParameterComponentKind,
       _ values: [Float]
@@ -222,21 +229,44 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     cerebellar.replaceSubrange(0...7, with: [0.25, 0.1, 0.05, 1, 0.1, 0.01, 0.99, 1])
     var plasticity = [Float](repeating: 0, count: 64)
     plasticity.replaceSubrange(0...7, with: [0.001, 0.95, 0.95, 1, 0.1, 0.01, 0.99, 1])
+    // Small deterministic zero-mean weights activate a true dense local path
+    // without overwhelming the explicit recurrent residual at initialization.
+    var regionalDense = [Float](repeating: 0, count: regionalDenseElementCount)
+    for index in regionalDense.indices {
+      var bits = UInt64(index) &+ 0x9e37_79b9_7f4a_7c15
+      bits = (bits ^ (bits >> 30)) &* 0xbf58_476d_1ce4_e5b9
+      bits = (bits ^ (bits >> 27)) &* 0x94d0_49bb_1331_11eb
+      bits ^= bits >> 31
+      let centered = Float(Int(bits & 0xffff) - 32_768) / 32_768
+      regionalDense[index] = centered * 0.025
+    }
     return try [
       payload(.sensory, sensory), payload(.belief, belief),
       payload(.world, world), payload(.route, route),
       payload(.memory, memory), payload(.value, value),
       payload(.policy, policy), payload(.motor, motor),
       payload(.cerebellar, cerebellar), payload(.plasticity, plasticity),
+      payload(.regionalDense, regionalDense),
     ]
   }
 
   public static func foundation(
     parameterVersion: BrainParameterVersion
   ) throws -> Self {
-    try Self(
+    guard let denseComponent = parameterVersion.components.first(where: {
+      $0.kind == .regionalDense
+    }), denseComponent.elementType == .fp32,
+      denseComponent.elementCount <= UInt64(Int.max)
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "parameter version is missing executable regional dense weights"
+      )
+    }
+    return try Self(
       parameterVersion: parameterVersion,
-      payloads: foundationPayloads()
+      payloads: foundationPayloads(
+        regionalDenseElementCount: Int(denseComponent.elementCount)
+      )
     )
   }
 

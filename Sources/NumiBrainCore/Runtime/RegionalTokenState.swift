@@ -80,6 +80,8 @@ public struct RegionalTokenLayout: Codable, Equatable, Hashable, Sendable {
   public let scalarCount: UInt32
   public let parameterOffset: UInt32
   public let incomingRouteOffset: UInt32
+  public let denseWeightOffset: UInt32
+  public let denseWeightCount: UInt32
   public let incomingRouteCount: UInt16
   public let flags: UInt32
   public let normalRouteBudget: UInt16
@@ -94,6 +96,8 @@ public struct RegionalTokenLayout: Codable, Equatable, Hashable, Sendable {
     record.scalar_count = scalarCount
     record.parameter_offset = parameterOffset
     record.incoming_route_offset = incomingRouteOffset
+    record.dense_weight_offset = denseWeightOffset
+    record.dense_weight_count = denseWeightCount
     record.module_id = moduleIdentifier
     record.token_count = tokenCount
     record.token_dimension = tokenDimension
@@ -170,6 +174,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   public let routeMessageDimensions: [UInt32]
   public let compiledRouteHistoryCapacity: Int
   public let routeHistoryScalarCount: Int
+  public let denseParameterCount: Int
   public let parameters: [RegionalTokenParameters]
   public let shapeFingerprint: UInt64
   public let fingerprint: UInt64
@@ -217,12 +222,16 @@ public struct RegionalTokenProgram: Equatable, Sendable {
 
     var scalarOffset: UInt32 = 0
     var incomingRouteOffset: UInt32 = 0
+    var denseWeightOffset: UInt32 = 0
     var layouts: [RegionalTokenLayout] = []
     layouts.reserveCapacity(schedule.modules.count)
     for module in schedule.modules {
       let scalarProduct = UInt64(module.tokenCount) * UInt64(module.tokenDimension)
+      let denseProduct = UInt64(module.tokenDimension) * UInt64(module.tokenDimension)
       guard scalarProduct <= UInt64(UInt32.max),
-        UInt64(scalarOffset) + scalarProduct <= UInt64(UInt32.max)
+        denseProduct <= UInt64(UInt32.max),
+        UInt64(scalarOffset) + scalarProduct <= UInt64(UInt32.max),
+        UInt64(denseWeightOffset) + denseProduct <= UInt64(UInt32.max)
       else {
         throw BrainRuntimeError.invalidSchedule("regional token scalar count exceeds ABI limits")
       }
@@ -254,6 +263,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
           scalarCount: UInt32(scalarProduct),
           parameterOffset: scalarOffset,
           incomingRouteOffset: incomingRouteOffset,
+          denseWeightOffset: denseWeightOffset,
+          denseWeightCount: UInt32(denseProduct),
           incomingRouteCount: UInt16(incomingCount),
           flags: module.flags,
           normalRouteBudget: UInt16(normalRouteBudget)
@@ -261,6 +272,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
       )
       scalarOffset += UInt32(scalarProduct)
       incomingRouteOffset += UInt32(incomingCount)
+      denseWeightOffset += UInt32(denseProduct)
     }
 
     let parameters =
@@ -366,6 +378,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     self.routeMessageDimensions = routeMessageDimensions
     self.compiledRouteHistoryCapacity = requestedHistoryCapacity
     self.routeHistoryScalarCount = Int(routeHistoryScalarCount)
+    self.denseParameterCount = Int(denseWeightOffset)
     self.parameters = parameters
     self.shapeFingerprint = shapeFingerprint
     self.fingerprint = fingerprint
@@ -396,6 +409,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     record.minimum_route_persistence_microseconds = Self.minimumRoutePersistenceMicroseconds
     record.salience_gain = Self.routeSalienceGain
     record.persistence_bonus = Self.routePersistenceBonus
+    record.dense_parameter_count = UInt32(denseParameterCount)
+    record.reserved = 0
     return record
   }
 
