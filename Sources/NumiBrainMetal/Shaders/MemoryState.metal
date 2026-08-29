@@ -6,10 +6,13 @@ constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT = 3u;
 constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION = 4u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
+constant uint NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION = 6u;
 constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
+constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
+constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
   NB_MEMORY_INNATE_OPTION_NAMESPACE | 4ul;
@@ -200,6 +203,27 @@ struct NBMemoryConsolidationUniforms {
   float semantic_learning_rate;
 };
 
+struct NBProspectiveLifecycleUniforms {
+  ulong target_timestamp_microseconds;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong recurrent_offset;
+  ulong control_header_offset;
+  ulong lifecycle_state_offset;
+  ulong prospective_memory_offset;
+  ulong persistent_memory_byte_count;
+  ulong journal_byte_count;
+  ulong default_deadline_microseconds;
+  uint recurrent_scalar_count;
+  uint prospective_capacity;
+  uint prospective_stride;
+  uint journal_entry_capacity;
+  float trigger_threshold;
+  float completion_threshold;
+  float failure_risk_threshold;
+  float default_priority;
+};
+
 struct NBWorkspaceMetadataRecord {
   ulong identifier;
   ulong source_timestamp_microseconds;
@@ -340,6 +364,19 @@ struct NBProspectiveIntentionSummaryRecord {
   float trigger_code[16];
 };
 
+struct NBProspectiveLifecycleState {
+  ulong previous_goal_identifier;
+  ulong previous_goal_timestamp_microseconds;
+  ulong last_intention_identifier;
+  ulong last_update_timestamp_microseconds;
+  uint format_version;
+  uint previous_control_mode;
+  uint flags;
+  uint reserved;
+  float previous_progress;
+  float context[51];
+};
+
 struct NBReplayQueueSummaryRecord {
   uint queue_kind;
   uint record_kind;
@@ -358,6 +395,7 @@ static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 192);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 176);
+static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
@@ -367,6 +405,7 @@ static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
+static_assert(sizeof(NBProspectiveLifecycleState) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
 inline ulong consolidation_hash(ulong value) {
@@ -377,10 +416,10 @@ inline ulong consolidation_hash(ulong value) {
   return value ^ (value >> 31);
 }
 
-template<typename Record>
+template<typename Record, typename Uniforms>
 inline bool append_memory_record(
   device NBMemoryJournalHeader *journal,
-  constant NBMemoryConsolidationUniforms &uniforms,
+  constant Uniforms &uniforms,
   thread const Record &record,
   ulong destination,
   uint section,
@@ -654,13 +693,15 @@ kernel void score_memory_retrieval_candidates(
             || uniforms.target_timestamp_microseconds
               <= record->deadline_timestamp_microseconds;
           if (record->format_version == 1u && record->identifier != 0ul
-              && record->status == 1u && before_deadline) {
+              && (record->status == 1u || record->status == 2u)
+              && before_deadline) {
             kind = 4u;
             identifier = record->identifier;
             score = uniforms.prospective_weight * (
               retrieval_similarity(
                 query, uniforms.recurrent_scalar_count, record->trigger_code, 16u
               ) + record->priority + record->trigger_confidence
+                + (record->status == 2u ? 0.15f : 0.0f)
             );
           }
           }
@@ -802,6 +843,166 @@ kernel void publish_memory_retrieval_winner(
   scratch->winner_indices[uniforms.retrieval_pass] = candidate_index;
   scratch->winner_scores[uniforms.retrieval_pass] = score;
   scratch->flags |= 1u << uniforms.retrieval_pass;
+}
+
+/// Maintains intended future goals only from accepted physical consequences.
+/// Persistent changes are journaled, while the causal previous-goal/context
+/// tracker remains in the root shadow and therefore rolls back on rejection.
+kernel void advance_prospective_memory(
+  device uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  device NBMemoryJournalHeader *journal [[buffer(2)]],
+  constant NBProspectiveLifecycleUniforms &uniforms [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.recurrent_scalar_count == 0u
+      || uniforms.prospective_capacity == 0u) return;
+  if (journal->base_generation != uniforms.base_generation
+      || journal->shadow_generation != uniforms.shadow_generation
+      || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return;
+  }
+  device const NBControlHeader *control =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  if ((control->flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u) return;
+  device NBProspectiveLifecycleState *lifecycle =
+    reinterpret_cast<device NBProspectiveLifecycleState *>(
+      hot_state + uniforms.lifecycle_state_offset
+    );
+  device const float *recurrent = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
+  const bool lifecycle_valid = lifecycle->format_version
+    == NB_MEMORY_RECORD_VERSION;
+  const ulong previous_goal = lifecycle_valid
+    ? lifecycle->previous_goal_identifier : 0ul;
+  const bool goal_changed = lifecycle_valid
+    && previous_goal != control->active_goal_identifier;
+  const uint current_goal_origin = uint(control->active_goal_identifier >> 56);
+  const ulong current_goal_code = control->active_goal_identifier
+    & NB_MEMORY_GOAL_SOURCE_MASK;
+  const ulong current_intention_identifier = current_goal_origin == 3u
+      && current_goal_code != 0ul
+    ? current_goal_code - 1ul : 0ul;
+  const uint previous_goal_origin = uint(previous_goal >> 56);
+  const ulong previous_goal_code = previous_goal & NB_MEMORY_GOAL_SOURCE_MASK;
+  const ulong previous_intention_identifier = previous_goal_origin == 3u
+      && previous_goal_code != 0ul
+    ? previous_goal_code - 1ul : 0ul;
+
+  for (uint index = 0u; index < uniforms.prospective_capacity; ++index) {
+    const ulong destination = uniforms.prospective_memory_offset
+      + ulong(index) * ulong(uniforms.prospective_stride);
+    device const NBProspectiveIntentionSummaryRecord *record =
+      reinterpret_cast<device const NBProspectiveIntentionSummaryRecord *>(
+        persistent_memory + destination
+      );
+    if (record->format_version != NB_MEMORY_RECORD_VERSION
+        || record->identifier == 0ul) continue;
+    uint next_status = record->status;
+    const bool expired = (record->status == 1u || record->status == 2u)
+      && record->deadline_timestamp_microseconds != 0ul
+      && uniforms.target_timestamp_microseconds
+        > record->deadline_timestamp_microseconds;
+    if (expired) {
+      next_status = 5u;
+    } else if (record->identifier == current_intention_identifier) {
+      if (control->progress >= uniforms.completion_threshold) {
+        next_status = 3u;
+      } else if ((control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
+          || control->selected_damage_cvar >= uniforms.failure_risk_threshold) {
+        next_status = 4u;
+      } else {
+        next_status = 2u;
+      }
+    } else if (goal_changed
+        && record->identifier == previous_intention_identifier
+        && record->status == 2u) {
+      next_status = 1u;
+    }
+    if (next_status != record->status) {
+      NBProspectiveIntentionSummaryRecord updated = *record;
+      updated.status = next_status;
+      updated.context_match = next_status == 2u ? 1.0f : 0.0f;
+      append_memory_record(
+        journal, uniforms, updated, destination,
+        NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION, updated.identifier
+      );
+    }
+  }
+
+  const bool interrupted_goal = goal_changed && previous_goal != 0ul
+    && previous_goal_origin != 3u
+    && lifecycle->previous_goal_timestamp_microseconds != 0ul
+    && lifecycle->previous_progress < uniforms.completion_threshold;
+  if (interrupted_goal) {
+    const ulong identity_space = NB_MEMORY_GOAL_SOURCE_MASK - 1ul;
+    const ulong intention_identifier =
+      consolidation_hash(previous_goal ^ 0x50524f5350454354ul)
+        % identity_space + 1ul;
+    const uint slot = uint(
+      intention_identifier % ulong(uniforms.prospective_capacity)
+    );
+    const ulong destination = uniforms.prospective_memory_offset
+      + ulong(slot) * ulong(uniforms.prospective_stride);
+    device const NBProspectiveIntentionSummaryRecord *existing =
+      reinterpret_cast<device const NBProspectiveIntentionSummaryRecord *>(
+        persistent_memory + destination
+      );
+    const bool collision = existing->format_version == NB_MEMORY_RECORD_VERSION
+      && existing->identifier != 0ul
+      && existing->identifier != intention_identifier;
+    if (!collision) {
+      NBProspectiveIntentionSummaryRecord intention = {};
+      intention.identifier = intention_identifier;
+      intention.goal_identifier = previous_goal;
+      const ulong deadline = uniforms.target_timestamp_microseconds
+        + uniforms.default_deadline_microseconds;
+      intention.deadline_timestamp_microseconds =
+        deadline < uniforms.target_timestamp_microseconds ? ~0ul : deadline;
+      intention.created_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+      intention.format_version = NB_MEMORY_RECORD_VERSION;
+      intention.status = 1u;
+      intention.flags = 1u;
+      intention.priority = clamp(
+        max(uniforms.default_priority, control->confidence), 0.0f, 1.0f
+      );
+      intention.trigger_confidence = clamp(
+        max(uniforms.trigger_threshold, 0.5f), 0.0f, 1.0f
+      );
+      intention.context_match = 0.0f;
+      for (uint component = 0u; component < 16u; ++component) {
+        intention.trigger_code[component] = lifecycle->context[component];
+      }
+      if (append_memory_record(
+          journal, uniforms, intention, destination,
+          NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION,
+          intention.identifier
+        )) {
+        lifecycle->last_intention_identifier = intention.identifier;
+      }
+    }
+  }
+
+  lifecycle->previous_goal_identifier = control->active_goal_identifier;
+  lifecycle->previous_goal_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  lifecycle->last_update_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  lifecycle->format_version = NB_MEMORY_RECORD_VERSION;
+  lifecycle->previous_control_mode = control->mode;
+  lifecycle->previous_progress = control->progress;
+  for (uint component = 0u; component < 51u; ++component) {
+    lifecycle->context[component] = recurrent[
+      component % uniforms.recurrent_scalar_count
+    ];
+  }
 }
 
 /// Consolidates only previously committed lived episodes. The kernel is

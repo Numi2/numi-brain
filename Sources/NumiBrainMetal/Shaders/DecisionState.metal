@@ -263,6 +263,7 @@ kernel void generate_active_goal_state(
   const uint active_workspace_capacity = min(
     uniforms.workspace_capacity, development->workspace_capacity
   );
+  const ulong previous_goal_identifier = header->active_goal_identifier;
   ulong goal_identifiers[4] = {};
   uint goal_origins[4] = {};
   uint goal_sources[4] = {};
@@ -322,6 +323,9 @@ kernel void generate_active_goal_state(
     }
   }
   header->active_goal_identifier = goal_identifiers[0];
+  if (previous_goal_identifier != goal_identifiers[0]) {
+    header->progress = 0.0f;
+  }
   for (uint rank = 0u; rank < 4u; ++rank) {
     const uint slot = 7u + rank;
     if (slot >= active_workspace_capacity) break;

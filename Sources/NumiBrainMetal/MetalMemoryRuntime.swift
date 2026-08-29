@@ -98,6 +98,27 @@ private struct MemoryConsolidationUniforms {
   var semanticLearningRate: Float = 0
 }
 
+private struct ProspectiveLifecycleUniforms {
+  var targetTimestampMicroseconds: UInt64 = 0
+  var baseGeneration: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
+  var recurrentOffset: UInt64 = 0
+  var controlHeaderOffset: UInt64 = 0
+  var lifecycleStateOffset: UInt64 = 0
+  var prospectiveMemoryOffset: UInt64 = 0
+  var persistentMemoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+  var defaultDeadlineMicroseconds: UInt64 = 0
+  var recurrentScalarCount: UInt32 = 0
+  var prospectiveCapacity: UInt32 = 0
+  var prospectiveStride: UInt32 = 0
+  var journalEntryCapacity: UInt32 = 0
+  var triggerThreshold: Float = 0
+  var completionThreshold: Float = 0
+  var failureRiskThreshold: Float = 0
+  var defaultPriority: Float = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalMemoryRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
@@ -112,10 +133,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let retrievalScorePipeline: any MTLComputePipelineState
   private let retrievalPublishPipeline: any MTLComputePipelineState
   private let consolidationPipeline: any MTLComputePipelineState
+  private let prospectiveLifecyclePipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
   private let consolidationUniformBuffer: any MTLBuffer
+  private let prospectiveLifecycleUniformBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -129,6 +152,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     guard MemoryLayout<MemoryUniforms>.stride == 144,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 192,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 176,
+      MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -158,7 +182,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let names = [
       "segment_and_journal_episode", "begin_memory_retrieval",
       "score_memory_retrieval_candidates", "publish_memory_retrieval_winner",
-      "consolidate_lived_memory_during_rest",
+      "consolidate_lived_memory_during_rest", "advance_prospective_memory",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -200,6 +224,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       let consolidationUniformBuffer = device.makeBuffer(
         length: MemoryLayout<MemoryConsolidationUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let prospectiveLifecycleUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<ProspectiveLifecycleUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -213,6 +241,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       buffer.label = "NumiBrain memory retrieval pass \(index) uniforms"
     }
     consolidationUniformBuffer.label = "NumiBrain lived-memory consolidation uniforms"
+    prospectiveLifecycleUniformBuffer.label =
+      "NumiBrain prospective-memory lifecycle uniforms"
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.arena = arena
     self.regionalProgram = regionalProgram
@@ -227,14 +257,80 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.retrievalScorePipeline = pipelines[2]
     self.retrievalPublishPipeline = pipelines[3]
     self.consolidationPipeline = pipelines[4]
+    self.prospectiveLifecyclePipeline = pipelines[5]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
     self.consolidationUniformBuffer = consolidationUniformBuffer
+    self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, consolidationUniformBuffer] + retrievalUniformBuffers
+    [uniformBuffer, consolidationUniformBuffer, prospectiveLifecycleUniformBuffer]
+      + retrievalUniformBuffers
+  }
+
+  /// Advances prospective intentions only inside an accepted root shadow.
+  /// Interrupted goals become pending intentions, while active intentions are
+  /// satisfied, failed, re-pended, or expired through the memory journal.
+  public func encodeProspectiveLifecycle(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp
+  ) throws {
+    let hot = try arena.hotStateView(transaction: transaction)
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let prospective = arena.memoryLayout.section(.prospectiveIntentions)
+    let recurrent = arena.layout.section(.regionalRecurrent)
+    let lifecycle = arena.layout.section(.prospectiveLifecycle)
+    let journalEntryCapacity = (memory.journalByteCount - 48) / 64
+    guard regionalProgram.scalarCount > 0,
+      regionalProgram.scalarCount <= Int(UInt32.max),
+      prospective.elementCount > 0,
+      prospective.elementCount <= Int(UInt32.max),
+      prospective.elementStride <= Int(UInt32.max),
+      lifecycle.byteCount >= 256,
+      journalEntryCapacity > 0,
+      journalEntryCapacity <= Int(UInt32.max)
+    else {
+      throw TissueError.transaction("prospective lifecycle exceeds GPU capacity")
+    }
+    var uniforms = ProspectiveLifecycleUniforms(
+      targetTimestampMicroseconds: timestamp.rawValue,
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      recurrentOffset: UInt64(recurrent.byteOffset),
+      controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      lifecycleStateOffset: UInt64(lifecycle.byteOffset),
+      prospectiveMemoryOffset: UInt64(prospective.byteOffset),
+      persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      journalByteCount: UInt64(memory.journalByteCount),
+      defaultDeadlineMicroseconds: 60_000_000,
+      recurrentScalarCount: UInt32(regionalProgram.scalarCount),
+      prospectiveCapacity: UInt32(prospective.elementCount),
+      prospectiveStride: UInt32(prospective.elementStride),
+      journalEntryCapacity: UInt32(journalEntryCapacity),
+      triggerThreshold: 0.2,
+      completionThreshold: 0.95,
+      failureRiskThreshold: 0.8,
+      defaultPriority: 0.55
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      prospectiveLifecycleUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
+    argumentTable.setAddress(memory.journalGPUAddress, index: 2)
+    argumentTable.setAddress(prospectiveLifecycleUniformBuffer.gpuAddress, index: 3)
+    encoder.setComputePipelineState(prospectiveLifecyclePipeline)
+    encoder.setArgumentTable(argumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
   }
 
   /// Emits semantic, procedural, and replay mutations only from already

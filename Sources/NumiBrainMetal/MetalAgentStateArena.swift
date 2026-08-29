@@ -40,6 +40,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case regionalPlasticModulation = 30
   /// Transactional unfinished lived-event segment.
   case activeEpisodeAccumulator = 31
+  /// Accepted-tick history used to create and advance prospective intentions.
+  case prospectiveLifecycle = 32
 }
 
 @frozen
@@ -304,6 +306,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       stride: 32
     )
     try builder.append(.activeEpisodeAccumulator, count: 1, stride: 256)
+    try builder.append(.prospectiveLifecycle, count: 1, stride: 256)
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
