@@ -4,6 +4,7 @@ using namespace metal;
 constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE = 2u;
+constant uint NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE = 9u;
 constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT = 3u;
 constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION = 4u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
@@ -18,6 +19,7 @@ constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
   NB_MEMORY_INNATE_OPTION_NAMESPACE | 4ul;
+constant uint NB_MEMORY_ARCHIVE_CLUSTER_COUNT = 256u;
 
 struct NBMemoryUniforms {
   ulong target_timestamp_microseconds;
@@ -33,6 +35,7 @@ struct NBMemoryUniforms {
   ulong active_episode_accumulator_offset;
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
+  ulong archive_episode_memory_offset;
   ulong journal_byte_count;
   ulong persistent_memory_byte_count;
   uint recurrent_scalar_count;
@@ -41,6 +44,8 @@ struct NBMemoryUniforms {
   uint active_episode_stride;
   uint compressed_episode_capacity;
   uint compressed_episode_stride;
+  uint archive_episode_capacity;
+  uint archive_episode_stride;
   uint journal_entry_capacity;
   uint surprise_sample_count;
   float boundary_threshold;
@@ -108,6 +113,32 @@ struct NBEpisodicSummaryRecord {
   float retrieval_key[10];
 };
 
+/// Quantized Tier-2 lived episode. Identity, provenance, time, outcome, and
+/// uncertainty remain explicit while the retrieval key is compacted.
+struct NBArchivedEpisodicRecord {
+  ulong identifier;
+  ulong start_timestamp_microseconds;
+  ulong end_timestamp_microseconds;
+  ulong parameter_version_fingerprint;
+  ulong source_generation;
+  ulong active_goal_identifier;
+  ulong active_option_identifier;
+  ulong archived_timestamp_microseconds;
+  uint format_version;
+  uint event_kind;
+  uint source_identifier;
+  uint flags;
+  uint coarse_cluster;
+  uint quantized_component_count;
+  float salience;
+  float epistemic_uncertainty;
+  float damage_severity;
+  float factored_reinforcement;
+  float retrieval_key_scale;
+  char quantized_retrieval_key[16];
+  uint reserved;
+};
+
 struct NBActiveEpisodeAccumulator {
   ulong identifier;
   ulong start_timestamp_microseconds;
@@ -145,6 +176,7 @@ struct NBMemoryRetrievalUniforms {
   ulong retrieval_scratch_offset;
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
+  ulong archive_episode_memory_offset;
   ulong semantic_memory_offset;
   ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
@@ -160,6 +192,9 @@ struct NBMemoryRetrievalUniforms {
   uint active_episode_stride;
   uint compressed_episode_capacity;
   uint compressed_episode_stride;
+  uint archive_episode_capacity;
+  uint archive_episode_stride;
+  uint archive_search_candidate_count;
   uint semantic_capacity;
   uint semantic_stride;
   uint semantic_relation_capacity;
@@ -484,14 +519,15 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 160);
+static_assert(sizeof(NBMemoryUniforms) == 176);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
 static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
+static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 216);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 232);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 184);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
@@ -516,6 +552,107 @@ inline ulong consolidation_hash(ulong value) {
   value ^= value >> 27;
   value *= 0x94d049bb133111ebul;
   return value ^ (value >> 31);
+}
+
+inline uint archive_cluster(thread const float *key) {
+  uint cluster = 0u;
+  for (uint component = 0u; component < 8u; ++component) {
+    if (key[component] >= 0.0f) cluster |= 1u << component;
+  }
+  return cluster;
+}
+
+inline uint archive_query_cluster(
+  device const float *query,
+  uint query_count)
+{
+  uint cluster = 0u;
+  for (uint component = 0u; component < 8u; ++component) {
+    if (component < query_count && query[component] >= 0.0f) {
+      cluster |= 1u << component;
+    }
+  }
+  return cluster;
+}
+
+inline uint archive_secondary_query_cluster(
+  device const float *query,
+  uint query_count,
+  uint primary_cluster)
+{
+  uint weakest_component = 0u;
+  float weakest_magnitude = INFINITY;
+  for (uint component = 0u; component < 8u; ++component) {
+    const float magnitude = component < query_count
+      ? abs(query[component]) : 0.0f;
+    if (magnitude < weakest_magnitude) {
+      weakest_magnitude = magnitude;
+      weakest_component = component;
+    }
+  }
+  return primary_cluster ^ (1u << weakest_component);
+}
+
+inline NBArchivedEpisodicRecord compress_archived_episode(
+  thread const NBEpisodicSummaryRecord &episode,
+  ulong archived_timestamp_microseconds)
+{
+  NBArchivedEpisodicRecord archived = {};
+  archived.identifier = episode.identifier;
+  archived.start_timestamp_microseconds = episode.start_timestamp_microseconds;
+  archived.end_timestamp_microseconds = episode.end_timestamp_microseconds;
+  archived.parameter_version_fingerprint = episode.parameter_version_fingerprint;
+  archived.source_generation = episode.source_generation;
+  archived.active_goal_identifier = episode.active_goal_identifier;
+  archived.active_option_identifier = episode.active_option_identifier;
+  archived.archived_timestamp_microseconds = archived_timestamp_microseconds;
+  archived.format_version = episode.format_version;
+  archived.event_kind = episode.event_kind;
+  archived.source_identifier = episode.source_identifier;
+  archived.flags = episode.flags | 4u;
+  archived.coarse_cluster = archive_cluster(episode.retrieval_key);
+  archived.quantized_component_count = 10u;
+  archived.salience = episode.salience;
+  archived.epistemic_uncertainty = episode.epistemic_uncertainty;
+  archived.damage_severity = episode.damage_severity;
+  archived.factored_reinforcement = episode.factored_reinforcement;
+  float maximum_magnitude = 0.0f;
+  for (uint component = 0u; component < 10u; ++component) {
+    maximum_magnitude = max(maximum_magnitude, abs(episode.retrieval_key[component]));
+  }
+  archived.retrieval_key_scale = maximum_magnitude > 0.0f
+    ? maximum_magnitude / 127.0f : 1.0f;
+  for (uint component = 0u; component < 10u; ++component) {
+    archived.quantized_retrieval_key[component] = char(clamp(
+      rint(episode.retrieval_key[component] / archived.retrieval_key_scale),
+      -127.0f,
+      127.0f
+    ));
+  }
+  return archived;
+}
+
+inline float archive_retrieval_similarity(
+  device const float *query,
+  uint query_count,
+  device const NBArchivedEpisodicRecord *record)
+{
+  const uint count = min(
+    min(query_count, record->quantized_component_count), 16u
+  );
+  if (count == 0u || !isfinite(record->retrieval_key_scale)
+      || record->retrieval_key_scale <= 0.0f) return 0.0f;
+  float dot = 0.0f;
+  float query_norm = 1.0e-6f;
+  float key_norm = 1.0e-6f;
+  for (uint component = 0u; component < count; ++component) {
+    const float key = float(record->quantized_retrieval_key[component])
+      * record->retrieval_key_scale;
+    dot += query[component] * key;
+    query_norm += query[component] * query[component];
+    key_norm += key * key;
+  }
+  return dot * rsqrt(query_norm * key_norm);
 }
 
 template<typename Record, typename Uniforms>
@@ -612,6 +749,27 @@ inline bool journal_accumulated_episode(
   const bool should_compress = uniforms.compressed_episode_capacity > 0u
     && compressed.format_version == NB_MEMORY_EPISODE_RECORD_VERSION
     && compressed.identifier != 0ul && compressed.identifier != record.identifier;
+  uint compressed_slot = 0u;
+  ulong compressed_destination = 0ul;
+  NBEpisodicSummaryRecord archive_source = {};
+  bool should_archive = false;
+  if (should_compress) {
+    compressed_slot = uint(
+      compressed.identifier % ulong(uniforms.compressed_episode_capacity)
+    );
+    compressed_destination = uniforms.compressed_episode_memory_offset
+      + ulong(compressed_slot) * ulong(uniforms.compressed_episode_stride);
+    device const NBEpisodicSummaryRecord *warm_displaced =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + compressed_destination
+      );
+    archive_source = *warm_displaced;
+    should_archive = uniforms.archive_episode_capacity
+        >= NB_MEMORY_ARCHIVE_CLUSTER_COUNT
+      && archive_source.format_version == NB_MEMORY_EPISODE_RECORD_VERSION
+      && archive_source.identifier != 0ul
+      && archive_source.identifier != compressed.identifier;
+  }
   if (!append_memory_record(
       journal, uniforms, record, destination,
       NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE, record.identifier
@@ -620,15 +778,27 @@ inline bool journal_accumulated_episode(
   }
   if (should_compress) {
     compressed.flags |= 2u;
-    const uint compressed_slot = uint(
-      compressed.identifier % ulong(uniforms.compressed_episode_capacity)
-    );
-    const ulong compressed_destination = uniforms.compressed_episode_memory_offset
-      + ulong(compressed_slot) * ulong(uniforms.compressed_episode_stride);
-    append_memory_record(
+    const bool compressed_written = append_memory_record(
       journal, uniforms, compressed, compressed_destination,
       NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE, compressed.identifier
     );
+    if (compressed_written && should_archive) {
+      const NBArchivedEpisodicRecord archived = compress_archived_episode(
+        archive_source, uniforms.target_timestamp_microseconds
+      );
+      const uint slots_per_cluster = uniforms.archive_episode_capacity
+        / NB_MEMORY_ARCHIVE_CLUSTER_COUNT;
+      const uint archive_slot = archived.coarse_cluster
+        + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * uint(
+          consolidation_hash(archived.identifier) % ulong(slots_per_cluster)
+        );
+      const ulong archive_destination = uniforms.archive_episode_memory_offset
+        + ulong(archive_slot) * ulong(uniforms.archive_episode_stride);
+      append_memory_record(
+        journal, uniforms, archived, archive_destination,
+        NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE, archived.identifier
+      );
+    }
   }
   return true;
 }
@@ -750,6 +920,42 @@ kernel void score_memory_retrieval_candidates(
       }
     } else {
       local_index -= uniforms.compressed_episode_capacity;
+    if (local_index < uniforms.archive_search_candidate_count) {
+      const uint slots_per_cluster = uniforms.archive_episode_capacity
+        / NB_MEMORY_ARCHIVE_CLUSTER_COUNT;
+      const uint cluster_choice = local_index / slots_per_cluster;
+      const uint within_cluster = local_index % slots_per_cluster;
+      const uint primary_cluster = archive_query_cluster(
+        query, uniforms.recurrent_scalar_count
+      );
+      const uint selected_cluster = cluster_choice == 0u
+        ? primary_cluster
+        : archive_secondary_query_cluster(
+            query, uniforms.recurrent_scalar_count, primary_cluster
+          );
+      const uint archive_index = selected_cluster
+        + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * within_cluster;
+      device const NBArchivedEpisodicRecord *record =
+        reinterpret_cast<device const NBArchivedEpisodicRecord *>(
+          persistent_memory + uniforms.archive_episode_memory_offset
+            + ulong(archive_index) * ulong(uniforms.archive_episode_stride)
+        );
+      if (record->format_version == NB_MEMORY_EPISODE_RECORD_VERSION
+          && record->identifier != 0ul
+          && record->coarse_cluster == selected_cluster) {
+        kind = 7u;
+        identifier = record->identifier;
+        score = 0.65f * uniforms.episodic_weight
+          * max(memory_parameters[0], 0.0f) * (
+            archive_retrieval_similarity(
+              query, uniforms.recurrent_scalar_count, record
+            ) + record->salience
+              - max(memory_parameters[6], 0.0f)
+                * record->epistemic_uncertainty
+          );
+      }
+    } else {
+      local_index -= uniforms.archive_search_candidate_count;
     if (local_index < uniforms.semantic_capacity) {
       device const NBSemanticConceptSummaryRecord *record =
         reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
@@ -829,6 +1035,7 @@ kernel void score_memory_retrieval_candidates(
       }
     }
     }
+    }
   }
   if (identifier == retrieval_request.target_identifier) score += 1.0f;
   score += 0.25f * retrieval_request.priority;
@@ -867,7 +1074,11 @@ kernel void publish_memory_retrieval_winner(
   ulong identifier = 0ul;
   float score = 0.0f;
   device const float *value = nullptr;
+  device const NBArchivedEpisodicRecord *archived_value = nullptr;
   uint value_count = 0u;
+  device const float *query = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
   uint local_index = candidate_index;
   if (local_index < uniforms.active_episode_capacity) {
     device const NBEpisodicSummaryRecord *record =
@@ -895,6 +1106,31 @@ kernel void publish_memory_retrieval_winner(
       value_count = 10u;
     } else {
       local_index -= uniforms.compressed_episode_capacity;
+    if (local_index < uniforms.archive_search_candidate_count) {
+      const uint slots_per_cluster = uniforms.archive_episode_capacity
+        / NB_MEMORY_ARCHIVE_CLUSTER_COUNT;
+      const uint cluster_choice = local_index / slots_per_cluster;
+      const uint within_cluster = local_index % slots_per_cluster;
+      const uint primary_cluster = archive_query_cluster(
+        query, uniforms.recurrent_scalar_count
+      );
+      const uint selected_cluster = cluster_choice == 0u
+        ? primary_cluster
+        : archive_secondary_query_cluster(
+            query, uniforms.recurrent_scalar_count, primary_cluster
+          );
+      const uint archive_index = selected_cluster
+        + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * within_cluster;
+      archived_value = reinterpret_cast<device const NBArchivedEpisodicRecord *>(
+        persistent_memory + uniforms.archive_episode_memory_offset
+          + ulong(archive_index) * ulong(uniforms.archive_episode_stride)
+      );
+      kind = 7u;
+      identifier = archived_value->identifier;
+      score = archived_value->salience;
+      value_count = min(archived_value->quantized_component_count, 16u);
+    } else {
+      local_index -= uniforms.archive_search_candidate_count;
     if (local_index < uniforms.semantic_capacity) {
       device const NBSemanticConceptSummaryRecord *record =
         reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
@@ -948,6 +1184,7 @@ kernel void publish_memory_retrieval_winner(
       }
     }
     }
+    }
   }
   const uint slot = 3u + uniforms.retrieval_pass;
   if (slot >= uniforms.workspace_capacity) return;
@@ -956,7 +1193,14 @@ kernel void publish_memory_retrieval_winner(
   );
   const uint base = slot * uniforms.workspace_dimension;
   for (uint index = 0u; index < uniforms.workspace_dimension; ++index) {
-    workspace[base + index] = index < value_count ? value[index] : 0.0f;
+    if (kind == 7u && archived_value != nullptr) {
+      workspace[base + index] = index < value_count
+        ? float(archived_value->quantized_retrieval_key[index])
+          * archived_value->retrieval_key_scale
+        : 0.0f;
+    } else {
+      workspace[base + index] = index < value_count ? value[index] : 0.0f;
+    }
   }
   device NBWorkspaceMetadataRecord *metadata =
     reinterpret_cast<device NBWorkspaceMetadataRecord *>(
@@ -1685,6 +1929,7 @@ kernel void segment_and_journal_episode(
     && accumulator->active_goal_identifier != control->active_goal_identifier;
   const bool option_transition = valid_accumulator
     && accumulator->active_option_identifier != control->active_option_identifier;
+  bool completed_episode_this_root = false;
   if (goal_transition || option_transition) {
     if (goal_transition && accumulator->goal_transition_count != ~0u) {
       accumulator->goal_transition_count += 1u;
@@ -1695,6 +1940,7 @@ kernel void segment_and_journal_episode(
     journal_accumulated_episode(
       persistent_memory, journal, uniforms, accumulator
     );
+    completed_episode_this_root = true;
     NBActiveEpisodeAccumulator cleared = {};
     *accumulator = cleared;
     valid_accumulator = false;
@@ -1748,7 +1994,7 @@ kernel void segment_and_journal_episode(
     || event_count > 0u
     || uniforms.target_timestamp_microseconds
       - accumulator->start_timestamp_microseconds >= 2000000ul;
-  if (salient_boundary) {
+  if (salient_boundary && !completed_episode_this_root) {
     accumulator->last_boundary_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     journal_accumulated_episode(

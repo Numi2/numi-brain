@@ -16,6 +16,7 @@ private struct MemoryUniforms {
   var activeEpisodeAccumulatorOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
+  var archiveEpisodeMemoryOffset: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -24,6 +25,8 @@ private struct MemoryUniforms {
   var activeEpisodeStride: UInt32 = 0
   var compressedEpisodeCapacity: UInt32 = 0
   var compressedEpisodeStride: UInt32 = 0
+  var archiveEpisodeCapacity: UInt32 = 0
+  var archiveEpisodeStride: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
   var boundaryThreshold: Float = 0
@@ -38,6 +41,7 @@ private struct MemoryRetrievalUniforms {
   var retrievalScratchOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
+  var archiveEpisodeMemoryOffset: UInt64 = 0
   var semanticMemoryOffset: UInt64 = 0
   var semanticRelationMemoryOffset: UInt64 = 0
   var proceduralMemoryOffset: UInt64 = 0
@@ -53,6 +57,9 @@ private struct MemoryRetrievalUniforms {
   var activeEpisodeStride: UInt32 = 0
   var compressedEpisodeCapacity: UInt32 = 0
   var compressedEpisodeStride: UInt32 = 0
+  var archiveEpisodeCapacity: UInt32 = 0
+  var archiveEpisodeStride: UInt32 = 0
+  var archiveSearchCandidateCount: UInt32 = 0
   var semanticCapacity: UInt32 = 0
   var semanticStride: UInt32 = 0
   var semanticRelationCapacity: UInt32 = 0
@@ -192,8 +199,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 160,
-      MemoryLayout<MemoryRetrievalUniforms>.stride == 216,
+    guard MemoryLayout<MemoryUniforms>.stride == 176,
+      MemoryLayout<MemoryRetrievalUniforms>.stride == 232,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
@@ -571,12 +578,18 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let memory = try arena.persistentMemoryView(transaction: transaction)
     let active = arena.memoryLayout.section(.activeEpisodes)
     let compressed = arena.memoryLayout.section(.compressedEpisodeMetadata)
+    let archive = arena.memoryLayout.section(.archiveIndex)
     let semantic = arena.memoryLayout.section(.semanticConcepts)
     let semanticRelations = arena.memoryLayout.section(.semanticRelations)
     let procedural = arena.memoryLayout.section(.proceduralSkills)
     let prospective = arena.memoryLayout.section(.prospectiveIntentions)
+    let archiveClusterCount = 256
+    let archiveSlotsPerCluster = archive.elementCount / archiveClusterCount
+    let (archiveSearchCandidateCount, archiveSearchOverflow) =
+      archiveSlotsPerCluster.multipliedReportingOverflow(by: 2)
     let candidateCounts = [
-      active.elementCount, compressed.elementCount, semantic.elementCount,
+      active.elementCount, compressed.elementCount, archiveSearchCandidateCount,
+      semantic.elementCount,
       semanticRelations.elementCount, procedural.elementCount,
       prospective.elementCount,
     ]
@@ -588,12 +601,14 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       return next
     }
     let maximumResults = Int(retrieval.maximumResults)
-    guard candidateCount > 0, candidateCount <= 0x0f_ffff,
+    guard !archiveSearchOverflow,
+      archiveSearchCandidateCount <= archive.elementCount,
+      candidateCount > 0, candidateCount <= 0x0f_ffff,
       candidateCount <= Int(UInt32.max),
       maximumResults <= retrievalUniformBuffers.count,
       3 + maximumResults <= arena.layout.section(.workspaceMetadata).elementCount,
-      [active, compressed, semantic, semanticRelations, procedural, prospective]
-        .allSatisfy({
+      [active, compressed, archive, semantic, semanticRelations, procedural,
+       prospective].allSatisfy({
         $0.elementCount <= Int(UInt32.max) && $0.elementStride <= Int(UInt32.max)
       })
     else {
@@ -611,6 +626,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         ),
         activeEpisodeMemoryOffset: UInt64(active.byteOffset),
         compressedEpisodeMemoryOffset: UInt64(compressed.byteOffset),
+        archiveEpisodeMemoryOffset: UInt64(archive.byteOffset),
         semanticMemoryOffset: UInt64(semantic.byteOffset),
         semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
         proceduralMemoryOffset: UInt64(procedural.byteOffset),
@@ -635,6 +651,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         activeEpisodeStride: UInt32(active.elementStride),
         compressedEpisodeCapacity: UInt32(compressed.elementCount),
         compressedEpisodeStride: UInt32(compressed.elementStride),
+        archiveEpisodeCapacity: UInt32(archive.elementCount),
+        archiveEpisodeStride: UInt32(archive.elementStride),
+        archiveSearchCandidateCount: UInt32(archiveSearchCandidateCount),
         semanticCapacity: UInt32(semantic.elementCount),
         semanticStride: UInt32(semantic.elementStride),
         semanticRelationCapacity: UInt32(semanticRelations.elementCount),
@@ -691,6 +710,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let memory = try arena.persistentMemoryView(transaction: transaction)
     let activeEpisodes = arena.memoryLayout.section(.activeEpisodes)
     let compressedEpisodes = arena.memoryLayout.section(.compressedEpisodeMetadata)
+    let archiveEpisodes = arena.memoryLayout.section(.archiveIndex)
     let recurrent = arena.layout.section(.regionalRecurrent)
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
@@ -702,6 +722,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeEpisodes.elementStride <= Int(UInt32.max),
       compressedEpisodes.elementCount <= Int(UInt32.max),
       compressedEpisodes.elementStride <= Int(UInt32.max),
+      archiveEpisodes.elementCount <= Int(UInt32.max),
+      archiveEpisodes.elementStride <= Int(UInt32.max),
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max)
     else {
       throw TissueError.transaction("episodic segmentation exceeds memory capacity")
@@ -722,6 +744,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       activeEpisodeMemoryOffset: UInt64(activeEpisodes.byteOffset),
       compressedEpisodeMemoryOffset: UInt64(compressedEpisodes.byteOffset),
+      archiveEpisodeMemoryOffset: UInt64(archiveEpisodes.byteOffset),
       journalByteCount: UInt64(memory.journalByteCount),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
@@ -730,6 +753,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeEpisodeStride: UInt32(activeEpisodes.elementStride),
       compressedEpisodeCapacity: UInt32(compressedEpisodes.elementCount),
       compressedEpisodeStride: UInt32(compressedEpisodes.elementStride),
+      archiveEpisodeCapacity: UInt32(archiveEpisodes.elementCount),
+      archiveEpisodeStride: UInt32(archiveEpisodes.elementStride),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
       boundaryThreshold: segmentation.boundaryThreshold,
