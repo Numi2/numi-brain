@@ -934,6 +934,13 @@ kernel void generate_active_goal_state(
   const uint active_workspace_capacity = min(
     uniforms.workspace_capacity, development->workspace_capacity
   );
+  NBWorkspaceMetadataRecord prior_goal_tokens[4] = {};
+  for (uint rank = 0u; rank < 4u; ++rank) {
+    const uint slot = 7u + rank;
+    if (slot < active_workspace_capacity) {
+      prior_goal_tokens[rank] = metadata[slot];
+    }
+  }
   const ulong previous_goal_identifier = header->active_goal_identifier;
   ulong goal_identifiers[4] = {};
   uint goal_origins[4] = {};
@@ -1262,13 +1269,30 @@ kernel void generate_active_goal_state(
       }
       workspace[base + feature] = value;
     }
-    NBWorkspaceMetadataRecord token = {};
-    token.identifier = (uniforms.target_timestamp_microseconds << 8)
-      | ulong(slot + 1u);
-    token.source_timestamp_microseconds =
-      goal_identifiers[rank] == external_goal_identifier
-        ? external_goal_created_timestamp
-        : uniforms.target_timestamp_microseconds;
+    uint matching_prior_rank = 0xffffffffu;
+    for (uint prior_rank = 0u; prior_rank < 4u; ++prior_rank) {
+      const NBWorkspaceMetadataRecord candidate = prior_goal_tokens[prior_rank];
+      if (candidate.identifier != 0ul && (candidate.flags & 1u) != 0u
+          && (candidate.kind_and_source & 0xffffu) == 2u
+          && (candidate.kind_and_source >> 16u) == 48u
+          && candidate.goal_identifier == goal_identifiers[rank]
+          && candidate.entity_identifier == goal_identifiers[rank]) {
+        matching_prior_rank = prior_rank;
+        break;
+      }
+    }
+    const bool existing_goal = matching_prior_rank != 0xffffffffu;
+    NBWorkspaceMetadataRecord token = existing_goal
+      ? prior_goal_tokens[matching_prior_rank]
+      : NBWorkspaceMetadataRecord{};
+    if (!existing_goal) {
+      token.identifier = (uniforms.target_timestamp_microseconds << 8)
+        | ulong(slot + 1u);
+      token.source_timestamp_microseconds =
+        goal_identifiers[rank] == external_goal_identifier
+          ? external_goal_created_timestamp
+          : uniforms.target_timestamp_microseconds;
+    }
     token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.entity_identifier = goal_identifiers[rank];
     token.goal_identifier = goal_identifiers[rank];
@@ -1332,10 +1356,19 @@ kernel void apply_internal_workspace_write(
     reinterpret_cast<device NBWorkspaceMetadataRecord *>(
       hot_state + uniforms.workspace_metadata_offset
     );
-  NBWorkspaceMetadataRecord token = {};
-  token.identifier = (uniforms.target_timestamp_microseconds << 8u)
-    | ulong(slot + 1u);
-  token.source_timestamp_microseconds = request.timestamp_microseconds;
+  const NBWorkspaceMetadataRecord prior = metadata[slot];
+  const bool same_request = prior.identifier != 0ul
+    && (prior.flags & NB_CONTROL_FLAG_VALID) != 0u
+    && (prior.kind_and_source & 0xffffu) == 9u
+    && (prior.kind_and_source >> 16u) == 25u
+    && prior.entity_identifier == request.target_identifier;
+  NBWorkspaceMetadataRecord token = same_request
+    ? prior : NBWorkspaceMetadataRecord{};
+  if (!same_request) {
+    token.identifier = (uniforms.target_timestamp_microseconds << 8u)
+      | ulong(slot + 1u);
+    token.source_timestamp_microseconds = request.timestamp_microseconds;
+  }
   token.last_refresh_timestamp_microseconds =
     uniforms.target_timestamp_microseconds;
   token.entity_identifier = request.target_identifier;
