@@ -38,7 +38,6 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
 
   public typealias CommitResult = MetalNumiBrainRuntime.CommitResult
 
-  public let parameterVersionFingerprint: UInt64
   public let compiledSpeciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
@@ -48,7 +47,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
 
   private let lock = NSLock()
   private let configuration: MetalNumiBrainConfiguration
-  private let publication: BrainParameterPublication
+  private var publication: BrainParameterPublication
   private let device: any MTLDevice
   private var runtime: MetalNumiBrainRuntime
   private var activeTransaction: ControlTransaction?
@@ -63,7 +62,6 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     self.configuration = configuration
     self.publication = publication
     self.device = device
-    self.parameterVersionFingerprint = runtime.parameterVersionFingerprint
     self.compiledSpeciesTemplateFingerprint =
       runtime.compiledSpeciesTemplateFingerprint
     self.regionalProgramFingerprint = runtime.regionalProgramFingerprint
@@ -78,6 +76,12 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return runtime.committedGeneration
+  }
+
+  public var parameterVersionFingerprint: UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    return publication.version.fingerprint
   }
 
   public var hasOpenControl: Bool {
@@ -216,7 +220,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
       physicalCheckpointFingerprint: physicalCheckpointFingerprint
     )
     guard candidate.committedGeneration == checkpoint.committedGeneration,
-      candidate.parameterVersionFingerprint == parameterVersionFingerprint,
+      candidate.parameterVersionFingerprint == publication.version.fingerprint,
       candidate.compiledSpeciesTemplateFingerprint
         == compiledSpeciesTemplateFingerprint,
       candidate.deviceRegistryID == deviceRegistryID
@@ -235,12 +239,23 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     controlStepIdentifier: UInt64,
     physicalCheckpointFingerprint: UInt64
   ) throws -> MetalNumiBrainCheckpoint {
-    let parentCheckpoint = try saveCheckpoint(
-      controlStepIdentifier: controlStepIdentifier,
-      physicalCheckpointFingerprint: physicalCheckpointFingerprint
-    )
+    lock.lock()
+    let parentCheckpoint: MetalNumiBrainCheckpoint
+    let parentVersion: BrainParameterVersion
+    do {
+      try requireIdle()
+      parentCheckpoint = try runtime.saveCheckpoint(
+        controlStepIdentifier: controlStepIdentifier,
+        physicalCheckpointFingerprint: physicalCheckpointFingerprint
+      )
+      parentVersion = publication.version
+      lock.unlock()
+    } catch {
+      lock.unlock()
+      throw error
+    }
     let migratedCheckpoint = try parentCheckpoint.migrated(
-      from: publication.version,
+      from: parentVersion,
       to: parameterCohort.publication
     )
     try successor.validate(parameterCohort: parameterCohort)
@@ -248,6 +263,55 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
       migratedCheckpoint,
       physicalCheckpointFingerprint: physicalCheckpointFingerprint
     )
+    return migratedCheckpoint
+  }
+
+  /// Publishes a direct learner successor into this persistent mind at a
+  /// closed rollout boundary. The old runtime remains authoritative until the
+  /// migrated checkpoint has loaded into a separately allocated successor and
+  /// that successor proves it consumes the exact cohort publication.
+  @discardableResult
+  public func activateSuccessor(
+    parameterCohort: MetalParameterCohort,
+    controlStepIdentifier: UInt64,
+    physicalCheckpointFingerprint: UInt64
+  ) throws -> MetalNumiBrainCheckpoint {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireIdle()
+    let parentCheckpoint = try runtime.saveCheckpoint(
+      controlStepIdentifier: controlStepIdentifier,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    let successorPublication = parameterCohort.publication
+    let migratedCheckpoint = try parentCheckpoint.migrated(
+      from: publication.version,
+      to: successorPublication
+    )
+    let candidate = try MetalNumiBrainRuntime.makeRuntime(
+      configuration: configuration,
+      publication: successorPublication,
+      device: device
+    )
+    try candidate.validate(parameterCohort: parameterCohort)
+    try candidate.loadCheckpoint(
+      migratedCheckpoint,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    guard candidate.committedGeneration
+        == migratedCheckpoint.committedGeneration,
+      candidate.parameterVersionFingerprint
+        == successorPublication.version.fingerprint,
+      candidate.compiledSpeciesTemplateFingerprint
+        == compiledSpeciesTemplateFingerprint,
+      candidate.deviceRegistryID == deviceRegistryID
+    else {
+      throw TissueError.transaction(
+        "learner successor did not preserve the persistent brain identity"
+      )
+    }
+    runtime = candidate
+    publication = successorPublication
     return migratedCheckpoint
   }
 
