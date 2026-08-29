@@ -43,6 +43,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong active_sensing_command_offset;
   ulong active_sensing_efficacy_offset;
   ulong accepted_somatic_output_offset;
+  ulong accepted_active_sensing_output_offset;
   ulong reflex_state_offset;
   ulong fast_autonomic_state_offset;
   ulong physics_state_fingerprint;
@@ -331,7 +332,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 376);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 384);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -837,7 +838,7 @@ kernel void update_active_sensing_efficacy(
   if (gid >= uniforms.active_sensing_count) return;
   device const NBActiveSensingCommandRecord *commands =
     reinterpret_cast<device const NBActiveSensingCommandRecord *>(
-      hot_state + uniforms.active_sensing_command_offset
+      hot_state + uniforms.accepted_active_sensing_output_offset
     );
   device NBActiveSensingEfficacyRecord *states =
     reinterpret_cast<device NBActiveSensingEfficacyRecord *>(

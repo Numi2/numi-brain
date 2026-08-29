@@ -26,6 +26,7 @@ private struct AcceptedConsequenceUniforms {
   var activeSensingCommandOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var acceptedSomaticOutputOffset: UInt64 = 0
+  var acceptedActiveSensingOutputOffset: UInt64 = 0
   var reflexStateOffset: UInt64 = 0
   var fastAutonomicStateOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
@@ -111,7 +112,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 376,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 384,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -468,6 +469,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       acceptedSomaticOutputOffset: UInt64(
         hot(.acceptedSomaticOutput).byteOffset
+      ),
+      acceptedActiveSensingOutputOffset: UInt64(
+        hot(.acceptedActiveSensingOutput).byteOffset
       ),
       reflexStateOffset: UInt64(hot(.reflexState).byteOffset),
       fastAutonomicStateOffset: UInt64(hot(.fastAutonomicState).byteOffset),
