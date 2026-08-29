@@ -166,6 +166,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let communicationDescriptorCount: UInt32
   private let valueParameterGPUAddress: UInt64
   private let policyParameterGPUAddress: UInt64
+  private let worldParameterGPUAddress: UInt64
   private let motorParameterGPUAddress: UInt64
   private let cerebellarParameterGPUAddress: UInt64
 
@@ -238,7 +239,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 11
+    descriptor.maxBufferBindCount = 12
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -453,6 +454,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.policyParameterGPUAddress = try sharedParameters.gpuAddress(
       .policy, minimumScalarCount: 16
     )
+    self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
+      .world, minimumScalarCount: 190
+    )
     self.motorParameterGPUAddress = try sharedParameters.gpuAddress(
       .motor, minimumScalarCount: 16
     )
@@ -493,6 +497,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(
       activeSensingChannelDescriptorBuffer.gpuAddress, index: 10
     )
+    argumentTable.setAddress(worldParameterGPUAddress, index: 11)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)

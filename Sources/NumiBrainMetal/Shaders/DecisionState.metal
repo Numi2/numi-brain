@@ -576,6 +576,25 @@ inline ulong nb_interrupt_mask_for_event_kind(uint kind) {
   }
 }
 
+/// Maps one parameterized option into the scalar action context expected by
+/// the learned hierarchical world dynamics. Every planning branch starts from
+/// the same world feature; only its proposed action and rolled latent state
+/// perturb the head preactivation.
+inline float nb_counterfactual_option_context(
+  const NBOptionCandidateRecord candidate,
+  thread const float *rollout_state,
+  const uint component)
+{
+  const uint parameter_count = min(max(candidate.parameter_count, 1u), 16u);
+  const uint primary = component % parameter_count;
+  const uint paired = (component + 7u) % parameter_count;
+  return tanh(
+    0.5f * candidate.parameters[primary]
+      + 0.25f * candidate.parameters[paired]
+      + 0.25f * rollout_state[component % 16u]
+  );
+}
+
 kernel void generate_active_goal_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -1088,6 +1107,7 @@ kernel void simulate_candidate_option_outcomes(
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *value_parameters [[buffer(2)]],
   device const float *policy_parameters [[buffer(3)]],
+  device const float *world_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -1173,16 +1193,30 @@ kernel void simulate_candidate_option_outcomes(
       selected_option = best_followup;
     }
     const NBOptionCandidateRecord candidate = candidates[selected_option];
-    const uint world_component = (gid * uniforms.maximum_planning_horizon + step)
-      % NB_WORLD_EVENT_OPTION_DIMENSION;
     float ensemble_mean = 0.0f;
     float head_values[NB_WORLD_HEAD_COUNT];
+    const uint planning_level = step == 0u ? 3u : 4u;
     for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-      const float prediction = structured_world_available
-        ? world[NB_WORLD_EVENT_OPTION_BASE
-            + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + world_component]
-        : world[(world_component * NB_WORLD_HEAD_COUNT + head)
-            % uniforms.world_model_scalar_count];
+      float prediction = 0.0f;
+      for (uint feature = 0u; feature < 16u; ++feature) {
+        const uint world_component = (step * 16u + feature)
+          % NB_WORLD_EVENT_OPTION_DIMENSION;
+        const float baseline = structured_world_available
+          ? world[NB_WORLD_EVENT_OPTION_BASE
+              + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + world_component]
+          : world[(world_component * NB_WORLD_HEAD_COUNT + head)
+              % uniforms.world_model_scalar_count];
+        const float base_logit = atanh(clamp(baseline, -0.999f, 0.999f));
+        const float option_context = nb_counterfactual_option_context(
+          candidate, rollout_state, world_component
+        );
+        prediction += tanh(
+          base_logit
+            + world_parameters[
+              160u + planning_level * NB_WORLD_HEAD_COUNT + head
+            ] * option_context
+        ) / 16.0f;
+      }
       head_values[head] = prediction;
       ensemble_mean += prediction / float(NB_WORLD_HEAD_COUNT);
     }
@@ -1194,7 +1228,8 @@ kernel void simulate_candidate_option_outcomes(
     const float epistemic = sqrt(max(epistemic_variance, 0.0f));
     const float aleatoric_variance = structured_world_available
       ? max(world[NB_WORLD_EVENT_OPTION_BASE
-          + 8u * NB_WORLD_EVENT_OPTION_DIMENSION + world_component], 0.0f)
+          + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
+          + (step * 16u) % NB_WORLD_EVENT_OPTION_DIMENSION], 0.0f)
       : 0.0f;
     const float predicted_world_damage = clamp(ensemble_mean, 0.0f, 1.0f);
     const float step_damage = clamp(
