@@ -158,6 +158,12 @@ struct NBWorkspaceMetadataRecord {
   ulong provenance_record_identifier;
   uint kind_and_source;
   float confidence;
+  float persistence_priority;
+  float selection_score;
+  uint provenance_kind;
+  uint flags;
+  ulong provenance_source_generation;
+  ulong reserved;
 };
 
 struct NBInternalActionRecord {
@@ -313,7 +319,7 @@ static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -2464,10 +2470,20 @@ kernel void select_and_merge_foundation_workspace(
     constexpr uint drive_source_module = 70u;
     const float persistence = clamp(memory_parameters[14], 0.0f, 1.0f);
     NBWorkspaceMetadataRecord prior = metadata[0];
+    const float prior_persistence = (prior.flags & 1u) != 0u
+      ? clamp(prior.persistence_priority, 0.0f, 1.0f)
+      : persistence;
     const float retained_confidence = clamp(prior.confidence, 0.0f, 1.0f)
       * nb_workspace_retention(
-        memory_parameters, persistence, elapsed_seconds
+        memory_parameters, prior_persistence, elapsed_seconds
       );
+    const float retained_selection_score = clamp(
+      (prior.flags & 1u) != 0u ? prior.selection_score : prior.confidence,
+      0.0f,
+      1.0f
+    ) * nb_workspace_retention(
+      memory_parameters, prior_persistence, elapsed_seconds
+    );
     const ulong drive_identity = selected_drive == 0xffffffffu
       ? 0ul : ulong(drives[selected_drive].kind);
     const bool matches = selected_drive != 0xffffffffu
@@ -2476,8 +2492,8 @@ kernel void select_and_merge_foundation_workspace(
       );
     const bool replace = selected_drive_score >= minimum_score
       && (prior.identifier == 0ul || matches
-        || selected_drive_score > retained_confidence
-          + replacement_margin * (0.25f + 0.75f * persistence));
+        || selected_drive_score > retained_selection_score
+          + replacement_margin * (0.25f + 0.75f * prior_persistence));
     if (replace) {
       const uint base = 0u;
       const NBDriveStateRecord selected = drives[selected_drive];
@@ -2517,10 +2533,17 @@ kernel void select_and_merge_foundation_workspace(
       token.confidence = matches
         ? mix(retained_confidence, selected_drive_score, refresh_gain)
         : selected_drive_score;
+      token.persistence_priority = persistence;
+      token.selection_score = selected_drive_score;
+      token.provenance_kind = 0u;
+      token.flags = 1u;
+      token.provenance_source_generation = 0ul;
+      token.reserved = 0ul;
       metadata[0] = token;
     } else if (prior.identifier != 0ul) {
       prior.confidence = retained_confidence;
-      if (retained_confidence < minimum_score) {
+      prior.selection_score = retained_selection_score;
+      if (retained_selection_score < minimum_score) {
         nb_clear_workspace_slot(
           content, metadata, 0u, uniforms.workspace_dimension
         );
@@ -2590,10 +2613,21 @@ kernel void select_and_merge_foundation_workspace(
   constexpr uint self_kind = 1u;
   const float self_persistence = clamp(memory_parameters[15], 0.0f, 1.0f);
   NBWorkspaceMetadataRecord prior_self = metadata[1];
+  const float prior_self_persistence = (prior_self.flags & 1u) != 0u
+    ? clamp(prior_self.persistence_priority, 0.0f, 1.0f)
+    : self_persistence;
   const float retained_self_confidence = clamp(
     prior_self.confidence, 0.0f, 1.0f
   ) * nb_workspace_retention(
-    memory_parameters, self_persistence, elapsed_seconds
+    memory_parameters, prior_self_persistence, elapsed_seconds
+  );
+  const float retained_self_selection_score = clamp(
+    (prior_self.flags & 1u) != 0u
+      ? prior_self.selection_score : prior_self.confidence,
+    0.0f,
+    1.0f
+  ) * nb_workspace_retention(
+    memory_parameters, prior_self_persistence, elapsed_seconds
   );
   const uint self_source_module = selected_region == 0xffffffffu
     ? 0u : region_ranges[selected_region].module_identifier;
@@ -2605,8 +2639,8 @@ kernel void select_and_merge_foundation_workspace(
     );
   const bool replace_self = selected_self_score >= minimum_score
     && (prior_self.identifier == 0ul || self_matches
-      || selected_self_score > retained_self_confidence
-        + replacement_margin * (0.25f + 0.75f * self_persistence));
+      || selected_self_score > retained_self_selection_score
+        + replacement_margin * (0.25f + 0.75f * prior_self_persistence));
   if (replace_self) {
     const NBPlasticityRegionRangeRecord selected_range =
       region_ranges[selected_region];
@@ -2636,10 +2670,17 @@ kernel void select_and_merge_foundation_workspace(
     token.confidence = self_matches
       ? mix(retained_self_confidence, selected_self_score, refresh_gain)
       : selected_self_score;
+    token.persistence_priority = self_persistence;
+    token.selection_score = selected_self_score;
+    token.provenance_kind = 0u;
+    token.flags = 1u;
+    token.provenance_source_generation = 0ul;
+    token.reserved = 0ul;
     metadata[1] = token;
   } else if (prior_self.identifier != 0ul) {
     prior_self.confidence = retained_self_confidence;
-    if (retained_self_confidence < minimum_score) {
+    prior_self.selection_score = retained_self_selection_score;
+    if (retained_self_selection_score < minimum_score) {
       nb_clear_workspace_slot(
         content, metadata, 1u, uniforms.workspace_dimension
       );
@@ -2861,6 +2902,10 @@ kernel void broadcast_social_context(
     object_token.entity_identifier = best_object.identifier;
     object_token.kind_and_source = 3u | (39u << 16u);
     object_token.confidence = nb_saturate(best_object_score);
+    object_token.persistence_priority = 0.65f;
+    object_token.selection_score = nb_saturate(best_object_score);
+    object_token.provenance_kind = 0u;
+    object_token.flags = 1u;
     metadata[slot] = object_token;
   }
 
@@ -2931,6 +2976,10 @@ kernel void broadcast_social_context(
       ? (10u | (51u << 16u))
       : (4u | (44u << 16u));
     token.confidence = nb_saturate(selected_score);
+    token.persistence_priority = communication_token ? 0.8f : 0.65f;
+    token.selection_score = nb_saturate(selected_score);
+    token.provenance_kind = communication_token ? 5u : 0u;
+    token.flags = 1u;
     metadata[target_slot] = token;
   }
 }

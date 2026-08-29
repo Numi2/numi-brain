@@ -136,7 +136,7 @@ public struct MetalArenaSectionLayout<Section: RawRepresentable & Codable & Equa
 @frozen
 public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let alignment = 256
-  public static let workspaceMetadataStride = 64
+  public static let workspaceMetadataStride = 96
   public static let bodyBeliefStride = 256
   public static let muscleBeliefStride = 192
   public static let objectSlotStride = 512

@@ -167,6 +167,12 @@ struct NBWorkspaceMetadataRecord {
   ulong provenance_record_identifier;
   uint kind_and_source;
   float confidence;
+  float persistence_priority;
+  float selection_score;
+  uint provenance_kind;
+  uint flags;
+  ulong provenance_source_generation;
+  ulong reserved;
 };
 
 struct NBControlHeader {
@@ -371,7 +377,7 @@ static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
@@ -1388,6 +1394,17 @@ kernel void broadcast_accepted_prediction_error(
             ? 1.0f : max(protective_risk, physiological_critical)
         )
       : clamp(min(1.0f - error, mean_agency), 0.0f, 1.0f);
+    const float accepted_error_salience = clamp(max(
+      error,
+      max(protective_risk, physiological_critical)
+    ), 0.0f, 1.0f);
+    token.persistence_priority = accepted_stop
+      ? 1.0f : 0.35f + 0.45f * accepted_error_salience;
+    token.selection_score = accepted_stop ? 1.0f : accepted_error_salience;
+    token.provenance_kind = 0u;
+    token.flags = 1u | (1u << 1u);
+    token.provenance_source_generation = 0ul;
+    token.reserved = 0ul;
     metadata[2] = token;
   }
   control->unsupported_uncertainty = max(

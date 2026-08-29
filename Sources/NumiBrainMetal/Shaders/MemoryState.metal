@@ -499,6 +499,12 @@ struct NBWorkspaceMetadataRecord {
   ulong provenance_record_identifier;
   uint kind_and_source;
   float confidence;
+  float persistence_priority;
+  float selection_score;
+  uint provenance_kind;
+  uint flags;
+  ulong provenance_source_generation;
+  ulong reserved;
 };
 
 struct NBControlHeader {
@@ -1031,7 +1037,7 @@ static_assert(sizeof(NBMemoryReconsolidationUniforms) == 288);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 368);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);
@@ -2424,9 +2430,26 @@ kernel void publish_memory_retrieval_winner(
     : (kind == 5u ? 59u
       : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
   token.kind_and_source = 5u | (source_module << 16);
-  token.confidence = sqrt(
+  const float retrieval_confidence = sqrt(
     clamp(score, 0.0f, 1.0f) * clamp(retrieval_relevance, 0.0f, 1.0f)
   );
+  token.confidence = retrieval_confidence;
+  token.persistence_priority = kind == 4u
+    ? 0.95f : (kind == 3u ? 0.85f
+      : ((kind == 2u || kind == 5u) ? 0.8f : 0.7f));
+  token.selection_score = clamp(
+    0.6f * retrieval_relevance + 0.4f * clamp(score, 0.0f, 1.0f),
+    0.0f,
+    1.0f
+  );
+  token.provenance_kind = (kind == 1u || kind == 6u || kind == 7u)
+    ? 1u : ((kind == 2u || kind == 5u) ? 2u : (kind == 3u ? 3u : 0u));
+  token.flags = 1u | (kind == 4u ? (1u << 2u) : 0u);
+  token.provenance_source_generation = episodic_value != nullptr
+    ? episodic_value->source_generation
+    : (archived_value != nullptr
+      ? archived_value->source_generation : uniforms.shadow_generation);
+  token.reserved = 0ul;
   metadata[slot] = token;
   scratch->winner_record_identifiers[uniforms.retrieval_pass] = identifier;
   scratch->winner_kinds[uniforms.retrieval_pass] = kind;

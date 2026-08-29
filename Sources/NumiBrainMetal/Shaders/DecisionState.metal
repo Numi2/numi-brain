@@ -160,6 +160,12 @@ struct NBWorkspaceMetadataRecord {
   ulong provenance_record_identifier;
   uint kind_and_source;
   float confidence;
+  float persistence_priority;
+  float selection_score;
+  uint provenance_kind;
+  uint flags;
+  ulong provenance_source_generation;
+  ulong reserved;
 };
 
 struct NBControlHeader {
@@ -464,7 +470,7 @@ static_assert(sizeof(NBDecisionUniforms) == 424);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);
@@ -1272,6 +1278,14 @@ kernel void generate_active_goal_state(
     }
     token.kind_and_source = 2u | (48u << 16);
     token.confidence = clamp(goal_priorities[rank], 0.0f, 1.0f);
+    token.persistence_priority = goal_identifiers[rank]
+        == external_goal_identifier
+      ? external_goal_persistence : (rank == 0u ? 0.8f : 0.5f);
+    token.selection_score = clamp(goal_priorities[rank], 0.0f, 1.0f);
+    token.provenance_kind = 0u;
+    token.flags = 1u;
+    token.provenance_source_generation = 0ul;
+    token.reserved = 0ul;
     metadata[slot] = token;
   }
 }
@@ -1327,6 +1341,12 @@ kernel void apply_internal_workspace_write(
   token.goal_identifier = request.target_identifier;
   token.kind_and_source = 9u | (25u << 16u);
   token.confidence = clamp(request.confidence * request.priority, 0.0f, 1.0f);
+  token.persistence_priority = clamp(request.priority, 0.0f, 1.0f);
+  token.selection_score = token.confidence;
+  token.provenance_kind = 0u;
+  token.flags = 1u;
+  token.provenance_source_generation = 0ul;
+  token.reserved = 0ul;
   metadata[slot] = token;
 }
 
