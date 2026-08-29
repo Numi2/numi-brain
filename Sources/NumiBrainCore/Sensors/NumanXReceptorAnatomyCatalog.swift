@@ -397,9 +397,11 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     endpoints: [NumanXReceptorEndpoint],
     species: SpeciesTemplate
   ) throws {
-    guard Set(endpoints.map(\.identifier)).count == endpoints.count else {
+    guard Set(endpoints.map(\.identifier)).count == endpoints.count,
+      endpoints.contains(where: { $0.bodyIdentifier == 0 })
+    else {
       throw BrainRuntimeError.invalidDescriptor(
-        "NumanX receptor endpoint identifiers are duplicated"
+        "NumanX body receptor anatomy requires unique endpoints and root evidence"
       )
     }
     let topologyByModality = Dictionary(

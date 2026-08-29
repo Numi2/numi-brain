@@ -218,6 +218,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     guard parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.scheduleFingerprint == regionalProgram.scheduleFingerprint,
       sensoryProfile.speciesTemplateFingerprint == species.fingerprint,
+      !sensoryProfile.bodyReceptorBindings.isEmpty,
+      sensoryProfile.bodyReceptorBindings.allSatisfy({
+        $0.sourceModelFingerprint > 0 && $0.sourceEndpointIdentifier > 0
+      }),
       let commandQueue = device.makeMTL4CommandQueue(),
       let commandAllocator = device.makeCommandAllocator(),
       let commandBuffer = device.makeCommandBuffer()
