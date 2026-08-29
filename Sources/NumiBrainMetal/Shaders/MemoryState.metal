@@ -1,6 +1,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
+#define NB_MEMORY_ARCHIVE_SHORTLIST_COUNT 32u
+
 constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE = 2u;
@@ -398,7 +400,8 @@ struct NBMemoryRetrievalScratch {
   uint winner_indices[4];
   float winner_scores[4];
   uint flags;
-  uint reserved[39];
+  atomic_uint archive_shortlist_keys[NB_MEMORY_ARCHIVE_SHORTLIST_COUNT];
+  uint reserved[71];
 };
 
 struct NBSemanticConceptSummaryRecord {
@@ -537,7 +540,7 @@ static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
-static_assert(sizeof(NBMemoryRetrievalScratch) == 256);
+static_assert(sizeof(NBMemoryRetrievalScratch) == 512);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
@@ -653,6 +656,42 @@ inline float archive_retrieval_similarity(
     key_norm += key * key;
   }
   return dot * rsqrt(query_norm * key_norm);
+}
+
+inline uint archive_storage_index_for_search_candidate(
+  device const float *query,
+  uint query_count,
+  constant NBMemoryRetrievalUniforms &uniforms,
+  uint search_index)
+{
+  const uint slots_per_cluster = uniforms.archive_episode_capacity
+    / NB_MEMORY_ARCHIVE_CLUSTER_COUNT;
+  const uint cluster_choice = search_index / slots_per_cluster;
+  const uint within_cluster = search_index % slots_per_cluster;
+  const uint primary_cluster = archive_query_cluster(query, query_count);
+  const uint selected_cluster = cluster_choice == 0u
+    ? primary_cluster
+    : archive_secondary_query_cluster(query, query_count, primary_cluster);
+  return selected_cluster
+    + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * within_cluster;
+}
+
+inline float archive_coarse_similarity(
+  device const float *query,
+  uint query_count,
+  device const NBArchivedEpisodicRecord *record)
+{
+  const uint count = min(
+    min(query_count, record->quantized_component_count), 8u
+  );
+  if (count == 0u) return 0.0f;
+  uint sign_matches = 0u;
+  for (uint component = 0u; component < count; ++component) {
+    const bool query_positive = query[component] >= 0.0f;
+    const bool record_positive = record->quantized_retrieval_key[component] >= 0;
+    sign_matches += query_positive == record_positive ? 1u : 0u;
+  }
+  return float(sign_matches) / float(count);
 }
 
 template<typename Record, typename Uniforms>
@@ -841,6 +880,162 @@ kernel void begin_memory_retrieval(
   if (gid == 0u) scratch->flags = 0u;
 }
 
+kernel void clear_archive_retrieval_shortlist(
+  device uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= NB_MEMORY_ARCHIVE_SHORTLIST_COUNT) return;
+  device NBMemoryRetrievalScratch *scratch =
+    reinterpret_cast<device NBMemoryRetrievalScratch *>(
+      hot_state + uniforms.retrieval_scratch_offset
+    );
+  atomic_store_explicit(
+    &scratch->archive_shortlist_keys[gid], 0u, memory_order_relaxed
+  );
+}
+
+/// Coarse cluster-local archive selection. Each deterministic shard retains
+/// one candidate using only key signs, salience, and uncertainty; fine vector
+/// similarity is intentionally deferred to the bounded rerank kernel.
+kernel void score_archive_retrieval_shortlist(
+  device uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
+  device const float *memory_parameters [[buffer(6)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.archive_search_candidate_count
+      || uniforms.retrieval_pass >= min(uniforms.maximum_results, 4u)) return;
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  if (development->stage < 7u || internal_actions[0].kind != 1u
+      || (internal_actions[0].flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u) return;
+
+  device NBMemoryRetrievalScratch *scratch =
+    reinterpret_cast<device NBMemoryRetrievalScratch *>(
+      hot_state + uniforms.retrieval_scratch_offset
+    );
+  const uint global_index = uniforms.active_episode_capacity
+    + uniforms.compressed_episode_capacity + gid;
+  for (uint pass = 0u; pass < uniforms.retrieval_pass; ++pass) {
+    const uint previous_key = atomic_load_explicit(
+      &scratch->winner_keys[pass], memory_order_relaxed
+    );
+    if (previous_key != 0u
+        && 0xfffffu - (previous_key & 0xfffffu) == global_index) return;
+  }
+
+  device const float *query = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
+  const uint archive_index = archive_storage_index_for_search_candidate(
+    query, uniforms.recurrent_scalar_count, uniforms, gid
+  );
+  device const NBArchivedEpisodicRecord *record =
+    reinterpret_cast<device const NBArchivedEpisodicRecord *>(
+      persistent_memory + uniforms.archive_episode_memory_offset
+        + ulong(archive_index) * ulong(uniforms.archive_episode_stride)
+    );
+  if (record->format_version != NB_MEMORY_EPISODE_RECORD_VERSION
+      || record->identifier == 0ul) return;
+  const uint expected_cluster = archive_query_cluster(
+    query, uniforms.recurrent_scalar_count
+  );
+  const uint selected_cluster = gid
+      < uniforms.archive_search_candidate_count / 2u
+    ? expected_cluster
+    : archive_secondary_query_cluster(
+        query, uniforms.recurrent_scalar_count, expected_cluster
+      );
+  if (record->coarse_cluster != selected_cluster) return;
+
+  const float coarse_score = archive_coarse_similarity(
+    query, uniforms.recurrent_scalar_count, record
+  ) + 0.25f * record->salience
+    - 0.10f * max(memory_parameters[6], 0.0f)
+      * record->epistemic_uncertainty;
+  if (!isfinite(coarse_score)) return;
+  const uint quantized_score = min(
+    uint(clamp(coarse_score / 1.25f, 0.0f, 1.0f) * 4095.0f), 4095u
+  );
+  const uint key = (quantized_score << 20) | (0xfffffu - gid);
+  atomic_fetch_max_explicit(
+    &scratch->archive_shortlist_keys[gid % NB_MEMORY_ARCHIVE_SHORTLIST_COUNT],
+    key,
+    memory_order_relaxed
+  );
+}
+
+/// Fine rerank of the bounded archive shortlist. The resulting key uses the
+/// global candidate index so publication and duplicate suppression remain
+/// identical across every memory tier.
+kernel void rerank_archive_retrieval_shortlist(
+  device uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
+  device const float *memory_parameters [[buffer(6)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= NB_MEMORY_ARCHIVE_SHORTLIST_COUNT
+      || uniforms.retrieval_pass >= min(uniforms.maximum_results, 4u)) return;
+  device NBMemoryRetrievalScratch *scratch =
+    reinterpret_cast<device NBMemoryRetrievalScratch *>(
+      hot_state + uniforms.retrieval_scratch_offset
+    );
+  const uint shortlist_key = atomic_load_explicit(
+    &scratch->archive_shortlist_keys[gid], memory_order_relaxed
+  );
+  if (shortlist_key == 0u) return;
+  const uint search_index = 0xfffffu - (shortlist_key & 0xfffffu);
+  const uint global_index = uniforms.active_episode_capacity
+    + uniforms.compressed_episode_capacity + search_index;
+  device const float *query = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
+  const uint archive_index = archive_storage_index_for_search_candidate(
+    query, uniforms.recurrent_scalar_count, uniforms, search_index
+  );
+  device const NBArchivedEpisodicRecord *record =
+    reinterpret_cast<device const NBArchivedEpisodicRecord *>(
+      persistent_memory + uniforms.archive_episode_memory_offset
+        + ulong(archive_index) * ulong(uniforms.archive_episode_stride)
+    );
+  if (record->format_version != NB_MEMORY_EPISODE_RECORD_VERSION
+      || record->identifier == 0ul) return;
+  const NBInternalActionRecord retrieval_request =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    )[0];
+  float score = 0.65f * uniforms.episodic_weight
+    * max(memory_parameters[0], 0.0f) * (
+      archive_retrieval_similarity(
+        query, uniforms.recurrent_scalar_count, record
+      ) + record->salience
+        - max(memory_parameters[6], 0.0f) * record->epistemic_uncertainty
+    );
+  if (record->identifier == retrieval_request.target_identifier) score += 1.0f;
+  score += 0.25f * retrieval_request.priority;
+  if (!isfinite(score) || score < uniforms.minimum_score) return;
+  const float normalized = clamp(
+    (score - uniforms.minimum_score) / (16.0f + abs(uniforms.minimum_score)),
+    0.0f,
+    1.0f
+  );
+  const uint quantized_score = min(uint(normalized * 4095.0f), 4095u);
+  const uint key = (quantized_score << 20) | (0xfffffu - global_index);
+  atomic_fetch_max_explicit(
+    &scratch->winner_keys[uniforms.retrieval_pass], key, memory_order_relaxed
+  );
+}
+
 kernel void score_memory_retrieval_candidates(
   device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
@@ -921,39 +1116,9 @@ kernel void score_memory_retrieval_candidates(
     } else {
       local_index -= uniforms.compressed_episode_capacity;
     if (local_index < uniforms.archive_search_candidate_count) {
-      const uint slots_per_cluster = uniforms.archive_episode_capacity
-        / NB_MEMORY_ARCHIVE_CLUSTER_COUNT;
-      const uint cluster_choice = local_index / slots_per_cluster;
-      const uint within_cluster = local_index % slots_per_cluster;
-      const uint primary_cluster = archive_query_cluster(
-        query, uniforms.recurrent_scalar_count
-      );
-      const uint selected_cluster = cluster_choice == 0u
-        ? primary_cluster
-        : archive_secondary_query_cluster(
-            query, uniforms.recurrent_scalar_count, primary_cluster
-          );
-      const uint archive_index = selected_cluster
-        + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * within_cluster;
-      device const NBArchivedEpisodicRecord *record =
-        reinterpret_cast<device const NBArchivedEpisodicRecord *>(
-          persistent_memory + uniforms.archive_episode_memory_offset
-            + ulong(archive_index) * ulong(uniforms.archive_episode_stride)
-        );
-      if (record->format_version == NB_MEMORY_EPISODE_RECORD_VERSION
-          && record->identifier != 0ul
-          && record->coarse_cluster == selected_cluster) {
-        kind = 7u;
-        identifier = record->identifier;
-        score = 0.65f * uniforms.episodic_weight
-          * max(memory_parameters[0], 0.0f) * (
-            archive_retrieval_similarity(
-              query, uniforms.recurrent_scalar_count, record
-            ) + record->salience
-              - max(memory_parameters[6], 0.0f)
-                * record->epistemic_uncertainty
-          );
-      }
+      // Tier-2 is scored by the coarse shortlist and bounded fine-rerank
+      // kernels. Keeping its global index range here preserves deterministic
+      // winner identities without paying a fine-vector score in this pass.
     } else {
       local_index -= uniforms.archive_search_candidate_count;
     if (local_index < uniforms.semantic_capacity) {

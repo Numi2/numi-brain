@@ -177,7 +177,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let controlLayout: MetalActiveControlLayout
   private let segmentPipeline: any MTLComputePipelineState
   private let retrievalBeginPipeline: any MTLComputePipelineState
+  private let archiveShortlistClearPipeline: any MTLComputePipelineState
+  private let archiveShortlistScorePipeline: any MTLComputePipelineState
   private let retrievalScorePipeline: any MTLComputePipelineState
+  private let archiveRerankPipeline: any MTLComputePipelineState
   private let retrievalPublishPipeline: any MTLComputePipelineState
   private let consolidationPipeline: any MTLComputePipelineState
   private let prospectiveLifecyclePipeline: any MTLComputePipelineState
@@ -232,7 +235,11 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let names = [
       "segment_and_journal_episode", "begin_memory_retrieval",
-      "score_memory_retrieval_candidates", "publish_memory_retrieval_winner",
+      "clear_archive_retrieval_shortlist",
+      "score_archive_retrieval_shortlist",
+      "score_memory_retrieval_candidates",
+      "rerank_archive_retrieval_shortlist",
+      "publish_memory_retrieval_winner",
       "consolidate_lived_memory_during_rest", "advance_prospective_memory",
       "journal_committed_learning_transition",
     ]
@@ -316,11 +323,14 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     )
     self.segmentPipeline = pipelines[0]
     self.retrievalBeginPipeline = pipelines[1]
-    self.retrievalScorePipeline = pipelines[2]
-    self.retrievalPublishPipeline = pipelines[3]
-    self.consolidationPipeline = pipelines[4]
-    self.prospectiveLifecyclePipeline = pipelines[5]
-    self.committedTransitionPipeline = pipelines[6]
+    self.archiveShortlistClearPipeline = pipelines[2]
+    self.archiveShortlistScorePipeline = pipelines[3]
+    self.retrievalScorePipeline = pipelines[4]
+    self.archiveRerankPipeline = pipelines[5]
+    self.retrievalPublishPipeline = pipelines[6]
+    self.consolidationPipeline = pipelines[7]
+    self.prospectiveLifecyclePipeline = pipelines[8]
+    self.committedTransitionPipeline = pipelines[9]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
@@ -690,8 +700,26 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       argumentTable.setAddress(retrievalUniformBuffers[pass].gpuAddress, index: 2)
       dispatch(
         encoder,
+        pipeline: archiveShortlistClearPipeline,
+        count: 32
+      )
+      barrier(encoder)
+      dispatch(
+        encoder,
+        pipeline: archiveShortlistScorePipeline,
+        count: archiveSearchCandidateCount
+      )
+      barrier(encoder)
+      dispatch(
+        encoder,
         pipeline: retrievalScorePipeline,
         count: candidateCount
+      )
+      barrier(encoder)
+      dispatch(
+        encoder,
+        pipeline: archiveRerankPipeline,
+        count: 32
       )
       barrier(encoder)
       dispatch(encoder, pipeline: retrievalPublishPipeline, count: 1)

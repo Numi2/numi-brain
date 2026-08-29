@@ -316,7 +316,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Int(species.motor.actuatorCount),
       stride: MemoryLayout<Float>.stride
     )
-    try builder.append(.memoryRetrievalScratch, count: 1, stride: 256)
+    try builder.append(.memoryRetrievalScratch, count: 1, stride: 512)
     try builder.append(.developmentalState, count: 1, stride: 256)
     let capabilityCodeCount = species.development
       .flatMap(\.capabilityGateCodes).count
