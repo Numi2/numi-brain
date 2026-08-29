@@ -20,7 +20,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 2u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
@@ -378,6 +378,7 @@ struct NBCommittedTransitionUniforms {
   ulong event_queue_offset;
   ulong control_header_offset;
   ulong somatic_output_offset;
+  ulong active_sensing_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
   ulong fast_plasticity_offset;
@@ -390,6 +391,7 @@ struct NBCommittedTransitionUniforms {
   uint recurrent_scalar_count;
   uint observation_count;
   uint action_count;
+  uint active_sensing_count;
   uint drive_count;
   uint neuromodulator_count;
   uint fast_plasticity_count;
@@ -550,6 +552,13 @@ struct NBNeuromodulatorRecord {
   float decay_time_constant_seconds;
   uint kind;
   uint flags;
+};
+
+struct NBActiveSensingCommandRecord {
+  float command;
+  float confidence;
+  uint attention_allocation_mask;
+  uint kind_and_flags;
 };
 
 struct NBFastPlasticityRecord {
@@ -771,7 +780,7 @@ struct NBCommittedTransitionRecord {
   float teacher_state[24];
   float fast_plasticity_trace[16];
   float cerebellar_trace[16];
-  float reserved_tail[4];
+  float active_sensing_trace[4];
 };
 
 /// Planning-only learner record. Its explicit imagined flag and disjoint
@@ -824,7 +833,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 240);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 256);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -834,6 +843,7 @@ static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
+static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
@@ -3708,6 +3718,10 @@ kernel void journal_committed_learning_transition(
   device const float *actions = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.somatic_output_offset
   );
+  device const NBActiveSensingCommandRecord *active_sensing =
+    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
+      output_hot_state + uniforms.active_sensing_offset
+    );
   device const NBControlHeader *control =
     reinterpret_cast<device const NBControlHeader *>(
       output_hot_state + uniforms.control_header_offset
@@ -3723,6 +3737,10 @@ kernel void journal_committed_learning_transition(
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       output_hot_state + uniforms.neuromodulation_offset
+    );
+  device const NBNeuromodulatorRecord *prior_neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorRecord *>(
+      input_hot_state + uniforms.neuromodulation_offset
     );
   device const NBFastPlasticityRecord *prior_plasticity =
     reinterpret_cast<device const NBFastPlasticityRecord *>(
@@ -3780,6 +3798,22 @@ kernel void journal_committed_learning_transition(
   record.model_error = uniforms.neuromodulator_count > 1u
     ? neuromodulators[1].value : 0.0f;
   record.predicted_information_gain = control->predicted_information_gain;
+  const float prior_epistemic = uniforms.neuromodulator_count > 3u
+    ? clamp(prior_neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
+  const float accepted_epistemic = uniforms.neuromodulator_count > 3u
+    ? clamp(neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
+  float sensing_allocation = 0.0f;
+  for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
+    const NBActiveSensingCommandRecord command = active_sensing[channel];
+    if ((command.kind_and_flags & (1u << 16u)) == 0u) continue;
+    sensing_allocation += clamp(command.confidence, 0.0f, 1.0f);
+  }
+  if (uniforms.active_sensing_count > 0u) {
+    sensing_allocation /= float(uniforms.active_sensing_count);
+  }
+  const float realized_information_gain = clamp(
+    prior_epistemic - accepted_epistemic, 0.0f, 1.0f
+  ) * sensing_allocation;
   for (uint component = 0u; component < 24u; ++component) {
     record.prior_state[component] = prior[
       component % uniforms.recurrent_scalar_count
@@ -3798,7 +3832,7 @@ kernel void journal_committed_learning_transition(
   record.factored_reinforcement[1] = control->selected_score;
   record.factored_reinforcement[2] = uniforms.drive_count > 9u
     ? drives[9].potential : 0.0f;
-  record.factored_reinforcement[3] = control->predicted_information_gain;
+  record.factored_reinforcement[3] = realized_information_gain;
   record.factored_reinforcement[4] = -record.pain;
   record.factored_reinforcement[5] = -control->predicted_effort;
   record.factored_reinforcement[6] = -control->selected_damage_cvar;
@@ -3873,6 +3907,10 @@ kernel void journal_committed_learning_transition(
     record.cerebellar_trace[base + 2u] = expert.state[1];
     record.cerebellar_trace[base + 3u] = expert.state[2];
   }
+  record.active_sensing_trace[0] = prior_epistemic;
+  record.active_sensing_trace[1] = accepted_epistemic;
+  record.active_sensing_trace[2] = sensing_allocation;
+  record.active_sensing_trace[3] = realized_information_gain;
 
   const uint slot = uint(
     uniforms.shadow_generation % ulong(uniforms.transition_capacity)

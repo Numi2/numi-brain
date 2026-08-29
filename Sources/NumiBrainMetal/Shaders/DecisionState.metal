@@ -2068,9 +2068,12 @@ kernel void generate_motor_spinal_autonomic_state(
       embodied_risk + 0.5f * fatigue + 0.25f * candidate.effort_cost,
       0.0f, 1.0f
     );
-    const float information_allocation = expected_information
+    const float expected_sensing_value = clamp(
+      expected_information * max(policy_parameters[15], 0.0f), 0.0f, 1.0f
+    );
+    const float information_allocation = expected_sensing_value
         > max(policy_parameters[14], 0.0f)
-      ? expected_information * (1.0f - sensing_cost)
+      ? expected_sensing_value * (1.0f - sensing_cost)
       : 0.0f;
     const float communication_allocation =
       communication_selected && communication_sensing

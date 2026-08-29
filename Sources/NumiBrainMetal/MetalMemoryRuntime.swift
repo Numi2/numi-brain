@@ -227,6 +227,7 @@ private struct CommittedTransitionUniforms {
   var eventQueueOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
+  var activeSensingOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
@@ -239,6 +240,7 @@ private struct CommittedTransitionUniforms {
   var recurrentScalarCount: UInt32 = 0
   var observationCount: UInt32 = 0
   var actionCount: UInt32 = 0
+  var activeSensingCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
@@ -284,6 +286,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let segmentation: EpisodicSegmentationDynamics
   private let retrieval: MemoryRetrievalDynamics
   private let controlLayout: MetalActiveControlLayout
+  private let activeSensingCount: Int
   private let segmentPipeline: any MTLComputePipelineState
   private let retrievalBeginPipeline: any MTLComputePipelineState
   private let archiveShortlistClearPipeline: any MTLComputePipelineState
@@ -320,7 +323,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 240,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 256,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -450,6 +453,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       arenaLayout: arena.layout,
       species: species
     )
+    self.activeSensingCount = Int(species.motor.activeSensingActionDimension)
     self.segmentPipeline = pipelines[0]
     self.retrievalBeginPipeline = pipelines[1]
     self.archiveShortlistClearPipeline = pipelines[2]
@@ -502,6 +506,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let observations = layout.section(.sensoryObservations)
     let events = layout.section(.eventQueue)
     let somatic = layout.section(.somaticOutput)
+    let activeSensing = controlLayout.section(.activeSensingCommands)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
     let fastPlasticity = layout.section(.fastPlasticity)
@@ -538,6 +543,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       eventQueueOffset: UInt64(events.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
+      activeSensingOffset: UInt64(activeSensing.byteOffset),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
       fastPlasticityOffset: UInt64(fastPlasticity.byteOffset),
@@ -552,6 +558,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       observationCount: UInt32(observations.elementCount),
       actionCount: UInt32(somatic.elementCount),
+      activeSensingCount: UInt32(activeSensingCount),
       driveCount: UInt32(drives.elementCount),
       neuromodulatorCount: UInt32(neuromodulation.elementCount),
       fastPlasticityCount: UInt32(fastPlasticity.elementCount),

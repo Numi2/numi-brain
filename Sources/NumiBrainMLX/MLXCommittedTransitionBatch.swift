@@ -4,8 +4,9 @@ import NumiBrainCore
 import NumiBrainMetal
 
 /// Zero-copy MLX view of the fixed 768-byte committed-transition slots. The
-/// accepted root now includes bounded local-plasticity and cerebellar traces;
-/// empty ring slots remain in the array but are excluded by `validMask`.
+/// accepted root now includes bounded local-plasticity, cerebellar, and active
+/// sensing traces; empty ring slots remain in the array but are excluded by
+/// `validMask`.
 @available(macOS 26.0, *)
 public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public static let transitionStride = MetalLearningBatch.transitionStride
@@ -27,6 +28,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let teacherState: MLXArray
   public let fastPlasticityTrace: MLXArray
   public let cerebellarTrace: MLXArray
+  public let activeSensingTrace: MLXArray
   public let teacherMask: MLXArray
   public let imitationMask: MLXArray
 
@@ -80,6 +82,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     let rawTeacher = field(528, count: 24, dtype: .float32)
     let rawFastPlasticityTrace = field(624, count: 16, dtype: .float32)
     let rawCerebellarTrace = field(688, count: 16, dtype: .float32)
+    let rawActiveSensingTrace = field(752, count: 4, dtype: .float32)
     let validMask = (
       (identifiers .> UInt64(0))
         * (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
@@ -97,6 +100,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       * allFinite(rawMetrics, count: 8)
       * allFinite(rawFastPlasticityTrace, count: 16)
       * allFinite(rawCerebellarTrace, count: 16)
+      * allFinite(rawActiveSensingTrace, count: 4)
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
     let teacherFiniteMask = allFinite(rawTeacher, count: 24)
@@ -117,6 +121,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.teacherState = finite(rawTeacher)
     self.fastPlasticityTrace = finite(rawFastPlasticityTrace)
     self.cerebellarTrace = finite(rawCerebellarTrace)
+    self.activeSensingTrace = finite(rawActiveSensingTrace)
     self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32)
       * validMask * teacherFiniteMask
     let hasDemonstratedAction = (

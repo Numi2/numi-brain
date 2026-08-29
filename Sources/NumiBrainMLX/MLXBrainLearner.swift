@@ -324,6 +324,13 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
+    let activeSensingTrace = batch.activeSensingTrace
+    let predictedActiveSensingGain = clip(
+      activeSensingTrace[0..., 2..<3]
+        * metrics[0..., 7..<8] * policy[15],
+      min: 0,
+      max: 1
+    )
     let burnInState = stopGradient(posterior)
     let oneStepObservation = sequences.oneStepSuccessors(observation)
     let oneStepAction = sequences.oneStepSuccessors(action)
@@ -459,6 +466,11 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let policyLoss =
       batch.maskedMeanSquaredError(
         predictedPolicyAction, action,
+        mask: transitionMask
+      )
+      + batch.maskedMeanSquaredError(
+        predictedActiveSensingGain,
+        activeSensingTrace[0..., 3..<4],
         mask: transitionMask
       )
       + counterfactuals.maskedMeanSquaredError(
