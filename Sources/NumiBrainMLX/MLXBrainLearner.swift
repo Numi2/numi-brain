@@ -317,6 +317,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let acceptedBodyRisk = maximum(
       posteriorBody[0..., 5..<6], posteriorBody[0..., 7..<8]
     )
+    let acceptedConsequenceRisk = maximum(
+      acceptedBodyRisk, batch.acceptedStopMask
+    )
     let replayTransitionWeights = clip(
       replay.transitionWeights(for: batch), min: 0, max: 4
     )
@@ -332,10 +335,16 @@ public final class MLXBrainLearner: @unchecked Sendable {
       * (Float(1) + replayTransitionWeights)
     let riskTransitionMask =
       batch.validMask
-      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
+      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights
+        + Float(2) * batch.acceptedStopMask)
     let bodyTransitionMask =
       batch.bodyStateMask
       * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
+    let acceptedRiskMask = maximum(
+      batch.bodyStateMask, batch.acceptedStopMask
+    ) * (Float(1) + replayTransitionWeights
+      + Float(2) * threatTransitionWeights
+      + Float(2) * batch.acceptedStopMask)
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
@@ -413,8 +422,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
         twoStepWorld, twoStepTarget, mask: twoStepMask
       )
       + batch.maskedMeanSquaredError(
-        eventRiskPredictions, acceptedBodyRisk,
-        mask: bodyTransitionMask
+        eventRiskPredictions, acceptedConsequenceRisk,
+        mask: acceptedRiskMask
       )
       + regional.predictionLoss(denseWeights: regionalDense)
     let bodyLoss =
@@ -500,8 +509,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       )
       + batch.maskedMeanSquaredError(
         predictedBodyRisk,
-        acceptedBodyRisk,
-        mask: bodyTransitionMask
+        acceptedConsequenceRisk,
+        mask: acceptedRiskMask
       )
       + replay.episodeMaskedMeanSquaredError(
         replayEpisodeRisk,

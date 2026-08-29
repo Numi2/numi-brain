@@ -23,6 +23,7 @@ constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 5u;
 constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
+constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 1u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
@@ -3916,7 +3917,9 @@ kernel void journal_committed_learning_transition(
   record.active_goal_identifier = control->active_goal_identifier;
   record.active_option_identifier = control->active_option_identifier;
   record.format_version = NB_COMMITTED_TRANSITION_RECORD_VERSION;
-  record.flags = 1u;
+  record.flags = 1u
+    | ((control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
+      ? NB_COMMITTED_TRANSITION_ACCEPTED_STOP : 0u);
   record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 24u);
   record.observation_sample_count = min(uniforms.observation_count, 24u);
   record.action_sample_count = min(uniforms.action_count, 16u);

@@ -36,6 +36,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let priorBodyState: MLXArray
   public let posteriorBodyState: MLXArray
   public let bodyStateMask: MLXArray
+  public let acceptedStopMask: MLXArray
   public let teacherMask: MLXArray
   public let imitationMask: MLXArray
 
@@ -162,6 +163,8 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.priorBodyState = finite(rawBodySchemaTrace[0..., 0..<8])
     self.posteriorBodyState = finite(rawBodySchemaTrace[0..., 8..<16])
     self.bodyStateMask = ((flags & UInt32(2)) .== UInt32(2)).asType(.float32)
+      * validMask
+    self.acceptedStopMask = ((flags & UInt32(4)) .== UInt32(4)).asType(.float32)
       * validMask
     self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32)
       * validMask * teacherFiniteMask
