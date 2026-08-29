@@ -504,7 +504,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 15
+  public static let recordLayoutVersion: UInt32 = 16
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
@@ -517,7 +517,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let replayQueueStride = 32
   public static let committedTransitionStride = 1_104
   public static let counterfactualRolloutStride = 256
-  public static let regionalTransitionStride = 1_104
+  public static let regionalTransitionStride = 1_152
 
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]
   public let totalByteCount: Int

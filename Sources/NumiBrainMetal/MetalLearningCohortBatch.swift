@@ -29,7 +29,7 @@ public struct MetalLearningCohortMember: @unchecked Sendable {
 /// as shared agent state.
 @available(macOS 26.0, *)
 public final class MetalLearningCohortBatch: @unchecked Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
   public static let maximumMemberCount = 16_384
 
   public let formatVersion: UInt32
@@ -37,6 +37,7 @@ public final class MetalLearningCohortBatch: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
+  public let regionalModuleCount: Int
   public let speciesTemplateFingerprints: [UInt64]
   public let minimumSourceGeneration: UInt64
   public let sourceGeneration: UInt64
@@ -65,6 +66,7 @@ public final class MetalLearningCohortBatch: @unchecked Sendable {
     let parameterFingerprint = first.batch.parameterVersionFingerprint
     let regionalFingerprint = first.batch.regionalProgramFingerprint
     let scheduleFingerprint = first.batch.scheduleFingerprint
+    let regionalModuleCount = first.batch.regionalModuleCount
     guard parameterFingerprint > 0, regionalFingerprint > 0,
       scheduleFingerprint > 0,
       members.allSatisfy({ member in
@@ -73,6 +75,7 @@ public final class MetalLearningCohortBatch: @unchecked Sendable {
           && batch.parameterVersionFingerprint == parameterFingerprint
           && batch.regionalProgramFingerprint == regionalFingerprint
           && batch.scheduleFingerprint == scheduleFingerprint
+          && batch.regionalModuleCount == regionalModuleCount
           && batch.sourceGeneration > 0
           && batch.speciesTemplateFingerprint > 0
       })
@@ -96,6 +99,7 @@ public final class MetalLearningCohortBatch: @unchecked Sendable {
     for value in [
       UInt64(Self.formatVersion), UInt64(members.count),
       parameterFingerprint, regionalFingerprint, scheduleFingerprint,
+      UInt64(regionalModuleCount),
     ] {
       Self.mix(value, into: &hash)
     }
@@ -111,6 +115,7 @@ public final class MetalLearningCohortBatch: @unchecked Sendable {
     self.parameterVersionFingerprint = parameterFingerprint
     self.regionalProgramFingerprint = regionalFingerprint
     self.scheduleFingerprint = scheduleFingerprint
+    self.regionalModuleCount = regionalModuleCount
     self.speciesTemplateFingerprints = Array(
       Set(members.map { $0.batch.speciesTemplateFingerprint })
     ).sorted()

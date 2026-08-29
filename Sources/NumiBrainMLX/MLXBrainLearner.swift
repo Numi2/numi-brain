@@ -471,7 +471,10 @@ public final class MLXBrainLearner: @unchecked Sendable {
         eventRiskPredictions, acceptedConsequenceRisk,
         mask: acceptedRiskMask
       )
-      + regional.predictionLoss(denseWeights: regionalDense)
+      + regional.predictionLoss(
+        denseWeights: regionalDense,
+        plasticityParameters: plasticity
+      )
     let bodyLoss =
       batch.maskedMeanSquaredError(
         tanh(

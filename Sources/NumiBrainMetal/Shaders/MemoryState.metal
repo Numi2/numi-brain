@@ -24,7 +24,7 @@ constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 6u;
 constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
-constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 1u;
+constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 2u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
@@ -950,9 +950,9 @@ struct NBCommittedTransitionRecord {
   float body_schema_trace[16];
 };
 
-/// One committed full-token sample for the exact dense matrix of one module.
-/// FP16 storage bounds persistent cohort memory while the learner promotes the
-/// values to FP32 before differentiation.
+/// One committed full-token sample for the exact effective matrix of one
+/// module, including its accepted top-four fast-plastic basis context. FP16
+/// state storage is promoted to FP32 before differentiation.
 struct NBRegionalTransitionRecord {
   ulong identifier;
   ulong start_timestamp_microseconds;
@@ -969,6 +969,12 @@ struct NBRegionalTransitionRecord {
   uint dense_weight_count;
   uint reserved_0;
   uint reserved_1;
+  uint active_plastic_basis_count;
+  uint active_plastic_basis_identifiers[4];
+  float active_plastic_basis_coefficients[4];
+  float plastic_dense_target_scale;
+  uint reserved_2;
+  uint reserved_3;
   half prior_state[256];
   half posterior_state[256];
 };
@@ -1055,7 +1061,7 @@ static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 336);
 static_assert(sizeof(NBProspectiveLifecycleState) == 512);
 static_assert(sizeof(NBCommittedTransitionRecord) == 1104);
 static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
-static_assert(sizeof(NBRegionalTransitionRecord) == 1104);
+static_assert(sizeof(NBRegionalTransitionRecord) == 1152);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
@@ -4640,6 +4646,49 @@ kernel void journal_committed_learning_transition(
   regional_record.feature_count = uint(regional_layout.token_dimension);
   regional_record.dense_weight_offset = regional_layout.dense_weight_offset;
   regional_record.dense_weight_count = regional_layout.dense_weight_count;
+  constexpr uint maximum_active_plastic_bases = 4u;
+  const uint plastic_basis_slot_count = (
+    uniforms.fast_plasticity_count + uniforms.regional_module_count - 1u
+  ) / uniforms.regional_module_count;
+  for (uint basis_slot = 0u;
+      basis_slot < plastic_basis_slot_count; ++basis_slot) {
+    const uint index = basis_slot * uniforms.regional_module_count + module_index;
+    if (index >= uniforms.fast_plasticity_count) break;
+    const NBFastPlasticityRecord site = accepted_plasticity[index];
+    if ((site.flags & 1u) == 0u
+        || uint(site.region_identifier) != regional_record.module_identifier
+        || !isfinite(site.coefficient)
+        || site.coefficient == 0.0f) continue;
+    const float magnitude = abs(site.coefficient);
+    uint insertion_index = regional_record.active_plastic_basis_count;
+    if (regional_record.active_plastic_basis_count
+        < maximum_active_plastic_bases) {
+      regional_record.active_plastic_basis_count += 1u;
+    } else {
+      if (magnitude <= abs(
+          regional_record.active_plastic_basis_coefficients[
+            maximum_active_plastic_bases - 1u
+          ]
+        )) continue;
+      insertion_index = maximum_active_plastic_bases - 1u;
+    }
+    while (insertion_index > 0u
+        && magnitude > abs(
+          regional_record.active_plastic_basis_coefficients[
+            insertion_index - 1u
+          ]
+        )) {
+      regional_record.active_plastic_basis_identifiers[insertion_index] =
+        regional_record.active_plastic_basis_identifiers[insertion_index - 1u];
+      regional_record.active_plastic_basis_coefficients[insertion_index] =
+        regional_record.active_plastic_basis_coefficients[insertion_index - 1u];
+      insertion_index -= 1u;
+    }
+    regional_record.active_plastic_basis_identifiers[insertion_index] =
+      uint(site.basis_identifier);
+    regional_record.active_plastic_basis_coefficients[insertion_index] =
+      site.coefficient;
+  }
   const uint regional_scalar_offset = regional_layout.scalar_offset
     + regional_record.token_index * uint(regional_layout.token_dimension);
   float regional_delta_energy = 0.0f;
@@ -4654,6 +4703,9 @@ kernel void journal_committed_learning_transition(
     regional_record.prior_state[feature] = half(prior_value);
     regional_record.posterior_state[feature] = half(posterior_value);
   }
+  regional_record.plastic_dense_target_scale = sqrt(
+    regional_delta_energy / max(float(regional_record.feature_count), 1.0f)
+  );
   regional_record.flags = regional_values_finite
       && regional_delta_energy > 1.0e-10f
     ? 1u : 0u;

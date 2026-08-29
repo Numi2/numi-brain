@@ -468,6 +468,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       semanticConcepts: semanticConcepts,
       semanticRelations: semanticRelations,
       regionalTransitions: regionalTransitions,
+      regionalModuleCount: agentStateRuntime.arena.layout.section(
+        .regionalMaturation
+      ).elementCount,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
