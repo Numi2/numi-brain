@@ -20,6 +20,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 2u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
@@ -379,6 +380,10 @@ struct NBCommittedTransitionUniforms {
   ulong somatic_output_offset;
   ulong drive_offset;
   ulong neuromodulation_offset;
+  ulong fast_plasticity_offset;
+  ulong regional_plastic_modulation_offset;
+  ulong cerebellar_offset;
+  ulong cerebellar_expert_memory_offset;
   ulong transition_memory_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
@@ -387,6 +392,10 @@ struct NBCommittedTransitionUniforms {
   uint action_count;
   uint drive_count;
   uint neuromodulator_count;
+  uint fast_plasticity_count;
+  uint regional_plastic_modulation_count;
+  uint active_cerebellar_count;
+  uint cerebellar_expert_capacity;
   uint transition_capacity;
   uint transition_stride;
   uint journal_entry_capacity;
@@ -541,6 +550,37 @@ struct NBNeuromodulatorRecord {
   float decay_time_constant_seconds;
   uint kind;
   uint flags;
+};
+
+struct NBFastPlasticityRecord {
+  float coefficient;
+  float eligibility;
+  float coefficient_retention;
+  float eligibility_retention;
+  float learning_rate;
+  float maximum_magnitude;
+  ushort region_identifier;
+  ushort basis_identifier;
+  uint flags;
+};
+
+struct NBRegionalPlasticModulationRecord {
+  uint module_identifier;
+  uint coefficient_count;
+  float recurrent_delta;
+  float local_delta;
+  float route_delta;
+  float drive_delta;
+  float gate_delta;
+  uint flags;
+};
+
+struct NBCerebellarExpertRecord {
+  uint expert_identifier;
+  uint flags;
+  float weight;
+  float prediction_error;
+  float state[60];
 };
 
 struct NBMemoryRetrievalScratch {
@@ -726,6 +766,8 @@ struct NBCommittedTransitionRecord {
   uint teacher_scalar_count;
   uint teacher_flags;
   float teacher_state[24];
+  float fast_plasticity_trace[16];
+  float cerebellar_trace[16];
   float reserved_tail[4];
 };
 
@@ -779,7 +821,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 240);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -789,6 +831,9 @@ static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
+static_assert(sizeof(NBFastPlasticityRecord) == 32);
+static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
+static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 512);
 static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
 static_assert(sizeof(NBArchivePageRequestRecord) == 32);
@@ -799,7 +844,7 @@ static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
-static_assert(sizeof(NBCommittedTransitionRecord) == 640);
+static_assert(sizeof(NBCommittedTransitionRecord) == 768);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
@@ -3676,6 +3721,26 @@ kernel void journal_committed_learning_transition(
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       output_hot_state + uniforms.neuromodulation_offset
     );
+  device const NBFastPlasticityRecord *prior_plasticity =
+    reinterpret_cast<device const NBFastPlasticityRecord *>(
+      input_hot_state + uniforms.fast_plasticity_offset
+    );
+  device const NBFastPlasticityRecord *accepted_plasticity =
+    reinterpret_cast<device const NBFastPlasticityRecord *>(
+      output_hot_state + uniforms.fast_plasticity_offset
+    );
+  device const NBRegionalPlasticModulationRecord *regional_plasticity =
+    reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
+      output_hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  device const NBCerebellarExpertRecord *active_cerebellar =
+    reinterpret_cast<device const NBCerebellarExpertRecord *>(
+      output_hot_state + uniforms.cerebellar_offset
+    );
+  device const NBCerebellarExpertRecord *cerebellar_bank =
+    reinterpret_cast<device const NBCerebellarExpertRecord *>(
+      output_hot_state + uniforms.cerebellar_expert_memory_offset
+    );
 
   NBCommittedTransitionRecord record = {};
   record.identifier = consolidation_hash(
@@ -3689,7 +3754,7 @@ kernel void journal_committed_learning_transition(
   record.physics_state_fingerprint = uniforms.physics_state_fingerprint;
   record.active_goal_identifier = control->active_goal_identifier;
   record.active_option_identifier = control->active_option_identifier;
-  record.format_version = NB_MEMORY_RECORD_VERSION;
+  record.format_version = NB_COMMITTED_TRANSITION_RECORD_VERSION;
   record.flags = 1u;
   record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 24u);
   record.observation_sample_count = min(uniforms.observation_count, 24u);
@@ -3740,6 +3805,70 @@ kernel void journal_committed_learning_transition(
   record.teacher_flags = uniforms.teacher_flags;
   for (uint component = 0u; component < record.teacher_scalar_count; ++component) {
     record.teacher_state[component] = teacher_state[component];
+  }
+
+  // Compress the accepted local plastic state and its actual within-root
+  // change into a fixed meta-learning target. No per-agent coefficient becomes
+  // a shared parameter; only these bounded statistics enter the slow learner.
+  for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
+    const NBFastPlasticityRecord prior_site = prior_plasticity[index];
+    const NBFastPlasticityRecord accepted_site = accepted_plasticity[index];
+    record.fast_plasticity_trace[0] += accepted_site.coefficient;
+    record.fast_plasticity_trace[1] += abs(accepted_site.coefficient);
+    record.fast_plasticity_trace[2] += accepted_site.eligibility;
+    record.fast_plasticity_trace[3] += abs(accepted_site.eligibility);
+    record.fast_plasticity_trace[4] += accepted_site.coefficient_retention;
+    record.fast_plasticity_trace[5] += accepted_site.eligibility_retention;
+    record.fast_plasticity_trace[6] += accepted_site.learning_rate;
+    record.fast_plasticity_trace[7] += accepted_site.maximum_magnitude;
+    const float coefficient_delta =
+      accepted_site.coefficient - prior_site.coefficient;
+    const float eligibility_delta =
+      accepted_site.eligibility - prior_site.eligibility;
+    record.fast_plasticity_trace[8] += coefficient_delta;
+    record.fast_plasticity_trace[9] += abs(coefficient_delta);
+    record.fast_plasticity_trace[10] += eligibility_delta;
+    record.fast_plasticity_trace[11] += abs(eligibility_delta);
+  }
+  if (uniforms.fast_plasticity_count > 0u) {
+    const float inverse_count = 1.0f / float(uniforms.fast_plasticity_count);
+    for (uint component = 0u; component < 12u; ++component) {
+      record.fast_plasticity_trace[component] *= inverse_count;
+    }
+  }
+  uint valid_regional_count = 0u;
+  for (uint index = 0u;
+      index < uniforms.regional_plastic_modulation_count; ++index) {
+    const NBRegionalPlasticModulationRecord regional = regional_plasticity[index];
+    if ((regional.flags & 1u) == 0u || regional.coefficient_count == 0u) continue;
+    record.fast_plasticity_trace[12] += regional.recurrent_delta;
+    record.fast_plasticity_trace[13] += regional.local_delta;
+    record.fast_plasticity_trace[14] += regional.route_delta;
+    record.fast_plasticity_trace[15] +=
+      0.5f * (regional.drive_delta + regional.gate_delta);
+    valid_regional_count += 1u;
+  }
+  if (valid_regional_count > 0u) {
+    const float inverse_count = 1.0f / float(valid_regional_count);
+    for (uint component = 12u; component < 16u; ++component) {
+      record.fast_plasticity_trace[component] *= inverse_count;
+    }
+  }
+
+  // Preserve the four active experts' accepted forward error, forward state,
+  // inverse correction, and competence. These are local adaptation outcomes,
+  // not authoritative body state or privileged teacher information.
+  const uint active_expert_count = min(uniforms.active_cerebellar_count, 4u);
+  for (uint rank = 0u; rank < active_expert_count; ++rank) {
+    const NBCerebellarExpertRecord active = active_cerebellar[rank];
+    const NBCerebellarExpertRecord expert =
+      active.expert_identifier < uniforms.cerebellar_expert_capacity
+        ? cerebellar_bank[active.expert_identifier] : active;
+    const uint base = rank * 4u;
+    record.cerebellar_trace[base] = expert.prediction_error;
+    record.cerebellar_trace[base + 1u] = expert.state[0];
+    record.cerebellar_trace[base + 2u] = expert.state[1];
+    record.cerebellar_trace[base + 3u] = expert.state[2];
   }
 
   const uint slot = uint(

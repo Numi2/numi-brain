@@ -229,6 +229,10 @@ private struct CommittedTransitionUniforms {
   var somaticOutputOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
+  var fastPlasticityOffset: UInt64 = 0
+  var regionalPlasticModulationOffset: UInt64 = 0
+  var cerebellarOffset: UInt64 = 0
+  var cerebellarExpertMemoryOffset: UInt64 = 0
   var transitionMemoryOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
@@ -237,6 +241,10 @@ private struct CommittedTransitionUniforms {
   var actionCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
+  var fastPlasticityCount: UInt32 = 0
+  var regionalPlasticModulationCount: UInt32 = 0
+  var activeCerebellarCount: UInt32 = 0
+  var cerebellarExpertCapacity: UInt32 = 0
   var transitionCapacity: UInt32 = 0
   var transitionStride: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
@@ -312,7 +320,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 192,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 240,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -496,10 +504,16 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let somatic = layout.section(.somaticOutput)
     let drives = layout.section(.drives)
     let neuromodulation = layout.section(.neuromodulation)
+    let fastPlasticity = layout.section(.fastPlasticity)
+    let regionalPlasticModulation = layout.section(.regionalPlasticModulation)
+    let cerebellar = controlLayout.section(.cerebellarExperts)
+    let cerebellarExpertMemory = layout.section(.cerebellarExpertMemory)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
     let counts = [
       regionalProgram.scalarCount, observations.elementCount,
       somatic.elementCount, drives.elementCount, neuromodulation.elementCount,
+      fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
+      cerebellar.elementCount, cerebellarExpertMemory.elementCount,
       transitions.elementCount, transitions.elementStride, journalEntryCapacity,
     ]
     guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
@@ -526,6 +540,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       somaticOutputOffset: UInt64(somatic.byteOffset),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
+      fastPlasticityOffset: UInt64(fastPlasticity.byteOffset),
+      regionalPlasticModulationOffset: UInt64(
+        regionalPlasticModulation.byteOffset
+      ),
+      cerebellarOffset: UInt64(cerebellar.byteOffset),
+      cerebellarExpertMemoryOffset: UInt64(cerebellarExpertMemory.byteOffset),
       transitionMemoryOffset: UInt64(transitions.byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
@@ -534,6 +554,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       actionCount: UInt32(somatic.elementCount),
       driveCount: UInt32(drives.elementCount),
       neuromodulatorCount: UInt32(neuromodulation.elementCount),
+      fastPlasticityCount: UInt32(fastPlasticity.elementCount),
+      regionalPlasticModulationCount: UInt32(
+        regionalPlasticModulation.elementCount
+      ),
+      activeCerebellarCount: UInt32(cerebellar.elementCount),
+      cerebellarExpertCapacity: UInt32(cerebellarExpertMemory.elementCount),
       transitionCapacity: UInt32(transitions.elementCount),
       transitionStride: UInt32(transitions.elementStride),
       journalEntryCapacity: UInt32(journalEntryCapacity),

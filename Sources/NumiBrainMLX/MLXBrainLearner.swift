@@ -487,10 +487,21 @@ public final class MLXBrainLearner: @unchecked Sendable {
       + counterfactuals.maskedMeanSquaredError(
         imaginedAdmissibility, counterfactuals.admissibility
       )
-    let cerebellarLoss = batch.maskedMeanSquaredError(
-      stateDelta[0..., 0..<16] * cerebellar[3], action,
-      mask: transitionMask
+    let cerebellarTracePrediction = tanh(
+      stateDelta[0..., 0..<16] * cerebellar[0]
+        + action * cerebellar[1]
+        + metrics[0..., 6..<7] * cerebellar[2]
+        + cerebellar[4]
     )
+    let cerebellarLoss =
+      batch.maskedMeanSquaredError(
+        stateDelta[0..., 0..<16] * cerebellar[3], action,
+        mask: transitionMask
+      )
+      + batch.maskedMeanSquaredError(
+        cerebellarTracePrediction, batch.cerebellarTrace,
+        mask: transitionMask
+      )
     let replayEpisodeOutcome = tanh(
       replay.episodeReinforcement - replay.episodeDamage
         + replay.episodeSalience
@@ -576,10 +587,22 @@ public final class MLXBrainLearner: @unchecked Sendable {
       ) {
         $0 + square($1.0 - $1.1).mean()
       } / Float(parameters.count)
-    let plasticityLoss = batch.maskedMeanSquaredError(
-      prior + plasticity[0] * plasticity[3] * observation, posterior,
-      mask: transitionMask
+    let fastPlasticityTracePrediction = tanh(
+      observation[0..., 0..<16] * plasticity[3]
+        + stateDelta[0..., 0..<16] * plasticity[4]
+        + reward.mean(axis: 1, keepDims: true) * plasticity[5]
+        + metrics[0..., 6..<7] * plasticity[6]
+        + plasticity[0]
     )
+    let plasticityLoss =
+      batch.maskedMeanSquaredError(
+        prior + plasticity[0] * plasticity[3] * observation, posterior,
+        mask: transitionMask
+      )
+      + batch.maskedMeanSquaredError(
+        fastPlasticityTracePrediction, batch.fastPlasticityTrace,
+        mask: transitionMask
+      )
     return [
       observationLoss, beliefLoss, worldLoss, bodyLoss, agencyLoss,
       eventLoss, driveLoss, valueLoss, riskLoss, policyLoss, optionLoss,
