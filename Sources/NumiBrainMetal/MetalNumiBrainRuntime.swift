@@ -50,6 +50,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
+  public let somaticSynergyCatalogFingerprint: UInt64
   public let deviceRegistryID: UInt64
 
   private let lock = NSLock()
@@ -63,6 +64,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       cognitive.parameterVersionFingerprint == fastTissue.parameterVersion.fingerprint,
       cognitive.regionalProgramFingerprint == fastTissue.regionalTokenProgram.fingerprint,
       cognitive.scheduleFingerprint == fastTissue.brainSchedule.fingerprint,
+      cognitive.somaticSynergyCatalogFingerprint
+        == fastTissue.somaticSynergyCatalog.fingerprint,
       cognitive.sharedParameterBank.artifactFingerprint
         == fastTissue.sharedParameterBank.artifactFingerprint,
       cognitive.sensoryRuntime.maximumEventCount <= fastTissue.maxSchedulerEvents
@@ -77,6 +80,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     self.parameterVersionFingerprint = cognitive.parameterVersionFingerprint
     self.regionalProgramFingerprint = cognitive.regionalProgramFingerprint
     self.scheduleFingerprint = cognitive.scheduleFingerprint
+    self.somaticSynergyCatalogFingerprint = cognitive.somaticSynergyCatalogFingerprint
     self.deviceRegistryID = cognitive.deviceRegistryID
   }
 

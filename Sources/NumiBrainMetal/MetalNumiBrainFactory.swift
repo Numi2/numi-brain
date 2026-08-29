@@ -21,6 +21,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let jointTopologyCatalog: NumanXJointTopologyCatalog
   public let protectiveMotorProfile: ProtectiveMotorProfile?
   public let muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+  public let somaticSynergyCatalog: SomaticSynergyCatalog?
   public let schedulerEnvironmentIdentifier: UInt32
   public let maximumSchedulerEvents: Int
   public let maximumSchedulerInvocations: Int
@@ -40,6 +41,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     randomContext: TissueRandomContext = .deterministicDefault,
     protectiveMotorProfile: ProtectiveMotorProfile? = nil,
     muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog? = nil,
+    somaticSynergyCatalog: SomaticSynergyCatalog? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maximumSchedulerEvents: Int = 64,
     maximumSchedulerInvocations: Int = 4_096,
@@ -58,6 +60,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.jointTopologyCatalog = jointTopologyCatalog
     self.protectiveMotorProfile = protectiveMotorProfile
     self.muscleAttachmentCatalog = muscleAttachmentCatalog
+    self.somaticSynergyCatalog = somaticSynergyCatalog
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumSchedulerEvents = maximumSchedulerEvents
     self.maximumSchedulerInvocations = maximumSchedulerInvocations
@@ -151,6 +154,12 @@ extension MetalNumiBrainRuntime {
         "protective actuator profile does not match the species motor topology"
       )
     }
+    guard let somaticSynergyCatalog = configuration.somaticSynergyCatalog else {
+      throw TissueError.metal(
+        "complete brain configuration requires a species somatic synergy catalog"
+      )
+    }
+    try somaticSynergyCatalog.validate(motor: species.motor)
     let cognitive = try MetalEmbodiedBrainRuntime(
       device: device,
       species: species,
@@ -159,7 +168,8 @@ extension MetalNumiBrainRuntime {
       sharedParameterArtifact: publication.sharedArtifact,
       sensoryProfile: configuration.sensoryProfile,
       jointTopologyCatalog: configuration.jointTopologyCatalog,
-      muscleAttachmentCatalog: configuration.muscleAttachmentCatalog
+      muscleAttachmentCatalog: configuration.muscleAttachmentCatalog,
+      somaticSynergyCatalog: somaticSynergyCatalog
     )
     let fastTissue = try MetalTissueRuntime(
       initialState: configuration.initialTissueState,
@@ -176,6 +186,7 @@ extension MetalNumiBrainRuntime {
       sharedParameterArtifact: publication.sharedArtifact,
       protectiveMotorProfile: protectiveProfile,
       numanXMuscleAttachmentCatalog: configuration.muscleAttachmentCatalog,
+      somaticSynergyCatalog: somaticSynergyCatalog,
       schedulerEnvironmentIdentifier: configuration.schedulerEnvironmentIdentifier,
       maxSchedulerEvents: configuration.maximumSchedulerEvents,
       maxSchedulerInvocations: configuration.maximumSchedulerInvocations,

@@ -3312,6 +3312,7 @@ kernel void map_protective_motor_output(
     device const NBFastCerebellarStateABI *fastCerebellarStates [[buffer(17)]],
     device const NBSomaticActuatorDescriptorABI *actuatorDescriptors
         [[buffer(18)]],
+    device const float *somaticSynergyDecoder [[buffer(19)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -3583,13 +3584,15 @@ kernel void map_protective_motor_output(
         );
         float sampledCPGOutput = 0.0f;
         float sampledReflexOutput = 0.0f;
-        const uint actuatorSynergy = index % max(cpgUniforms->synergy_count, 1u);
         for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
             const NBFastCPGStateABI state = cpgStates[oscillator];
             if ((state.flags & 1u) != 0u &&
                 state.output_kind == NBCPGOutputSomaticSynergy &&
-                state.output_synergy_identifier == actuatorSynergy) {
-                sampledCPGOutput += state.output;
+                state.output_synergy_identifier < cpgUniforms->synergy_count) {
+                sampledCPGOutput += state.output * somaticSynergyDecoder[
+                    index * cpgUniforms->synergy_count
+                        + state.output_synergy_identifier
+                ];
             }
         }
         for (uint ruleIndex = 0u; ruleIndex < reflexRuleCount; ++ruleIndex) {

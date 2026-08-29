@@ -593,6 +593,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveCommandBuffers: [any MTLBuffer]
   private let protectiveMotorProfileBuffer: any MTLBuffer
   private let somaticActuatorDescriptorBuffer: any MTLBuffer
+  private let somaticSynergyDecoderBuffer: any MTLBuffer
   private let protectiveSourceInhibitionMaskBuffer: any MTLBuffer
   private let zeroDescendingSomaticBuffer: any MTLBuffer
   private let descendingSomaticBuffer: any MTLBuffer
@@ -660,6 +661,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveCommandUniformByteCount = MemoryLayout<ProtectiveCommandUniforms>.stride
   public let protectiveMotorProfile: ProtectiveMotorProfile
   public let numanXMuscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+  public let somaticSynergyCatalog: SomaticSynergyCatalog
   public let bodyLoadFieldDynamics: BodyLoadFieldDynamics
   public let bodySchemaDynamics: BodySchemaPosteriorDynamics
   public let protectiveMotorProfileByteCount: Int
@@ -759,6 +761,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorProfile requestedProtectiveMotorProfile: ProtectiveMotorProfile? = nil,
     numanXMuscleAttachmentCatalog requestedNumanXMuscleAttachmentCatalog:
       NumanXMuscleAttachmentCatalog? = nil,
+    somaticSynergyCatalog requestedSomaticSynergyCatalog:
+      SomaticSynergyCatalog? = nil,
     bodyLoadFieldDynamics requestedBodyLoadFieldDynamics: BodyLoadFieldDynamics? = nil,
     bodySchemaDynamics requestedBodySchemaDynamics: BodySchemaPosteriorDynamics? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
@@ -870,6 +874,24 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectiveMotorProfile =
       try requestedProtectiveMotorProfile
       ?? ProtectiveMotorProfile.runtimeFoundationFixture()
+    guard let foundationSynergyCount = UInt16(
+      exactly: protectiveMotorProfile.channels.count
+    ) else {
+      throw TissueError.metal("protective motor profile exceeds synergy capacity")
+    }
+    let somaticSynergyCatalog = try requestedSomaticSynergyCatalog
+      ?? SomaticSynergyCatalog.runtimeFoundationFixture(
+        actuatorCount: UInt32(protectiveMotorProfile.channels.count),
+        synergyCount: foundationSynergyCount
+      )
+    guard somaticSynergyCatalog.actuatorCount
+        == UInt32(protectiveMotorProfile.channels.count)
+    else {
+      throw TissueError.metal(
+        "somatic synergy catalog does not cover the protective motor profile"
+      )
+    }
+    let somaticSynergyDecoder = try somaticSynergyCatalog.denseDecoder()
     let bodyLoadFieldDynamics =
       try requestedBodyLoadFieldDynamics
       ?? BodyLoadFieldDynamics.runtimeFoundationV0
@@ -1154,7 +1176,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 19
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 20
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -1399,6 +1421,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveMotorProfile.channels.count.multipliedReportingOverflow(
         by: MemoryLayout<Float>.stride
       )
+    let (somaticSynergyDecoderByteCount, somaticSynergyDecoderByteOverflow) =
+      somaticSynergyDecoder.count.multipliedReportingOverflow(
+        by: MemoryLayout<Float>.stride
+      )
     let (developmentalMaturationByteCount, developmentalMaturationOverflow) =
       brainSchedule.modules.count.multipliedReportingOverflow(
         by: MemoryLayout<TissueRegionalMaturationRecord>.stride
@@ -1455,6 +1481,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       Self.cognitiveEventQueueHeaderStride
         + Self.maximumCognitiveEventCount * Self.cognitiveEventRecordStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
+      !somaticSynergyDecoderByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       !fastPlasticityByteOverflow, !fastPlasticityStateByteOverflow,
       plasticityBasisScalarCount > 0,
@@ -1672,6 +1699,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       let somaticActuatorDescriptorBuffer = device.makeBuffer(
         length: protectiveMotorProfileByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let somaticSynergyDecoderBuffer = device.makeBuffer(
+        length: somaticSynergyDecoderByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
       let protectiveSourceInhibitionMaskBuffer = device.makeBuffer(
@@ -1928,6 +1959,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
     somaticActuatorDescriptorBuffer.label =
       "NumiBrain immutable somatic actuator command contracts"
+    somaticSynergyDecoderBuffer.label =
+      "NumiBrain immutable somatic synergy decoder"
     zeroDescendingSomaticBuffer.label = "NumiBrain zero descending somatic command"
     descendingSomaticBuffer.label = "NumiBrain transaction descending somatic command"
     fastCPGUniformBuffer.label = "NumiBrain accepted fast CPG sampling uniforms"
@@ -2034,7 +2067,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                   regionalUploadByteCount,
                   max(
                     max(
-                      max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount),
+                      max(
+                        max(
+                          protectiveMotorProfileByteCount,
+                          protectiveMuscleExcitationByteCount
+                        ),
+                        somaticSynergyDecoderByteCount
+                      ),
                       max(
                         fastCPGStateCapacityByteCount,
                         max(
@@ -2158,6 +2197,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     residencySet.addAllocation(protectiveMotorProfileBuffer)
     residencySet.addAllocation(somaticActuatorDescriptorBuffer)
+    residencySet.addAllocation(somaticSynergyDecoderBuffer)
     residencySet.addAllocation(protectiveSourceInhibitionMaskBuffer)
     residencySet.addAllocation(zeroDescendingSomaticBuffer)
     residencySet.addAllocation(descendingSomaticBuffer)
@@ -2224,6 +2264,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.sharedParameterBank = sharedParameterBank
     self.protectiveMotorProfile = protectiveMotorProfile
     self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
+    self.somaticSynergyCatalog = somaticSynergyCatalog
     self.bodyLoadFieldDynamics = bodyLoadFieldDynamics
     self.bodySchemaDynamics = bodySchemaDynamics
     self.protectiveSourceInhibitionMaskByteCount = protectiveMuscleExcitationByteCount
@@ -2298,6 +2339,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveCommandBuffers = protectiveCommandBuffers
     self.protectiveMotorProfileBuffer = protectiveMotorProfileBuffer
     self.somaticActuatorDescriptorBuffer = somaticActuatorDescriptorBuffer
+    self.somaticSynergyDecoderBuffer = somaticSynergyDecoderBuffer
     self.protectiveSourceInhibitionMaskBuffer = protectiveSourceInhibitionMaskBuffer
     self.zeroDescendingSomaticBuffer = zeroDescendingSomaticBuffer
     self.descendingSomaticBuffer = descendingSomaticBuffer
@@ -2741,6 +2783,19 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: somaticActuatorDescriptorBuffer,
       size: protectiveMotorProfileByteCount,
       label: "NumiBrain default muscle actuator-contract upload"
+    )
+    somaticSynergyDecoder.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: somaticSynergyDecoderByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: somaticSynergyDecoderBuffer,
+      size: somaticSynergyDecoderByteCount,
+      label: "NumiBrain immutable somatic synergy decoder upload"
     )
     protectiveSourceInhibitionMaskBuffer.contents().initializeMemory(
       as: UInt8.self,
@@ -3422,6 +3477,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         == lease.decision.cpgStateCount * Self.fastCPGStateStride,
       lease.decision.cpgStateByteCount <= fastCPGStateCapacityByteCount,
       lease.decision.cpgSynergyCount > 0,
+      lease.decision.cpgSynergyCount == Int(somaticSynergyCatalog.synergyCount),
       boundFastReflexSpeciesFingerprint == lease.speciesTemplateFingerprint,
       lease.decision.reflexStateCount == boundFastReflexRuleCount,
       lease.decision.reflexStateByteCount
@@ -3785,6 +3841,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveMotorArgumentTable.setAddress(
         somaticActuatorDescriptorBuffer.gpuAddress,
         index: 18
+      )
+      protectiveMotorArgumentTable.setAddress(
+        somaticSynergyDecoderBuffer.gpuAddress,
+        index: 19
       )
       encoder.setComputePipelineState(protectiveMotorPipeline)
       encoder.setArgumentTable(protectiveMotorArgumentTable)
@@ -5075,6 +5135,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       sharedArtifactFingerprint: sharedParameterBank.artifactFingerprint,
       protectiveMotorProfileFingerprint: protectiveMotorProfile.fingerprint,
       attachmentCatalogFingerprint: numanXMuscleAttachmentCatalog?.fingerprint ?? 0,
+      somaticSynergyCatalogFingerprint: somaticSynergyCatalog.fingerprint,
       structureHash: structureHash,
       delayFieldHash: delayFieldHash,
       connectomeHash: connectomeHash,
@@ -5108,6 +5169,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       checkpoint.protectiveMotorProfileFingerprint == protectiveMotorProfile.fingerprint,
       checkpoint.attachmentCatalogFingerprint
         == (numanXMuscleAttachmentCatalog?.fingerprint ?? 0),
+      checkpoint.somaticSynergyCatalogFingerprint
+        == somaticSynergyCatalog.fingerprint,
       checkpoint.structureHash == structureHash,
       checkpoint.delayFieldHash == delayFieldHash,
       checkpoint.connectomeHash == connectomeHash,
@@ -6379,6 +6442,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorArgumentTable.setAddress(
       somaticActuatorDescriptorBuffer.gpuAddress,
       index: 18
+    )
+    protectiveMotorArgumentTable.setAddress(
+      somaticSynergyDecoderBuffer.gpuAddress,
+      index: 19
     )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)

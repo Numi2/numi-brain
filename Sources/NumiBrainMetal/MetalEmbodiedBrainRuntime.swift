@@ -178,6 +178,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
+  public let somaticSynergyCatalogFingerprint: UInt64
   public let sharedParameterBank: MetalSharedParameterBank
   public let agentStateRuntime: MetalAgentStateRuntime
   public let sensoryRuntime: MetalSensoryTransductionRuntime
@@ -206,6 +207,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     sensoryProfile: SensoryTransductionProfile,
     jointTopologyCatalog: NumanXJointTopologyCatalog,
     muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
+    somaticSynergyCatalog: SomaticSynergyCatalog,
     decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
     acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
       AcceptedConsequenceDynamics? = nil,
@@ -269,6 +271,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device,
       arena: agentStateRuntime.arena,
       species: species,
+      somaticSynergyCatalog: somaticSynergyCatalog,
       regionalProgram: regionalProgram,
       parameterVersion: parameterVersion,
       dynamics: requestedDecisionDynamics ?? DecisionDynamics.foundationV1,
@@ -339,6 +342,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.regionalProgramFingerprint = regionalProgram.fingerprint
     self.scheduleFingerprint = regionalProgram.scheduleFingerprint
+    self.somaticSynergyCatalogFingerprint = somaticSynergyCatalog.fingerprint
     self.sharedParameterBank = sharedParameterBank
     self.agentStateRuntime = agentStateRuntime
     self.sensoryRuntime = sensoryRuntime

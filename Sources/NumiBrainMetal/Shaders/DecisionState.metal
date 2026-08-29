@@ -3013,6 +3013,7 @@ kernel void generate_motor_spinal_autonomic_state(
     [[buffer(9)]],
   device const NBActiveSensingChannelDescriptor *active_sensing_descriptors
     [[buffer(10)]],
+  device const float *somatic_synergy_decoder [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
@@ -3229,12 +3230,26 @@ kernel void generate_motor_spinal_autonomic_state(
         );
       }
     }
-    const float goal_synergy = motor_goal_valid
-        && motor_goal->synergy_count > 0u
-      ? motor_goal->synergy_coefficients[
-          gid % min(motor_goal->synergy_count, 16u)
-        ]
-      : 0.0f;
+    float goal_synergy = 0.0f;
+    uint dominant_synergy = 0u;
+    float dominant_synergy_gain = 0.0f;
+    const uint available_synergy_count = min(
+      min(motor_goal->synergy_count, uniforms.synergy_count), 16u
+    );
+    for (uint synergy = 0u; synergy < uniforms.synergy_count; ++synergy) {
+      const float decoder_gain = somatic_synergy_decoder[
+        gid * uniforms.synergy_count + synergy
+      ];
+      if (abs(decoder_gain) > abs(dominant_synergy_gain)) {
+        dominant_synergy = synergy;
+        dominant_synergy_gain = decoder_gain;
+      }
+      if (motor_goal_valid && synergy < available_synergy_count) {
+        goal_synergy += decoder_gain
+          * motor_goal->synergy_coefficients[synergy];
+      }
+    }
+    goal_synergy = clamp(goal_synergy, -1.0f, 1.0f);
     const float motor_logit =
       candidate.parameters[gid % parameter_count]
         * uniforms.motor_gain * motor_parameters[0]
@@ -3330,20 +3345,23 @@ kernel void generate_motor_spinal_autonomic_state(
       0.25f
     );
     command.risk_inhibition = inhibition;
-    command.synergy_identifier = gid % max(uniforms.synergy_count, 1u);
+    command.synergy_identifier = dominant_synergy;
     command.flags = NB_CONTROL_FLAG_VALID
       | (communication_selected && communication_actuator ? (1u << 4u) : 0u)
       | (muscle_excitation ? (1u << 5u) : 0u);
     motor[gid] = command;
     float cpg_output = 0.0f;
-    const uint actuator_synergy = gid % max(uniforms.synergy_count, 1u);
     for (uint oscillator = 0u; oscillator < uniforms.cpg_oscillator_count;
         ++oscillator) {
       const NBCPGStateRecord oscillator_state = cpg_states[oscillator];
       if ((oscillator_state.flags & NB_CONTROL_FLAG_VALID) != 0u
           && oscillator_state.output_kind == NB_CPG_OUTPUT_SOMATIC_SYNERGY
-          && oscillator_state.output_synergy_identifier == actuator_synergy) {
-        cpg_output += oscillator_state.output;
+          && oscillator_state.output_synergy_identifier
+            < uniforms.synergy_count) {
+        cpg_output += oscillator_state.output * somatic_synergy_decoder[
+          gid * uniforms.synergy_count
+            + oscillator_state.output_synergy_identifier
+        ];
       }
     }
     cpg_output = clamp(cpg_output, 0.0f, 1.0f);
@@ -3390,9 +3408,8 @@ kernel void generate_motor_spinal_autonomic_state(
     const bool use_structured_synergy = motor_goal_valid
       && motor_goal->synergy_count > 0u && !communication_selected;
     const float structured_synergy = use_structured_synergy
-      ? motor_goal->synergy_coefficients[
-          gid % min(motor_goal->synergy_count, 16u)
-        ]
+      ? (gid < min(motor_goal->synergy_count, 16u)
+        ? motor_goal->synergy_coefficients[gid] : 0.0f)
       : candidate.parameters[parameter_index];
     synergies[gid] = rest_selected ? 0.0f
       : structured_synergy * (use_structured_synergy ? 1.0f : gain)

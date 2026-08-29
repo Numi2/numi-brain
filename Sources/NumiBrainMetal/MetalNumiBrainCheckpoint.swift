@@ -168,6 +168,8 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
       protectiveMotorProfileFingerprint:
         fastTissueState.protectiveMotorProfileFingerprint,
       attachmentCatalogFingerprint: fastTissueState.attachmentCatalogFingerprint,
+      somaticSynergyCatalogFingerprint:
+        fastTissueState.somaticSynergyCatalogFingerprint,
       structureHash: fastTissueState.structureHash,
       delayFieldHash: fastTissueState.delayFieldHash,
       connectomeHash: fastTissueState.connectomeHash,

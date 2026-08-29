@@ -36,7 +36,7 @@ public struct MetalTissueCheckpointBuffer: Codable, Equatable, Sendable {
 /// fingerprints; mutable GPU generations are stored byte-for-byte.
 @frozen
 public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let width: Int
@@ -54,6 +54,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
   public let sharedArtifactFingerprint: UInt64
   public let protectiveMotorProfileFingerprint: UInt64
   public let attachmentCatalogFingerprint: UInt64
+  public let somaticSynergyCatalogFingerprint: UInt64
   public let structureHash: String
   public let delayFieldHash: String
   public let connectomeHash: String
@@ -79,6 +80,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
     sharedArtifactFingerprint: UInt64,
     protectiveMotorProfileFingerprint: UInt64,
     attachmentCatalogFingerprint: UInt64,
+    somaticSynergyCatalogFingerprint: UInt64,
     structureHash: String,
     delayFieldHash: String,
     connectomeHash: String,
@@ -91,6 +93,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
     guard width > 0, height > 0, parameterVersionFingerprint > 0,
       scheduleFingerprint > 0, regionalProgramFingerprint > 0,
       sharedArtifactFingerprint > 0, protectiveMotorProfileFingerprint > 0,
+      somaticSynergyCatalogFingerprint > 0,
       !structureHash.isEmpty, !delayFieldHash.isEmpty, !connectomeHash.isEmpty,
       !eventScheduleHash.isEmpty,
       committedRelayHistoryTimestamps.count == TissueDelayField.historyCapacity,
@@ -115,6 +118,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
     self.sharedArtifactFingerprint = sharedArtifactFingerprint
     self.protectiveMotorProfileFingerprint = protectiveMotorProfileFingerprint
     self.attachmentCatalogFingerprint = attachmentCatalogFingerprint
+    self.somaticSynergyCatalogFingerprint = somaticSynergyCatalogFingerprint
     self.structureHash = structureHash
     self.delayFieldHash = delayFieldHash
     self.connectomeHash = connectomeHash
@@ -138,6 +142,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
       sharedArtifactFingerprint: sharedArtifactFingerprint,
       protectiveMotorProfileFingerprint: protectiveMotorProfileFingerprint,
       attachmentCatalogFingerprint: attachmentCatalogFingerprint,
+      somaticSynergyCatalogFingerprint: somaticSynergyCatalogFingerprint,
       structureHash: structureHash,
       delayFieldHash: delayFieldHash,
       connectomeHash: connectomeHash,
@@ -158,6 +163,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
       parameterVersionFingerprint > 0, scheduleFingerprint > 0,
       regionalProgramFingerprint > 0, sharedArtifactFingerprint > 0,
       protectiveMotorProfileFingerprint > 0,
+      somaticSynergyCatalogFingerprint > 0,
       !structureHash.isEmpty, !delayFieldHash.isEmpty,
       !connectomeHash.isEmpty, !eventScheduleHash.isEmpty,
       Set(buffers.map(\.kind)) == Set(MetalTissueCheckpointBufferKind.allCases),
@@ -179,6 +185,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
         sharedArtifactFingerprint: sharedArtifactFingerprint,
         protectiveMotorProfileFingerprint: protectiveMotorProfileFingerprint,
         attachmentCatalogFingerprint: attachmentCatalogFingerprint,
+        somaticSynergyCatalogFingerprint: somaticSynergyCatalogFingerprint,
         structureHash: structureHash,
         delayFieldHash: delayFieldHash,
         connectomeHash: connectomeHash,
@@ -232,6 +239,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
     sharedArtifactFingerprint: UInt64,
     protectiveMotorProfileFingerprint: UInt64,
     attachmentCatalogFingerprint: UInt64,
+    somaticSynergyCatalogFingerprint: UInt64,
     structureHash: String,
     delayFieldHash: String,
     connectomeHash: String,
@@ -251,6 +259,7 @@ public struct MetalTissueCheckpoint: Codable, Equatable, Sendable {
       parameterVersionFingerprint, scheduleFingerprint,
       regionalProgramFingerprint, sharedArtifactFingerprint,
       protectiveMotorProfileFingerprint, attachmentCatalogFingerprint,
+      somaticSynergyCatalogFingerprint,
       UInt64(bodyLoadFieldDynamics.persistenceMicroseconds),
       UInt64(bodyLoadFieldDynamics.decayMicroseconds),
       UInt64(bodySchemaDynamics.forceScaleNewtons.bitPattern),

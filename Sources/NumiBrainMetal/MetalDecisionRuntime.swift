@@ -230,6 +230,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let autonomicChannelDescriptorBuffer: any MTLBuffer
   private let activeSensingChannelDescriptorBuffer: any MTLBuffer
   private let externalGoalDirectiveBuffer: any MTLBuffer
+  private let somaticSynergyDecoderBuffer: any MTLBuffer
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
@@ -243,6 +244,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     device: any MTLDevice,
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
+    somaticSynergyCatalog: SomaticSynergyCatalog,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
     dynamics: DecisionDynamics,
@@ -261,6 +263,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("decision runtime ABI or immutable binding drift")
     }
+    try somaticSynergyCatalog.validate(motor: species.motor)
+    let somaticSynergyDecoder = try somaticSynergyCatalog.denseDecoder()
     let controlLayout = try MetalActiveControlLayout(
       arenaLayout: arena.layout,
       species: species
@@ -310,7 +314,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 13
+    descriptor.maxBufferBindCount = 14
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -451,6 +455,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       let externalGoalDirectiveBuffer = device.makeBuffer(
         length: MemoryLayout<ExternalGoalDirectiveRecord>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let somaticSynergyDecoderBuffer = device.makeBuffer(
+        length: somaticSynergyDecoder.count * MemoryLayout<Float>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -468,6 +476,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "NumiBrain immutable species active sensing channels"
     externalGoalDirectiveBuffer.label =
       "NumiBrain transactional external goal directive"
+    somaticSynergyDecoderBuffer.label =
+      "NumiBrain immutable somatic synergy decoder"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
@@ -498,6 +508,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         from: source, byteCount: bytes.count
       )
     }
+    somaticSynergyDecoder.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      somaticSynergyDecoderBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
     self.arena = arena
     self.species = species
     self.regionalProgram = regionalProgram
@@ -524,6 +540,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.activeSensingChannelDescriptorBuffer =
       activeSensingChannelDescriptorBuffer
     self.externalGoalDirectiveBuffer = externalGoalDirectiveBuffer
+    self.somaticSynergyDecoderBuffer = somaticSynergyDecoderBuffer
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -549,7 +566,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       uniformBuffer, communicationDescriptorBuffer,
       cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
       autonomicChannelDescriptorBuffer, activeSensingChannelDescriptorBuffer,
-      externalGoalDirectiveBuffer,
+      externalGoalDirectiveBuffer, somaticSynergyDecoderBuffer,
     ]
   }
 
@@ -635,6 +652,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
     argumentTable.setAddress(worldParameterGPUAddress, index: 11)
     argumentTable.setAddress(externalGoalDirectiveBuffer.gpuAddress, index: 12)
+    argumentTable.setAddress(somaticSynergyDecoderBuffer.gpuAddress, index: 13)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
