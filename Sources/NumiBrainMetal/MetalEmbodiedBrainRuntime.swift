@@ -300,6 +300,21 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     )
   }
 
+  public func makeLearningBatch() throws -> MetalLearningBatch {
+    lock.lock()
+    defer { lock.unlock() }
+    let snapshot = try agentStateRuntime.snapshotPersistentSection(
+      .committedTransitions
+    )
+    return try MetalLearningBatch(
+      snapshot: snapshot,
+      speciesTemplateFingerprint: speciesTemplateFingerprint,
+      regionalProgramFingerprint: regionalProgramFingerprint,
+      scheduleFingerprint: scheduleFingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint
+    )
+  }
+
   public func beginControl(
     jointToken: BrainJointTransactionToken,
     cachedDecisionFingerprint: UInt64

@@ -18,6 +18,10 @@ private struct CheckpointCopyUniforms {
   var journalByteCount: UInt64 = 0
 }
 
+private struct MemoryRangeCopyUniforms {
+  var byteCount: UInt64 = 0
+}
+
 /// Executes generation seeding and persistent-memory journal application for
 /// `MetalAgentStateArena`. All state movement stays device-side; CPU only
 /// publishes or discards generation pointers after command completion.
@@ -27,6 +31,13 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     let generation: UInt64
     let hotState: Data
     let persistentMemory: Data
+  }
+
+  struct PersistentSectionSnapshot: @unchecked Sendable {
+    let buffer: any MTLBuffer
+    let generation: UInt64
+    let elementCount: Int
+    let elementStride: Int
   }
 
   public let arena: MetalAgentStateArena
@@ -40,13 +51,16 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   private let applyJournalPipeline: any MTLComputePipelineState
   private let checkpointSnapshotPipeline: any MTLComputePipelineState
   private let checkpointRestorePipeline: any MTLComputePipelineState
+  private let memoryRangeSnapshotPipeline: any MTLComputePipelineState
   private let initializeArguments: any MTL4ArgumentTable
   private let beginArguments: any MTL4ArgumentTable
   private let applyJournalArguments: any MTL4ArgumentTable
   private let checkpointSnapshotArguments: any MTL4ArgumentTable
   private let checkpointRestoreArguments: any MTL4ArgumentTable
+  private let memoryRangeSnapshotArguments: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let checkpointCopyUniformBuffer: any MTLBuffer
+  private let memoryRangeCopyUniformBuffer: any MTLBuffer
   private let residencySet: any MTLResidencySet
   private let lock = NSLock()
 
@@ -58,6 +72,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<AgentArenaUniforms>.stride == 48,
       MemoryLayout<CheckpointCopyUniforms>.stride == 24
+        && MemoryLayout<MemoryRangeCopyUniforms>.stride == 8
     else {
       throw TissueError.metal("agent-state arena uniform ABI drift")
     }
@@ -77,12 +92,17 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       let checkpointCopyUniformBuffer = device.makeBuffer(
         length: MemoryLayout<CheckpointCopyUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let memoryRangeCopyUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<MemoryRangeCopyUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to create agent-state Metal 4 execution objects")
     }
     uniformBuffer.label = "NumiBrain complete agent-state arena uniforms"
     checkpointCopyUniformBuffer.label = "NumiBrain checkpoint copy uniforms"
+    memoryRangeCopyUniformBuffer.label = "NumiBrain learner range-copy uniforms"
 
     let sourceURL =
       Bundle.module.url(
@@ -115,6 +135,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       ),
       let checkpointRestoreFunction = library.makeFunction(
         name: "restore_agent_checkpoint"
+      ),
+      let memoryRangeSnapshotFunction = library.makeFunction(
+        name: "snapshot_agent_memory_range"
       )
     else {
       throw TissueError.metal("agent-state arena kernels are incomplete")
@@ -124,6 +147,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     let applyJournalPipeline: any MTLComputePipelineState
     let checkpointSnapshotPipeline: any MTLComputePipelineState
     let checkpointRestorePipeline: any MTLComputePipelineState
+    let memoryRangeSnapshotPipeline: any MTLComputePipelineState
     do {
       initializePipeline = try device.makeComputePipelineState(function: initializeFunction)
       beginPipeline = try device.makeComputePipelineState(function: beginFunction)
@@ -133,6 +157,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
       checkpointRestorePipeline = try device.makeComputePipelineState(
         function: checkpointRestoreFunction
+      )
+      memoryRangeSnapshotPipeline = try device.makeComputePipelineState(
+        function: memoryRangeSnapshotFunction
       )
     } catch {
       throw TissueError.metal("agent-state arena pipeline creation failed: \(error)")
@@ -163,6 +190,11 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       label: "NumiBrain checkpoint restore arguments",
       count: 8
     )
+    let memoryRangeSnapshotArguments = try Self.makeArgumentTable(
+      device: device,
+      label: "NumiBrain learner range snapshot arguments",
+      count: 3
+    )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain complete agent-state residency"
     residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 4
@@ -177,6 +209,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     }
     residencySet.addAllocation(uniformBuffer)
     residencySet.addAllocation(checkpointCopyUniformBuffer)
+    residencySet.addAllocation(memoryRangeCopyUniformBuffer)
     residencySet.commit()
     residencySet.requestResidency()
 
@@ -190,13 +223,16 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     self.applyJournalPipeline = applyJournalPipeline
     self.checkpointSnapshotPipeline = checkpointSnapshotPipeline
     self.checkpointRestorePipeline = checkpointRestorePipeline
+    self.memoryRangeSnapshotPipeline = memoryRangeSnapshotPipeline
     self.initializeArguments = initializeArguments
     self.beginArguments = beginArguments
     self.applyJournalArguments = applyJournalArguments
     self.checkpointSnapshotArguments = checkpointSnapshotArguments
     self.checkpointRestoreArguments = checkpointRestoreArguments
+    self.memoryRangeSnapshotArguments = memoryRangeSnapshotArguments
     self.uniformBuffer = uniformBuffer
     self.checkpointCopyUniformBuffer = checkpointCopyUniformBuffer
+    self.memoryRangeCopyUniformBuffer = memoryRangeCopyUniformBuffer
     self.residencySet = residencySet
 
     try writeUniforms(
@@ -413,6 +449,64 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
     }
     try arena.markCheckpointRestored(generation: payload.generation)
+  }
+
+  func snapshotPersistentSection(
+    _ section: MetalAgentPersistentSection
+  ) throws -> PersistentSectionSnapshot {
+    lock.lock()
+    defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    _ = try arena.checkpointSourceView()
+    let layout = arena.memoryLayout.section(section)
+    guard layout.byteCount > 0,
+      layout.byteCount % MemoryLayout<UInt32>.stride == 0,
+      let snapshot = device.makeBuffer(
+        length: layout.byteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate persistent-section snapshot")
+    }
+    snapshot.label = "NumiBrain immutable \(section) learner snapshot"
+    addTemporaryResidency([snapshot])
+    defer { removeTemporaryResidency([snapshot]) }
+    var uniforms = MemoryRangeCopyUniforms(byteCount: UInt64(layout.byteCount))
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      memoryRangeCopyUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    try submit(label: "NumiBrain freeze committed transition cohort") { encoder in
+      memoryRangeSnapshotArguments.setAddress(
+        arena.persistentSectionAddress(section), index: 0
+      )
+      memoryRangeSnapshotArguments.setAddress(snapshot.gpuAddress, index: 1)
+      memoryRangeSnapshotArguments.setAddress(
+        memoryRangeCopyUniformBuffer.gpuAddress, index: 2
+      )
+      encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+      encoder.setArgumentTable(memoryRangeSnapshotArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(
+          width: layout.byteCount / MemoryLayout<UInt32>.stride,
+          height: 1,
+          depth: 1
+        ),
+        threadsPerThreadgroup: self.threadgroupSize(
+          for: memoryRangeSnapshotPipeline
+        )
+      )
+    }
+    return PersistentSectionSnapshot(
+      buffer: snapshot,
+      generation: arena.committedGeneration,
+      elementCount: layout.elementCount,
+      elementStride: layout.elementStride
+    )
   }
 
   private var journalEntryCapacity: Int {

@@ -24,6 +24,10 @@ struct NBCheckpointCopyUniforms {
   ulong journal_byte_count;
 };
 
+struct NBMemoryRangeCopyUniforms {
+  ulong byte_count;
+};
+
 struct NBAgentMemoryJournalHeader {
   uint format_version;
   atomic_uint entry_count;
@@ -52,6 +56,7 @@ struct NBAgentMemoryMutation {
 
 static_assert(sizeof(NBAgentArenaUniforms) == 48);
 static_assert(sizeof(NBCheckpointCopyUniforms) == 24);
+static_assert(sizeof(NBMemoryRangeCopyUniforms) == 8);
 static_assert(sizeof(NBAgentMemoryJournalHeader) == 48);
 static_assert(sizeof(NBAgentMemoryMutation) == 64);
 
@@ -95,6 +100,18 @@ kernel void restore_agent_checkpoint(
   if (byte_offset < uniforms.journal_byte_count) {
     first_journal[gid] = 0u;
     second_journal[gid] = 0u;
+  }
+}
+
+kernel void snapshot_agent_memory_range(
+  device const uint *source [[buffer(0)]],
+  device uint *snapshot [[buffer(1)]],
+  constant NBMemoryRangeCopyUniforms &uniforms [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const ulong byte_offset = ulong(gid) * sizeof(uint);
+  if (byte_offset < uniforms.byte_count) {
+    snapshot[gid] = source[gid];
   }
 }
 
