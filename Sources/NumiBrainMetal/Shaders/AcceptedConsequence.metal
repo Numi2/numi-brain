@@ -65,6 +65,7 @@ constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 16u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
+constant uint NB_CEREBELLAR_FEATURE_MASK = 0xffu;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -488,6 +489,9 @@ struct NBCerebellarExpertRecord {
   ulong prediction_timestamp_microseconds;
   uint prediction_count;
   uint reserved;
+  // 4...11 forward predictions, 12...19 actuator-local inverse corrections,
+  // 20...27 command features, 28...35 learned forward effects,
+  // 36...43 packed actuator/feature identities, 44...51 source records.
   float state[56];
 };
 
@@ -3117,7 +3121,8 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     }
   }
   for (uint sample = 0u; sample < prediction_count; ++sample) {
-    const uint feature_code = uint(expert.state[36u + sample]);
+    const uint feature_code = as_type<uint>(expert.state[36u + sample])
+      & NB_CEREBELLAR_FEATURE_MASK;
     const uint source_index = uint(expert.state[44u + sample]);
     float accepted_feature = 0.0f;
     bool feature_valid = false;
@@ -3198,6 +3203,16 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     absolute_error_sum += abs(signed_error);
     command_error_sum += signed_error * command_feature;
     accepted_count += 1u;
+    const float sample_inverse_correction = clamp(
+      -signed_error * command_feature * cerebellar_parameters[3],
+      -0.25f,
+      0.25f
+    );
+    expert.state[12u + sample] = mix(
+      expert.state[12u + sample],
+      sample_inverse_correction,
+      learning_rate
+    );
     expert.state[28u + sample] = clamp(
       expert.state[28u + sample]
         + learning_rate * signed_error * command_feature,

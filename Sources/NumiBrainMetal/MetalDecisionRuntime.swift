@@ -259,7 +259,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<ExternalGoalDirectiveRecord>.stride == 240,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
-      parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
+      parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
+      species.motor.actuatorCount <= 0x0100_0000
     else {
       throw TissueError.metal("decision runtime ABI or immutable binding drift")
     }

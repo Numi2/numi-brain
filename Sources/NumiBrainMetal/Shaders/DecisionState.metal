@@ -50,6 +50,8 @@ constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 16u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
+constant uint NB_CEREBELLAR_FEATURE_MASK = 0xffu;
+constant uint NB_CEREBELLAR_ACTUATOR_SHIFT = 8u;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -331,6 +333,9 @@ struct NBCerebellarExpertRecord {
   ulong prediction_timestamp_microseconds;
   uint prediction_count;
   uint reserved;
+  // 4...11 forward predictions, 12...19 actuator-local inverse corrections,
+  // 20...27 command features, 28...35 learned forward effects,
+  // 36...43 packed actuator/feature identities, 44...51 source records.
   float state[56];
 };
 
@@ -2720,6 +2725,69 @@ inline float nb_cerebellar_embodied_context(
     ? clamp(total / float(factor_count), -1.0f, 1.0f) : 0.0f;
 }
 
+/// Selects only from physical actuators whose immutable muscle attachment
+/// reaches the current motor-goal body. Index cycling distributes an expert's
+/// delayed samples across eligible anatomy; it never invents anatomy. Robot
+/// templates without biological attachment fingerprints retain their explicit
+/// contiguous actuator fallback.
+inline uint nb_cerebellar_anatomical_actuator(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  uint target_body_identifier,
+  uint selection_seed)
+{
+  if (uniforms.actuator_count == 0u) return 0u;
+  uint eligible_count = 0u;
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.somatic_effector_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.somatic_effector_belief_offset
+        + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    const uint actuator_identifier = uint(identity[5]);
+    const uint first_body_identifier = uint(identity[7]);
+    const uint terminal_body_identifier = uint(identity[7] >> 32u);
+    const bool reaches_target = identity[2] == 0ul
+      || first_body_identifier == target_body_identifier
+      || terminal_body_identifier == target_body_identifier;
+    if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) != 0ul
+        && actuator_identifier < uniforms.actuator_count
+        && reaches_target) {
+      eligible_count += 1u;
+    }
+  }
+  if (eligible_count == 0u) {
+    return selection_seed % uniforms.actuator_count;
+  }
+  const uint selected_rank = selection_seed % eligible_count;
+  uint rank = 0u;
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.somatic_effector_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.somatic_effector_belief_offset
+        + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    const uint actuator_identifier = uint(identity[5]);
+    const uint first_body_identifier = uint(identity[7]);
+    const uint terminal_body_identifier = uint(identity[7] >> 32u);
+    const bool reaches_target = identity[2] == 0ul
+      || first_body_identifier == target_body_identifier
+      || terminal_body_identifier == target_body_identifier;
+    if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+        || actuator_identifier >= uniforms.actuator_count
+        || !reaches_target) continue;
+    if (rank == selected_rank) return actuator_identifier;
+    rank += 1u;
+  }
+  return selection_seed % uniforms.actuator_count;
+}
+
 kernel void select_cerebellar_context_experts(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -3064,12 +3132,6 @@ kernel void generate_motor_spinal_autonomic_state(
     reinterpret_cast<device const NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
     );
-  float learned_cerebellar_residual = 0.0f;
-  for (uint expert_index = 0u;
-      expert_index < uniforms.active_cerebellar_expert_count; ++expert_index) {
-    learned_cerebellar_residual += experts[expert_index].weight
-      * experts[expert_index].state[1];
-  }
   device const NBCPGStateRecord *cpg_states =
     reinterpret_cast<device const NBCPGStateRecord *>(
       hot_state + uniforms.cpg_state_offset
@@ -3292,6 +3354,30 @@ kernel void generate_motor_spinal_autonomic_state(
     fast_cerebellar[gid] = fast_state;
     const float fast_cerebellar_residual = fast_correction_active
       ? clamp(fast_state.correction, -0.25f, 0.25f) : 0.0f;
+    float learned_cerebellar_residual = 0.0f;
+    float learned_cerebellar_weight = 0.0f;
+    for (uint expert_index = 0u;
+        expert_index < uniforms.active_cerebellar_expert_count;
+        ++expert_index) {
+      const NBCerebellarExpertRecord expert = experts[expert_index];
+      if ((expert.flags & NB_CONTROL_FLAG_VALID) == 0u) continue;
+      const uint sample_count = min(expert.prediction_count, 8u);
+      const float expert_weight = max(expert.weight, 0.0f)
+        * clamp(expert.state[2], 0.05f, 1.0f);
+      for (uint sample = 0u; sample < sample_count; ++sample) {
+        const uint feature_actuator = as_type<uint>(
+          expert.state[36u + sample]
+        );
+        const uint actuator_identifier = feature_actuator
+          >> NB_CEREBELLAR_ACTUATOR_SHIFT;
+        if (actuator_identifier != gid) continue;
+        learned_cerebellar_residual += expert_weight
+          * expert.state[12u + sample];
+        learned_cerebellar_weight += expert_weight;
+      }
+    }
+    learned_cerebellar_residual = learned_cerebellar_weight > 0.0f
+      ? learned_cerebellar_residual / learned_cerebellar_weight : 0.0f;
     descending = nb_scale_motor_drive(
       descending,
       1.0f - inhibition,
@@ -3335,8 +3421,12 @@ kernel void generate_motor_spinal_autonomic_state(
     const float slow_cerebellar_residual = rest_selected
       ? 0.0f
       : clamp(
-          learned_cerebellar_residual
-            - header->unsupported_uncertainty * motor_parameters[10],
+          learned_cerebellar_residual * clamp(
+            1.0f - header->unsupported_uncertainty
+              * abs(motor_parameters[10]),
+            0.0f,
+            1.0f
+          ),
           -0.25f, 0.25f
         ) * (0.5f + 0.5f * agency_confidence);
     command.cerebellar_residual = clamp(
@@ -3718,9 +3808,9 @@ kernel void generate_motor_spinal_autonomic_state(
 }
 
 /// Arms each expert with eight timestamped articulated predictions after the
-/// exact motor command has been generated. Each sample retains a typed feature
-/// code and its source-record index so delayed body, joint, and muscle feedback
-/// cannot alias one another during accepted-consequence learning.
+/// exact motor command has been generated. Each sample retains its physical
+/// actuator, typed feature, and source record so delayed body, joint, and
+/// muscle feedback cannot alias one another during accepted-only learning.
 kernel void predict_delayed_cerebellar_consequences(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -3781,12 +3871,12 @@ kernel void predict_delayed_cerebellar_consequences(
     float baseline = nb_normalized_body_feature_value(
       body[feature_code], feature_code
     );
-    const uint actuator_index = sample % max(uniforms.actuator_count, 1u);
-    const float actuator_feature = uniforms.actuator_count == 0u
-      ? 0.0f
-      : nb_motor_feature(
-          somatic_output[actuator_index], uniforms.actuator_command_kind
-        );
+    uint actuator_index = nb_cerebellar_anatomical_actuator(
+      hot_state,
+      uniforms,
+      motor_goal->target_body_identifier,
+      expert.expert_identifier * prediction_count + sample
+    );
     float command_feature = 0.0f;
     bool articulated_source = false;
     if (sample >= 4u && sample < 6u && uniforms.joint_belief_count > 0u) {
@@ -3847,6 +3937,7 @@ kernel void predict_delayed_cerebellar_consequences(
         const uint first_body_identifier = uint(identity[7]);
         const uint terminal_body_identifier = uint(identity[7] >> 32u);
         if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+            || uint(identity[5]) >= uniforms.actuator_count
             || (identity[2] != 0ul
               && first_body_identifier
                 != motor_goal->target_body_identifier
@@ -3863,10 +3954,16 @@ kernel void predict_delayed_cerebellar_consequences(
         baseline = nb_normalized_muscle_feature_value(
           muscle[muscle_feature], muscle_feature
         );
+        actuator_index = uint(identity[5]);
         articulated_source = true;
         break;
       }
     }
+    const float actuator_feature = uniforms.actuator_count == 0u
+      ? 0.0f
+      : nb_motor_feature(
+          somatic_output[actuator_index], uniforms.actuator_command_kind
+        );
     if (articulated_source) {
       command_feature = clamp(
         actuator_feature * motor_goal->confidence
@@ -3893,9 +3990,11 @@ kernel void predict_delayed_cerebellar_consequences(
     );
     expert.state[4u + sample] = baseline
       + clamp(command_feature * learned_effect, -1.0f, 1.0f);
-    expert.state[12u + sample] = baseline;
     expert.state[20u + sample] = command_feature;
-    expert.state[36u + sample] = float(feature_code);
+    expert.state[36u + sample] = as_type<float>(
+      (actuator_index << NB_CEREBELLAR_ACTUATOR_SHIFT)
+        | (feature_code & NB_CEREBELLAR_FEATURE_MASK)
+    );
     expert.state[44u + sample] = float(source_index);
     mean_command += command_feature;
   }

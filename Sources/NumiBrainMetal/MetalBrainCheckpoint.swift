@@ -6,7 +6,7 @@ import NumiBrainCore
 /// the corresponding fast-tissue state for complete nervous-system recovery.
 @frozen
 public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let committedGeneration: UInt64
