@@ -6,6 +6,7 @@ constant uint NB_CONTROL_MODE_PROCEDURAL = 2u;
 constant uint NB_CONTROL_MODE_PLANNING = 3u;
 constant uint NB_CONTROL_FLAG_VALID = 1u;
 constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
 constant uint NB_OPTION_PROPOSAL_REST_RECOVERY = 3u;
@@ -74,6 +75,9 @@ struct NBDecisionUniforms {
   float motor_gain;
   float stiffness_gain;
   float damping_gain;
+  ulong observation_offset;
+  uint observation_count;
+  uint cerebellar_expert_capacity;
 };
 
 struct NBDriveRecord {
@@ -185,7 +189,10 @@ struct NBCerebellarExpertRecord {
   uint flags;
   float weight;
   float prediction_error;
-  float state[60];
+  ulong prediction_timestamp_microseconds;
+  uint prediction_count;
+  uint reserved;
+  float state[56];
 };
 
 struct NBSpinalStateRecord {
@@ -330,7 +337,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 344);
+static_assert(sizeof(NBDecisionUniforms) == 360);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -1319,7 +1326,9 @@ kernel void select_cerebellar_context_experts(
   const float option_context = float(
     uint(header->active_option_identifier ^ (header->active_option_identifier >> 32))
   ) * 2.3283064365386963e-10f;
-  for (uint expert_identifier = 0u; expert_identifier < 128u; ++expert_identifier) {
+  for (uint expert_identifier = 0u;
+      expert_identifier < uniforms.cerebellar_expert_capacity;
+      ++expert_identifier) {
     NBCerebellarExpertRecord memory = bank[expert_identifier];
     if ((memory.flags & NB_CONTROL_FLAG_VALID) == 0u) {
       memory.expert_identifier = expert_identifier;
@@ -1331,7 +1340,8 @@ kernel void select_cerebellar_context_experts(
     const float neural_context = recurrent[
       (expert_identifier * 17u) % uniforms.recurrent_scalar_count
     ];
-    const float expert_context = float(expert_identifier) / 127.0f;
+    const float expert_context = float(expert_identifier)
+      / float(max(uniforms.cerebellar_expert_capacity - 1u, 1u));
     const float adaptation_bonus = clamp(abs(memory.state[2]), 0.0f, 0.25f);
     const float score = cerebellar_parameters[3]
       - abs(tanh(cerebellar_parameters[7] * neural_context + option_context)
@@ -1757,4 +1767,60 @@ kernel void generate_motor_spinal_autonomic_state(
       | (communication_selected && communication_sensing ? (1u << 17u) : 0u);
     active_sensing[gid] = command;
   }
+}
+
+/// Arms the active mixture experts with timestamped sensory predictions after
+/// the exact motor command has been generated. These records live only in the
+/// agent shadow generation; accepted feedback may adapt them, while a root
+/// abort discards the predictions without changing expert memory.
+kernel void predict_delayed_cerebellar_consequences(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *cerebellar_parameters [[buffer(5)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.active_cerebellar_expert_count) return;
+  device NBCerebellarExpertRecord *experts =
+    reinterpret_cast<device NBCerebellarExpertRecord *>(
+      hot_state + uniforms.cerebellar_offset
+    );
+  NBCerebellarExpertRecord expert = experts[gid];
+  if ((expert.flags & NB_CONTROL_FLAG_VALID) == 0u) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const float *somatic_output = reinterpret_cast<device const float *>(
+    hot_state + uniforms.somatic_output_offset
+  );
+  const uint prediction_count = min(uniforms.observation_count, 8u);
+  float mean_command = 0.0f;
+  for (uint sample = 0u; sample < prediction_count; ++sample) {
+    const uint observation_index =
+      (expert.expert_identifier * 17u + sample * 31u)
+        % uniforms.observation_count;
+    const uint actuator_index = sample % max(uniforms.actuator_count, 1u);
+    const float command_feature = uniforms.actuator_count == 0u
+      ? 0.0f : 2.0f * somatic_output[actuator_index] - 1.0f;
+    const float baseline = observations[observation_index];
+    const float learned_effect = clamp(
+      cerebellar_parameters[4] + expert.state[28u + sample],
+      -1.0f,
+      1.0f
+    );
+    expert.state[4u + sample] = baseline
+      + clamp(command_feature * learned_effect, -1.0f, 1.0f);
+    expert.state[12u + sample] = baseline;
+    expert.state[20u + sample] = command_feature;
+    mean_command += command_feature;
+  }
+  expert.state[3] = prediction_count == 0u
+    ? 0.0f : mean_command / float(prediction_count);
+  expert.prediction_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  expert.prediction_count = prediction_count;
+  expert.reserved = 0u;
+  expert.flags = prediction_count == 0u
+    ? (expert.flags & ~NB_CEREBELLAR_PREDICTION_VALID)
+    : (expert.flags | NB_CEREBELLAR_PREDICTION_VALID);
+  experts[gid] = expert;
 }

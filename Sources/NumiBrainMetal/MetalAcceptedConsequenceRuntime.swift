@@ -38,7 +38,7 @@ private struct AcceptedConsequenceUniforms {
   var optionCandidateCapacity: UInt32 = 0
   var proceduralTraceRecordCapacity: UInt32 = 0
   var proceduralTracePhaseCapacity: UInt32 = 0
-  var reserved: UInt32 = 0
+  var cerebellarExpertCapacity: UInt32 = 0
   var visionOffset: UInt32 = 0
   var visionCount: UInt32 = 0
   var auditionOffset: UInt32 = 0
@@ -324,7 +324,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         hot(.proceduralExecutionTrace).elementCount
       ),
       proceduralTracePhaseCapacity: 8,
-      reserved: 0,
+      cerebellarExpertCapacity: UInt32(
+        species.capacities.cerebellarExpertCapacity
+      ),
       visionOffset: vision.offset,
       visionCount: vision.count,
       auditionOffset: audition.offset,

@@ -580,7 +580,10 @@ struct NBCerebellarExpertRecord {
   uint flags;
   float weight;
   float prediction_error;
-  float state[60];
+  ulong prediction_timestamp_microseconds;
+  uint prediction_count;
+  uint reserved;
+  float state[56];
 };
 
 struct NBMemoryRetrievalScratch {

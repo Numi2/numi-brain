@@ -62,6 +62,9 @@ private struct DecisionUniforms {
   var motorGain: Float = 0
   var stiffnessGain: Float = 0
   var dampingGain: Float = 0
+  var observationOffset: UInt64 = 0
+  var observationCount: UInt32 = 0
+  var cerebellarExpertCapacity: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -120,6 +123,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let cerebellarPipeline: any MTLComputePipelineState
   private let cpgPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
+  private let cerebellarPredictionPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let communicationDescriptorBuffer: any MTLBuffer
@@ -142,7 +146,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 344,
+    guard MemoryLayout<DecisionUniforms>.stride == 360,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -184,6 +188,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "select_cerebellar_context_experts",
       "advance_cpg_state",
       "generate_motor_spinal_autonomic_state",
+      "predict_delayed_cerebellar_consequences",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -339,6 +344,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.cerebellarPipeline = pipelines[6]
     self.cpgPipeline = pipelines[7]
     self.motorPipeline = pipelines[8]
+    self.cerebellarPredictionPipeline = pipelines[9]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
@@ -434,6 +440,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         )
       )
     )
+    barrier(encoder)
+    dispatch(
+      encoder,
+      pipeline: cerebellarPredictionPipeline,
+      count: Int(species.capacities.activeCerebellarExpertCapacity)
+    )
     let header = controlLayout.section(.header)
     let motor = controlLayout.section(.motorCommands)
     let spinal = controlLayout.section(.spinalState)
@@ -464,6 +476,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let workspace = arena.layout.section(.workspaceContent)
     let workspaceMetadata = arena.layout.section(.workspaceMetadata)
     let world = arena.layout.section(.worldModel)
+    let observations = arena.layout.section(.sensoryObservations)
     let drives = arena.layout.section(.drives)
     let neuromodulation = arena.layout.section(.neuromodulation)
     let header = controlLayout.section(.header)
@@ -484,6 +497,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let counts = [
       recurrent.elementCount, workspace.elementCount, world.elementCount,
       workspaceMetadata.elementCount, candidates.elementCount, plans.elementCount,
+      observations.elementCount,
     ]
     guard counts.allSatisfy({ $0 <= Int(UInt32.max) }),
       plans.elementCount == candidates.elementCount * maximumPlanningHorizon
@@ -570,7 +584,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       planningCostWeight: dynamics.planningCostWeight,
       motorGain: dynamics.motorGain,
       stiffnessGain: dynamics.stiffnessGain,
-      dampingGain: dynamics.dampingGain
+      dampingGain: dynamics.dampingGain,
+      observationOffset: UInt64(observations.byteOffset),
+      observationCount: UInt32(observations.elementCount),
+      cerebellarExpertCapacity: UInt32(
+        species.capacities.cerebellarExpertCapacity
+      )
     )
   }
 

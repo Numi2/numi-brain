@@ -142,6 +142,7 @@ public struct BrainCapacityProfile: Codable, Equatable, Hashable, Sendable {
       fastPlasticityCapacity > 0, activeOptionCandidateCapacity > 0,
       cerebellarExpertCapacity > 0,
       activeCerebellarExpertCapacity > 0,
+      activeCerebellarExpertCapacity <= 4,
       activeCerebellarExpertCapacity <= cerebellarExpertCapacity
     else {
       throw BrainRuntimeError.capacity("brain capacity profile is invalid")

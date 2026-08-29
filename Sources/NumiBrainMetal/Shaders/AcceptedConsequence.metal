@@ -2,6 +2,7 @@
 using namespace metal;
 
 constant uint NB_ACCEPTED_STATE_VALID = 1u;
+constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
 constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
 constant uint NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP = 1u << 1;
@@ -47,7 +48,7 @@ struct NBAcceptedConsequenceUniforms {
   uint option_candidate_capacity;
   uint procedural_trace_record_capacity;
   uint procedural_trace_phase_capacity;
-  uint reserved;
+  uint cerebellar_expert_capacity;
   uint vision_offset;
   uint vision_count;
   uint audition_offset;
@@ -213,7 +214,10 @@ struct NBCerebellarExpertRecord {
   uint flags;
   float weight;
   float prediction_error;
-  float state[60];
+  ulong prediction_timestamp_microseconds;
+  uint prediction_count;
+  uint reserved;
+  float state[56];
 };
 
 static_assert(sizeof(NBAcceptedConsequenceUniforms) == 304);
@@ -551,9 +555,6 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
-  device const float *world = reinterpret_cast<device const float *>(
-    hot_state + uniforms.world_model_offset
-  );
   device NBCerebellarExpertRecord *experts =
     reinterpret_cast<device NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
@@ -562,29 +563,56 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     reinterpret_cast<device NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_expert_memory_offset
     );
-  device const NBMotorCommandRecord *motor =
-    reinterpret_cast<device const NBMotorCommandRecord *>(
-      hot_state + uniforms.motor_command_offset
-    );
-  const float error = nb_mean_prediction_error(
-    observations, world, uniforms
-  );
   NBCerebellarExpertRecord expert = experts[gid];
-  expert.prediction_error = error;
+  const bool prediction_is_causal =
+    (expert.flags & NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID) != 0u
+    && expert.prediction_count > 0u
+    && uniforms.observation_count > 0u
+    && expert.prediction_timestamp_microseconds
+      < uniforms.target_timestamp_microseconds
+    && uniforms.target_timestamp_microseconds
+      - expert.prediction_timestamp_microseconds == uniforms.delta_microseconds;
+  if (!prediction_is_causal) {
+    expert.flags &= ~NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID;
+    experts[gid] = expert;
+    return;
+  }
   const float learning_rate = clamp(
     min(uniforms.cerebellar_learning_rate, max(cerebellar_parameters[0], 0.0f)),
     0.0f,
     1.0f
   );
+  const uint prediction_count = min(expert.prediction_count, 8u);
+  float absolute_error_sum = 0.0f;
+  float command_error_sum = 0.0f;
+  for (uint sample = 0u; sample < prediction_count; ++sample) {
+    const uint observation_index =
+      (expert.expert_identifier * 17u + sample * 31u)
+        % uniforms.observation_count;
+    const float signed_error = observations[observation_index]
+      - expert.state[4u + sample];
+    const float command_feature = expert.state[20u + sample];
+    absolute_error_sum += abs(signed_error);
+    command_error_sum += signed_error * command_feature;
+    expert.state[28u + sample] = clamp(
+      expert.state[28u + sample]
+        + learning_rate * signed_error * command_feature,
+      -1.0f,
+      1.0f
+    );
+  }
+  const float error = absolute_error_sum / float(prediction_count);
+  expert.prediction_error = error;
   expert.state[0] = mix(
     expert.state[0], error,
     learning_rate
   );
-  const float command_direction = uniforms.actuator_count == 0u
-    ? 0.0f
-    : 2.0f * motor[gid % uniforms.actuator_count].excitation - 1.0f;
-  const float inverse_correction = -error * command_direction
-    * cerebellar_parameters[3];
+  const float inverse_correction = clamp(
+    -(command_error_sum / float(prediction_count))
+      * cerebellar_parameters[3],
+    -0.25f,
+    0.25f
+  );
   expert.state[1] = mix(
     expert.state[1], inverse_correction,
     learning_rate
@@ -593,9 +621,10 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     expert.state[2], 1.0f - clamp(error, 0.0f, 1.0f),
     clamp(cerebellar_parameters[2], 0.0f, 1.0f)
   );
-  expert.flags |= NB_ACCEPTED_STATE_VALID;
+  expert.flags = (expert.flags | NB_ACCEPTED_STATE_VALID)
+    & ~NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID;
   experts[gid] = expert;
-  if (expert.expert_identifier < 128u) {
+  if (expert.expert_identifier < uniforms.cerebellar_expert_capacity) {
     expert_bank[expert.expert_identifier] = expert;
   }
 }
