@@ -2664,14 +2664,23 @@ kernel void publish_memory_retrieval_winner(
         ? prospective_value->goal_identifier
         : (kind == 3u && procedural_value != nullptr
           ? procedural_value->initiation_goal_identifier : 0ul)))));
+  const ulong procedural_phase_option = procedural_value != nullptr
+      && procedural_value->phase_count > 0u
+    ? procedural_value->phase_option_identifiers[
+        min(procedural_phase, min(procedural_value->phase_count, 8u) - 1u)
+      ]
+    : (procedural_value != nullptr
+      ? procedural_value->parent_skill_identifier : 0ul);
   token.bound_token_identifier = episodic_value != nullptr
     ? episodic_value->active_option_identifier
     : (archived_value != nullptr
       ? archived_value->active_option_identifier
-      : (semantic_relation_value != nullptr
-        ? semantic_relation_value->destination_concept_identifier
-        : (prospective_value != nullptr
-          ? prospective_value->deadline_timestamp_microseconds : 0ul)));
+      : (kind == 3u && procedural_value != nullptr
+        ? procedural_phase_option
+        : (semantic_relation_value != nullptr
+          ? semantic_relation_value->destination_concept_identifier
+          : (prospective_value != nullptr
+            ? prospective_value->deadline_timestamp_microseconds : 0ul))));
   token.provenance_record_identifier = identifier;
   token.kind_and_source = 5u | (source_module << 16);
   const float retrieval_confidence = sqrt(

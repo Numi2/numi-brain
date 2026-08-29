@@ -1729,6 +1729,13 @@ kernel void propose_dynamic_options(
         - 0.5f * termination_probability * termination_confidence;
     }
     learned.proposal_kind = 10u;
+    const ulong phase_option_identifier = memory_token.bound_token_identifier;
+    const ulong innate_phase_identifier = phase_option_identifier
+      & ~NB_INNATE_OPTION_NAMESPACE;
+    if ((phase_option_identifier & NB_INNATE_OPTION_NAMESPACE) != 0ul
+        && innate_phase_identifier > 0ul) {
+      learned.proposal_kind = uint((innate_phase_identifier - 1ul) % 10ul);
+    }
     learned.source_module = 60u;
     learned.flags = NB_CONTROL_FLAG_VALID;
     learned.parameter_count = 16u;
@@ -2948,13 +2955,11 @@ kernel void advance_cpg_state(
     (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
     deliberate_inhibition
   );
-  const bool locomotor_active = ((
-    candidate.source_module == 72u
-      && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
-  ) || (
-    candidate.source_module == 65u
-      && candidate.proposal_kind == NB_OPTION_PROPOSAL_EXPLORATION
-  ))
+  const bool locomotor_source = candidate.source_module == 72u
+    || candidate.source_module == 65u || candidate.source_module == 60u;
+  const bool locomotor_active = locomotor_source
+    && (candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
+      || candidate.proposal_kind == NB_OPTION_PROPOSAL_EXPLORATION)
     && (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) == 0u;
 
   device NBEventQueueHeader *event_header =
