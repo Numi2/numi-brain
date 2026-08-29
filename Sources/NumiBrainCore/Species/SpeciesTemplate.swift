@@ -383,7 +383,7 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
       learningRateMultiplier.isFinite, learningRateMultiplier >= 0,
       sensorPrecisionMultiplier.isFinite, sensorPrecisionMultiplier >= 0,
       muscleStrengthMultiplier.isFinite, muscleStrengthMultiplier >= 0,
-      workspaceCapacity > 0,
+      planningHorizonSteps <= 64, workspaceCapacity > 0,
       Set(capabilityGateCodes).count == capabilityGateCodes.count
     else {
       throw BrainRuntimeError.invalidDescriptor("developmental stage template is invalid")

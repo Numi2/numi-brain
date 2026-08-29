@@ -306,6 +306,17 @@ struct NBRegionalMaturationRecordABI {
     uint flags;
 };
 
+struct NBRegionalPlasticModulationRecordABI {
+    uint module_identifier;
+    uint coefficient_count;
+    float recurrent_delta;
+    float local_delta;
+    float route_delta;
+    float drive_delta;
+    float gate_delta;
+    uint flags;
+};
+
 struct NBParameterVersionBindingABI {
     uint format_version;
     uint component_count;
@@ -597,6 +608,8 @@ static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
 static_assert(sizeof(NBRegionalMaturationRecordABI) == 32,
               "regional maturation ABI drift");
+static_assert(sizeof(NBRegionalPlasticModulationRecordABI) == 32,
+              "regional plastic modulation ABI drift");
 static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
 static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI drift");
 static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
@@ -1555,6 +1568,9 @@ kernel void advance_due_regional_tokens(
     device uint *selectedRouteIndices [[buffer(21)]],
     device uint *selectedRouteCounts [[buffer(22)]],
     device const NBParameterVersionBindingABI *parameterVersion [[buffer(23)]],
+    device const NBRegionalPlasticModulationRecordABI *plasticModulation
+        [[buffer(24)]],
+    device const NBRegionalMaturationRecordABI *maturation [[buffer(25)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
@@ -1650,6 +1666,20 @@ kernel void advance_due_regional_tokens(
              moduleIndex += laneCount) {
             selectedRouteCounts[moduleIndex] = 0u;
             const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
+            const NBRegionalMaturationRecordABI maturationRecord =
+                maturation[moduleIndex];
+            const bool validMaturation = maturationRecord.module_identifier
+                    == uint(receiver.module_id)
+                && maturationRecord.unlocked != 0u;
+            const uint effectiveNormalRouteBudget = validMaturation
+                ? min(
+                    uint(receiver.normal_route_budget),
+                    uint(ceil(
+                        float(receiver.normal_route_budget)
+                            * clamp(maturationRecord.capacity_fraction, 0.0f, 1.0f)
+                    ))
+                )
+                : 0u;
             NBDueInvocationABI receiverInvocation;
             if (!regional_invocation_for_module(
                     invocations,
@@ -1707,7 +1737,7 @@ kernel void advance_due_regional_tokens(
             }
             for (uint routeIndex = routeBegin;
                  routeIndex < routeEnd
-                     && normalSelected < uint(receiver.normal_route_budget);
+                     && normalSelected < effectiveNormalRouteBudget;
                  ++routeIndex) {
                 const NBRegionalRouteABI route = routes[routeIndex];
                 const NBRegionalRouteRuntimeStateABI state =
@@ -1725,7 +1755,7 @@ kernel void advance_due_regional_tokens(
                     normalSelected += 1u;
                 }
             }
-            while (normalSelected < uint(receiver.normal_route_budget)) {
+            while (normalSelected < effectiveNormalRouteBudget) {
                 uint bestRoute = ~0u;
                 float bestScore = -INFINITY;
                 for (uint routeIndex = routeBegin;
@@ -1846,12 +1876,30 @@ kernel void advance_due_regional_tokens(
             }
 
             const NBModuleDescriptorABI module = modules[moduleIndex];
+            const NBRegionalMaturationRecordABI maturationRecord =
+                maturation[moduleIndex];
+            const NBRegionalPlasticModulationRecordABI plastic =
+                plasticModulation[moduleIndex];
+            const bool validMaturation = maturationRecord.module_identifier
+                    == uint(module.module_id)
+                && maturationRecord.unlocked != 0u;
+            const bool validPlastic = plastic.module_identifier
+                    == uint(module.module_id)
+                && plastic.coefficient_count > 0u
+                && (plastic.flags & 1u) != 0u;
             const NBRegionalModuleStateABI diagnostic = outputDiagnostics[moduleIndex];
             const ulong elapsedMicroseconds = diagnostic.last_update_microseconds == neverUpdated
                 ? ulong(module.period_microseconds)
                 : invocation.timestamp_microseconds - diagnostic.last_update_microseconds;
             const float alpha = 1.0f - exp(
-                -float(elapsedMicroseconds) / float(module.intrinsic_timescale_microseconds)
+                -float(elapsedMicroseconds) /
+                    (float(module.intrinsic_timescale_microseconds)
+                        * max(
+                            validMaturation
+                                ? maturationRecord.timescale_multiplier
+                                : 1.0f,
+                            0.05f
+                        ))
             );
             const float periodicDrive =
                 (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
@@ -1879,6 +1927,7 @@ kernel void advance_due_regional_tokens(
                 ];
                 const NBRegionalRouteABI route = routes[routeIndex];
                 routedInput += route.gain
+                    * (validMaturation ? maturationRecord.route_gain_multiplier : 1.0f)
                     * outputRouteRuntimeStates[routeIndex].strength
                     * regional_route_message_value(
                         routeIndex,
@@ -1896,13 +1945,18 @@ kernel void advance_due_regional_tokens(
                 parameters[layout.parameter_offset + localScalar];
             const float current = outputTokens[scalarIndex];
             const float candidate = tanh(
-                parameter.recurrent_gain * current
-                + parameter.local_gain * localMean
-                + parameter.route_gain * routedInput
-                + parameter.drive_gain * drive
+                (parameter.recurrent_gain
+                    + (validPlastic ? plastic.recurrent_delta : 0.0f)) * current
+                + (parameter.local_gain
+                    + (validPlastic ? plastic.local_delta : 0.0f)) * localMean
+                + (parameter.route_gain
+                    + (validPlastic ? plastic.route_delta : 0.0f)) * routedInput
+                + (parameter.drive_gain
+                    + (validPlastic ? plastic.drive_delta : 0.0f)) * drive
                 + parameter.bias
             );
             const float gateInput = parameter.gate_bias
+                + (validPlastic ? plastic.gate_delta : 0.0f)
                 + parameter.gate_recurrent_gain * current
                 + parameter.gate_input_gain * (routedInput + drive);
             const float gate = 1.0f / (1.0f + exp(-gateInput));

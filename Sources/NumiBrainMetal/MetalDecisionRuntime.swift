@@ -20,6 +20,7 @@ private struct DecisionUniforms {
   var autonomicOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
+  var cerebellarExpertMemoryOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var reservedIdentity: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -35,7 +36,7 @@ private struct DecisionUniforms {
   var synergyCount: UInt32 = 0
   var activeCerebellarExpertCount: UInt32 = 0
   var autonomicDimension: UInt32 = 0
-  var moduleCount: UInt32 = 0
+  var maximumPlanningHorizon: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
   var switchingMargin: Float = 0
@@ -66,6 +67,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let parameterVersion: BrainParameterVersion
   private let dynamics: DecisionDynamics
   private let controlLayout: MetalActiveControlLayout
+  private let goalPipeline: any MTLComputePipelineState
   private let proposalPipeline: any MTLComputePipelineState
   private let planningPipeline: any MTLComputePipelineState
   private let selectionPipeline: any MTLComputePipelineState
@@ -82,7 +84,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     parameterVersion: BrainParameterVersion,
     dynamics: DecisionDynamics
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 240,
+    guard MemoryLayout<DecisionUniforms>.stride == 248,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -114,7 +116,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       throw TissueError.metal("decision-state Metal 4 compilation failed: \(error)")
     }
     let names = [
-      "propose_dynamic_options", "simulate_candidate_option_outcomes",
+      "generate_active_goal_state", "propose_dynamic_options",
+      "simulate_candidate_option_outcomes",
       "select_option_and_control_mode", "select_cerebellar_context_experts",
       "generate_motor_spinal_autonomic_state",
     ]
@@ -149,11 +152,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.parameterVersion = parameterVersion
     self.dynamics = dynamics
     self.controlLayout = controlLayout
-    self.proposalPipeline = pipelines[0]
-    self.planningPipeline = pipelines[1]
-    self.selectionPipeline = pipelines[2]
-    self.cerebellarPipeline = pipelines[3]
-    self.motorPipeline = pipelines[4]
+    self.goalPipeline = pipelines[0]
+    self.proposalPipeline = pipelines[1]
+    self.planningPipeline = pipelines[2]
+    self.selectionPipeline = pipelines[3]
+    self.cerebellarPipeline = pipelines[4]
+    self.motorPipeline = pipelines[5]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
   }
@@ -173,6 +177,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    dispatch(encoder, pipeline: goalPipeline, count: 1)
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: proposalPipeline,
@@ -190,7 +196,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dispatch(
       encoder,
       pipeline: cerebellarPipeline,
-      count: Int(species.capacities.activeCerebellarExpertCapacity)
+      count: 1
     )
     dispatch(
       encoder,
@@ -236,11 +242,17 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let spinal = controlLayout.section(.spinalState)
     let somatic = arena.layout.section(.somaticOutput)
     let autonomic = controlLayout.section(.autonomicCommands)
+    let maximumPlanningHorizon = max(
+      species.development.map({ Int($0.planningHorizonSteps) }).max() ?? 0,
+      1
+    )
     let counts = [
       recurrent.elementCount, workspace.elementCount, world.elementCount,
       workspaceMetadata.elementCount, candidates.elementCount, plans.elementCount,
     ]
-    guard counts.allSatisfy({ $0 <= Int(UInt32.max) }) else {
+    guard counts.allSatisfy({ $0 <= Int(UInt32.max) }),
+      plans.elementCount == candidates.elementCount * maximumPlanningHorizon
+    else {
       throw TissueError.metal("decision-state count exceeds UInt32")
     }
     return DecisionUniforms(
@@ -263,6 +275,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       developmentalStateOffset: UInt64(
         arena.layout.section(.developmentalState).byteOffset
       ),
+      cerebellarExpertMemoryOffset: UInt64(
+        arena.layout.section(.cerebellarExpertMemory).byteOffset
+      ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
       reservedIdentity: 0,
       recurrentScalarCount: UInt32(recurrent.elementCount),
@@ -282,7 +297,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         species.capacities.activeCerebellarExpertCapacity
       ),
       autonomicDimension: UInt32(species.physiology.autonomicActionDimension),
-      moduleCount: UInt32(species.enabledModuleIdentifiers.count),
+      maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,
       switchingMargin: dynamics.switchingMargin,

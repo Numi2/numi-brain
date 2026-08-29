@@ -18,6 +18,7 @@ private struct AcceptedConsequenceUniforms {
   var controlHeaderOffset: UInt64 = 0
   var motorCommandOffset: UInt64 = 0
   var cerebellarOffset: UInt64 = 0
+  var cerebellarExpertMemoryOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
   var observationCount: UInt32 = 0
@@ -71,7 +72,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     dynamics: AcceptedConsequenceDynamics
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 232,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 240,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
@@ -257,6 +258,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       controlHeaderOffset: UInt64(controlHeader.byteOffset),
       motorCommandOffset: UInt64(motor.byteOffset),
       cerebellarOffset: UInt64(cerebellar.byteOffset),
+      cerebellarExpertMemoryOffset: UInt64(
+        hot(.cerebellarExpertMemory).byteOffset
+      ),
       somaticOutputOffset: UInt64(hot(.somaticOutput).byteOffset),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),

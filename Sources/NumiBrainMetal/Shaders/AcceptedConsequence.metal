@@ -21,6 +21,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong control_header_offset;
   ulong motor_command_offset;
   ulong cerebellar_offset;
+  ulong cerebellar_expert_memory_offset;
   ulong somatic_output_offset;
   ulong physics_state_fingerprint;
   uint observation_count;
@@ -145,7 +146,7 @@ struct NBCerebellarExpertRecord {
   float state[60];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 232);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 240);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -409,6 +410,14 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     reinterpret_cast<device NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
     );
+  device NBCerebellarExpertRecord *expert_bank =
+    reinterpret_cast<device NBCerebellarExpertRecord *>(
+      hot_state + uniforms.cerebellar_expert_memory_offset
+    );
+  device const NBMotorCommandRecord *motor =
+    reinterpret_cast<device const NBMotorCommandRecord *>(
+      hot_state + uniforms.motor_command_offset
+    );
   const float error = nb_mean_prediction_error(
     observations, uniforms.observation_count, world, uniforms.world_model_count
   );
@@ -418,9 +427,20 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
     expert.state[0], error,
     clamp(uniforms.cerebellar_learning_rate, 0.0f, 1.0f)
   );
-  expert.state[1] = mix(expert.state[1], error * expert.weight, 0.25f);
+  const float command_direction = uniforms.actuator_count == 0u
+    ? 0.0f
+    : 2.0f * motor[gid % uniforms.actuator_count].excitation - 1.0f;
+  const float inverse_correction = -error * command_direction;
+  expert.state[1] = mix(
+    expert.state[1], inverse_correction,
+    clamp(uniforms.cerebellar_learning_rate, 0.0f, 1.0f)
+  );
+  expert.state[2] = mix(expert.state[2], 1.0f - clamp(error, 0.0f, 1.0f), 0.05f);
   expert.flags |= NB_ACCEPTED_STATE_VALID;
   experts[gid] = expert;
+  if (expert.expert_identifier < 128u) {
+    expert_bank[expert.expert_identifier] = expert;
+  }
 }
 
 kernel void update_fast_plasticity_from_accepted_error(

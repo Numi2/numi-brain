@@ -34,6 +34,10 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case developmentalState = 26
   case developmentalEvidence = 27
   case regionalMaturation = 28
+  /// Persistent per-agent cerebellar forward/inverse expert bank.
+  case cerebellarExpertMemory = 29
+  /// Reduced per-region effect of the agent's fast-plastic coefficients.
+  case regionalPlasticModulation = 30
 }
 
 @frozen
@@ -205,11 +209,21 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Int(species.capacities.fastPlasticityCapacity),
       stride: Self.fastPlasticityStride
     )
+    let maximumPlanningHorizon = max(
+      species.development.map({ Int($0.planningHorizonSteps) }).max() ?? 0,
+      1
+    )
+    let candidateControlScalars = try Self.checkedMultiply(
+      Int(species.capacities.activeOptionCandidateCapacity),
+      32 * (1 + maximumPlanningHorizon)
+    )
+    let cerebellarControlScalars = try Self.checkedMultiply(
+      Int(species.capacities.activeCerebellarExpertCapacity), 64
+    )
     let controlScalarCount = try Self.checkedAdd(
-      Int(species.motor.actuatorCount) * 5,
+      Int(species.motor.actuatorCount) * 12,
       Int(species.motor.synergyCount) * 2
-        + Int(species.capacities.activeOptionCandidateCapacity) * 256
-        + Int(species.capacities.activeCerebellarExpertCapacity) * 512
+        + candidateControlScalars + cerebellarControlScalars + 64
     )
     try builder.append(
       .activeControl,
@@ -281,6 +295,12 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: species.enabledModuleIdentifiers.count,
       stride: 32
     )
+    try builder.append(.cerebellarExpertMemory, count: 128, stride: 256)
+    try builder.append(
+      .regionalPlasticModulation,
+      count: species.enabledModuleIdentifiers.count,
+      stride: 32
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
@@ -304,6 +324,12 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
   fileprivate static func checkedAdd(_ lhs: Int, _ rhs: Int) throws -> Int {
     let (result, overflow) = lhs.addingReportingOverflow(rhs)
+    guard !overflow else { throw BrainRuntimeError.capacity("Metal arena size overflows Int") }
+    return result
+  }
+
+  fileprivate static func checkedMultiply(_ lhs: Int, _ rhs: Int) throws -> Int {
+    let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
     guard !overflow else { throw BrainRuntimeError.capacity("Metal arena size overflows Int") }
     return result
   }
@@ -424,7 +450,13 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
     )
     try builder.append(
       .planSteps,
-      count: Int(species.capacities.activeOptionCandidateCapacity),
+      count: try MetalAgentStateLayout.checkedMultiply(
+        Int(species.capacities.activeOptionCandidateCapacity),
+        max(
+          species.development.map({ Int($0.planningHorizonSteps) }).max() ?? 0,
+          1
+        )
+      ),
       stride: 128
     )
     try builder.append(

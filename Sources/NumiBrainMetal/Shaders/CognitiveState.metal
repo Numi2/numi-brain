@@ -14,6 +14,8 @@ struct NBCognitiveUniforms {
   ulong active_control_offset;
   ulong event_queue_offset;
   ulong developmental_state_offset;
+  ulong regional_maturation_offset;
+  ulong regional_plastic_modulation_offset;
   ulong hot_state_byte_count;
   uint recurrent_scalar_count;
   uint workspace_capacity;
@@ -127,7 +129,29 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 168);
+struct NBRegionalMaturationRecord {
+  uint module_identifier;
+  uint unlocked;
+  float learning_rate_multiplier;
+  float timescale_multiplier;
+  float route_gain_multiplier;
+  float conduction_delay_multiplier;
+  float capacity_fraction;
+  uint flags;
+};
+
+struct NBRegionalPlasticModulationRecord {
+  uint module_identifier;
+  uint coefficient_count;
+  float recurrent_delta;
+  float local_delta;
+  float route_delta;
+  float drive_delta;
+  float gate_delta;
+  uint flags;
+};
+
+static_assert(sizeof(NBCognitiveUniforms) == 184);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -136,6 +160,8 @@ static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
+static_assert(sizeof(NBRegionalMaturationRecord) == 32);
+static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
 
 inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
@@ -393,9 +419,15 @@ kernel void advance_fast_plasticity_foundation(
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
     );
+  device const NBRegionalMaturationRecord *maturation =
+    reinterpret_cast<device const NBRegionalMaturationRecord *>(
+      hot_state + uniforms.regional_maturation_offset
+    );
   NBFastPlasticityStateRecord site = sites[gid];
   if (site.region_identifier == 0u) {
-    site.region_identifier = ushort(gid % uniforms.module_count + 1u);
+    site.region_identifier = ushort(
+      maturation[gid % uniforms.module_count].module_identifier
+    );
     site.basis_identifier = ushort(gid / uniforms.module_count);
     site.coefficient_retention = 0.999f;
     site.eligibility_retention = 0.95f;
@@ -417,6 +449,54 @@ kernel void advance_fast_plasticity_foundation(
     site.maximum_magnitude
   );
   sites[gid] = site;
+}
+
+kernel void reduce_fast_plasticity_by_region(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.module_count || uniforms.fast_plasticity_count == 0u) return;
+  device const NBRegionalMaturationRecord *maturation =
+    reinterpret_cast<device const NBRegionalMaturationRecord *>(
+      hot_state + uniforms.regional_maturation_offset
+    );
+  device const NBFastPlasticityStateRecord *sites =
+    reinterpret_cast<device const NBFastPlasticityStateRecord *>(
+      hot_state + uniforms.fast_plasticity_offset
+    );
+  device NBRegionalPlasticModulationRecord *regional =
+    reinterpret_cast<device NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  const uint module_identifier = maturation[gid].module_identifier;
+  float signed_sum = 0.0f;
+  float magnitude_sum = 0.0f;
+  float eligibility_sum = 0.0f;
+  uint coefficient_count = 0u;
+  for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
+    const NBFastPlasticityStateRecord site = sites[index];
+    if (uint(site.region_identifier) != module_identifier) continue;
+    signed_sum += site.coefficient;
+    magnitude_sum += abs(site.coefficient);
+    eligibility_sum += site.eligibility;
+    coefficient_count += 1u;
+  }
+  const float divisor = coefficient_count > 0u
+    ? 1.0f / float(coefficient_count) : 0.0f;
+  const float mean = signed_sum * divisor;
+  const float magnitude = magnitude_sum * divisor;
+  const float eligibility = eligibility_sum * divisor;
+  NBRegionalPlasticModulationRecord record;
+  record.module_identifier = module_identifier;
+  record.coefficient_count = coefficient_count;
+  record.recurrent_delta = clamp(0.10f * mean, -0.20f, 0.20f);
+  record.local_delta = clamp(0.08f * mean, -0.15f, 0.15f);
+  record.route_delta = clamp(0.10f * magnitude, 0.0f, 0.20f);
+  record.drive_delta = clamp(0.05f * eligibility, -0.10f, 0.10f);
+  record.gate_delta = clamp(0.05f * mean, -0.10f, 0.10f);
+  record.flags = coefficient_count > 0u ? 1u : 0u;
+  regional[gid] = record;
 }
 
 kernel void broadcast_foundation_workspace(

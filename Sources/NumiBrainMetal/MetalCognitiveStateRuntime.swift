@@ -15,6 +15,8 @@ private struct CognitiveUniforms {
   var activeControlOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
+  var regionalMaturationOffset: UInt64 = 0
+  var regionalPlasticModulationOffset: UInt64 = 0
   var hotStateByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -80,6 +82,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let homeostasisPipeline: any MTLComputePipelineState
   private let worldModelPipeline: any MTLComputePipelineState
   private let fastPlasticityPipeline: any MTLComputePipelineState
+  private let regionalPlasticityPipeline: any MTLComputePipelineState
   private let workspacePipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
@@ -94,7 +97,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 168,
+    guard MemoryLayout<CognitiveUniforms>.stride == 184,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -126,6 +129,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "advance_homeostasis_and_neuromodulation",
       "advance_hierarchical_world_model",
       "advance_fast_plasticity_foundation",
+      "reduce_fast_plasticity_by_region",
       "broadcast_foundation_workspace",
       "advance_foundation_motor_control",
     ]
@@ -209,8 +213,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.homeostasisPipeline = pipelines[1]
     self.worldModelPipeline = pipelines[2]
     self.fastPlasticityPipeline = pipelines[3]
-    self.workspacePipeline = pipelines[4]
-    self.motorPipeline = pipelines[5]
+    self.regionalPlasticityPipeline = pipelines[4]
+    self.workspacePipeline = pipelines[5]
+    self.motorPipeline = pipelines[6]
     self.argumentTable = argumentTable
     self.worldModelArgumentTables = [
       firstWorldTable, secondWorldTable, thirdWorldTable,
@@ -295,6 +300,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       threadCount: Int(species.capacities.fastPlasticityCapacity)
     )
     barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: regionalPlasticityPipeline,
+      threadCount: species.enabledModuleIdentifiers.count
+    )
+    barrier(encoder)
     let workspaceContent = Int(species.capacities.workspaceTokenCapacity)
       * Int(species.capacities.workspaceTokenDimension)
     try dispatch(
@@ -338,6 +349,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       activeControlOffset: offset(.activeControl),
       eventQueueOffset: offset(.eventQueue),
       developmentalStateOffset: offset(.developmentalState),
+      regionalMaturationOffset: offset(.regionalMaturation),
+      regionalPlasticModulationOffset: offset(.regionalPlasticModulation),
       hotStateByteCount: UInt64(arena.layout.totalByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),

@@ -31,6 +31,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let regionalMaturationGPUAddress: UInt64
     public let regionalMaturationByteCount: Int
     public let regionalMaturationCount: Int
+    public let regionalPlasticModulationGPUAddress: UInt64
+    public let regionalPlasticModulationByteCount: Int
+    public let regionalPlasticModulationCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -67,19 +70,22 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let buffer: any MTLBuffer
     let sourceOffset: Int
     let maturationSourceOffset: Int
+    let plasticModulationSourceOffset: Int
 
     fileprivate init(
       decision: DecisionBufferView,
       speciesTemplateFingerprint: UInt64,
       buffer: any MTLBuffer,
       sourceOffset: Int,
-      maturationSourceOffset: Int
+      maturationSourceOffset: Int,
+      plasticModulationSourceOffset: Int
     ) {
       self.decision = decision
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
       self.buffer = buffer
       self.sourceOffset = sourceOffset
       self.maturationSourceOffset = maturationSourceOffset
+      self.plasticModulationSourceOffset = plasticModulationSourceOffset
     }
 
     public var metalBufferObject: UnsafeMutableRawPointer {
@@ -338,6 +344,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       let control = agentStateRuntime.arena.layout.section(.activeControl)
       let workspace = agentStateRuntime.arena.layout.section(.workspaceContent)
       let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
+      let plasticModulation = agentStateRuntime.arena.layout.section(
+        .regionalPlasticModulation
+      )
       return DecisionBufferView(
         transactionFingerprint: transaction.jointToken.fingerprint,
         shadowGeneration: transaction.agentStateToken.shadowGeneration,
@@ -364,6 +373,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         regionalMaturationByteCount:
           maturation.elementCount * maturation.elementStride,
         regionalMaturationCount: maturation.elementCount,
+        regionalPlasticModulationGPUAddress:
+          hot.outputGPUAddress + UInt64(plasticModulation.byteOffset),
+        regionalPlasticModulationByteCount:
+          plasticModulation.elementCount * plasticModulation.elementStride,
+        regionalPlasticModulationCount: plasticModulation.elementCount,
         gpuStartSeconds: feedback.gpuStartTime,
         gpuEndSeconds: feedback.gpuEndTime
       )
@@ -526,6 +540,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     let section = agentStateRuntime.arena.layout.section(.somaticOutput)
     let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
+    let plasticModulation = agentStateRuntime.arena.layout.section(
+      .regionalPlasticModulation
+    )
     let buffer = try agentStateRuntime.arena.borrowShadowHotBuffer(
       transaction: transaction.agentStateToken
     )
@@ -541,7 +558,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.regionalMaturationByteCount
         <= buffer.length - maturation.byteOffset,
       decision.regionalMaturationGPUAddress
-        == buffer.gpuAddress + UInt64(maturation.byteOffset)
+        == buffer.gpuAddress + UInt64(maturation.byteOffset),
+      decision.regionalPlasticModulationCount == plasticModulation.elementCount,
+      decision.regionalPlasticModulationByteCount
+        == plasticModulation.elementCount * plasticModulation.elementStride,
+      plasticModulation.byteOffset <= buffer.length,
+      decision.regionalPlasticModulationByteCount
+        <= buffer.length - plasticModulation.byteOffset,
+      decision.regionalPlasticModulationGPUAddress
+        == buffer.gpuAddress + UInt64(plasticModulation.byteOffset)
     else {
       throw TissueError.transaction(
         "embodied somatic command does not identify its resident shadow buffer"
@@ -552,7 +577,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       buffer: buffer,
       sourceOffset: section.byteOffset,
-      maturationSourceOffset: maturation.byteOffset
+      maturationSourceOffset: maturation.byteOffset,
+      plasticModulationSourceOffset: plasticModulation.byteOffset
     )
   }
 

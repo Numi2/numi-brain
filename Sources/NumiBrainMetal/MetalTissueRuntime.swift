@@ -149,6 +149,17 @@ private struct TissueRegionalMaturationRecord {
   var flags: UInt32 = 1
 }
 
+private struct TissueRegionalPlasticModulationRecord {
+  var moduleIdentifier: UInt32 = 0
+  var coefficientCount: UInt32 = 0
+  var recurrentDelta: Float = 0
+  var localDelta: Float = 0
+  var routeDelta: Float = 0
+  var driveDelta: Float = 0
+  var gateDelta: Float = 0
+  var flags: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
   /// Retains the exact Metal allocations lent to one immediate NumanX
@@ -333,6 +344,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let descendingSomaticBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
+  private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
+  private let stagedRegionalPlasticModulationBuffer: any MTLBuffer
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let bodyLoadFieldUniformBuffer: any MTLBuffer
@@ -378,6 +391,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
   public let protectiveMuscleExcitationByteCount: Int
   public let developmentalMaturationByteCount: Int
+  public let regionalPlasticModulationByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -766,7 +780,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 24
+    regionalArgumentDescriptor.maxBufferBindCount = 26
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -1005,9 +1019,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       brainSchedule.modules.count.multipliedReportingOverflow(
         by: MemoryLayout<TissueRegionalMaturationRecord>.stride
       )
+    let (regionalPlasticModulationByteCount, plasticModulationOverflow) =
+      brainSchedule.modules.count.multipliedReportingOverflow(
+        by: MemoryLayout<TissueRegionalPlasticModulationRecord>.stride
+      )
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
-      !developmentalMaturationOverflow,
-      MemoryLayout<TissueRegionalMaturationRecord>.stride == 32
+      !developmentalMaturationOverflow, !plasticModulationOverflow,
+      MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
+      MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32
     else {
       throw TissueError.metal("protective motor profile byte count overflows Int")
     }
@@ -1219,6 +1238,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let defaultRegionalPlasticModulationBuffer = device.makeBuffer(
+        length: regionalPlasticModulationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedRegionalPlasticModulationBuffer = device.makeBuffer(
+        length: regionalPlasticModulationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let firstProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
         length: ProtectiveMotorOutput.headerByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1367,6 +1394,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
       "NumiBrain transaction regional maturation"
+    defaultRegionalPlasticModulationBuffer.label =
+      "NumiBrain default zero regional fast plasticity"
+    stagedRegionalPlasticModulationBuffer.label =
+      "NumiBrain transaction regional fast plasticity"
     protectiveSourceInhibitionMaskBuffer.label =
       "NumiBrain transaction-local protective source-inhibition mask"
     firstProtectiveMotorOutputHeaderBuffer.label =
@@ -1448,7 +1479,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 50
+    residencyDescriptor.initialCapacity = stateBuffers.count + 52
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -1516,6 +1547,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(descendingSomaticBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
+    residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
+    residencySet.addAllocation(stagedRegionalPlasticModulationBuffer)
     for buffer in protectiveMotorOutputHeaderBuffers {
       residencySet.addAllocation(buffer)
     }
@@ -1626,6 +1659,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.descendingSomaticBuffer = descendingSomaticBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
+    self.defaultRegionalPlasticModulationBuffer =
+      defaultRegionalPlasticModulationBuffer
+    self.stagedRegionalPlasticModulationBuffer =
+      stagedRegionalPlasticModulationBuffer
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.bodyLoadFieldUniformBuffer = bodyLoadFieldUniformBuffer
@@ -1665,6 +1702,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMotorProfileByteCount = protectiveMotorProfileByteCount
     self.protectiveMuscleExcitationByteCount = protectiveMuscleExcitationByteCount
     self.developmentalMaturationByteCount = developmentalMaturationByteCount
+    self.regionalPlasticModulationByteCount = regionalPlasticModulationByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2027,6 +2065,30 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: developmentalMaturationByteCount,
       label: "NumiBrain initial regional maturation upload"
     )
+    let initialPlasticModulationRecords = brainSchedule.modules.map {
+      TissueRegionalPlasticModulationRecord(
+        moduleIdentifier: UInt32($0.moduleIdentifier)
+      )
+    }
+    initialPlasticModulationRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: regionalPlasticModulationByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: defaultRegionalPlasticModulationBuffer,
+      size: regionalPlasticModulationByteCount,
+      label: "NumiBrain default regional fast-plasticity upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedRegionalPlasticModulationBuffer,
+      size: regionalPlasticModulationByteCount,
+      label: "NumiBrain initial regional fast-plasticity upload"
+    )
     let initialProtectiveMotorOutput = try ProtectiveMotorOutput.reference(
       command: initialProtectiveCommand,
       profile: protectiveMotorProfile
@@ -2329,11 +2391,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.regionalMaturationCount == brainSchedule.modules.count,
       lease.decision.regionalMaturationByteCount
         == developmentalMaturationByteCount,
+      lease.decision.regionalPlasticModulationCount == brainSchedule.modules.count,
+      lease.decision.regionalPlasticModulationByteCount
+        == regionalPlasticModulationByteCount,
       lease.sourceOffset <= lease.buffer.length,
       protectiveMuscleExcitationByteCount <= lease.buffer.length - lease.sourceOffset,
       lease.maturationSourceOffset <= lease.buffer.length,
       developmentalMaturationByteCount
-        <= lease.buffer.length - lease.maturationSourceOffset
+        <= lease.buffer.length - lease.maturationSourceOffset,
+      lease.plasticModulationSourceOffset <= lease.buffer.length,
+      regionalPlasticModulationByteCount
+        <= lease.buffer.length - lease.plasticModulationSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -2369,6 +2437,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destinationBuffer: stagedRegionalMaturationBuffer,
         destinationOffset: 0,
         size: developmentalMaturationByteCount
+      )
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.plasticModulationSourceOffset,
+        destinationBuffer: stagedRegionalPlasticModulationBuffer,
+        destinationOffset: 0,
+        size: regionalPlasticModulationByteCount
       )
     }
     descendingSomaticTransactionFingerprint = transaction.fingerprint
@@ -4136,6 +4211,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       index: 22
     )
     regionalArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 23)
+    let plasticModulationBuffer =
+      descendingSomaticTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? stagedRegionalPlasticModulationBuffer
+      : defaultRegionalPlasticModulationBuffer
+    regionalArgumentTable.setAddress(plasticModulationBuffer.gpuAddress, index: 24)
+    regionalArgumentTable.setAddress(maturationBuffer.gpuAddress, index: 25)
     encoder.setComputePipelineState(regionalPipeline)
     encoder.setArgumentTable(regionalArgumentTable)
     encoder.dispatchThreads(
