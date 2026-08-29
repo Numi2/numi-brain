@@ -64,6 +64,7 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
   public static let plasticityHyperparameterCount = 8
   public static let plasticityBasisChannelCount = 5
+  public static let plasticityReceptorEffectCount = 6
   public static let defaultPlasticityBasisCapacityPerRegion = 128
   public static let requiredKinds: [BrainParameterComponentKind] = [
     .sensory, .belief, .world, .route, .memory, .value, .policy,
@@ -301,9 +302,12 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
 
   public static func plasticityElementCount(
     regionCount: Int,
-    basisCapacityPerRegion: Int
+    basisCapacityPerRegion: Int,
+    neuromodulatorCount: Int = NeuromodulatorKind.allCases.count
   ) throws -> Int {
-    guard regionCount > 0, basisCapacityPerRegion > 0 else {
+    guard regionCount > 0, basisCapacityPerRegion > 0,
+      neuromodulatorCount > 0
+    else {
       throw BrainRuntimeError.invalidParameterVersion(
         "plasticity basis dimensions must be positive"
       )
@@ -314,9 +318,17 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     let (basisScalars, scalarOverflow) = basisCount.multipliedReportingOverflow(
       by: plasticityBasisChannelCount
     )
-    let (total, totalOverflow) = plasticityHyperparameterCount
+    let (receptorRows, receptorRowOverflow) = regionCount
+      .multipliedReportingOverflow(by: neuromodulatorCount)
+    let (receptorScalars, receptorScalarOverflow) = receptorRows
+      .multipliedReportingOverflow(by: plasticityReceptorEffectCount)
+    let (parameterScalars, parameterOverflow) = plasticityHyperparameterCount
       .addingReportingOverflow(basisScalars)
-    guard !basisOverflow, !scalarOverflow, !totalOverflow else {
+    let (total, totalOverflow) = parameterScalars
+      .addingReportingOverflow(receptorScalars)
+    guard !basisOverflow, !scalarOverflow, !receptorRowOverflow,
+      !receptorScalarOverflow, !parameterOverflow, !totalOverflow
+    else {
       throw BrainRuntimeError.invalidParameterVersion(
         "plasticity basis parameter count overflows Int"
       )

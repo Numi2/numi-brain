@@ -397,8 +397,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
         basisCapacityPerRegion: basisCapacity
       )
     let plasticityScalarCount = sharedParameters.scalarCount(.plasticity)
+    let receptorScalarCount = regionCount
+      * NeuromodulatorKind.allCases.count
+      * BrainSharedParameterArtifact.plasticityReceptorEffectCount
     let basisScalarCount = plasticityScalarCount
       - BrainSharedParameterArtifact.plasticityHyperparameterCount
+      - receptorScalarCount
     let perBasisBankScalarCount = regionCount
       * BrainSharedParameterArtifact.plasticityBasisChannelCount
     guard plasticityScalarCount >= minimumPlasticityScalarCount,

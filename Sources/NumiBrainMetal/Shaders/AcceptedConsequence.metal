@@ -50,6 +50,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong reflex_state_offset;
   ulong fast_autonomic_state_offset;
   ulong physics_state_fingerprint;
+  ulong regional_maturation_offset;
   uint observation_count;
   uint body_count;
   uint muscle_count;
@@ -88,6 +89,8 @@ struct NBAcceptedConsequenceUniforms {
   uint gustation_count;
   uint interoception_offset;
   uint interoception_count;
+  uint module_count;
+  uint plasticity_parameter_count;
   float belief_gain;
   float world_correction_gain;
   float cerebellar_learning_rate;
@@ -140,6 +143,17 @@ struct NBFastPlasticityRecord {
   float maximum_magnitude;
   ushort region_identifier;
   ushort basis_identifier;
+  uint flags;
+};
+
+struct NBRegionalMaturationRecord {
+  uint module_identifier;
+  uint unlocked;
+  float learning_rate_multiplier;
+  float timescale_multiplier;
+  float route_gain_multiplier;
+  float conduction_delay_multiplier;
+  float capacity_fraction;
   uint flags;
 };
 
@@ -351,11 +365,12 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 392);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 408);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
+static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -1599,9 +1614,43 @@ kernel void update_fast_plasticity_from_accepted_error(
     observations, world, uniforms
   );
   NBFastPlasticityRecord site = sites[gid];
-  const float modulation = uniforms.neuromodulator_count == 0u
-    ? 0.0f
-    : neuromodulators[gid % uniforms.neuromodulator_count].value;
+  device const NBRegionalMaturationRecord *maturation =
+    reinterpret_cast<device const NBRegionalMaturationRecord *>(
+      hot_state + uniforms.regional_maturation_offset
+    );
+  constexpr uint hyperparameter_count = 8u;
+  constexpr uint basis_channel_count = 5u;
+  constexpr uint receptor_effect_count = 6u;
+  const uint receptor_scalar_count = uniforms.module_count
+    * uniforms.neuromodulator_count * receptor_effect_count;
+  const uint basis_scalar_count = uniforms.plasticity_parameter_count
+      > hyperparameter_count + receptor_scalar_count
+    ? uniforms.plasticity_parameter_count - hyperparameter_count
+        - receptor_scalar_count
+    : 0u;
+  const uint basis_capacity = uniforms.module_count > 0u
+    ? basis_scalar_count / (uniforms.module_count * basis_channel_count)
+    : 0u;
+  const uint receptor_offset = hyperparameter_count
+    + uniforms.module_count * basis_capacity * basis_channel_count;
+  uint region_index = uniforms.module_count > 0u
+    ? gid % uniforms.module_count : 0u;
+  for (uint index = 0u; index < uniforms.module_count; ++index) {
+    if (maturation[index].module_identifier == uint(site.region_identifier)) {
+      region_index = index;
+      break;
+    }
+  }
+  float modulation = 0.0f;
+  if (basis_capacity > 0u) {
+    for (uint channel = 0u; channel < uniforms.neuromodulator_count; ++channel) {
+      const uint weight_index = receptor_offset
+        + (region_index * uniforms.neuromodulator_count + channel)
+          * receptor_effect_count;
+      modulation += neuromodulators[channel].value
+        * plasticity_parameters[weight_index];
+    }
+  }
   const float eligibility_retention = min(
     site.eligibility_retention,
     clamp(plasticity_parameters[2], 0.0f, 1.0f)

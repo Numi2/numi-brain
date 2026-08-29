@@ -31,6 +31,7 @@ private struct AcceptedConsequenceUniforms {
   var reflexStateOffset: UInt64 = 0
   var fastAutonomicStateOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
+  var regionalMaturationOffset: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
   var muscleCount: UInt32 = 0
@@ -69,6 +70,8 @@ private struct AcceptedConsequenceUniforms {
   var gustationCount: UInt32 = 0
   var interoceptionOffset: UInt32 = 0
   var interoceptionCount: UInt32 = 0
+  var moduleCount: UInt32 = 0
+  var plasticityParameterCount: UInt32 = 0
   var beliefGain: Float = 0
   var worldCorrectionGain: Float = 0
   var cerebellarLearningRate: Float = 0
@@ -106,6 +109,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let actuatorDescriptorBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
+  private let plasticityParameterCount: UInt32
 
   public init(
     device: any MTLDevice,
@@ -114,7 +118,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 392,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 408,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -245,8 +249,28 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       try sharedParameters.gpuAddress(.cerebellar, minimumScalarCount: 8),
       index: 4
     )
+    let regionCount = species.enabledModuleIdentifiers.count
+    let basisCapacity =
+      (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
+      / regionCount
+    let minimumPlasticityScalarCount = try BrainSharedParameterArtifact
+      .plasticityElementCount(
+        regionCount: regionCount,
+        basisCapacityPerRegion: basisCapacity
+      )
+    let plasticityScalarCount = sharedParameters.scalarCount(.plasticity)
+    guard plasticityScalarCount >= minimumPlasticityScalarCount,
+      plasticityScalarCount <= Int(UInt32.max)
+    else {
+      throw TissueError.metal(
+        "accepted plasticity receptor matrix does not cover the species graph"
+      )
+    }
     argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.plasticity, minimumScalarCount: 8),
+      try sharedParameters.gpuAddress(
+        .plasticity,
+        minimumScalarCount: minimumPlasticityScalarCount
+      ),
       index: 5
     )
     argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
@@ -264,6 +288,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
+    self.plasticityParameterCount = UInt32(plasticityScalarCount)
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -479,6 +504,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       reflexStateOffset: UInt64(hot(.reflexState).byteOffset),
       fastAutonomicStateOffset: UInt64(hot(.fastAutonomicState).byteOffset),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      regionalMaturationOffset: UInt64(hot(.regionalMaturation).byteOffset),
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
       muscleCount: UInt32(hot(.muscleBelief).elementCount),
@@ -525,6 +551,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       gustationCount: gustation.count,
       interoceptionOffset: interoception.offset,
       interoceptionCount: interoception.count,
+      moduleCount: UInt32(species.enabledModuleIdentifiers.count),
+      plasticityParameterCount: plasticityParameterCount,
       beliefGain: dynamics.beliefGain,
       worldCorrectionGain: dynamics.worldCorrectionGain,
       cerebellarLearningRate: dynamics.cerebellarLearningRate,

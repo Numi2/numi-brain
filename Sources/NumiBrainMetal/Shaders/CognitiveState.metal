@@ -311,6 +311,41 @@ inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
 }
 
+inline float nb_regional_neuromodulator_effect(
+  device const float *plasticity_parameters,
+  constant NBCognitiveUniforms &uniforms,
+  device const NBNeuromodulatorStateRecord *neuromodulators,
+  const uint region_index,
+  const uint effect_index)
+{
+  constexpr uint hyperparameter_count = 8u;
+  constexpr uint basis_channel_count = 5u;
+  constexpr uint receptor_effect_count = 6u;
+  const uint receptor_scalar_count = uniforms.module_count
+    * uniforms.neuromodulator_count * receptor_effect_count;
+  if (uniforms.plasticity_parameter_count
+        < hyperparameter_count + receptor_scalar_count
+      || effect_index >= receptor_effect_count) {
+    return 0.0f;
+  }
+  const uint plasticity_scalar_count = uniforms.plasticity_parameter_count
+    - hyperparameter_count - receptor_scalar_count;
+  const uint basis_capacity = plasticity_scalar_count
+    / (uniforms.module_count * basis_channel_count);
+  const uint receptor_offset = hyperparameter_count
+    + uniforms.module_count * basis_capacity * basis_channel_count;
+  float effect = 0.0f;
+  for (uint channel = 0u; channel < uniforms.neuromodulator_count; ++channel) {
+    const uint weight_index = receptor_offset
+      + (region_index * uniforms.neuromodulator_count + channel)
+        * receptor_effect_count
+      + effect_index;
+    effect += neuromodulators[channel].value
+      * plasticity_parameters[weight_index];
+  }
+  return effect;
+}
+
 /// Converts a learned per-second memory retention into the retention for the
 /// exact accepted simulation-time interval. Cognitive dispatch frequency can
 /// change with development, arousal, and cohort compaction, so applying the
@@ -1947,9 +1982,20 @@ kernel void advance_fast_plasticity_foundation(
     site.eligibility_retention,
     clamp(plasticity_parameters[2], 0.0f, 1.0f)
   ) * site.eligibility + plasticity_parameters[3] * activity_product;
-  const float local_modulation = neuromodulators[
-    uint(site.region_identifier - 1u) % uniforms.neuromodulator_count
-  ].value;
+  uint region_index = gid % uniforms.module_count;
+  for (uint index = 0u; index < uniforms.module_count; ++index) {
+    if (maturation[index].module_identifier == uint(site.region_identifier)) {
+      region_index = index;
+      break;
+    }
+  }
+  const float local_modulation = nb_regional_neuromodulator_effect(
+    plasticity_parameters,
+    uniforms,
+    neuromodulators,
+    region_index,
+    0u
+  );
   site.coefficient = clamp(
     min(site.coefficient_retention, clamp(plasticity_parameters[1], 0.0f, 1.0f))
       * site.coefficient
@@ -1984,9 +2030,13 @@ kernel void reduce_fast_plasticity_by_region(
   const uint module_identifier = maturation[gid].module_identifier;
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
+  constexpr uint receptor_effect_count = 6u;
+  const uint receptor_scalar_count = uniforms.module_count
+    * uniforms.neuromodulator_count * receptor_effect_count;
   const uint basis_scalar_count = uniforms.plasticity_parameter_count
-      > hyperparameter_count
+      > hyperparameter_count + receptor_scalar_count
     ? uniforms.plasticity_parameter_count - hyperparameter_count
+        - receptor_scalar_count
     : 0u;
   const uint basis_capacity = basis_scalar_count
     / (uniforms.module_count * basis_channel_count);
@@ -2004,6 +2054,19 @@ kernel void reduce_fast_plasticity_by_region(
         * plasticity_parameters[basis_offset + channel];
     }
     coefficient_count += 1u;
+  }
+  device const NBNeuromodulatorStateRecord *neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorStateRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
+  for (uint channel = 0u; channel < basis_channel_count; ++channel) {
+    projection[channel] += nb_regional_neuromodulator_effect(
+      plasticity_parameters,
+      uniforms,
+      neuromodulators,
+      gid,
+      channel + 1u
+    );
   }
   NBRegionalPlasticModulationRecord record;
   record.module_identifier = module_identifier;
