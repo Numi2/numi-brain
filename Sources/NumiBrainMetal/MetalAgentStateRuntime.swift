@@ -680,6 +680,183 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     )
   }
 
+  /// Exports exact committed Tier-2 page bytes for checkpoint/archive storage.
+  /// The copy is an orchestration boundary and never enters the control path.
+  public func snapshotArchivePages(
+    _ pageIdentifiers: [UInt32]
+  ) throws -> [MetalArchivePagePayload] {
+    lock.lock()
+    defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    _ = try arena.checkpointSourceView()
+    let archive = arena.memoryLayout.section(.archiveIndex)
+    let pageCount = arena.layout.section(.archivePageResidency).elementCount
+    guard Set(pageIdentifiers).count == pageIdentifiers.count,
+      pageIdentifiers.allSatisfy({ Int($0) < pageCount })
+    else {
+      throw TissueError.transaction("archive page snapshot selection is invalid")
+    }
+    var payloads: [MetalArchivePagePayload] = []
+    payloads.reserveCapacity(pageIdentifiers.count)
+    for pageIdentifier in pageIdentifiers.sorted() {
+      let startRecord = Int(pageIdentifier)
+        * MetalAgentStateLayout.archiveRecordsPerPage
+      let recordCount = min(
+        MetalAgentStateLayout.archiveRecordsPerPage,
+        archive.elementCount - startRecord
+      )
+      let byteCount = recordCount * archive.elementStride
+      guard recordCount > 0,
+        let snapshot = device.makeBuffer(
+          length: byteCount,
+          options: [.storageModeShared, .hazardTrackingModeTracked]
+        )
+      else {
+        throw TissueError.metal("failed to allocate archive page snapshot")
+      }
+      snapshot.label = "NumiBrain archive page \(pageIdentifier) snapshot"
+      addTemporaryResidency([snapshot])
+      defer { removeTemporaryResidency([snapshot]) }
+      var uniforms = MemoryRangeCopyUniforms(byteCount: UInt64(byteCount))
+      withUnsafeBytes(of: &uniforms) { bytes in
+        guard let source = bytes.baseAddress else { return }
+        memoryRangeCopyUniformBuffer.contents().copyMemory(
+          from: source, byteCount: bytes.count
+        )
+      }
+      let sourceAddress = arena.persistentSectionAddress(.archiveIndex)
+        + UInt64(startRecord * archive.elementStride)
+      try submit(label: "NumiBrain snapshot archive page \(pageIdentifier)") {
+        encoder in
+        memoryRangeSnapshotArguments.setAddress(sourceAddress, index: 0)
+        memoryRangeSnapshotArguments.setAddress(snapshot.gpuAddress, index: 1)
+        memoryRangeSnapshotArguments.setAddress(
+          memoryRangeCopyUniformBuffer.gpuAddress, index: 2
+        )
+        encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+        encoder.setArgumentTable(memoryRangeSnapshotArguments)
+        encoder.dispatchThreads(
+          threadsPerGrid: MTLSize(
+            width: byteCount / MemoryLayout<UInt32>.stride,
+            height: 1,
+            depth: 1
+          ),
+          threadsPerThreadgroup: threadgroupSize(
+            for: memoryRangeSnapshotPipeline
+          )
+        )
+      }
+      payloads.append(
+        try MetalArchivePagePayload(
+          pageIdentifier: pageIdentifier,
+          sourceGeneration: arena.committedGeneration,
+          memoryLayoutFingerprint: arena.memoryLayout.fingerprint,
+          recordLayoutVersion: MetalAgentMemoryLayout.recordLayoutVersion,
+          recordStride: UInt32(archive.elementStride),
+          recordCount: UInt32(recordCount),
+          bytes: Data(bytes: snapshot.contents(), count: byteCount)
+        )
+      )
+    }
+    return payloads
+  }
+
+  /// Loads validated archive bytes into the private persistent-memory range and
+  /// publishes residency only after each GPU copy completes.
+  public func loadArchivePages(
+    _ payloads: [MetalArchivePagePayload]
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    _ = try arena.checkpointSourceView()
+    let archive = arena.memoryLayout.section(.archiveIndex)
+    let pageCount = arena.layout.section(.archivePageResidency).elementCount
+    guard Set(payloads.map(\.pageIdentifier)).count == payloads.count else {
+      throw TissueError.transaction("archive page load contains duplicates")
+    }
+    for payload in payloads {
+      let startRecord = Int(payload.pageIdentifier)
+        * MetalAgentStateLayout.archiveRecordsPerPage
+      let expectedRecordCount = min(
+        MetalAgentStateLayout.archiveRecordsPerPage,
+        archive.elementCount - startRecord
+      )
+      guard Int(payload.pageIdentifier) < pageCount,
+        expectedRecordCount > 0,
+        payload.memoryLayoutFingerprint == arena.memoryLayout.fingerprint,
+        payload.recordLayoutVersion == MetalAgentMemoryLayout.recordLayoutVersion,
+        payload.recordStride == UInt32(archive.elementStride),
+        payload.recordCount == UInt32(expectedRecordCount),
+        payload.bytes.count == expectedRecordCount * archive.elementStride,
+        payload.validateChecksum()
+      else {
+        throw TissueError.transaction("archive page payload is incompatible or corrupt")
+      }
+    }
+    for payload in payloads.sorted(by: {
+      $0.pageIdentifier < $1.pageIdentifier
+    }) {
+      guard let upload = device.makeBuffer(
+        length: payload.bytes.count,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ) else {
+        throw TissueError.metal("failed to allocate archive page upload")
+      }
+      payload.bytes.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        upload.contents().copyMemory(from: source, byteCount: bytes.count)
+      }
+      upload.label = "NumiBrain archive page \(payload.pageIdentifier) upload"
+      addTemporaryResidency([upload])
+      defer { removeTemporaryResidency([upload]) }
+      var uniforms = MemoryRangeCopyUniforms(
+        byteCount: UInt64(payload.bytes.count)
+      )
+      withUnsafeBytes(of: &uniforms) { bytes in
+        guard let source = bytes.baseAddress else { return }
+        memoryRangeCopyUniformBuffer.contents().copyMemory(
+          from: source, byteCount: bytes.count
+        )
+      }
+      let startRecord = Int(payload.pageIdentifier)
+        * MetalAgentStateLayout.archiveRecordsPerPage
+      let destinationAddress = arena.persistentSectionAddress(.archiveIndex)
+        + UInt64(startRecord * archive.elementStride)
+      try submit(label: "NumiBrain load archive page \(payload.pageIdentifier)") {
+        encoder in
+        memoryRangeSnapshotArguments.setAddress(upload.gpuAddress, index: 0)
+        memoryRangeSnapshotArguments.setAddress(destinationAddress, index: 1)
+        memoryRangeSnapshotArguments.setAddress(
+          memoryRangeCopyUniformBuffer.gpuAddress, index: 2
+        )
+        encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+        encoder.setArgumentTable(memoryRangeSnapshotArguments)
+        encoder.dispatchThreads(
+          threadsPerGrid: MTLSize(
+            width: payload.bytes.count / MemoryLayout<UInt32>.stride,
+            height: 1,
+            depth: 1
+          ),
+          threadsPerThreadgroup: threadgroupSize(
+            for: memoryRangeSnapshotPipeline
+          )
+        )
+      }
+    }
+    if !payloads.isEmpty {
+      try updateArchivePageResidencyLocked(
+        payloads.map(\.pageIdentifier).sorted(),
+        residentState: 1,
+        clearRequests: false
+      )
+    }
+  }
+
   /// Marks resident archive pages absent between control roots. Retrieval will
   /// request them on demand and defer the corresponding memory result.
   public func evictArchivePages(_ pageIdentifiers: [UInt32]) throws {

@@ -1,6 +1,99 @@
 import Foundation
 import NumiBrainCore
 
+@frozen
+public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
+  public static let currentFormatVersion: UInt32 = 1
+
+  public let formatVersion: UInt32
+  public let pageIdentifier: UInt32
+  public let sourceGeneration: UInt64
+  public let memoryLayoutFingerprint: UInt64
+  public let recordLayoutVersion: UInt32
+  public let recordStride: UInt32
+  public let recordCount: UInt32
+  public let checksum: UInt64
+  public let bytes: Data
+
+  public init(
+    pageIdentifier: UInt32,
+    sourceGeneration: UInt64,
+    memoryLayoutFingerprint: UInt64,
+    recordLayoutVersion: UInt32,
+    recordStride: UInt32,
+    recordCount: UInt32,
+    bytes: Data
+  ) throws {
+    guard memoryLayoutFingerprint > 0, recordStride > 0, recordCount > 0,
+      Int(recordStride) * Int(recordCount) == bytes.count,
+      bytes.count % MemoryLayout<UInt32>.stride == 0
+    else {
+      throw TissueError.transaction("archive page payload shape is invalid")
+    }
+    formatVersion = Self.currentFormatVersion
+    self.pageIdentifier = pageIdentifier
+    self.sourceGeneration = sourceGeneration
+    self.memoryLayoutFingerprint = memoryLayoutFingerprint
+    self.recordLayoutVersion = recordLayoutVersion
+    self.recordStride = recordStride
+    self.recordCount = recordCount
+    self.bytes = bytes
+    checksum = Self.checksum(
+      pageIdentifier: pageIdentifier,
+      sourceGeneration: sourceGeneration,
+      memoryLayoutFingerprint: memoryLayoutFingerprint,
+      recordLayoutVersion: recordLayoutVersion,
+      recordStride: recordStride,
+      recordCount: recordCount,
+      bytes: bytes
+    )
+  }
+
+  public func validateChecksum() -> Bool {
+    formatVersion == Self.currentFormatVersion && checksum == Self.checksum(
+      pageIdentifier: pageIdentifier,
+      sourceGeneration: sourceGeneration,
+      memoryLayoutFingerprint: memoryLayoutFingerprint,
+      recordLayoutVersion: recordLayoutVersion,
+      recordStride: recordStride,
+      recordCount: recordCount,
+      bytes: bytes
+    )
+  }
+
+  private static func checksum(
+    pageIdentifier: UInt32,
+    sourceGeneration: UInt64,
+    memoryLayoutFingerprint: UInt64,
+    recordLayoutVersion: UInt32,
+    recordStride: UInt32,
+    recordCount: UInt32,
+    bytes: Data
+  ) -> UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    func mix(_ value: UInt64) {
+      var value = value
+      for _ in 0..<8 {
+        hash ^= value & 0xff
+        hash &*= 1_099_511_628_211
+        value >>= 8
+      }
+    }
+    mix(UInt64(currentFormatVersion))
+    mix(UInt64(pageIdentifier))
+    mix(sourceGeneration)
+    mix(memoryLayoutFingerprint)
+    mix(UInt64(recordLayoutVersion))
+    mix(UInt64(recordStride))
+    mix(UInt64(recordCount))
+    for byte in bytes {
+      hash ^= UInt64(byte)
+      hash &*= 1_099_511_628_211
+    }
+    return hash
+  }
+}
+
 /// One compact Tier-2 page request emitted by committed GPU retrieval. The
 /// archive worker may satisfy requests asynchronously; motor control never
 /// waits for the corresponding page.

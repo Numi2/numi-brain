@@ -112,6 +112,34 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     return try cognitive.agentStateRuntime.snapshotArchivePageRequests()
   }
 
+  public func snapshotArchivePages(
+    _ pageIdentifiers: [UInt32]
+  ) throws -> [MetalArchivePagePayload] {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive pages cannot be exported during joint control"
+      )
+    }
+    return try cognitive.agentStateRuntime.snapshotArchivePages(
+      pageIdentifiers
+    )
+  }
+
+  public func loadArchivePages(
+    _ payloads: [MetalArchivePagePayload]
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive pages cannot be loaded during joint control"
+      )
+    }
+    try cognitive.agentStateRuntime.loadArchivePages(payloads)
+  }
+
   public func evictArchivePages(_ pageIdentifiers: [UInt32]) throws {
     lock.lock()
     defer { lock.unlock() }
@@ -137,6 +165,31 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     try cognitive.agentStateRuntime.resolveArchivePageRequests(
       snapshot,
       residentPageIdentifiers: residentPageIdentifiers
+    )
+  }
+
+  public func resolveArchivePageRequests(
+    _ snapshot: MetalArchivePageRequestSnapshot,
+    loadedPages: [MetalArchivePagePayload]
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive requests cannot be resolved during joint control"
+      )
+    }
+    let requested = Set(snapshot.requests.map(\.pageIdentifier))
+    let loaded = Set(loadedPages.map(\.pageIdentifier))
+    guard loaded.isSubset(of: requested) else {
+      throw TissueError.transaction(
+        "archive worker supplied an unrequested page payload"
+      )
+    }
+    try cognitive.agentStateRuntime.loadArchivePages(loadedPages)
+    try cognitive.agentStateRuntime.resolveArchivePageRequests(
+      snapshot,
+      residentPageIdentifiers: loaded.sorted()
     )
   }
 
