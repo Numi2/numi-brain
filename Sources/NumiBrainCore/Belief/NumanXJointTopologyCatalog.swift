@@ -45,6 +45,29 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     self.maximumPosition = maximumPosition
     self.restPosition = restPosition
   }
+
+  private enum CodingKeys: String, CodingKey {
+    case identifier
+    case kind
+    case parentLocalAxis
+    case minimumPosition
+    case maximumPosition
+    case restPosition
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      identifier: values.decode(UInt16.self, forKey: .identifier),
+      kind: values.decode(NumanXJointCoordinateKind.self, forKey: .kind),
+      parentLocalAxis: values.decode(
+        NumanXBodyLocalPoint.self, forKey: .parentLocalAxis
+      ),
+      minimumPosition: values.decode(Float.self, forKey: .minimumPosition),
+      maximumPosition: values.decode(Float.self, forKey: .maximumPosition),
+      restPosition: values.decode(Float.self, forKey: .restPosition)
+    )
+  }
 }
 
 /// Immutable articulation edge between two authoritative NumanX bodies.
@@ -53,17 +76,50 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
   public let jointIdentifier: UInt32
   public let parentBodyIdentifier: UInt32
   public let childBodyIdentifier: UInt32
+  public let parentLocalAnchor: NumanXBodyLocalPoint
+  public let childLocalAnchor: NumanXBodyLocalPoint
+  public let restRelativeOrientation: BrainQuaternion
   public let coordinates: [NumanXJointCoordinateTopology]
 
   public init(
     jointIdentifier: UInt32,
     parentBodyIdentifier: UInt32,
     childBodyIdentifier: UInt32,
+    parentLocalAnchor: NumanXBodyLocalPoint,
+    childLocalAnchor: NumanXBodyLocalPoint,
+    restRelativeOrientation: BrainQuaternion,
     coordinates: [NumanXJointCoordinateTopology]
   ) throws {
+    let validatedParentAnchor = try NumanXBodyLocalPoint(
+      x: parentLocalAnchor.x,
+      y: parentLocalAnchor.y,
+      z: parentLocalAnchor.z
+    )
+    let validatedChildAnchor = try NumanXBodyLocalPoint(
+      x: childLocalAnchor.x,
+      y: childLocalAnchor.y,
+      z: childLocalAnchor.z
+    )
+    let validatedRestOrientation = try BrainQuaternion(
+      x: restRelativeOrientation.x,
+      y: restRelativeOrientation.y,
+      z: restRelativeOrientation.z,
+      w: restRelativeOrientation.w
+    )
+    let validatedCoordinates = try coordinates.map {
+      try NumanXJointCoordinateTopology(
+        identifier: $0.identifier,
+        kind: $0.kind,
+        parentLocalAxis: $0.parentLocalAxis,
+        minimumPosition: $0.minimumPosition,
+        maximumPosition: $0.maximumPosition,
+        restPosition: $0.restPosition
+      )
+    }
     guard parentBodyIdentifier != childBodyIdentifier,
-      (1...6).contains(coordinates.count),
-      Set(coordinates.map(\.identifier)).count == coordinates.count
+      (1...6).contains(validatedCoordinates.count),
+      Set(validatedCoordinates.map(\.identifier)).count
+        == validatedCoordinates.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX joint topology endpoints or coordinates are invalid"
@@ -72,7 +128,43 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
     self.jointIdentifier = jointIdentifier
     self.parentBodyIdentifier = parentBodyIdentifier
     self.childBodyIdentifier = childBodyIdentifier
-    self.coordinates = coordinates.sorted { $0.identifier < $1.identifier }
+    self.parentLocalAnchor = validatedParentAnchor
+    self.childLocalAnchor = validatedChildAnchor
+    self.restRelativeOrientation = validatedRestOrientation
+    self.coordinates = validatedCoordinates.sorted { $0.identifier < $1.identifier }
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case jointIdentifier
+    case parentBodyIdentifier
+    case childBodyIdentifier
+    case parentLocalAnchor
+    case childLocalAnchor
+    case restRelativeOrientation
+    case coordinates
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      jointIdentifier: values.decode(UInt32.self, forKey: .jointIdentifier),
+      parentBodyIdentifier: values.decode(
+        UInt32.self, forKey: .parentBodyIdentifier
+      ),
+      childBodyIdentifier: values.decode(UInt32.self, forKey: .childBodyIdentifier),
+      parentLocalAnchor: values.decode(
+        NumanXBodyLocalPoint.self, forKey: .parentLocalAnchor
+      ),
+      childLocalAnchor: values.decode(
+        NumanXBodyLocalPoint.self, forKey: .childLocalAnchor
+      ),
+      restRelativeOrientation: values.decode(
+        BrainQuaternion.self, forKey: .restRelativeOrientation
+      ),
+      coordinates: values.decode(
+        [NumanXJointCoordinateTopology].self, forKey: .coordinates
+      )
+    )
   }
 }
 
@@ -81,7 +173,7 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
 /// never sufficient to construct a production body schema.
 @frozen
 public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let numanXModelFingerprint: UInt64
   public let bodyCount: UInt32
@@ -98,8 +190,11 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
         "NumanX joint topology catalog identity is incomplete"
       )
     }
-    let canonicalJoints = joints.sorted { $0.jointIdentifier < $1.jointIdentifier }
-    try Self.validate(bodyCount: bodyCount, joints: canonicalJoints)
+    try Self.validate(bodyCount: bodyCount, joints: joints)
+    let canonicalJoints = try Self.topologicallyOrdered(
+      bodyCount: bodyCount,
+      joints: joints
+    )
     self.numanXModelFingerprint = numanXModelFingerprint
     self.bodyCount = bodyCount
     self.joints = canonicalJoints
@@ -139,6 +234,14 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
         "NumanX joint identifiers must be unique"
       )
     }
+    guard joints.count == Int(bodyCount - 1),
+      !joints.contains(where: { $0.childBodyIdentifier == 0 }),
+      Set(joints.map(\.childBodyIdentifier)).count == joints.count
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX articulation must be a body-rooted directed tree"
+      )
+    }
     var adjacency = Array(repeating: [UInt32](), count: Int(bodyCount))
     for joint in joints {
       guard joint.parentBodyIdentifier < bodyCount,
@@ -163,6 +266,35 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
         "NumanX joint graph must connect every declared body"
       )
     }
+  }
+
+  private static func topologicallyOrdered(
+    bodyCount: UInt32,
+    joints: [NumanXJointTopology]
+  ) throws -> [NumanXJointTopology] {
+    var remaining = joints.sorted { $0.jointIdentifier < $1.jointIdentifier }
+    var reachedBodies: Set<UInt32> = [0]
+    var ordered: [NumanXJointTopology] = []
+    ordered.reserveCapacity(joints.count)
+    while !remaining.isEmpty {
+      guard let nextIndex = remaining.firstIndex(where: {
+        reachedBodies.contains($0.parentBodyIdentifier)
+          && !reachedBodies.contains($0.childBodyIdentifier)
+      }) else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "NumanX directed joint graph cannot be ordered from body zero"
+        )
+      }
+      let joint = remaining.remove(at: nextIndex)
+      reachedBodies.insert(joint.childBodyIdentifier)
+      ordered.append(joint)
+    }
+    guard reachedBodies.count == Int(bodyCount) else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX directed joint graph does not cover every body"
+      )
+    }
+    return ordered
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -222,6 +354,16 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
       mix(joint.jointIdentifier, into: &hash)
       mix(joint.parentBodyIdentifier, into: &hash)
       mix(joint.childBodyIdentifier, into: &hash)
+      mix(joint.parentLocalAnchor.x.bitPattern, into: &hash)
+      mix(joint.parentLocalAnchor.y.bitPattern, into: &hash)
+      mix(joint.parentLocalAnchor.z.bitPattern, into: &hash)
+      mix(joint.childLocalAnchor.x.bitPattern, into: &hash)
+      mix(joint.childLocalAnchor.y.bitPattern, into: &hash)
+      mix(joint.childLocalAnchor.z.bitPattern, into: &hash)
+      mix(joint.restRelativeOrientation.x.bitPattern, into: &hash)
+      mix(joint.restRelativeOrientation.y.bitPattern, into: &hash)
+      mix(joint.restRelativeOrientation.z.bitPattern, into: &hash)
+      mix(joint.restRelativeOrientation.w.bitPattern, into: &hash)
       mix(UInt32(joint.coordinates.count), into: &hash)
       for coordinate in joint.coordinates {
         mix(UInt32(coordinate.identifier), into: &hash)

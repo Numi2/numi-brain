@@ -6,6 +6,7 @@ constant uint NB_ACCEPTED_MUSCLE_LENGTH_VALID = 1u << 1;
 constant uint NB_ACCEPTED_MUSCLE_VELOCITY_VALID = 1u << 2;
 constant uint NB_ACCEPTED_MUSCLE_FORCE_VALID = 1u << 3;
 constant uint NB_ACCEPTED_MUSCLE_FATIGUE_VALID = 1u << 4;
+constant ulong NB_ACCEPTED_BODY_ARTICULATED = 1ul << 5;
 constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
 constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
@@ -310,13 +311,12 @@ struct NBJointReceptorBindingTableHeader {
 };
 
 struct NBJointTopologyRecord {
-  uint joint_identifier;
-  uint parent_body_identifier;
-  uint child_body_identifier;
-  uint coordinate_count;
-  float minimum_position[6];
-  float maximum_position[6];
-  float rest_position[6];
+  uint4 identifiers;
+  float4 axes[6];
+  float4 limits[6];
+  float4 parent_local_anchor;
+  float4 child_local_anchor;
+  float4 rest_relative_orientation;
 };
 
 struct NBJointReceptorBindingRecord {
@@ -489,7 +489,7 @@ static_assert(sizeof(NBBodyReceptorBindingTableHeader) == 16);
 static_assert(sizeof(NBBodyReceptorBindingRange) == 8);
 static_assert(sizeof(NBBodyReceptorBindingRecord) == 32);
 static_assert(sizeof(NBJointReceptorBindingTableHeader) == 24);
-static_assert(sizeof(NBJointTopologyRecord) == 88);
+static_assert(sizeof(NBJointTopologyRecord) == 256);
 static_assert(sizeof(NBJointReceptorBindingRecord) == 32);
 static_assert(sizeof(NBMuscleReceptorBindingTableHeader) == 24);
 static_assert(sizeof(NBMuscleReceptorBindingRecord) == 32);
@@ -1615,7 +1615,7 @@ kernel void assimilate_accepted_joint_schema(
   ), 0.0f, 1.0f);
   float maximum_error = 0.0f;
   uint evidence_channels = 0u;
-  const uint coordinate_count = min(topology.coordinate_count, 6u);
+  const uint coordinate_count = min(topology.identifiers.w, 6u);
   for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
     float position_total = 0.0f;
     float position_weight = 0.0f;
@@ -1657,7 +1657,7 @@ kernel void assimilate_accepted_joint_schema(
       }
     }
     const float prior_position = prior_valid
-      ? joint[coordinate] : topology.rest_position[coordinate];
+      ? joint[coordinate] : topology.limits[coordinate].z;
     const float prior_velocity = prior_valid ? joint[6u + coordinate] : 0.0f;
     const bool has_position = position_weight > 0.0f;
     const bool has_velocity = velocity_weight > 0.0f;
@@ -1708,14 +1708,248 @@ kernel void assimilate_accepted_joint_schema(
     gain
   ), 0.0f, 1.0f);
   joint[31] = maximum_error;
-  identity[0] = ulong(topology.joint_identifier);
-  identity[1] = ulong(topology.parent_body_identifier);
-  identity[2] = ulong(topology.child_body_identifier);
+  identity[0] = ulong(topology.identifiers.x);
+  identity[1] = ulong(topology.identifiers.y);
+  identity[2] = ulong(topology.identifiers.z);
   identity[3] = ulong(coordinate_count);
   identity[4] = uniforms.target_timestamp_microseconds;
   identity[5] = uniforms.physics_state_fingerprint;
   identity[6] = joint_receptor_table->topology_fingerprint;
   identity[7] = ulong(NB_ACCEPTED_STATE_VALID);
+}
+
+inline float4 nb_accepted_quaternion_multiply(float4 lhs, float4 rhs) {
+  return float4(
+    lhs.w * rhs.xyz + rhs.w * lhs.xyz + cross(lhs.xyz, rhs.xyz),
+    lhs.w * rhs.w - dot(lhs.xyz, rhs.xyz)
+  );
+}
+
+inline float3 nb_accepted_rotate(float3 vector, float4 quaternion) {
+  const float norm_squared = dot(quaternion, quaternion);
+  if (norm_squared <= 1.0e-12f) return vector;
+  const float4 normalized = quaternion * rsqrt(norm_squared);
+  const float3 twice_cross = 2.0f * cross(normalized.xyz, vector);
+  return vector + normalized.w * twice_cross
+    + cross(normalized.xyz, twice_cross);
+}
+
+inline float4 nb_accepted_axis_angle(float3 axis, float angle) {
+  const float axis_length_squared = dot(axis, axis);
+  if (axis_length_squared <= 1.0e-12f || !isfinite(angle)) {
+    return float4(0.0f, 0.0f, 0.0f, 1.0f);
+  }
+  const float half_angle = 0.5f * angle;
+  return float4(
+    axis * rsqrt(axis_length_squared) * sin(half_angle),
+    cos(half_angle)
+  );
+}
+
+/// Reconciles the topologically ordered articulation posterior into the one
+/// compatible body factor. This is belief-space forward kinematics from
+/// receptor estimates, not access to authoritative NumanX pose state.
+kernel void reconcile_accepted_articulated_body_graph(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  device const NBJointReceptorBindingTableHeader *joint_receptor_table
+    [[buffer(10)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.joint_count == 0u) return;
+  device const NBJointTopologyRecord *topologies =
+    reinterpret_cast<device const NBJointTopologyRecord *>(
+      joint_receptor_table + 1
+    );
+  const uint joint_count = min(
+    uniforms.joint_count, joint_receptor_table->joint_count
+  );
+  const float base_gain = clamp(
+    min(uniforms.belief_gain, max(belief_parameters[0], 0.0f)),
+    0.0f,
+    1.0f
+  );
+  for (uint joint_index = 0u; joint_index < joint_count; ++joint_index) {
+    const NBJointTopologyRecord topology = topologies[joint_index];
+    const uint parent_index = topology.identifiers.y;
+    const uint child_index = topology.identifiers.z;
+    if (parent_index >= uniforms.body_count
+        || child_index >= uniforms.body_count) continue;
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset
+        + ulong(joint_index) * 256ul
+    );
+    device const ulong *joint_identity =
+      reinterpret_cast<device const ulong *>(joint + 32u);
+    if ((joint_identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul
+        || joint_identity[6] != joint_receptor_table->topology_fingerprint) {
+      continue;
+    }
+    device float *parent = reinterpret_cast<device float *>(
+      hot_state + uniforms.body_belief_offset + ulong(parent_index) * 256ul
+    );
+    device float *child = reinterpret_cast<device float *>(
+      hot_state + uniforms.body_belief_offset + ulong(child_index) * 256ul
+    );
+    device const ulong *parent_identity =
+      reinterpret_cast<device const ulong *>(parent + NB_BODY_IDENTITY_FLOAT_OFFSET);
+    device ulong *child_identity =
+      reinterpret_cast<device ulong *>(child + NB_BODY_IDENTITY_FLOAT_OFFSET);
+    if ((parent_identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul) continue;
+    float4 parent_orientation = float4(
+      parent[NB_BODY_ORIENTATION],
+      parent[NB_BODY_ORIENTATION + 1u],
+      parent[NB_BODY_ORIENTATION + 2u],
+      parent[NB_BODY_ORIENTATION + 3u]
+    );
+    parent_orientation = dot(parent_orientation, parent_orientation) > 1.0e-12f
+      ? normalize(parent_orientation) : float4(0.0f, 0.0f, 0.0f, 1.0f);
+    float4 coordinate_rotation = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    float3 local_translation = float3(0.0f);
+    float3 local_linear_velocity = float3(0.0f);
+    float3 local_angular_velocity = float3(0.0f);
+    float joint_variance = 0.0f;
+    const uint coordinate_count = min(topology.identifiers.w, 6u);
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      const float3 axis = topology.axes[coordinate].xyz;
+      const uint kind = uint(round(topology.axes[coordinate].w));
+      const float position = joint[coordinate];
+      const float displacement = position - topology.limits[coordinate].z;
+      const float velocity = joint[6u + coordinate];
+      joint_variance += max(joint[12u + coordinate], 0.0f)
+        + max(joint[18u + coordinate], 0.0f);
+      if (kind == 1u) {
+        coordinate_rotation = nb_accepted_quaternion_multiply(
+          coordinate_rotation,
+          nb_accepted_axis_angle(axis, displacement)
+        );
+        local_angular_velocity += normalize(axis) * velocity;
+      } else if (kind == 2u) {
+        const float3 normalized_axis = normalize(axis);
+        local_translation += normalized_axis * displacement;
+        local_linear_velocity += normalized_axis * velocity;
+      }
+    }
+    float4 predicted_orientation = nb_accepted_quaternion_multiply(
+      parent_orientation,
+      nb_accepted_quaternion_multiply(
+        coordinate_rotation,
+        topology.rest_relative_orientation
+      )
+    );
+    predicted_orientation = dot(predicted_orientation, predicted_orientation)
+        > 1.0e-12f
+      ? normalize(predicted_orientation) : parent_orientation;
+    const float3 parent_position = float3(
+      parent[NB_BODY_POSITION],
+      parent[NB_BODY_POSITION + 1u],
+      parent[NB_BODY_POSITION + 2u]
+    );
+    const float3 parent_linear_velocity = float3(
+      parent[NB_BODY_LINEAR_VELOCITY],
+      parent[NB_BODY_LINEAR_VELOCITY + 1u],
+      parent[NB_BODY_LINEAR_VELOCITY + 2u]
+    );
+    const float3 parent_angular_velocity = float3(
+      parent[NB_BODY_ANGULAR_VELOCITY],
+      parent[NB_BODY_ANGULAR_VELOCITY + 1u],
+      parent[NB_BODY_ANGULAR_VELOCITY + 2u]
+    );
+    const float3 parent_joint_offset = nb_accepted_rotate(
+      topology.parent_local_anchor.xyz + local_translation,
+      parent_orientation
+    );
+    const float3 child_anchor_offset = nb_accepted_rotate(
+      topology.child_local_anchor.xyz,
+      predicted_orientation
+    );
+    const float3 predicted_position = parent_position + parent_joint_offset
+      - child_anchor_offset;
+    const float3 predicted_angular_velocity = parent_angular_velocity
+      + nb_accepted_rotate(local_angular_velocity, parent_orientation);
+    const float3 predicted_linear_velocity = parent_linear_velocity
+      + cross(parent_angular_velocity, parent_joint_offset)
+      + nb_accepted_rotate(local_linear_velocity, parent_orientation)
+      - cross(predicted_angular_velocity, child_anchor_offset);
+    const bool child_valid =
+      (child_identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul;
+    const float mean_joint_variance = joint_variance
+      / max(float(coordinate_count * 2u), 1.0f);
+    const float certainty = clamp(joint[30], 0.0f, 1.0f)
+      / (1.0f + sqrt(mean_joint_variance));
+    const float graph_gain = child_valid
+      ? min(base_gain * certainty, 0.75f) : 1.0f;
+    for (uint component = 0u; component < 3u; ++component) {
+      child[NB_BODY_POSITION + component] = mix(
+        child_valid ? child[NB_BODY_POSITION + component]
+          : predicted_position[component],
+        predicted_position[component],
+        graph_gain
+      );
+      child[NB_BODY_LINEAR_VELOCITY + component] = mix(
+        child_valid ? child[NB_BODY_LINEAR_VELOCITY + component]
+          : predicted_linear_velocity[component],
+        predicted_linear_velocity[component],
+        graph_gain
+      );
+      child[NB_BODY_ANGULAR_VELOCITY + component] = mix(
+        child_valid ? child[NB_BODY_ANGULAR_VELOCITY + component]
+          : predicted_angular_velocity[component],
+        predicted_angular_velocity[component],
+        graph_gain
+      );
+      const float predicted_position_variance = max(
+        parent[NB_BODY_POSITION_VARIANCE + component], 0.0f
+      ) + mean_joint_variance;
+      const float predicted_orientation_variance = max(
+        parent[NB_BODY_ORIENTATION_VARIANCE + component], 0.0f
+      ) + mean_joint_variance;
+      child[NB_BODY_POSITION_VARIANCE + component] = mix(
+        child_valid ? max(child[NB_BODY_POSITION_VARIANCE + component], 0.0f)
+          : predicted_position_variance,
+        predicted_position_variance,
+        graph_gain
+      );
+      child[NB_BODY_ORIENTATION_VARIANCE + component] = mix(
+        child_valid ? max(child[NB_BODY_ORIENTATION_VARIANCE + component], 0.0f)
+          : predicted_orientation_variance,
+        predicted_orientation_variance,
+        graph_gain
+      );
+    }
+    float4 child_orientation = child_valid
+      ? float4(
+          child[NB_BODY_ORIENTATION],
+          child[NB_BODY_ORIENTATION + 1u],
+          child[NB_BODY_ORIENTATION + 2u],
+          child[NB_BODY_ORIENTATION + 3u]
+        ) : predicted_orientation;
+    if (dot(child_orientation, predicted_orientation) < 0.0f) {
+      predicted_orientation = -predicted_orientation;
+    }
+    child_orientation = mix(
+      child_orientation, predicted_orientation, graph_gain
+    );
+    child_orientation = dot(child_orientation, child_orientation) > 1.0e-12f
+      ? normalize(child_orientation) : predicted_orientation;
+    for (uint component = 0u; component < 4u; ++component) {
+      child[NB_BODY_ORIENTATION + component] = child_orientation[component];
+    }
+    child[NB_BODY_OWNERSHIP] = clamp(max(
+      child_valid ? child[NB_BODY_OWNERSHIP] : 0.0f,
+      certainty
+    ), 0.0f, 1.0f);
+    child[NB_BODY_PROPRIOCEPTIVE_ERROR] = max(
+      child_valid ? child[NB_BODY_PROPRIOCEPTIVE_ERROR] : 0.0f,
+      joint[31]
+    );
+    child_identity[0] = ulong(child_index);
+    child_identity[1] = uniforms.target_timestamp_microseconds;
+    child_identity[2] = uniforms.physics_state_fingerprint;
+    child_identity[3] = (child_valid ? child_identity[3] : 0ul)
+      | ulong(NB_ACCEPTED_STATE_VALID) | NB_ACCEPTED_BODY_ARTICULATED;
+  }
 }
 
 /// Joins the accepted fast load posterior into the compatible cognitive body

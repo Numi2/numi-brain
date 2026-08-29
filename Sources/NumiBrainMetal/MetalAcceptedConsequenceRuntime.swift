@@ -123,28 +123,22 @@ private struct AcceptedJointReceptorBindingTableHeader {
 }
 
 private struct AcceptedJointTopologyRecord {
-  var jointIdentifier: UInt32 = 0
-  var parentBodyIdentifier: UInt32 = 0
-  var childBodyIdentifier: UInt32 = 0
-  var coordinateCount: UInt32 = 0
-  var minimum0: Float = 0
-  var minimum1: Float = 0
-  var minimum2: Float = 0
-  var minimum3: Float = 0
-  var minimum4: Float = 0
-  var minimum5: Float = 0
-  var maximum0: Float = 0
-  var maximum1: Float = 0
-  var maximum2: Float = 0
-  var maximum3: Float = 0
-  var maximum4: Float = 0
-  var maximum5: Float = 0
-  var rest0: Float = 0
-  var rest1: Float = 0
-  var rest2: Float = 0
-  var rest3: Float = 0
-  var rest4: Float = 0
-  var rest5: Float = 0
+  var identifiers = SIMD4<UInt32>(repeating: 0)
+  var axis0 = SIMD4<Float>(repeating: 0)
+  var axis1 = SIMD4<Float>(repeating: 0)
+  var axis2 = SIMD4<Float>(repeating: 0)
+  var axis3 = SIMD4<Float>(repeating: 0)
+  var axis4 = SIMD4<Float>(repeating: 0)
+  var axis5 = SIMD4<Float>(repeating: 0)
+  var limits0 = SIMD4<Float>(repeating: 0)
+  var limits1 = SIMD4<Float>(repeating: 0)
+  var limits2 = SIMD4<Float>(repeating: 0)
+  var limits3 = SIMD4<Float>(repeating: 0)
+  var limits4 = SIMD4<Float>(repeating: 0)
+  var limits5 = SIMD4<Float>(repeating: 0)
+  var parentLocalAnchor = SIMD4<Float>(repeating: 0)
+  var childLocalAnchor = SIMD4<Float>(repeating: 0)
+  var restRelativeOrientation = SIMD4<Float>(0, 0, 0, 1)
 }
 
 private struct AcceptedJointReceptorBindingRecord {
@@ -222,7 +216,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
       MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride == 32,
       MemoryLayout<AcceptedJointReceptorBindingTableHeader>.stride == 24,
-      MemoryLayout<AcceptedJointTopologyRecord>.stride == 88,
+      MemoryLayout<AcceptedJointTopologyRecord>.stride == 256,
       MemoryLayout<AcceptedJointReceptorBindingRecord>.stride == 32,
       MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride == 24,
       MemoryLayout<AcceptedMuscleReceptorBindingRecord>.stride == 32,
@@ -393,26 +387,51 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       )
     }
     let jointTopologyRecords = jointTopologyCatalog.joints.map { joint in
-      let minimums =
-        joint.coordinates.map(\.minimumPosition)
-        + Array(repeating: 0, count: 6 - joint.coordinates.count)
-      let maximums =
-        joint.coordinates.map(\.maximumPosition)
-        + Array(repeating: 0, count: 6 - joint.coordinates.count)
-      let rests =
-        joint.coordinates.map(\.restPosition)
-        + Array(repeating: 0, count: 6 - joint.coordinates.count)
+      let axes = joint.coordinates.map {
+        SIMD4<Float>(
+          $0.parentLocalAxis.x,
+          $0.parentLocalAxis.y,
+          $0.parentLocalAxis.z,
+          Float($0.kind.rawValue)
+        )
+      } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
+      let limits = joint.coordinates.map {
+        SIMD4<Float>(
+          $0.minimumPosition,
+          $0.maximumPosition,
+          $0.restPosition,
+          0
+        )
+      } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
       return AcceptedJointTopologyRecord(
-        jointIdentifier: joint.jointIdentifier,
-        parentBodyIdentifier: joint.parentBodyIdentifier,
-        childBodyIdentifier: joint.childBodyIdentifier,
-        coordinateCount: UInt32(joint.coordinates.count),
-        minimum0: minimums[0], minimum1: minimums[1], minimum2: minimums[2],
-        minimum3: minimums[3], minimum4: minimums[4], minimum5: minimums[5],
-        maximum0: maximums[0], maximum1: maximums[1], maximum2: maximums[2],
-        maximum3: maximums[3], maximum4: maximums[4], maximum5: maximums[5],
-        rest0: rests[0], rest1: rests[1], rest2: rests[2],
-        rest3: rests[3], rest4: rests[4], rest5: rests[5]
+        identifiers: SIMD4<UInt32>(
+          joint.jointIdentifier,
+          joint.parentBodyIdentifier,
+          joint.childBodyIdentifier,
+          UInt32(joint.coordinates.count)
+        ),
+        axis0: axes[0], axis1: axes[1], axis2: axes[2],
+        axis3: axes[3], axis4: axes[4], axis5: axes[5],
+        limits0: limits[0], limits1: limits[1], limits2: limits[2],
+        limits3: limits[3], limits4: limits[4], limits5: limits[5],
+        parentLocalAnchor: SIMD4<Float>(
+          joint.parentLocalAnchor.x,
+          joint.parentLocalAnchor.y,
+          joint.parentLocalAnchor.z,
+          0
+        ),
+        childLocalAnchor: SIMD4<Float>(
+          joint.childLocalAnchor.x,
+          joint.childLocalAnchor.y,
+          joint.childLocalAnchor.z,
+          0
+        ),
+        restRelativeOrientation: SIMD4<Float>(
+          joint.restRelativeOrientation.x,
+          joint.restRelativeOrientation.y,
+          joint.restRelativeOrientation.z,
+          joint.restRelativeOrientation.w
+        )
       )
     }
     let muscleAttachments = muscleAttachmentCatalog?.attachments ?? []
@@ -677,6 +696,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "reconcile_accepted_sensorimotor_world_model",
       "assimilate_accepted_joint_schema",
       "assimilate_accepted_muscle_schema",
+      "reconcile_accepted_articulated_body_graph",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -861,6 +881,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       pipeline: pipelines[10],
       count: Int(species.body.jointCount)
     )
+    barrier(encoder)
+    dispatch(encoder, pipeline: pipelines[12], count: 1)
     barrier(encoder)
     if let acceptedFastMotorState,
       acceptedFastMotorState.bodySchemaByteCount > 0
