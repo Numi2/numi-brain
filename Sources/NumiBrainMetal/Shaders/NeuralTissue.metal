@@ -338,6 +338,12 @@ struct NBRegionalPlasticModulationRecordABI {
     float drive_delta;
     float gate_delta;
     uint flags;
+    float update_gain_multiplier;
+    float timescale_multiplier;
+    float route_threshold_delta;
+    float inhibition_delta;
+    float plasticity_decay_multiplier;
+    uint reserved[3];
 };
 
 struct NBParameterVersionBindingABI {
@@ -770,7 +776,7 @@ static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
 static_assert(sizeof(NBRegionalMaturationRecordABI) == 32,
               "regional maturation ABI drift");
-static_assert(sizeof(NBRegionalPlasticModulationRecordABI) == 32,
+static_assert(sizeof(NBRegionalPlasticModulationRecordABI) == 64,
               "regional plastic modulation ABI drift");
 static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
 static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI drift");
@@ -1929,9 +1935,20 @@ kernel void advance_due_regional_tokens(
             const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
             const NBRegionalMaturationRecordABI maturationRecord =
                 maturation[moduleIndex];
+            const NBRegionalPlasticModulationRecordABI plastic =
+                plasticModulation[moduleIndex];
             const bool validMaturation = maturationRecord.module_identifier
                     == uint(receiver.module_id)
                 && maturationRecord.unlocked != 0u;
+            const bool validPlastic = plastic.module_identifier
+                    == uint(receiver.module_id)
+                && plastic.coefficient_count > 0u
+                && (plastic.flags & 1u) != 0u;
+            const float routeActivationThreshold = max(
+                routeParameters[6]
+                    + (validPlastic ? plastic.route_threshold_delta : 0.0f),
+                0.0f
+            );
             const uint effectiveNormalRouteBudget = validMaturation
                 ? min(
                     uint(receiver.normal_route_budget),
@@ -2063,7 +2080,7 @@ kernel void advance_due_regional_tokens(
                         bestRoute = routeIndex;
                     }
                 }
-                if (bestRoute == ~0u) {
+                if (bestRoute == ~0u || bestScore < routeActivationThreshold) {
                     break;
                 }
                 selectedRouteIndices[routeBegin + selectedCount] = bestRoute;
@@ -2165,15 +2182,21 @@ kernel void advance_due_regional_tokens(
             const ulong elapsedMicroseconds = diagnostic.last_update_microseconds == neverUpdated
                 ? ulong(module.period_microseconds)
                 : invocation.timestamp_microseconds - diagnostic.last_update_microseconds;
-            const float alpha = 1.0f - exp(
+            const float effectiveTimescaleMultiplier = max(
+                (validMaturation
+                    ? maturationRecord.timescale_multiplier
+                    : 1.0f)
+                    * (validPlastic ? plastic.timescale_multiplier : 1.0f),
+                0.05f
+            );
+            const float alpha = clamp(
+                (1.0f - exp(
                 -float(elapsedMicroseconds) /
                     (float(module.intrinsic_timescale_microseconds)
-                        * max(
-                            validMaturation
-                                ? maturationRecord.timescale_multiplier
-                                : 1.0f,
-                            0.05f
-                        ))
+                        * effectiveTimescaleMultiplier)
+                )) * (validPlastic ? plastic.update_gain_multiplier : 1.0f),
+                0.0f,
+                1.0f
             );
             const float periodicDrive =
                 (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
@@ -2241,6 +2264,7 @@ kernel void advance_due_regional_tokens(
                 );
                 const float gateInput = parameter.gate_bias
                     + (validPlastic ? plastic.gate_delta : 0.0f)
+                    - (validPlastic ? plastic.inhibition_delta : 0.0f)
                     + parameter.gate_recurrent_gain * current
                     + parameter.gate_input_gain * (routedInput + drive);
                 const float gate = 1.0f / (1.0f + exp(-gateInput));

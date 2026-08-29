@@ -285,6 +285,12 @@ struct NBRegionalPlasticModulationRecord {
   float drive_delta;
   float gate_delta;
   uint flags;
+  float update_gain_multiplier;
+  float timescale_multiplier;
+  float route_threshold_delta;
+  float inhibition_delta;
+  float plasticity_decay_multiplier;
+  uint reserved[3];
 };
 
 struct NBPlasticityRegionRangeRecord {
@@ -312,7 +318,7 @@ static_assert(sizeof(NBRelationSlotRecord) == 64);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
-static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
+static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
 static_assert(sizeof(NBPlasticityRegionRangeRecord) == 16);
 
 inline float nb_saturate(float value) {
@@ -341,7 +347,7 @@ inline float nb_regional_neuromodulator_effect(
 {
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
-  constexpr uint receptor_effect_count = 6u;
+  constexpr uint receptor_effect_count = 11u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
   if (uniforms.plasticity_parameter_count
@@ -2027,10 +2033,24 @@ kernel void advance_fast_plasticity_foundation(
   const float interval_scale = nb_plasticity_interval_scale(
     uniforms.delta_microseconds
   );
+  device const NBRegionalPlasticModulationRecord *prior_regional_modulation =
+    reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  const NBRegionalPlasticModulationRecord prior_modulation =
+    prior_regional_modulation[region_index];
+  const bool valid_prior_modulation = prior_modulation.module_identifier
+        == uint(site.region_identifier)
+    && (prior_modulation.flags & 1u) != 0u;
+  const float decay_interval_scale = interval_scale * max(
+    valid_prior_modulation
+      ? prior_modulation.plasticity_decay_multiplier : 1.0f,
+    0.05f
+  );
   const float eligibility_retention = nb_plasticity_interval_retention(min(
     site.eligibility_retention,
     clamp(plasticity_parameters[2], 0.0f, 1.0f)
-  ), interval_scale);
+  ), decay_interval_scale);
   site.eligibility = eligibility_retention * site.eligibility
     + interval_scale * plasticity_parameters[3] * activity_product;
   const float local_modulation = nb_regional_neuromodulator_effect(
@@ -2043,7 +2063,7 @@ kernel void advance_fast_plasticity_foundation(
   const float coefficient_retention = nb_plasticity_interval_retention(min(
     site.coefficient_retention,
     clamp(plasticity_parameters[1], 0.0f, 1.0f)
-  ), interval_scale);
+  ), decay_interval_scale);
   site.coefficient = clamp(
     coefficient_retention * site.coefficient
       + interval_scale
@@ -2078,7 +2098,7 @@ kernel void reduce_fast_plasticity_by_region(
   const uint module_identifier = maturation[gid].module_identifier;
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
-  constexpr uint receptor_effect_count = 6u;
+  constexpr uint receptor_effect_count = 11u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
   const uint basis_scalar_count = uniforms.plasticity_parameter_count
@@ -2124,6 +2144,44 @@ kernel void reduce_fast_plasticity_by_region(
   record.route_delta = clamp(projection[2], -0.20f, 0.20f);
   record.drive_delta = clamp(projection[3], -0.10f, 0.10f);
   record.gate_delta = clamp(projection[4], -0.10f, 0.10f);
+  record.update_gain_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 6u
+    ),
+    -1.0f,
+    1.0f
+  ));
+  record.timescale_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 7u
+    ),
+    -1.0f,
+    1.0f
+  ));
+  record.route_threshold_delta = clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 8u
+    ),
+    -0.50f,
+    0.50f
+  );
+  record.inhibition_delta = clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 9u
+    ),
+    -0.50f,
+    0.50f
+  );
+  record.plasticity_decay_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 10u
+    ),
+    -1.0f,
+    1.0f
+  ));
+  record.reserved[0] = 0u;
+  record.reserved[1] = 0u;
+  record.reserved[2] = 0u;
   record.flags = coefficient_count > 0u ? 1u : 0u;
   regional[gid] = record;
 }

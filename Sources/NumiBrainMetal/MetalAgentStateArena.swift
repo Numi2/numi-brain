@@ -146,6 +146,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let physiologyScalarCapacity = 64
   public static let contextScalarCapacity = 512
   public static let fastPlasticityStride = 32
+  public static let regionalPlasticModulationStride = 64
   public static let activeSensingEfficacyStride = 32
   public static let eventTokenStride = 32
   public static let defaultEventTokenCapacity = 4_096
@@ -375,7 +376,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     try builder.append(
       .regionalPlasticModulation,
       count: species.enabledModuleIdentifiers.count,
-      stride: 32
+      stride: Self.regionalPlasticModulationStride
     )
     try builder.append(.activeEpisodeAccumulator, count: 1, stride: 256)
     try builder.append(.prospectiveLifecycle, count: 1, stride: 512)

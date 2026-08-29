@@ -214,6 +214,14 @@ private struct TissueRegionalPlasticModulationRecord {
   var driveDelta: Float = 0
   var gateDelta: Float = 0
   var flags: UInt32 = 0
+  var updateGainMultiplier: Float = 1
+  var timescaleMultiplier: Float = 1
+  var routeThresholdDelta: Float = 0
+  var inhibitionDelta: Float = 0
+  var plasticityDecayMultiplier: Float = 1
+  var reserved0: UInt32 = 0
+  var reserved1: UInt32 = 0
+  var reserved2: UInt32 = 0
 }
 
 @available(macOS 26.0, *)
@@ -1408,7 +1416,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       !fastCerebellarStateByteOverflow, !stagedMotorCommandByteOverflow,
       MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
-      MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32,
+      MemoryLayout<TissueRegionalPlasticModulationRecord>.stride
+        == MetalAgentStateLayout.regionalPlasticModulationStride,
       MemoryLayout<FastCPGUniforms>.stride == 24,
       MemoryLayout<FastAutonomicUniforms>.stride == 40,
       MemoryLayout<FastAutonomicChannelDescriptor>.stride

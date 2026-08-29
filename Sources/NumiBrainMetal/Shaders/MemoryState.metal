@@ -716,6 +716,12 @@ struct NBRegionalPlasticModulationRecord {
   float drive_delta;
   float gate_delta;
   uint flags;
+  float update_gain_multiplier;
+  float timescale_multiplier;
+  float route_threshold_delta;
+  float inhibition_delta;
+  float plasticity_decay_multiplier;
+  uint reserved[3];
 };
 
 struct NBCerebellarExpertRecord {
@@ -1030,7 +1036,7 @@ static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
 static_assert(sizeof(NBRelationSlotRecord) == 64);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
-static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
+static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 512);
 static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
@@ -4520,8 +4526,15 @@ kernel void journal_committed_learning_transition(
     record.fast_plasticity_trace[12] += regional.recurrent_delta;
     record.fast_plasticity_trace[13] += regional.local_delta;
     record.fast_plasticity_trace[14] += regional.route_delta;
-    record.fast_plasticity_trace[15] +=
-      0.5f * (regional.drive_delta + regional.gate_delta);
+    record.fast_plasticity_trace[15] += (
+      regional.drive_delta
+      + regional.gate_delta
+      + regional.route_threshold_delta
+      - regional.inhibition_delta
+      + log(max(regional.update_gain_multiplier, 1.0e-4f))
+      + log(max(regional.timescale_multiplier, 1.0e-4f))
+      + log(max(regional.plasticity_decay_multiplier, 1.0e-4f))
+    ) / 7.0f;
     valid_regional_count += 1u;
   }
   if (valid_regional_count > 0u) {

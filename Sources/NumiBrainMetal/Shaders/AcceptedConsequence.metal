@@ -1620,7 +1620,7 @@ kernel void update_fast_plasticity_from_accepted_error(
     );
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
-  constexpr uint receptor_effect_count = 6u;
+  constexpr uint receptor_effect_count = 11u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
   const uint basis_scalar_count = uniforms.plasticity_parameter_count
