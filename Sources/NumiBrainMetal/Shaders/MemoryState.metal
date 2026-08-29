@@ -253,6 +253,47 @@ struct NBMemoryConsolidationUniforms {
   float semantic_learning_rate;
 };
 
+struct NBMemoryReconsolidationUniforms {
+  ulong target_timestamp_microseconds;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong recurrent_offset;
+  ulong observation_offset;
+  ulong retrieval_scratch_offset;
+  ulong active_episode_memory_offset;
+  ulong compressed_episode_memory_offset;
+  ulong archive_episode_memory_offset;
+  ulong semantic_memory_offset;
+  ulong semantic_relation_memory_offset;
+  ulong procedural_memory_offset;
+  ulong control_header_offset;
+  ulong drive_offset;
+  ulong persistent_memory_byte_count;
+  ulong journal_byte_count;
+  uint recurrent_scalar_count;
+  uint observation_count;
+  uint active_episode_capacity;
+  uint active_episode_stride;
+  uint compressed_episode_capacity;
+  uint compressed_episode_stride;
+  uint archive_episode_capacity;
+  uint archive_episode_stride;
+  uint archive_search_candidate_count;
+  uint semantic_capacity;
+  uint semantic_stride;
+  uint semantic_relation_capacity;
+  uint semantic_relation_stride;
+  uint procedural_capacity;
+  uint procedural_stride;
+  uint drive_count;
+  uint maximum_results;
+  uint journal_entry_capacity;
+  float learning_rate;
+  float confirmation_similarity;
+  float conflict_similarity;
+  float maximum_damage;
+};
+
 struct NBProspectiveLifecycleUniforms {
   ulong target_timestamp_microseconds;
   ulong base_generation;
@@ -535,6 +576,7 @@ static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 232);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 184);
+static_assert(sizeof(NBMemoryReconsolidationUniforms) == 216);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -661,10 +703,11 @@ inline float archive_retrieval_similarity(
   return dot * rsqrt(query_norm * key_norm);
 }
 
+template<typename Uniforms>
 inline uint archive_storage_index_for_search_candidate(
   device const float *query,
   uint query_count,
-  constant NBMemoryRetrievalUniforms &uniforms,
+  constant Uniforms &uniforms,
   uint search_index)
 {
   const uint slots_per_cluster = uniforms.archive_episode_capacity
@@ -1433,6 +1476,397 @@ kernel void publish_memory_retrieval_winner(
   scratch->winner_indices[uniforms.retrieval_pass] = candidate_index;
   scratch->winner_scores[uniforms.retrieval_pass] = score;
   scratch->flags |= 1u << uniforms.retrieval_pass;
+}
+
+inline float accepted_memory_evidence_component(
+  device const float *recurrent,
+  uint recurrent_count,
+  device const float *observations,
+  uint observation_count,
+  uint component)
+{
+  const float recurrent_value = recurrent_count > 0u
+    ? recurrent[component % recurrent_count] : 0.0f;
+  const float observation_value = observation_count > 0u
+    ? observations[component % observation_count] : recurrent_value;
+  return 0.65f * recurrent_value + 0.35f * observation_value;
+}
+
+inline float accepted_memory_similarity(
+  device const float *recurrent,
+  uint recurrent_count,
+  device const float *observations,
+  uint observation_count,
+  device const float *key,
+  uint key_count)
+{
+  const uint count = min(key_count, 32u);
+  if (count == 0u) return 0.0f;
+  float dot = 0.0f;
+  float evidence_norm = 1.0e-6f;
+  float key_norm = 1.0e-6f;
+  for (uint component = 0u; component < count; ++component) {
+    const float evidence = accepted_memory_evidence_component(
+      recurrent, recurrent_count, observations, observation_count, component
+    );
+    dot += evidence * key[component];
+    evidence_norm += evidence * evidence;
+    key_norm += key[component] * key[component];
+  }
+  return dot * rsqrt(evidence_norm * key_norm);
+}
+
+inline float accepted_archive_memory_similarity(
+  device const float *recurrent,
+  uint recurrent_count,
+  device const float *observations,
+  uint observation_count,
+  device const NBArchivedEpisodicRecord *record)
+{
+  const uint count = min(record->quantized_component_count, 16u);
+  if (count == 0u || !isfinite(record->retrieval_key_scale)
+      || record->retrieval_key_scale <= 0.0f) return 0.0f;
+  float dot = 0.0f;
+  float evidence_norm = 1.0e-6f;
+  float key_norm = 1.0e-6f;
+  for (uint component = 0u; component < count; ++component) {
+    const float evidence = accepted_memory_evidence_component(
+      recurrent, recurrent_count, observations, observation_count, component
+    );
+    const float key = float(record->quantized_retrieval_key[component])
+      * record->retrieval_key_scale;
+    dot += evidence * key;
+    evidence_norm += evidence * evidence;
+    key_norm += key * key;
+  }
+  return dot * rsqrt(evidence_norm * key_norm);
+}
+
+/// Accepted-evidence reconsolidation of the bounded records recalled by this
+/// root. Identity, original time, source generation, and parameter provenance
+/// are copied unchanged; the reconsolidated flag records that content or
+/// confidence has been revised after retrieval.
+kernel void reconsolidate_retrieved_memory(
+  device uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  device NBMemoryJournalHeader *journal [[buffer(2)]],
+  constant NBMemoryReconsolidationUniforms &uniforms [[buffer(3)]],
+  device const float *memory_parameters [[buffer(6)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= min(uniforms.maximum_results, 4u)) return;
+  if (journal->base_generation != uniforms.base_generation
+      || journal->shadow_generation != uniforms.shadow_generation
+      || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return;
+  }
+  device NBMemoryRetrievalScratch *scratch =
+    reinterpret_cast<device NBMemoryRetrievalScratch *>(
+      hot_state + uniforms.retrieval_scratch_offset
+    );
+  if ((scratch->flags & (1u << gid)) == 0u) return;
+  const uint kind = scratch->winner_kinds[gid];
+  const uint candidate_index = scratch->winner_indices[gid];
+  const ulong identifier = scratch->winner_record_identifiers[gid];
+  if (kind == 0u || identifier == 0ul) return;
+
+  device const float *recurrent = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  const float rate = clamp(
+    min(uniforms.learning_rate, max(memory_parameters[4], 0.0f)),
+    0.0f,
+    1.0f
+  );
+  if (rate <= 0.0f) return;
+
+  if (kind == 1u || kind == 6u) {
+    uint local_index = candidate_index;
+    ulong base_offset = uniforms.active_episode_memory_offset;
+    uint stride = uniforms.active_episode_stride;
+    uint capacity = uniforms.active_episode_capacity;
+    if (kind == 6u) {
+      if (local_index < uniforms.active_episode_capacity) return;
+      local_index -= uniforms.active_episode_capacity;
+      base_offset = uniforms.compressed_episode_memory_offset;
+      stride = uniforms.compressed_episode_stride;
+      capacity = uniforms.compressed_episode_capacity;
+    }
+    if (local_index >= capacity) return;
+    const ulong destination = base_offset + ulong(local_index) * ulong(stride);
+    device const NBEpisodicSummaryRecord *record =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + destination
+      );
+    if (record->identifier != identifier
+        || record->format_version != NB_MEMORY_EPISODE_RECORD_VERSION) return;
+    NBEpisodicSummaryRecord updated = *record;
+    const float similarity = accepted_memory_similarity(
+      recurrent, uniforms.recurrent_scalar_count,
+      observations, uniforms.observation_count,
+      record->retrieval_key, 10u
+    );
+    float content_rate = rate * 0.5f;
+    if (similarity >= uniforms.confirmation_similarity) {
+      updated.epistemic_uncertainty = max(
+        record->epistemic_uncertainty * (1.0f - rate), 0.0f
+      );
+      content_rate = rate;
+    } else if (similarity <= uniforms.conflict_similarity) {
+      updated.epistemic_uncertainty = record->epistemic_uncertainty
+        + rate * (1.0f + abs(similarity));
+      content_rate = rate * 0.25f;
+    }
+    for (uint component = 0u; component < 10u; ++component) {
+      const float evidence = accepted_memory_evidence_component(
+        recurrent, uniforms.recurrent_scalar_count,
+        observations, uniforms.observation_count, component
+      );
+      updated.retrieval_key[component] = mix(
+        record->retrieval_key[component], evidence, content_rate
+      );
+    }
+    updated.flags = record->flags | 8u;
+    append_memory_record(
+      journal, uniforms, updated, destination,
+      kind == 1u ? NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE
+        : NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE,
+      updated.identifier
+    );
+    return;
+  }
+
+  const uint archive_base = uniforms.active_episode_capacity
+    + uniforms.compressed_episode_capacity;
+  if (kind == 7u) {
+    if (candidate_index < archive_base) return;
+    const uint search_index = candidate_index - archive_base;
+    if (search_index >= uniforms.archive_search_candidate_count) return;
+    const uint archive_index = archive_storage_index_for_search_candidate(
+      recurrent, uniforms.recurrent_scalar_count, uniforms, search_index
+    );
+    const ulong destination = uniforms.archive_episode_memory_offset
+      + ulong(archive_index) * ulong(uniforms.archive_episode_stride);
+    device const NBArchivedEpisodicRecord *record =
+      reinterpret_cast<device const NBArchivedEpisodicRecord *>(
+        persistent_memory + destination
+      );
+    if (record->identifier != identifier
+        || record->format_version != NB_MEMORY_EPISODE_RECORD_VERSION) return;
+    NBArchivedEpisodicRecord updated = *record;
+    const float similarity = accepted_archive_memory_similarity(
+      recurrent, uniforms.recurrent_scalar_count,
+      observations, uniforms.observation_count, record
+    );
+    float content_rate = rate * 0.5f;
+    if (similarity >= uniforms.confirmation_similarity) {
+      updated.epistemic_uncertainty = max(
+        record->epistemic_uncertainty * (1.0f - rate), 0.0f
+      );
+      content_rate = rate;
+    } else if (similarity <= uniforms.conflict_similarity) {
+      updated.epistemic_uncertainty = record->epistemic_uncertainty
+        + rate * (1.0f + abs(similarity));
+      content_rate = rate * 0.25f;
+    }
+    float reconstructed[16] = {};
+    float maximum_magnitude = 0.0f;
+    const uint count = min(record->quantized_component_count, 16u);
+    for (uint component = 0u; component < count; ++component) {
+      const float prior = float(record->quantized_retrieval_key[component])
+        * record->retrieval_key_scale;
+      const float evidence = accepted_memory_evidence_component(
+        recurrent, uniforms.recurrent_scalar_count,
+        observations, uniforms.observation_count, component
+      );
+      reconstructed[component] = mix(prior, evidence, content_rate);
+      // Tier-2 placement is keyed by the first eight signs. Preserve that
+      // coarse identity during in-place reconsolidation so the record never
+      // becomes unreachable from the cluster that physically owns it.
+      if (component < 8u) {
+        reconstructed[component] = record->quantized_retrieval_key[component] >= 0
+          ? max(reconstructed[component], 0.0f)
+          : min(reconstructed[component], -1.0e-6f);
+      }
+      maximum_magnitude = max(maximum_magnitude, abs(reconstructed[component]));
+    }
+    updated.retrieval_key_scale = maximum_magnitude > 0.0f
+      ? maximum_magnitude / 127.0f : 1.0f;
+    for (uint component = 0u; component < count; ++component) {
+      updated.quantized_retrieval_key[component] = char(clamp(
+        rint(reconstructed[component] / updated.retrieval_key_scale),
+        -127.0f,
+        127.0f
+      ));
+    }
+    updated.flags = record->flags | 8u;
+    append_memory_record(
+      journal, uniforms, updated, destination,
+      NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE, updated.identifier
+    );
+    return;
+  }
+
+  const uint semantic_base = archive_base
+    + uniforms.archive_search_candidate_count;
+  if (kind == 2u) {
+    if (candidate_index < semantic_base) return;
+    const uint local_index = candidate_index - semantic_base;
+    if (local_index >= uniforms.semantic_capacity) return;
+    const ulong destination = uniforms.semantic_memory_offset
+      + ulong(local_index) * ulong(uniforms.semantic_stride);
+    device const NBSemanticConceptSummaryRecord *record =
+      reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+        persistent_memory + destination
+      );
+    if (record->identifier != identifier
+        || record->format_version != NB_MEMORY_RECORD_VERSION) return;
+    NBSemanticConceptSummaryRecord updated = *record;
+    const float similarity = accepted_memory_similarity(
+      recurrent, uniforms.recurrent_scalar_count,
+      observations, uniforms.observation_count, record->embedding, 19u
+    );
+    if (similarity >= uniforms.confirmation_similarity) {
+      updated.confidence = clamp(
+        record->confidence + rate * (1.0f - record->confidence), 0.0f, 1.0f
+      );
+    } else if (similarity <= uniforms.conflict_similarity) {
+      updated.confidence = clamp(record->confidence * (1.0f - rate), 0.0f, 1.0f);
+    }
+    for (uint component = 0u; component < 19u; ++component) {
+      const float evidence = accepted_memory_evidence_component(
+        recurrent, uniforms.recurrent_scalar_count,
+        observations, uniforms.observation_count, component
+      );
+      updated.embedding[component] = mix(
+        record->embedding[component], evidence, rate * 0.25f
+      );
+    }
+    updated.last_used_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    updated.usage_count = record->usage_count == ~0ul
+      ? record->usage_count : record->usage_count + 1ul;
+    updated.flags = record->flags | 8u;
+    append_memory_record(
+      journal, uniforms, updated, destination,
+      NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, updated.identifier
+    );
+    return;
+  }
+
+  const uint relation_base = semantic_base + uniforms.semantic_capacity;
+  if (kind == 5u) {
+    if (candidate_index < relation_base) return;
+    const uint local_index = candidate_index - relation_base;
+    if (local_index >= uniforms.semantic_relation_capacity) return;
+    const ulong destination = uniforms.semantic_relation_memory_offset
+      + ulong(local_index) * ulong(uniforms.semantic_relation_stride);
+    device const NBSemanticRelationSummaryRecord *record =
+      reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+        persistent_memory + destination
+      );
+    if (record->identifier != identifier
+        || record->format_version != NB_MEMORY_RECORD_VERSION) return;
+    NBSemanticRelationSummaryRecord updated = *record;
+    const float similarity = accepted_memory_similarity(
+      recurrent, uniforms.recurrent_scalar_count,
+      observations, uniforms.observation_count,
+      record->evidence_embedding, 10u
+    );
+    if (similarity >= uniforms.confirmation_similarity) {
+      updated.confidence = clamp(
+        record->confidence + rate * (1.0f - record->confidence), 0.0f, 1.0f
+      );
+      updated.contradiction = max(record->contradiction * (1.0f - rate), 0.0f);
+    } else if (similarity <= uniforms.conflict_similarity) {
+      updated.confidence = clamp(record->confidence * (1.0f - rate), 0.0f, 1.0f);
+      updated.contradiction = clamp(
+        record->contradiction + rate * (1.0f - record->contradiction),
+        0.0f,
+        1.0f
+      );
+    }
+    for (uint component = 0u; component < 10u; ++component) {
+      const float evidence = accepted_memory_evidence_component(
+        recurrent, uniforms.recurrent_scalar_count,
+        observations, uniforms.observation_count, component
+      );
+      updated.evidence_embedding[component] = mix(
+        record->evidence_embedding[component], evidence, rate * 0.25f
+      );
+    }
+    updated.last_used_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    updated.flags = record->flags | 8u;
+    append_memory_record(
+      journal, uniforms, updated, destination,
+      NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION, updated.identifier
+    );
+    return;
+  }
+
+  const uint procedural_base = relation_base
+    + uniforms.semantic_relation_capacity;
+  if (kind == 3u) {
+    if (candidate_index < procedural_base) return;
+    const uint local_index = candidate_index - procedural_base;
+    if (local_index >= uniforms.procedural_capacity) return;
+    const ulong destination = uniforms.procedural_memory_offset
+      + ulong(local_index) * ulong(uniforms.procedural_stride);
+    device const NBProceduralSkillSummaryRecord *record =
+      reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+        persistent_memory + destination
+      );
+    device const NBControlHeader *control =
+      reinterpret_cast<device const NBControlHeader *>(
+        hot_state + uniforms.control_header_offset
+      );
+    if (record->identifier != identifier
+        || record->format_version != NB_MEMORY_RECORD_VERSION
+        || control->active_option_identifier != record->identifier) return;
+    device const NBDriveRecord *drives =
+      reinterpret_cast<device const NBDriveRecord *>(
+        hot_state + uniforms.drive_offset
+      );
+    float accepted_damage = control->selected_damage_cvar;
+    if (uniforms.drive_count > 5u) accepted_damage = max(
+      accepted_damage, drives[5].level
+    );
+    if (uniforms.drive_count > 6u) accepted_damage = max(
+      accepted_damage, drives[6].level
+    );
+    if (uniforms.drive_count > 11u) accepted_damage = max(
+      accepted_damage, drives[11].level
+    );
+    accepted_damage = clamp(accepted_damage, 0.0f, uniforms.maximum_damage);
+    const float success = clamp(
+      control->progress * (1.0f - accepted_damage), 0.0f, 1.0f
+    );
+    NBProceduralSkillSummaryRecord updated = *record;
+    updated.competence = mix(record->competence, success, rate);
+    updated.damage_cvar = mix(record->damage_cvar, accepted_damage, rate);
+    updated.expected_effort = mix(
+      record->expected_effort, max(control->predicted_effort, 0.0f), rate
+    );
+    updated.expected_value = mix(
+      record->expected_value, control->selected_score, rate
+    );
+    updated.last_execution_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    updated.execution_count = record->execution_count == ~0ul
+      ? record->execution_count : record->execution_count + 1ul;
+    updated.flags = record->flags | 8u;
+    append_memory_record(
+      journal, uniforms, updated, destination,
+      NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, updated.identifier
+    );
+  }
 }
 
 /// Maintains intended future goals only from accepted physical consequences.

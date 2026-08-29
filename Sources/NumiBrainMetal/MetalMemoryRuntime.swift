@@ -116,6 +116,47 @@ private struct MemoryConsolidationUniforms {
   var semanticLearningRate: Float = 0
 }
 
+private struct MemoryReconsolidationUniforms {
+  var targetTimestampMicroseconds: UInt64 = 0
+  var baseGeneration: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
+  var recurrentOffset: UInt64 = 0
+  var observationOffset: UInt64 = 0
+  var retrievalScratchOffset: UInt64 = 0
+  var activeEpisodeMemoryOffset: UInt64 = 0
+  var compressedEpisodeMemoryOffset: UInt64 = 0
+  var archiveEpisodeMemoryOffset: UInt64 = 0
+  var semanticMemoryOffset: UInt64 = 0
+  var semanticRelationMemoryOffset: UInt64 = 0
+  var proceduralMemoryOffset: UInt64 = 0
+  var controlHeaderOffset: UInt64 = 0
+  var driveOffset: UInt64 = 0
+  var persistentMemoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+  var recurrentScalarCount: UInt32 = 0
+  var observationCount: UInt32 = 0
+  var activeEpisodeCapacity: UInt32 = 0
+  var activeEpisodeStride: UInt32 = 0
+  var compressedEpisodeCapacity: UInt32 = 0
+  var compressedEpisodeStride: UInt32 = 0
+  var archiveEpisodeCapacity: UInt32 = 0
+  var archiveEpisodeStride: UInt32 = 0
+  var archiveSearchCandidateCount: UInt32 = 0
+  var semanticCapacity: UInt32 = 0
+  var semanticStride: UInt32 = 0
+  var semanticRelationCapacity: UInt32 = 0
+  var semanticRelationStride: UInt32 = 0
+  var proceduralCapacity: UInt32 = 0
+  var proceduralStride: UInt32 = 0
+  var driveCount: UInt32 = 0
+  var maximumResults: UInt32 = 0
+  var journalEntryCapacity: UInt32 = 0
+  var learningRate: Float = 0
+  var confirmationSimilarity: Float = 0
+  var conflictSimilarity: Float = 0
+  var maximumDamage: Float = 0
+}
+
 private struct ProspectiveLifecycleUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
   var baseGeneration: UInt64 = 0
@@ -185,12 +226,14 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let retrievalScorePipeline: any MTLComputePipelineState
   private let archiveRerankPipeline: any MTLComputePipelineState
   private let retrievalPublishPipeline: any MTLComputePipelineState
+  private let reconsolidationPipeline: any MTLComputePipelineState
   private let consolidationPipeline: any MTLComputePipelineState
   private let prospectiveLifecyclePipeline: any MTLComputePipelineState
   private let committedTransitionPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
+  private let reconsolidationUniformBuffer: any MTLBuffer
   private let consolidationUniformBuffer: any MTLBuffer
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
   private let committedTransitionUniformBuffer: any MTLBuffer
@@ -207,6 +250,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 192,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 232,
+      MemoryLayout<MemoryReconsolidationUniforms>.stride == 216,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
@@ -243,6 +287,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "score_memory_retrieval_candidates",
       "rerank_archive_retrieval_shortlist",
       "publish_memory_retrieval_winner",
+      "reconsolidate_retrieved_memory",
       "consolidate_lived_memory_during_rest", "advance_prospective_memory",
       "journal_committed_learning_transition",
     ]
@@ -283,6 +328,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         length: MemoryLayout<MemoryRetrievalUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
+      let reconsolidationUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<MemoryReconsolidationUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
       let consolidationUniformBuffer = device.makeBuffer(
         length: MemoryLayout<MemoryConsolidationUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -298,6 +347,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
     }
+    reconsolidationUniformBuffer.label =
+      "NumiBrain accepted memory reconsolidation uniforms"
     uniformBuffer.label = "NumiBrain episodic segmentation uniforms"
     let retrievalUniformBuffers: [any MTLBuffer] = [
       firstRetrievalUniform, secondRetrievalUniform,
@@ -331,12 +382,14 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.retrievalScorePipeline = pipelines[4]
     self.archiveRerankPipeline = pipelines[5]
     self.retrievalPublishPipeline = pipelines[6]
-    self.consolidationPipeline = pipelines[7]
-    self.prospectiveLifecyclePipeline = pipelines[8]
-    self.committedTransitionPipeline = pipelines[9]
+    self.reconsolidationPipeline = pipelines[7]
+    self.consolidationPipeline = pipelines[8]
+    self.prospectiveLifecyclePipeline = pipelines[9]
+    self.committedTransitionPipeline = pipelines[10]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
+    self.reconsolidationUniformBuffer = reconsolidationUniformBuffer
     self.consolidationUniformBuffer = consolidationUniformBuffer
     self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
     self.committedTransitionUniformBuffer = committedTransitionUniformBuffer
@@ -345,6 +398,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   public var residencyAllocations: [any MTLAllocation] {
     [
       uniformBuffer, consolidationUniformBuffer,
+      reconsolidationUniformBuffer,
       prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
     ]
       + retrievalUniformBuffers
@@ -499,6 +553,100 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
+  }
+
+  /// Reconsolidates only records that were actually retrieved into this root's
+  /// shadow and only from accepted posterior evidence. All mutations remain in
+  /// the root journal, so a rejected physical trajectory cannot confirm,
+  /// contradict, or rewrite a memory.
+  public func encodeAcceptedReconsolidation(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp
+  ) throws {
+    let hot = try arena.hotStateView(transaction: transaction)
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let layout = arena.layout
+    let active = arena.memoryLayout.section(.activeEpisodes)
+    let compressed = arena.memoryLayout.section(.compressedEpisodeMetadata)
+    let archive = arena.memoryLayout.section(.archiveIndex)
+    let semantic = arena.memoryLayout.section(.semanticConcepts)
+    let semanticRelations = arena.memoryLayout.section(.semanticRelations)
+    let procedural = arena.memoryLayout.section(.proceduralSkills)
+    let archiveClusterCount = 256
+    let archiveSlotsPerCluster = archive.elementCount / archiveClusterCount
+    let (archiveSearchCandidateCount, archiveSearchOverflow) =
+      archiveSlotsPerCluster.multipliedReportingOverflow(by: 2)
+    let journalEntryCapacity = (memory.journalByteCount - 48) / 64
+    let maximumResults = Int(retrieval.maximumResults)
+    let sections = [active, compressed, archive, semantic, semanticRelations, procedural]
+    guard !archiveSearchOverflow, archiveSearchCandidateCount <= archive.elementCount,
+      journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max),
+      maximumResults > 0, maximumResults <= 4,
+      sections.allSatisfy({
+        $0.elementCount > 0 && $0.elementCount <= Int(UInt32.max)
+          && $0.elementStride <= Int(UInt32.max)
+      })
+    else {
+      throw TissueError.transaction("memory reconsolidation exceeds GPU capacity")
+    }
+    let recurrent = layout.section(.regionalRecurrent)
+    let observations = layout.section(.sensoryObservations)
+    var uniforms = MemoryReconsolidationUniforms(
+      targetTimestampMicroseconds: timestamp.rawValue,
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      recurrentOffset: UInt64(recurrent.byteOffset),
+      observationOffset: UInt64(observations.byteOffset),
+      retrievalScratchOffset: UInt64(
+        layout.section(.memoryRetrievalScratch).byteOffset
+      ),
+      activeEpisodeMemoryOffset: UInt64(active.byteOffset),
+      compressedEpisodeMemoryOffset: UInt64(compressed.byteOffset),
+      archiveEpisodeMemoryOffset: UInt64(archive.byteOffset),
+      semanticMemoryOffset: UInt64(semantic.byteOffset),
+      semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
+      proceduralMemoryOffset: UInt64(procedural.byteOffset),
+      controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      driveOffset: UInt64(layout.section(.drives).byteOffset),
+      persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      journalByteCount: UInt64(memory.journalByteCount),
+      recurrentScalarCount: UInt32(recurrent.elementCount),
+      observationCount: UInt32(observations.elementCount),
+      activeEpisodeCapacity: UInt32(active.elementCount),
+      activeEpisodeStride: UInt32(active.elementStride),
+      compressedEpisodeCapacity: UInt32(compressed.elementCount),
+      compressedEpisodeStride: UInt32(compressed.elementStride),
+      archiveEpisodeCapacity: UInt32(archive.elementCount),
+      archiveEpisodeStride: UInt32(archive.elementStride),
+      archiveSearchCandidateCount: UInt32(archiveSearchCandidateCount),
+      semanticCapacity: UInt32(semantic.elementCount),
+      semanticStride: UInt32(semantic.elementStride),
+      semanticRelationCapacity: UInt32(semanticRelations.elementCount),
+      semanticRelationStride: UInt32(semanticRelations.elementStride),
+      proceduralCapacity: UInt32(procedural.elementCount),
+      proceduralStride: UInt32(procedural.elementStride),
+      driveCount: UInt32(layout.section(.drives).elementCount),
+      maximumResults: UInt32(maximumResults),
+      journalEntryCapacity: UInt32(journalEntryCapacity),
+      learningRate: 0.10,
+      confirmationSimilarity: 0.50,
+      conflictSimilarity: -0.10,
+      maximumDamage: 1.0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      reconsolidationUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
+    argumentTable.setAddress(memory.journalGPUAddress, index: 2)
+    argumentTable.setAddress(reconsolidationUniformBuffer.gpuAddress, index: 3)
+    encoder.setComputePipelineState(reconsolidationPipeline)
+    encoder.setArgumentTable(argumentTable)
+    dispatch(encoder, pipeline: reconsolidationPipeline, count: maximumResults)
   }
 
   /// Emits semantic, procedural, and replay mutations only from already

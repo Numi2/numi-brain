@@ -642,6 +642,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      try memoryRuntime.encodeAcceptedReconsolidation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
       try memoryRuntime.encodeProspectiveLifecycle(
         encoder: encoder,
         transaction: transaction.agentStateToken,
