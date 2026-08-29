@@ -307,6 +307,21 @@ inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
 }
 
+/// Converts a learned per-second memory retention into the retention for the
+/// exact accepted simulation-time interval. Cognitive dispatch frequency can
+/// change with development, arousal, and cohort compaction, so applying the
+/// coefficient once per dispatch would make entity lifetime depend on the
+/// scheduler rather than physical time.
+inline float nb_time_scaled_retention(
+  float retained_per_second,
+  float elapsed_seconds)
+{
+  const float bounded = clamp(retained_per_second, 0.0f, 1.0f);
+  if (bounded <= 0.0f) return 0.0f;
+  if (bounded >= 1.0f) return 1.0f;
+  return pow(bounded, max(elapsed_seconds, 0.0f));
+}
+
 inline float nb_event_signal(
   device const NBReceptorEventStateRecord *events,
   uint event_count,
@@ -945,7 +960,9 @@ kernel void advance_entity_and_social_slots(
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
   );
-  const float retention = clamp(belief_parameters[7], 0.0f, 1.0f);
+  const float retention = nb_time_scaled_retention(
+    belief_parameters[7], elapsed_seconds
+  );
   const float correction_gain = clamp(
     belief_parameters[0] + belief_parameters[2] * visual_transient,
     0.001f,
@@ -993,7 +1010,7 @@ kernel void advance_entity_and_social_slots(
         max(olfactory_energy, gustatory_energy)
           - max(0.5f * belief_parameters[4], 0.0f)
       );
-      const float observed_presence = max(visual_presence, chemical_presence);
+      const float candidate_presence = max(visual_presence, chemical_presence);
       float observed_pose[4];
       for (uint component = 0u; component < 4u; ++component) {
         const uint pose_offset = uniforms.vision_observation_count > 0u
@@ -1017,25 +1034,52 @@ kernel void advance_entity_and_social_slots(
         slot.format_version = 1u;
         slot.uncertainty = 1.0f;
       }
-      if (slot.identifier == 0ul && observed_presence > 0.05f) {
+
+      const bool had_identity = slot.identifier != 0ul;
+      float predicted_pose[4];
+      float pose_difference = 0.0f;
+      for (uint component = 0u; component < 4u; ++component) {
+        predicted_pose[component] = slot.pose[component]
+          + retention * slot.velocity[component] * elapsed_seconds;
+        pose_difference += abs(
+          observed_pose[component] - predicted_pose[component]
+        ) * 0.25f;
+      }
+      const float association_precision = max(
+        0.5f,
+        development->sensor_precision_multiplier
+          * (1.0f - 0.75f * slot.uncertainty)
+      );
+      const float association_likelihood = had_identity
+        ? exp(-association_precision * pose_difference)
+        : 1.0f;
+      const float observed_presence = candidate_presence
+        * association_likelihood;
+
+      if (!had_identity && observed_presence > 0.05f) {
         slot.identifier = nb_latent_slot_identifier(
           0x1000000000000000ul,
           observed_pose[0],
           observed_pose[1],
           gid
         );
+        for (uint component = 0u; component < 4u; ++component) {
+          slot.pose[component] = observed_pose[component];
+          slot.velocity[component] = 0.0f;
+          predicted_pose[component] = observed_pose[component];
+        }
+        pose_difference = 0.0f;
       }
-      float pose_difference = 0.0f;
       for (uint component = 0u; component < 4u; ++component) {
-        const float difference = observed_pose[component] - slot.pose[component];
-        pose_difference += abs(difference) * 0.25f;
+        const float difference = observed_pose[component]
+          - predicted_pose[component];
         slot.velocity[component] = mix(
           retention * slot.velocity[component],
           difference / elapsed_seconds,
           correction_gain * observed_presence
         );
         slot.pose[component] = mix(
-          slot.pose[component],
+          predicted_pose[component],
           observed_pose[component],
           correction_gain * observed_presence
         );
@@ -1044,10 +1088,10 @@ kernel void advance_entity_and_social_slots(
         observed_presence,
         retention * slot.existence_probability
       );
-      slot.visibility = visual_presence;
+      slot.visibility = visual_presence * association_likelihood;
       slot.identity_confidence = nb_saturate(mix(
         retention * slot.identity_confidence,
-        1.0f - nb_saturate(pose_difference),
+        association_likelihood,
         correction_gain * observed_presence
       ));
       slot.uncertainty = nb_saturate(mix(
@@ -1119,6 +1163,12 @@ kernel void advance_entity_and_social_slots(
           ]),
           correction_gain * observed_presence
         );
+      }
+      if (slot.existence_probability <= 0.01f) {
+        NBObjectSlotRecord inactive = {};
+        inactive.format_version = 1u;
+        inactive.uncertainty = 1.0f;
+        slot = inactive;
       }
       object_slots[gid] = slot;
     }
