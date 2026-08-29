@@ -26,6 +26,7 @@ private struct CognitiveUniforms {
   var relationSlotOffset: UInt64 = 0
   var spatialTransformOffset: UInt64 = 0
   var physiologyBeliefOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -56,6 +57,7 @@ private struct CognitiveUniforms {
   var vestibularObservationCount: UInt32 = 0
   var spatialTransformCount: UInt32 = 0
   var physiologyBeliefCount: UInt32 = 0
+  var bodyBeliefCount: UInt32 = 0
   var olfactionObservationOffset: UInt32 = 0
   var olfactionObservationCount: UInt32 = 0
   var gustationObservationOffset: UInt32 = 0
@@ -63,6 +65,7 @@ private struct CognitiveUniforms {
   var interoceptionObservationOffset: UInt32 = 0
   var interoceptionObservationCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
+  var bodySensingMask: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -152,7 +155,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 336,
+    guard MemoryLayout<CognitiveUniforms>.stride == 352,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -571,6 +574,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       }
       return UInt32(count)
     }
+    var bodySensingMask: UInt32 = 0
+    for (index, channel) in species.activeSensingChannels.enumerated()
+    where index < 32
+      && (channel.modality == .touch || channel.modality == .proprioception) {
+      bodySensingMask |= 1 << UInt32(index)
+    }
     return try CognitiveUniforms(
       targetTimestampMicroseconds: targetTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
@@ -595,6 +604,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       relationSlotOffset: offset(.relationSlots),
       spatialTransformOffset: offset(.spatialTransforms),
       physiologyBeliefOffset: offset(.physiologyBelief),
+      bodyBeliefOffset: offset(.bodyBelief),
       activeSensingEfficacyOffset: offset(.activeSensingEfficacy),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
@@ -625,13 +635,15 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       vestibularObservationCount: vestibularObservationCount,
       spatialTransformCount: count(.spatialTransforms),
       physiologyBeliefCount: count(.physiologyBelief),
+      bodyBeliefCount: count(.bodyBelief),
       olfactionObservationOffset: olfactionObservationOffset,
       olfactionObservationCount: olfactionObservationCount,
       gustationObservationOffset: gustationObservationOffset,
       gustationObservationCount: gustationObservationCount,
       interoceptionObservationOffset: interoceptionObservationOffset,
       interoceptionObservationCount: interoceptionObservationCount,
-      activeSensingCount: UInt32(species.motor.activeSensingActionDimension)
+      activeSensingCount: UInt32(species.motor.activeSensingActionDimension),
+      bodySensingMask: bodySensingMask
     )
   }
 

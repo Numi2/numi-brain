@@ -25,6 +25,7 @@ struct NBCognitiveUniforms {
   ulong relation_slot_offset;
   ulong spatial_transform_offset;
   ulong physiology_belief_offset;
+  ulong body_belief_offset;
   ulong active_sensing_efficacy_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
@@ -55,6 +56,7 @@ struct NBCognitiveUniforms {
   uint vestibular_observation_count;
   uint spatial_transform_count;
   uint physiology_belief_count;
+  uint body_belief_count;
   uint olfaction_observation_offset;
   uint olfaction_observation_count;
   uint gustation_observation_offset;
@@ -62,6 +64,7 @@ struct NBCognitiveUniforms {
   uint interoception_observation_offset;
   uint interoception_observation_count;
   uint active_sensing_count;
+  uint body_sensing_mask;
 };
 
 struct NBWorldModelLevelRecord {
@@ -261,7 +264,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 336);
+static_assert(sizeof(NBCognitiveUniforms) == 352);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -733,6 +736,7 @@ kernel void update_curiosity_drive_from_world_model(
   }
   float best_sensing_efficacy =
     uniforms.active_sensing_count == 0u ? 1.0f : 0.0f;
+  float best_body_sensing_efficacy = 0.0f;
   for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
     const NBActiveSensingEfficacyRecord sensing = sensing_efficacy[channel];
     const float efficacy = sensing.sample_count > 0u
@@ -740,6 +744,28 @@ kernel void update_curiosity_drive_from_world_model(
       ? clamp(sensing.efficacy, 0.0f, 1.0f)
       : 1.0f;
     best_sensing_efficacy = max(best_sensing_efficacy, efficacy);
+    if (channel < 32u
+        && (uniforms.body_sensing_mask & (1u << channel)) != 0u) {
+      best_body_sensing_efficacy = max(
+        best_body_sensing_efficacy, efficacy
+      );
+    }
+  }
+  float body_model_uncertainty = 0.0f;
+  for (uint body_index = 0u;
+      body_index < uniforms.body_belief_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
+    const float standard_deviation = sqrt(max(body[9], 0.0f));
+    body_model_uncertainty = max(
+      body_model_uncertainty,
+      standard_deviation / (1.0f + standard_deviation)
+    );
   }
   const float fatigue = uniforms.drive_count > 4u
     ? clamp(drives[4].level, 0.0f, 1.0f) : 0.0f;
@@ -761,8 +787,10 @@ kernel void update_curiosity_drive_from_world_model(
   const float previous = curiosity.level;
   curiosity.level = development->stage > 0u
     ? clamp(
-        sqrt(max(epistemic_variance, 0.0f))
-          * best_sensing_efficacy * safe_capacity,
+        max(
+          sqrt(max(epistemic_variance, 0.0f)) * best_sensing_efficacy,
+          body_model_uncertainty * best_body_sensing_efficacy
+        ) * safe_capacity,
         0.0f,
         1.0f
       )
