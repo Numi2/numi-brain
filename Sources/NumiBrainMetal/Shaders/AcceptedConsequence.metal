@@ -11,6 +11,8 @@ constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
+constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
+constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
 
 struct NBAcceptedConsequenceUniforms {
@@ -45,6 +47,7 @@ struct NBAcceptedConsequenceUniforms {
   uint world_model_count;
   uint neuromodulator_count;
   uint drive_count;
+  uint maximum_planning_horizon;
   uint fast_plasticity_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -280,7 +283,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 344);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 352);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -818,12 +821,13 @@ kernel void update_active_sensing_efficacy(
   states[gid] = state;
 }
 
-inline float2 nb_accepted_embodied_risk(
+inline float3 nb_accepted_embodied_risk(
   device const uchar *hot_state,
   constant NBAcceptedConsequenceUniforms &uniforms)
 {
   float pain = 0.0f;
   float threat = 0.0f;
+  float evidence = 0.0f;
   for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
     device const float *body = reinterpret_cast<device const float *>(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
@@ -832,6 +836,7 @@ inline float2 nb_accepted_embodied_risk(
       body + 16
     );
     if ((identity[3] & 1ul) == 0ul) continue;
+    evidence = 1.0f;
     if (isfinite(body[5])) {
       pain = max(pain, clamp(body[5], 0.0f, 1.0f));
     }
@@ -847,7 +852,7 @@ inline float2 nb_accepted_embodied_risk(
       threat = max(threat, damage_risk);
     }
   }
-  return float2(pain, max(threat, pain));
+  return float3(pain, max(threat, pain), evidence);
 }
 
 inline void nb_raise_accepted_drive(
@@ -912,7 +917,7 @@ kernel void broadcast_accepted_prediction_error(
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
-  const float2 embodied_risk = nb_accepted_embodied_risk(
+  const float3 embodied_risk = nb_accepted_embodied_risk(
     hot_state, uniforms
   );
   device NBDriveStateRecord *drives =
@@ -946,6 +951,52 @@ kernel void broadcast_accepted_prediction_error(
     );
     neuromodulators[6].kind = 7u;
     neuromodulators[6].flags = NB_ACCEPTED_STATE_VALID;
+  }
+  if (embodied_risk.z > 0.0f && uniforms.maximum_planning_horizon > 0u
+      && uint(control->reserved0) < uniforms.option_candidate_capacity
+      && uniforms.world_model_count >= NB_WORLD_EVENT_OPTION_BASE
+        + 9u * NB_WORLD_EVENT_OPTION_DIMENSION) {
+    const uint selected_candidate = uint(control->reserved0);
+    const uint component = (
+      selected_candidate * uniforms.maximum_planning_horizon
+    ) % NB_WORLD_EVENT_OPTION_DIMENSION;
+    device float *mutable_world = reinterpret_cast<device float *>(
+      hot_state + uniforms.world_model_offset
+    );
+    const float accepted_risk = max(embodied_risk.x, embodied_risk.y);
+    float predicted_mean = 0.0f;
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      predicted_mean += mutable_world[NB_WORLD_EVENT_OPTION_BASE
+        + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component]
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+    const float residual = accepted_risk - predicted_mean;
+    const float gain = clamp(
+      min(uniforms.world_correction_gain, max(world_parameters[150], 0.0f)),
+      0.0f,
+      1.0f
+    );
+    mutable_world[NB_WORLD_EVENT_OPTION_BASE + component] = mix(
+      mutable_world[NB_WORLD_EVENT_OPTION_BASE + component],
+      accepted_risk,
+      gain
+    );
+    mutable_world[NB_WORLD_EVENT_OPTION_BASE
+      + NB_WORLD_EVENT_OPTION_DIMENSION + component] = residual;
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      const uint head_index = NB_WORLD_EVENT_OPTION_BASE
+        + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component;
+      mutable_world[head_index] = mix(
+        mutable_world[head_index], accepted_risk, gain
+      );
+    }
+    const uint aleatoric_index = NB_WORLD_EVENT_OPTION_BASE
+      + 8u * NB_WORLD_EVENT_OPTION_DIMENSION + component;
+    mutable_world[aleatoric_index] = mix(
+      max(mutable_world[aleatoric_index], 0.0f),
+      residual * residual,
+      gain * clamp(world_parameters[152], 0.0f, 1.0f)
+    );
   }
   if (uniforms.neuromodulator_count > 2u) {
     device const NBActiveSensingEfficacyRecord *sensing_states =
@@ -1204,7 +1255,7 @@ kernel void update_accepted_procedural_trace(
   const NBOptionCandidateRecord candidate = candidates[selected_index];
   if ((candidate.flags & NB_ACCEPTED_STATE_VALID) == 0u
       || candidate.option_identifier != control->active_option_identifier) return;
-  const float2 embodied_risk = nb_accepted_embodied_risk(
+  const float3 embodied_risk = nb_accepted_embodied_risk(
     hot_state, uniforms
   );
   const float accepted_damage = max(

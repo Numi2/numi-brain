@@ -34,6 +34,7 @@ private struct AcceptedConsequenceUniforms {
   var worldModelCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var driveCount: UInt32 = 0
+  var maximumPlanningHorizon: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -105,7 +106,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 344,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 352,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -380,6 +381,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let interoception = range(.interoception)
     let controlHeader = controlLayout.section(.header)
     let optionCandidates = controlLayout.section(.optionCandidates)
+    let planSteps = controlLayout.section(.planSteps)
     let motor = controlLayout.section(.motorCommands)
     let cerebellar = controlLayout.section(.cerebellarExperts)
     let activeSensing = controlLayout.section(.activeSensingCommands)
@@ -387,11 +389,17 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       hot(.sensoryObservations).elementCount,
       hot(.worldModel).elementCount,
       hot(.drives).elementCount,
+      optionCandidates.elementCount,
+      planSteps.elementCount,
       hot(.fastPlasticity).elementCount,
     ]
-    guard integerCounts.allSatisfy({ $0 <= Int(UInt32.max) }) else {
+    guard integerCounts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+      planSteps.elementCount % optionCandidates.elementCount == 0
+    else {
       throw TissueError.metal("accepted-consequence arena exceeds UInt32")
     }
+    let maximumPlanningHorizon =
+      planSteps.elementCount / optionCandidates.elementCount
     return AcceptedConsequenceUniforms(
       targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
@@ -432,6 +440,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       worldModelCount: UInt32(hot(.worldModel).elementCount),
       neuromodulatorCount: UInt32(NeuromodulatorKind.allCases.count),
       driveCount: UInt32(hot(.drives).elementCount),
+      maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
       fastPlasticityCount: UInt32(hot(.fastPlasticity).elementCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),

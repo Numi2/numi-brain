@@ -1196,8 +1196,9 @@ kernel void simulate_candidate_option_outcomes(
       ? max(world[NB_WORLD_EVENT_OPTION_BASE
           + 8u * NB_WORLD_EVENT_OPTION_DIMENSION + world_component], 0.0f)
       : 0.0f;
+    const float predicted_world_damage = clamp(ensemble_mean, 0.0f, 1.0f);
     const float step_damage = clamp(
-      candidate.damage_cvar + 0.1f * abs(ensemble_mean)
+      max(candidate.damage_cvar, predicted_world_damage)
         + 0.05f * sqrt(aleatoric_variance)
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
       0.0f, 1.0f

@@ -314,6 +314,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let metrics = batch.outcomeMetrics
     let priorBody = batch.priorBodyState
     let posteriorBody = batch.posteriorBodyState
+    let acceptedBodyRisk = maximum(
+      posteriorBody[0..., 5..<6], posteriorBody[0..., 7..<8]
+    )
     let replayTransitionWeights = clip(
       replay.transitionWeights(for: batch), min: 0, max: 4
     )
@@ -383,6 +386,21 @@ public final class MLXBrainLearner: @unchecked Sendable {
         + world[2] * twoStepAction.mean(axis: 1, keepDims: true)
         + world[5]
     )
+    var eventRiskHeads: [MLXArray] = []
+    for head in 0..<5 {
+      let base = 90 + head * 6
+      eventRiskHeads.append(
+        tanh(
+          world[base] * priorBody[0..., 7..<8]
+            + world[base + 1] * abs(prior[0..., 0..<1])
+            + world[base + 2] * priorBody[0..., 5..<6]
+            + world[base + 3] * metrics[0..., 4..<5]
+            + world[base + 4] * metrics[0..., 6..<7]
+            + world[base + 5]
+        )
+      )
+    }
+    let eventRiskPredictions = concatenated(eventRiskHeads, axis: 1)
     let worldLoss =
       batch.maskedMeanSquaredError(
         tanh(world[0] * prior + world[1] * observation + world[5]), posterior,
@@ -393,6 +411,10 @@ public final class MLXBrainLearner: @unchecked Sendable {
       ) + Float(0.5)
       * batch.maskedMeanSquaredError(
         twoStepWorld, twoStepTarget, mask: twoStepMask
+      )
+      + batch.maskedMeanSquaredError(
+        eventRiskPredictions, acceptedBodyRisk,
+        mask: bodyTransitionMask
       )
       + regional.predictionLoss(denseWeights: regionalDense)
     let bodyLoss =
@@ -464,9 +486,6 @@ public final class MLXBrainLearner: @unchecked Sendable {
         * value[16]
         + counterfactuals.epistemicUncertainty * value[17]
         + counterfactuals.predictedEffort * value[18]
-    )
-    let acceptedBodyRisk = maximum(
-      posteriorBody[0..., 5..<6], posteriorBody[0..., 7..<8]
     )
     let predictedBodyRisk = sigmoid(
       priorBody[0..., 5..<6] * value[8]
