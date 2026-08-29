@@ -1651,16 +1651,11 @@ kernel void update_fast_plasticity_from_accepted_error(
         * plasticity_parameters[weight_index];
     }
   }
-  const float eligibility_retention = min(
-    site.eligibility_retention,
-    clamp(plasticity_parameters[2], 0.0f, 1.0f)
-  );
-  site.eligibility = eligibility_retention * site.eligibility
-    + error * plasticity_parameters[3];
-  const float coefficient_retention = min(
-    site.coefficient_retention,
-    clamp(plasticity_parameters[1], 0.0f, 1.0f)
-  );
+  // The cognitive shadow step already applied the interval's retention. The
+  // accepted correction is additive so one committed interval never decays
+  // the same trace twice, and a zero-duration retry cannot change plasticity.
+  const float interval_scale = float(uniforms.delta_microseconds) / 20000.0f;
+  site.eligibility += interval_scale * error * plasticity_parameters[3];
   const float learning_rate = min(
     uniforms.plasticity_learning_rate,
     max(plasticity_parameters[0], 0.0f)
@@ -1669,8 +1664,8 @@ kernel void update_fast_plasticity_from_accepted_error(
     site.maximum_magnitude * max(plasticity_parameters[7], 0.0f), 1.0e-4f
   );
   site.coefficient = clamp(
-    coefficient_retention * site.coefficient
-      + learning_rate * modulation * site.eligibility,
+    site.coefficient
+      + interval_scale * learning_rate * modulation * site.eligibility,
     -limit,
     limit
   );

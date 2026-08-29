@@ -319,6 +319,19 @@ inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
 }
 
+inline float nb_plasticity_interval_scale(const ulong delta_microseconds) {
+  return float(delta_microseconds) / 20000.0f;
+}
+
+inline float nb_plasticity_interval_retention(
+  const float reference_retention,
+  const float interval_scale)
+{
+  return interval_scale > 0.0f
+    ? pow(clamp(reference_retention, 0.0f, 1.0f), interval_scale)
+    : 1.0f;
+}
+
 inline float nb_regional_neuromodulator_effect(
   device const float *plasticity_parameters,
   constant NBCognitiveUniforms &uniforms,
@@ -2011,10 +2024,15 @@ kernel void advance_fast_plasticity_foundation(
   const float activity_product = valid_region
     ? recurrent[pre_index] * recurrent[post_index]
     : 0.0f;
-  site.eligibility = min(
+  const float interval_scale = nb_plasticity_interval_scale(
+    uniforms.delta_microseconds
+  );
+  const float eligibility_retention = nb_plasticity_interval_retention(min(
     site.eligibility_retention,
     clamp(plasticity_parameters[2], 0.0f, 1.0f)
-  ) * site.eligibility + plasticity_parameters[3] * activity_product;
+  ), interval_scale);
+  site.eligibility = eligibility_retention * site.eligibility
+    + interval_scale * plasticity_parameters[3] * activity_product;
   const float local_modulation = nb_regional_neuromodulator_effect(
     plasticity_parameters,
     uniforms,
@@ -2022,10 +2040,14 @@ kernel void advance_fast_plasticity_foundation(
     region_index,
     0u
   );
+  const float coefficient_retention = nb_plasticity_interval_retention(min(
+    site.coefficient_retention,
+    clamp(plasticity_parameters[1], 0.0f, 1.0f)
+  ), interval_scale);
   site.coefficient = clamp(
-    min(site.coefficient_retention, clamp(plasticity_parameters[1], 0.0f, 1.0f))
-      * site.coefficient
-      + min(site.learning_rate, max(plasticity_parameters[0], 0.0f))
+    coefficient_retention * site.coefficient
+      + interval_scale
+        * min(site.learning_rate, max(plasticity_parameters[0], 0.0f))
         * development->learning_rate_multiplier
         * local_modulation * site.eligibility,
     -min(site.maximum_magnitude, max(plasticity_parameters[7], 1.0e-4f)),
