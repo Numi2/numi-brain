@@ -2327,12 +2327,62 @@ kernel void clear_requested_workspace_token(
   }
 }
 
-kernel void broadcast_foundation_workspace(
+inline void nb_clear_workspace_slot(
+  device float *content,
+  device NBWorkspaceMetadataRecord *metadata,
+  const uint slot,
+  const uint dimension)
+{
+  const uint base = slot * dimension;
+  for (uint feature = 0u; feature < dimension; ++feature) {
+    content[base + feature] = 0.0f;
+  }
+  metadata[slot] = {};
+}
+
+inline float nb_workspace_retention(
+  device const float *memory_parameters,
+  const float persistence_priority,
+  const float elapsed_seconds)
+{
+  const float base_retention = clamp(memory_parameters[7], 0.0f, 1.0f);
+  const float persistence_coupling = clamp(
+    memory_parameters[12], 0.0f, 1.0f
+  );
+  const float retained_per_second = mix(
+    base_retention,
+    1.0f,
+    clamp(persistence_priority, 0.0f, 1.0f) * persistence_coupling
+  );
+  return nb_time_scaled_retention(retained_per_second, elapsed_seconds);
+}
+
+inline bool nb_workspace_identity_matches(
+  const NBWorkspaceMetadataRecord token,
+  const uint kind,
+  const uint source_module,
+  const ulong entity_identifier)
+{
+  return token.identifier != 0ul
+    && (token.kind_and_source & 0xffffu) == kind
+    && (token.kind_and_source >> 16u) == source_module
+    && token.entity_identifier == entity_identifier;
+}
+
+/// Selects and merges the foundational drive and embodied-self broadcasts.
+/// One lane owns the complete operation so identity refresh, persistence, and
+/// replacement are deterministic. Slots 2+ remain owned by accepted error,
+/// memory, decision, and social publishers.
+kernel void select_and_merge_foundation_workspace(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *memory_parameters [[buffer(2)]],
+  device const NBPlasticityRegionRangeRecord *region_ranges [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (gid != 0u || uniforms.workspace_capacity == 0u
+      || uniforms.workspace_dimension == 0u
+      || uniforms.recurrent_scalar_count == 0u) return;
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -2340,10 +2390,6 @@ kernel void broadcast_foundation_workspace(
   const uint active_workspace_capacity = min(
     uniforms.workspace_capacity, development->workspace_capacity
   );
-  const uint content_count = uniforms.workspace_capacity * uniforms.workspace_dimension;
-  if (gid >= max(content_count, uniforms.workspace_capacity)) {
-    return;
-  }
   device float *content = reinterpret_cast<device float *>(
     hot_state + uniforms.workspace_content_offset
   );
@@ -2356,30 +2402,250 @@ kernel void broadcast_foundation_workspace(
   );
   device const NBDriveStateRecord *drives =
     reinterpret_cast<device const NBDriveStateRecord *>(hot_state + uniforms.drive_offset);
+  device const NBRegionalMaturationRecord *maturation =
+    reinterpret_cast<device const NBRegionalMaturationRecord *>(
+      hot_state + uniforms.regional_maturation_offset
+    );
+  device const NBRegionalPlasticModulationRecord *regional_modulation =
+    reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
 
-  if (gid < content_count) {
-    const uint slot = gid / uniforms.workspace_dimension;
-    const uint feature = gid % uniforms.workspace_dimension;
-    if (slot >= active_workspace_capacity) {
-      content[gid] = 0.0f;
-    } else if (slot == 0u) {
-      content[gid] = feature < uniforms.drive_count
-        ? drives[feature].deficit
-        : recurrent[feature % uniforms.recurrent_scalar_count];
-    } else if (slot == 1u) {
-      content[gid] = recurrent[feature % uniforms.recurrent_scalar_count];
-    } else {
-      content[gid] *= clamp(memory_parameters[7], 0.0f, 1.0f);
+  for (uint slot = active_workspace_capacity;
+      slot < uniforms.workspace_capacity; ++slot) {
+    nb_clear_workspace_slot(
+      content, metadata, slot, uniforms.workspace_dimension
+    );
+  }
+
+  const ulong previous_timestamp = uniforms.target_timestamp_microseconds
+      > uniforms.delta_microseconds
+    ? uniforms.target_timestamp_microseconds - uniforms.delta_microseconds
+    : 0ul;
+  constexpr ulong workspace_period_microseconds = 50000ul;
+  const bool workspace_due = previous_timestamp
+      / workspace_period_microseconds
+    != uniforms.target_timestamp_microseconds
+      / workspace_period_microseconds;
+  if (!workspace_due || active_workspace_capacity == 0u) return;
+
+  const ulong elapsed_workspace_periods =
+    uniforms.target_timestamp_microseconds / workspace_period_microseconds
+      - previous_timestamp / workspace_period_microseconds;
+  const float elapsed_seconds = float(elapsed_workspace_periods)
+    * float(workspace_period_microseconds) * 1.0e-6f;
+  const float minimum_score = max(memory_parameters[16], 0.0f);
+  const float replacement_margin = max(memory_parameters[13], 0.0f);
+  const float refresh_gain = clamp(memory_parameters[17], 0.0f, 1.0f);
+
+  uint selected_drive = 0xffffffffu;
+  float selected_drive_score = 0.0f;
+  for (uint index = 0u; index < uniforms.drive_count; ++index) {
+    const NBDriveStateRecord candidate = drives[index];
+    const float deficit_salience = sqrt(max(candidate.potential, 0.0f));
+    const float rate_salience = clamp(
+      abs(candidate.estimated_rate) * 0.1f, 0.0f, 1.0f
+    );
+    const float score = clamp(
+      max(memory_parameters[8], 0.0f) * deficit_salience
+        + max(memory_parameters[9], 0.0f) * rate_salience,
+      0.0f,
+      1.0f
+    );
+    if (score > selected_drive_score
+        || (score == selected_drive_score && index < selected_drive)) {
+      selected_drive = index;
+      selected_drive_score = score;
     }
   }
-  if (gid < active_workspace_capacity && gid < 2u) {
-    NBWorkspaceMetadataRecord token = metadata[gid];
-    token.identifier = (uniforms.target_timestamp_microseconds << 8) | ulong(gid + 1u);
-    token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
-    token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
-    token.kind_and_source = gid == 0u ? (8u | (70u << 16)) : (1u | (25u << 16));
-    token.confidence = gid == 0u ? 1.0f : 0.5f;
-    metadata[gid] = token;
+
+  if (active_workspace_capacity > 0u) {
+    constexpr uint drive_kind = 8u;
+    constexpr uint drive_source_module = 70u;
+    const float persistence = clamp(memory_parameters[14], 0.0f, 1.0f);
+    NBWorkspaceMetadataRecord prior = metadata[0];
+    const float retained_confidence = clamp(prior.confidence, 0.0f, 1.0f)
+      * nb_workspace_retention(
+        memory_parameters, persistence, elapsed_seconds
+      );
+    const ulong drive_identity = selected_drive == 0xffffffffu
+      ? 0ul : ulong(drives[selected_drive].kind);
+    const bool matches = selected_drive != 0xffffffffu
+      && nb_workspace_identity_matches(
+        prior, drive_kind, drive_source_module, drive_identity
+      );
+    const bool replace = selected_drive_score >= minimum_score
+      && (prior.identifier == 0ul || matches
+        || selected_drive_score > retained_confidence
+          + replacement_margin * (0.25f + 0.75f * persistence));
+    if (replace) {
+      const uint base = 0u;
+      const NBDriveStateRecord selected = drives[selected_drive];
+      for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+        float value = 0.0f;
+        if (feature == 0u) value = selected.level;
+        else if (feature == 1u) value = selected.viable_minimum;
+        else if (feature == 2u) value = selected.viable_maximum;
+        else if (feature == 3u) value = selected.deficit;
+        else if (feature == 4u) value = selected.potential;
+        else if (feature == 5u) value = selected.estimated_rate;
+        else if (feature == 6u) value = selected.priority_weight;
+        else if (feature == 7u) value = float(selected.kind);
+        else if (feature >= 16u
+            && feature < 16u + uniforms.drive_count) {
+          value = drives[feature - 16u].deficit;
+        } else if (feature >= 32u
+            && feature < 32u + uniforms.drive_count) {
+          value = drives[feature - 32u].potential;
+        }
+        content[base + feature] = value;
+      }
+      NBWorkspaceMetadataRecord token = matches ? prior
+        : NBWorkspaceMetadataRecord{};
+      if (!matches) {
+        token.identifier = (uniforms.target_timestamp_microseconds << 8u) | 1ul;
+        token.source_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+      }
+      token.last_refresh_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+      token.entity_identifier = drive_identity;
+      token.goal_identifier = 0ul;
+      token.bound_token_identifier = 0ul;
+      token.provenance_record_identifier = 0ul;
+      token.kind_and_source = drive_kind | (drive_source_module << 16u);
+      token.confidence = matches
+        ? mix(retained_confidence, selected_drive_score, refresh_gain)
+        : selected_drive_score;
+      metadata[0] = token;
+    } else if (prior.identifier != 0ul) {
+      prior.confidence = retained_confidence;
+      if (retained_confidence < minimum_score) {
+        nb_clear_workspace_slot(
+          content, metadata, 0u, uniforms.workspace_dimension
+        );
+      } else {
+        metadata[0] = prior;
+      }
+    }
+  }
+
+  if (active_workspace_capacity <= 1u) return;
+  uint selected_region = 0xffffffffu;
+  uint selected_token = 0xffffffffu;
+  float selected_self_score = 0.0f;
+  for (uint region = 0u; region < uniforms.module_count; ++region) {
+    const NBPlasticityRegionRangeRecord range = region_ranges[region];
+    if (range.module_identifier < 27u || range.module_identifier > 36u
+        || maturation[region].unlocked == 0u || range.token_count == 0u
+        || range.token_dimension == 0u || range.scalar_count == 0u
+        || range.scalar_offset + range.scalar_count
+          > uniforms.recurrent_scalar_count) continue;
+    for (uint token_index = 0u; token_index < uint(range.token_count);
+        ++token_index) {
+      float energy = 0.0f;
+      const uint sample_count = min(uint(range.token_dimension), 32u);
+      for (uint sample = 0u; sample < sample_count; ++sample) {
+        const uint feature = sample_count == uint(range.token_dimension)
+          ? sample
+          : (sample * uint(range.token_dimension)) / sample_count;
+        const uint scalar = range.scalar_offset
+          + token_index * uint(range.token_dimension) + feature;
+        if (scalar < range.scalar_offset + range.scalar_count) {
+          energy += abs(recurrent[scalar]);
+        }
+      }
+      energy = sample_count > 0u
+        ? clamp(energy / float(sample_count), 0.0f, 1.0f) : 0.0f;
+      const float regional_salience = clamp(
+        regional_modulation[region].memory_write_multiplier - 1.0f,
+        0.0f,
+        1.0f
+      );
+      const float score = clamp(
+        maturation[region].capacity_fraction * (
+          max(memory_parameters[10], 0.0f) * energy
+            + max(memory_parameters[11], 0.0f) * regional_salience
+        ),
+        0.0f,
+        1.0f
+      );
+      if (score > selected_self_score
+          || (score == selected_self_score
+            && (range.module_identifier
+                < (selected_region == 0xffffffffu
+                  ? 0xffffffffu
+                  : region_ranges[selected_region].module_identifier)
+              || (selected_region != 0xffffffffu
+                && range.module_identifier
+                  == region_ranges[selected_region].module_identifier
+                && token_index < selected_token)))) {
+        selected_region = region;
+        selected_token = token_index;
+        selected_self_score = score;
+      }
+    }
+  }
+
+  constexpr uint self_kind = 1u;
+  const float self_persistence = clamp(memory_parameters[15], 0.0f, 1.0f);
+  NBWorkspaceMetadataRecord prior_self = metadata[1];
+  const float retained_self_confidence = clamp(
+    prior_self.confidence, 0.0f, 1.0f
+  ) * nb_workspace_retention(
+    memory_parameters, self_persistence, elapsed_seconds
+  );
+  const uint self_source_module = selected_region == 0xffffffffu
+    ? 0u : region_ranges[selected_region].module_identifier;
+  const ulong self_identity = selected_region == 0xffffffffu
+    ? 0ul : (ulong(self_source_module) << 32u) | ulong(selected_token + 1u);
+  const bool self_matches = selected_region != 0xffffffffu
+    && nb_workspace_identity_matches(
+      prior_self, self_kind, self_source_module, self_identity
+    );
+  const bool replace_self = selected_self_score >= minimum_score
+    && (prior_self.identifier == 0ul || self_matches
+      || selected_self_score > retained_self_confidence
+        + replacement_margin * (0.25f + 0.75f * self_persistence));
+  if (replace_self) {
+    const NBPlasticityRegionRangeRecord selected_range =
+      region_ranges[selected_region];
+    const uint token_base = selected_range.scalar_offset
+      + selected_token * uint(selected_range.token_dimension);
+    const uint workspace_base = uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      content[workspace_base + feature] = feature
+          < uint(selected_range.token_dimension)
+        ? recurrent[token_base + feature]
+        : 0.0f;
+    }
+    NBWorkspaceMetadataRecord token = self_matches ? prior_self
+      : NBWorkspaceMetadataRecord{};
+    if (!self_matches) {
+      token.identifier = (uniforms.target_timestamp_microseconds << 8u) | 2ul;
+      token.source_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+    }
+    token.last_refresh_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    token.entity_identifier = self_identity;
+    token.goal_identifier = 0ul;
+    token.bound_token_identifier = 0ul;
+    token.provenance_record_identifier = 0ul;
+    token.kind_and_source = self_kind | (self_source_module << 16u);
+    token.confidence = self_matches
+      ? mix(retained_self_confidence, selected_self_score, refresh_gain)
+      : selected_self_score;
+    metadata[1] = token;
+  } else if (prior_self.identifier != 0ul) {
+    prior_self.confidence = retained_self_confidence;
+    if (retained_self_confidence < minimum_score) {
+      nb_clear_workspace_slot(
+        content, metadata, 1u, uniforms.workspace_dimension
+      );
+    } else {
+      metadata[1] = prior_self;
+    }
   }
 }
 

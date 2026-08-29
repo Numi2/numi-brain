@@ -233,7 +233,14 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     var route = [Float](repeating: 0, count: 64)
     route.replaceSubrange(0...7, with: [1, 1, 1, 1, 0.1, 0.25, 0.01, 0.99])
     var memory = [Float](repeating: 0, count: 64)
-    memory.replaceSubrange(0...7, with: [1, 1, 1, 1, 0.2, 0.25, 0.1, 0.99])
+    memory.replaceSubrange(0...17, with: [
+      1, 1, 1, 1, 0.2, 0.25, 0.1, 0.99,
+      // Workspace SelectAndMerge parameters: drive deficit, drive-rate,
+      // self-token energy, regional salience, persistence-retention coupling,
+      // replacement margin, drive persistence, self persistence, minimum
+      // candidate score, and refresh gain.
+      1.0, 0.05, 1.0, 0.15, 0.75, 0.05, 0.8, 0.6, 0.01, 1.0,
+    ])
     var value = [Float](repeating: 0, count: 64)
     value.replaceSubrange(0...7, with: [1, 1, 1, 1, 2, 1, 1, 1])
     var policy = [Float](repeating: 0, count: 128)

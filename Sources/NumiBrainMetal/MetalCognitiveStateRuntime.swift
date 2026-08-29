@@ -137,7 +137,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let regionalPlasticityPipeline: any MTLComputePipelineState
   private let routeActionPipeline: any MTLComputePipelineState
   private let clearWorkspacePipeline: any MTLComputePipelineState
-  private let workspacePipeline: any MTLComputePipelineState
+  private let workspaceMergePipeline: any MTLComputePipelineState
   private let socialContextPipeline: any MTLComputePipelineState
   private let curiosityPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
@@ -215,7 +215,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "reduce_fast_plasticity_by_region",
       "apply_internal_route_allocation",
       "clear_requested_workspace_token",
-      "broadcast_foundation_workspace",
+      "select_and_merge_foundation_workspace",
       "broadcast_social_context",
       "update_curiosity_drive_from_world_model",
     ]
@@ -381,7 +381,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.regionalPlasticityPipeline = pipelines[7]
     self.routeActionPipeline = pipelines[8]
     self.clearWorkspacePipeline = pipelines[9]
-    self.workspacePipeline = pipelines[10]
+    self.workspaceMergePipeline = pipelines[10]
     self.socialContextPipeline = pipelines[11]
     self.curiosityPipeline = pipelines[12]
     self.argumentTable = argumentTable
@@ -424,7 +424,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       .world, minimumScalarCount: 190
     )
     self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
-      .memory, minimumScalarCount: 8
+      .memory, minimumScalarCount: 18
     )
     let regionCount = species.enabledModuleIdentifiers.count
     let basisCapacity =
@@ -676,8 +676,6 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       threadCount: 1
     )
     barrier(encoder)
-    let workspaceContent = Int(species.capacities.workspaceTokenCapacity)
-      * Int(species.capacities.workspaceTokenDimension)
     try dispatch(
       encoder: encoder,
       pipeline: clearWorkspacePipeline,
@@ -687,8 +685,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     argumentTable.setAddress(memoryParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
-      pipeline: workspacePipeline,
-      threadCount: max(workspaceContent, Int(species.capacities.workspaceTokenCapacity))
+      pipeline: workspaceMergePipeline,
+      threadCount: 1
     )
     barrier(encoder)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
