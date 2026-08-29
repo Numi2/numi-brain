@@ -665,6 +665,7 @@ kernel void score_memory_retrieval_candidates(
   device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
   constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
+  device const float *memory_parameters [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.candidate_count
@@ -702,10 +703,11 @@ kernel void score_memory_retrieval_candidates(
         && record->identifier != 0ul) {
       kind = 1u;
       identifier = record->identifier;
-      score = uniforms.episodic_weight * (
+      score = uniforms.episodic_weight * max(memory_parameters[0], 0.0f) * (
         retrieval_similarity(
           query, uniforms.recurrent_scalar_count, record->retrieval_key, 10u
-        ) + record->salience - 0.25f * record->epistemic_uncertainty
+        ) + record->salience
+          - max(memory_parameters[6], 0.0f) * record->epistemic_uncertainty
       );
     }
   } else {
@@ -719,7 +721,7 @@ kernel void score_memory_retrieval_candidates(
       if (record->format_version == 1u && record->identifier != 0ul) {
         kind = 2u;
         identifier = record->identifier;
-        score = uniforms.semantic_weight * (
+        score = uniforms.semantic_weight * max(memory_parameters[1], 0.0f) * (
           retrieval_similarity(
             query, uniforms.recurrent_scalar_count, record->embedding, 19u
           ) + record->confidence
@@ -736,7 +738,7 @@ kernel void score_memory_retrieval_candidates(
         if (record->format_version == 1u && record->identifier != 0ul) {
           kind = 5u;
           identifier = record->identifier;
-          score = uniforms.semantic_weight * (
+          score = uniforms.semantic_weight * max(memory_parameters[1], 0.0f) * (
             retrieval_similarity(
               query, uniforms.recurrent_scalar_count,
               record->evidence_embedding, 10u
@@ -755,7 +757,7 @@ kernel void score_memory_retrieval_candidates(
             && (record->flags & 4u) == 0u) {
           kind = 3u;
           identifier = record->identifier;
-          score = uniforms.procedural_weight * (
+          score = uniforms.procedural_weight * max(memory_parameters[2], 0.0f) * (
             retrieval_similarity(
               query, uniforms.recurrent_scalar_count, record->policy_code, 16u
             ) + record->competence - record->damage_cvar
@@ -777,7 +779,7 @@ kernel void score_memory_retrieval_candidates(
               && before_deadline) {
             kind = 4u;
             identifier = record->identifier;
-            score = uniforms.prospective_weight * (
+            score = uniforms.prospective_weight * max(memory_parameters[3], 0.0f) * (
               retrieval_similarity(
                 query, uniforms.recurrent_scalar_count, record->trigger_code, 16u
               ) + record->priority + record->trigger_confidence
@@ -1093,6 +1095,7 @@ kernel void consolidate_lived_memory_during_rest(
   device const uchar *persistent_memory [[buffer(1)]],
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryConsolidationUniforms &uniforms [[buffer(3)]],
+  device const float *memory_parameters [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.active_episode_capacity == 0u
@@ -1154,6 +1157,13 @@ kernel void consolidate_lived_memory_during_rest(
     }
   }
   if (latest == nullptr) return;
+
+  const float semantic_learning_rate = min(
+    uniforms.semantic_learning_rate, max(memory_parameters[5], 0.0f)
+  );
+  const float procedural_learning_rate = min(
+    uniforms.procedural_learning_rate, max(memory_parameters[5], 0.0f)
+  );
 
   uint semantic_count = 0u;
   uint procedural_count = 0u;
@@ -1227,7 +1237,7 @@ kernel void consolidate_lived_memory_during_rest(
       concept.kind = 5u;
       concept.flags = 1u;
       concept.confidence = clamp(
-        1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+        1.0f - exp(-semantic_learning_rate * float(semantic_count)),
         0.0f, 1.0f
       );
       for (uint component = 0u; component < 14u; ++component) {
@@ -1274,7 +1284,7 @@ kernel void consolidate_lived_memory_during_rest(
       goal.kind = 6u;
       goal.flags = 1u;
       goal.confidence = clamp(
-        1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+        1.0f - exp(-semantic_learning_rate * float(semantic_count)),
         0.0f, 1.0f
       );
       for (uint component = 0u; component < 10u; ++component) {
@@ -1328,7 +1338,7 @@ kernel void consolidate_lived_memory_during_rest(
         relation.flags = 1u;
         relation.supporting_episode_count = semantic_count;
         relation.confidence = clamp(
-          1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+          1.0f - exp(-semantic_learning_rate * float(semantic_count)),
           0.0f, 1.0f
         );
         relation.contradiction = 0.0f;
@@ -1376,7 +1386,7 @@ kernel void consolidate_lived_memory_during_rest(
       skill.goal_parameter_dimension = 16u;
       skill.competence = clamp(
         (1.0f - mean_damage)
-          * (1.0f - exp(-uniforms.procedural_learning_rate
+          * (1.0f - exp(-procedural_learning_rate
             * float(procedural_count))),
         0.0f, 1.0f
       );
@@ -1549,6 +1559,7 @@ kernel void segment_and_journal_episode(
   device uchar *persistent_memory [[buffer(1)]],
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryUniforms &uniforms [[buffer(3)]],
+  device const float *memory_parameters [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.active_episode_capacity == 0u) return;
@@ -1598,8 +1609,9 @@ kernel void segment_and_journal_episode(
       damage = max(damage, event.magnitude);
     }
   }
-  const float boundary_score = surprise
-    + uniforms.event_salience_weight * event_salience;
+  const float boundary_score = max(memory_parameters[0], 0.0f) * surprise
+    + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
+      * event_salience;
   device NBActiveEpisodeAccumulator *accumulator =
     reinterpret_cast<device NBActiveEpisodeAccumulator *>(
       hot_state + uniforms.active_episode_accumulator_offset

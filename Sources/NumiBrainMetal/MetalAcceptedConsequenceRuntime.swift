@@ -70,7 +70,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     device: any MTLDevice,
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
-    dynamics: AcceptedConsequenceDynamics
+    dynamics: AcceptedConsequenceDynamics,
+    sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 240,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
@@ -136,7 +137,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 2
+    descriptor.maxBufferBindCount = 6
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -147,6 +148,22 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to allocate accepted-consequence bindings")
     }
     uniformBuffer.label = "NumiBrain accepted-consequence uniforms"
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.belief, minimumScalarCount: 8),
+      index: 2
+    )
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.world, minimumScalarCount: 158),
+      index: 3
+    )
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.cerebellar, minimumScalarCount: 8),
+      index: 4
+    )
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.plasticity, minimumScalarCount: 8),
+      index: 5
+    )
     self.arena = arena
     self.species = species
     self.dynamics = dynamics

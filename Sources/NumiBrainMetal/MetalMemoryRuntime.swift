@@ -181,7 +181,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
     segmentation: EpisodicSegmentationDynamics,
-    retrieval: MemoryRetrievalDynamics
+    retrieval: MemoryRetrievalDynamics,
+    sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 144,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 192,
@@ -234,7 +235,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 6
+    descriptor.maxBufferBindCount = 7
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -285,6 +286,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "NumiBrain prospective-memory lifecycle uniforms"
     committedTransitionUniformBuffer.label =
       "NumiBrain committed learning-transition uniforms"
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.memory, minimumScalarCount: 8),
+      index: 6
+    )
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.arena = arena
     self.regionalProgram = regionalProgram

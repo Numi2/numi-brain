@@ -154,7 +154,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device,
       arena: agentStateRuntime.arena,
       species: species,
-      profile: sensoryProfile
+      profile: sensoryProfile,
+      sharedParameters: sharedParameterBank
     )
     let cognitiveRuntime = try MetalCognitiveStateRuntime(
       device: device,
@@ -172,7 +173,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       segmentation: requestedEpisodicSegmentation
         ?? EpisodicSegmentationDynamics.foundationV1,
       retrieval: requestedMemoryRetrievalDynamics
-        ?? MemoryRetrievalDynamics.foundationV1
+        ?? MemoryRetrievalDynamics.foundationV1,
+      sharedParameters: sharedParameterBank
     )
     let decisionRuntime = try MetalDecisionRuntime(
       device: device,
@@ -193,7 +195,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       arena: agentStateRuntime.arena,
       species: species,
       dynamics: requestedAcceptedConsequenceDynamics
-        ?? AcceptedConsequenceDynamics.foundationV1
+        ?? AcceptedConsequenceDynamics.foundationV1,
+      sharedParameters: sharedParameterBank
     )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain embodied cognitive residency"

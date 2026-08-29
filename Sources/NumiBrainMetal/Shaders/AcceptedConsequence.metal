@@ -231,12 +231,18 @@ inline float nb_mean_aleatoric_uncertainty(
 kernel void assimilate_accepted_body_and_physiology(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
-  const float gain = clamp(uniforms.belief_gain, 0.0f, 1.0f);
+  const float gain = clamp(
+    min(uniforms.belief_gain, max(belief_parameters[0], 0.0f)), 0.0f, 1.0f
+  );
+  const float velocity_gain = min(gain, max(belief_parameters[1], 0.0f));
+  const float contact_gain = min(gain, max(belief_parameters[2], 0.0f));
+  const float physiology_gain = min(gain, max(belief_parameters[3], 0.0f));
   if (gid < uniforms.body_count) {
     device float *body = reinterpret_cast<device float *>(
       hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
@@ -254,11 +260,14 @@ kernel void assimilate_accepted_body_and_physiology(
     );
     const float prior_position = body[0];
     body[0] = mix(prior_position, proprioception, gain);
-    body[1] = mix(body[1], proprioception - prior_position, gain);
-    body[2] = mix(body[2], clamp(abs(touch), 0.0f, 1.0f), gain);
+    body[1] = mix(body[1], proprioception - prior_position, velocity_gain);
+    body[2] = mix(body[2], clamp(abs(touch), 0.0f, 1.0f), contact_gain);
     body[3] = mix(body[3], clamp(1.0f - abs(vestibular), 0.0f, 1.0f), gain);
     body[4] = mix(body[4], max(touch, 0.0f), gain);
-    body[5] = max(body[5] * 0.999f, clamp(abs(touch), 0.0f, 1.0f));
+    body[5] = max(
+      body[5] * clamp(belief_parameters[7], 0.0f, 1.0f),
+      clamp(abs(touch), 0.0f, 1.0f)
+    );
     body[6] = abs(proprioception - prior_position);
     body[7] = max(body[7] * (1.0f - gain), body[6] * gain);
     device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
@@ -296,13 +305,14 @@ kernel void assimilate_accepted_body_and_physiology(
       observations, uniforms.interoception_offset,
       uniforms.interoception_count, gid
     );
-    physiology[gid] = mix(physiology[gid], interoception, gain);
+    physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
   }
 }
 
 kernel void reconcile_accepted_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *world_parameters [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= min(uniforms.world_model_count, NB_WORLD_RECEPTOR_DIMENSION)
@@ -321,18 +331,24 @@ kernel void reconcile_accepted_world_model(
       / float(NB_WORLD_HEAD_COUNT);
   }
   const float residual = observed - predicted_mean;
-  const float gain = clamp(uniforms.world_correction_gain, 0.0f, 1.0f);
+  const float gain = clamp(
+    min(uniforms.world_correction_gain, max(world_parameters[150], 0.0f)),
+    0.0f,
+    1.0f
+  );
   world[gid] = mix(world[gid], observed, gain);
   world[NB_WORLD_RECEPTOR_DIMENSION + gid] = residual;
   const uint aleatoric_index = 8u * NB_WORLD_RECEPTOR_DIMENSION + gid;
   world[aleatoric_index] = mix(
-    max(world[aleatoric_index], 0.0f), residual * residual, gain * 0.1f
+    max(world[aleatoric_index], 0.0f), residual * residual,
+    gain * clamp(world_parameters[152], 0.0f, 1.0f)
   );
 }
 
 kernel void broadcast_accepted_prediction_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *world_parameters [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -390,13 +406,16 @@ kernel void broadcast_accepted_prediction_error(
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
-  control->unsupported_uncertainty = max(epistemic, aleatoric);
+  control->unsupported_uncertainty = max(
+    epistemic * max(world_parameters[157], 0.0f), aleatoric
+  );
   control->progress = clamp(control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f);
 }
 
 kernel void adapt_cerebellar_experts_from_accepted_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *cerebellar_parameters [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.active_cerebellar_count) return;
@@ -423,19 +442,28 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   );
   NBCerebellarExpertRecord expert = experts[gid];
   expert.prediction_error = error;
+  const float learning_rate = clamp(
+    min(uniforms.cerebellar_learning_rate, max(cerebellar_parameters[0], 0.0f)),
+    0.0f,
+    1.0f
+  );
   expert.state[0] = mix(
     expert.state[0], error,
-    clamp(uniforms.cerebellar_learning_rate, 0.0f, 1.0f)
+    learning_rate
   );
   const float command_direction = uniforms.actuator_count == 0u
     ? 0.0f
     : 2.0f * motor[gid % uniforms.actuator_count].excitation - 1.0f;
-  const float inverse_correction = -error * command_direction;
+  const float inverse_correction = -error * command_direction
+    * cerebellar_parameters[3];
   expert.state[1] = mix(
     expert.state[1], inverse_correction,
-    clamp(uniforms.cerebellar_learning_rate, 0.0f, 1.0f)
+    learning_rate
   );
-  expert.state[2] = mix(expert.state[2], 1.0f - clamp(error, 0.0f, 1.0f), 0.05f);
+  expert.state[2] = mix(
+    expert.state[2], 1.0f - clamp(error, 0.0f, 1.0f),
+    clamp(cerebellar_parameters[2], 0.0f, 1.0f)
+  );
   expert.flags |= NB_ACCEPTED_STATE_VALID;
   experts[gid] = expert;
   if (expert.expert_identifier < 128u) {
@@ -446,6 +474,7 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
 kernel void update_fast_plasticity_from_accepted_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *plasticity_parameters [[buffer(5)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.fast_plasticity_count) return;
@@ -470,11 +499,26 @@ kernel void update_fast_plasticity_from_accepted_error(
   const float modulation = uniforms.neuromodulator_count == 0u
     ? 0.0f
     : neuromodulators[gid % uniforms.neuromodulator_count].value;
-  site.eligibility = site.eligibility_retention * site.eligibility + error;
-  const float limit = max(site.maximum_magnitude, 1.0f);
+  const float eligibility_retention = min(
+    site.eligibility_retention,
+    clamp(plasticity_parameters[2], 0.0f, 1.0f)
+  );
+  site.eligibility = eligibility_retention * site.eligibility
+    + error * plasticity_parameters[3];
+  const float coefficient_retention = min(
+    site.coefficient_retention,
+    clamp(plasticity_parameters[1], 0.0f, 1.0f)
+  );
+  const float learning_rate = min(
+    uniforms.plasticity_learning_rate,
+    max(plasticity_parameters[0], 0.0f)
+  );
+  const float limit = max(
+    site.maximum_magnitude * max(plasticity_parameters[7], 0.0f), 1.0e-4f
+  );
   site.coefficient = clamp(
-    site.coefficient_retention * site.coefficient
-      + uniforms.plasticity_learning_rate * modulation * site.eligibility,
+    coefficient_retention * site.coefficient
+      + learning_rate * modulation * site.eligibility,
     -limit,
     limit
   );

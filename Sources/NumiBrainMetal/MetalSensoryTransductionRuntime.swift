@@ -147,7 +147,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     device: any MTLDevice,
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
-    profile: SensoryTransductionProfile
+    profile: SensoryTransductionProfile,
+    sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<SensoryUniforms>.stride == 104,
       MemoryLayout<SensoryDescriptorRecord>.stride == 64,
@@ -252,7 +253,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain sensory transduction arguments"
-    argumentDescriptor.maxBufferBindCount = 11
+    argumentDescriptor.maxBufferBindCount = 12
     argumentDescriptor.initializeBindings = true
     let descriptorByteCount = max(
       descriptors.count * MemoryLayout<SensoryDescriptorRecord>.stride,
@@ -295,6 +296,10 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       ruleBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
     }
     dummyInputBuffer.contents().storeBytes(of: Float(0), as: Float.self)
+    argumentTable.setAddress(
+      try sharedParameters.gpuAddress(.sensory, minimumScalarCount: 8),
+      index: 11
+    )
     self.profileFingerprint = profile.fingerprint
     self.arena = arena
     self.species = species

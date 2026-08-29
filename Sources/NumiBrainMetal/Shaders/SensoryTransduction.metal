@@ -240,6 +240,7 @@ kernel void update_receptor_adaptation(
   device const float *input5 [[buffer(8)]],
   device const float *input6 [[buffer(9)]],
   device const float *input7 [[buffer(10)]],
+  device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.total_receptors) return;
@@ -252,7 +253,7 @@ kernel void update_receptor_adaptation(
   const NBSensoryDescriptor descriptor = descriptors[descriptor_index];
   const uint local_receptor = gid - descriptor.adaptation_offset;
   const uint raw_index = local_receptor * descriptor.feature_dimension;
-  const float raw_value = nb_raw_input(
+  const float raw_value = sensory_parameters[0] * nb_raw_input(
     descriptor.input_buffer_index,
     raw_index,
     input0, input1, input2, input3, input4, input5, input6, input7
@@ -264,7 +265,8 @@ kernel void update_receptor_adaptation(
   const float alpha = 1.0f - exp(
     -elapsed_seconds / max(descriptor.adaptation_time_constant_seconds, 1.0e-4f)
   );
-  adaptation[gid] = mix(adaptation[gid], raw_value, clamp(alpha, 0.0f, 1.0f));
+  const float learned_alpha = clamp(alpha * max(sensory_parameters[4], 0.0f), 0.0f, 1.0f);
+  adaptation[gid] = mix(adaptation[gid], raw_value, learned_alpha);
 }
 
 kernel void transduce_receptor_observations(
@@ -279,6 +281,7 @@ kernel void transduce_receptor_observations(
   device const float *input5 [[buffer(8)]],
   device const float *input6 [[buffer(9)]],
   device const float *input7 [[buffer(10)]],
+  device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.total_observation_scalars) return;
@@ -292,7 +295,7 @@ kernel void transduce_receptor_observations(
   const uint local_scalar = gid - descriptor.output_scalar_offset;
   const uint local_receptor = local_scalar / descriptor.feature_dimension;
   const uint global_receptor = descriptor.adaptation_offset + local_receptor;
-  const float raw_value = nb_raw_input(
+  const float raw_value = sensory_parameters[0] * nb_raw_input(
     descriptor.input_buffer_index,
     local_scalar,
     input0, input1, input2, input3, input4, input5, input6, input7
@@ -314,7 +317,9 @@ kernel void transduce_receptor_observations(
     descriptor.modality,
     local_scalar
   );
-  observations[gid] = raw_value - 0.1f * adaptation[global_receptor] + noise;
+  observations[gid] = raw_value
+    - max(sensory_parameters[2], 0.0f) * adaptation[global_receptor]
+    + sensory_parameters[3] * noise + sensory_parameters[1];
 }
 
 kernel void extract_receptor_events(
@@ -322,6 +327,7 @@ kernel void extract_receptor_events(
   device const NBSensoryDescriptor *descriptors [[buffer(1)]],
   device const NBReceptorEventRule *rules [[buffer(2)]],
   constant NBSensoryUniforms &uniforms [[buffer(3)]],
+  device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.event_rule_count) return;
@@ -348,16 +354,21 @@ kernel void extract_receptor_events(
     bool active = false;
     float magnitude = 0.0f;
     if (rule.comparison == 1u) {
-      active = value > rule.threshold;
-      magnitude = value - rule.threshold;
+      const float threshold = max(rule.threshold, sensory_parameters[6]);
+      active = value > threshold;
+      magnitude = value - threshold;
     } else if (rule.comparison == 2u) {
-      active = value < rule.threshold;
-      magnitude = rule.threshold - value;
+      const float threshold = max(rule.threshold, sensory_parameters[6]);
+      active = value < threshold;
+      magnitude = threshold - value;
     } else {
-      active = abs(value) > rule.threshold;
-      magnitude = abs(value) - rule.threshold;
+      const float threshold = max(rule.threshold, sensory_parameters[6]);
+      active = abs(value) > threshold;
+      magnitude = abs(value) - threshold;
     }
-    magnitude = active ? magnitude * rule.magnitude_scale : 0.0f;
+    magnitude = active
+      ? magnitude * rule.magnitude_scale * max(sensory_parameters[5], 0.0f)
+      : 0.0f;
     if (magnitude > strongest) {
       strongest = magnitude;
       strongest_receptor = receptor_index;
