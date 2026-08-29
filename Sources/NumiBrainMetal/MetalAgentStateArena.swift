@@ -54,6 +54,7 @@ public enum MetalAgentPersistentSection: UInt16, Codable, CaseIterable, Sendable
   case proceduralSkills = 6
   case prospectiveIntentions = 7
   case replayQueue = 8
+  case committedTransitions = 9
 }
 
 @frozen
@@ -362,6 +363,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let proceduralSkillStride = 1_024
   public static let prospectiveIntentionStride = 640
   public static let replayQueueStride = 32
+  public static let committedTransitionStride = 768
 
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]
   public let totalByteCount: Int
@@ -411,6 +413,15 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
       Int(capacities.proceduralSkillCapacity)
     )
     try builder.append(.replayQueue, count: replayCount, stride: Self.replayQueueStride)
+    let committedTransitionCount = max(
+      Int(capacities.activeEpisodicCapacity) * 4,
+      256
+    )
+    try builder.append(
+      .committedTransitions,
+      count: committedTransitionCount,
+      stride: Self.committedTransitionStride
+    )
     let mutationCapacity = max(
       Int(capacities.activeEpisodicCapacity)
         + Int(capacities.prospectiveIntentionCapacity)

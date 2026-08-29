@@ -8,6 +8,7 @@ constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION = 4u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION = 6u;
 constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
+constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
@@ -224,6 +225,38 @@ struct NBProspectiveLifecycleUniforms {
   float default_priority;
 };
 
+struct NBCommittedTransitionUniforms {
+  ulong target_timestamp_microseconds;
+  ulong previous_timestamp_microseconds;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong parameter_version_fingerprint;
+  ulong episode_identifier;
+  ulong control_step_identifier;
+  ulong physics_state_fingerprint;
+  ulong teacher_content_fingerprint;
+  ulong recurrent_offset;
+  ulong observation_offset;
+  ulong event_queue_offset;
+  ulong control_header_offset;
+  ulong somatic_output_offset;
+  ulong drive_offset;
+  ulong neuromodulation_offset;
+  ulong transition_memory_offset;
+  ulong persistent_memory_byte_count;
+  ulong journal_byte_count;
+  uint recurrent_scalar_count;
+  uint observation_count;
+  uint action_count;
+  uint drive_count;
+  uint neuromodulator_count;
+  uint transition_capacity;
+  uint transition_stride;
+  uint journal_entry_capacity;
+  uint teacher_scalar_count;
+  uint teacher_flags;
+};
+
 struct NBWorkspaceMetadataRecord {
   ulong identifier;
   ulong source_timestamp_microseconds;
@@ -293,6 +326,13 @@ struct NBDriveRecord {
   float deficit;
   float potential;
   uint kind;
+};
+
+struct NBNeuromodulatorRecord {
+  float value;
+  float decay_time_constant_seconds;
+  uint kind;
+  uint flags;
 };
 
 struct NBMemoryRetrievalScratch {
@@ -377,6 +417,43 @@ struct NBProspectiveLifecycleState {
   float context[51];
 };
 
+struct NBCommittedTransitionRecord {
+  ulong identifier;
+  ulong start_timestamp_microseconds;
+  ulong end_timestamp_microseconds;
+  ulong parameter_version_fingerprint;
+  ulong source_generation;
+  ulong physics_state_fingerprint;
+  ulong active_goal_identifier;
+  ulong active_option_identifier;
+  uint format_version;
+  uint flags;
+  uint recurrent_sample_count;
+  uint observation_sample_count;
+  uint action_sample_count;
+  uint event_count;
+  uint control_mode;
+  uint reserved;
+  float selected_score;
+  float damage_cvar;
+  float progress;
+  float uncertainty;
+  float mean_drive_deficit;
+  float pain;
+  float model_error;
+  float predicted_information_gain;
+  float prior_state[24];
+  float posterior_state[24];
+  float observation[24];
+  float action[16];
+  float factored_reinforcement[8];
+  ulong teacher_content_fingerprint;
+  uint teacher_scalar_count;
+  uint teacher_flags;
+  float teacher_state[24];
+  float reserved_tail[4];
+};
+
 struct NBReplayQueueSummaryRecord {
   uint queue_kind;
   uint record_kind;
@@ -396,16 +473,19 @@ static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 192);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 176);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
+static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 256);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
+static_assert(sizeof(NBCommittedTransitionRecord) == 640);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
 inline ulong consolidation_hash(ulong value) {
@@ -1334,6 +1414,134 @@ kernel void consolidate_lived_memory_during_rest(
       }
     }
   }
+}
+
+/// Emits exactly one compressed learning transition for an accepted root.
+/// The journal makes the record visible only after joint brain-physics commit;
+/// rejected trajectories therefore cannot enter replay or slow learning.
+kernel void journal_committed_learning_transition(
+  device const uchar *input_hot_state [[buffer(0)]],
+  device const uchar *output_hot_state [[buffer(1)]],
+  device const uchar *persistent_memory [[buffer(2)]],
+  device NBMemoryJournalHeader *journal [[buffer(3)]],
+  constant NBCommittedTransitionUniforms &uniforms [[buffer(4)]],
+  device const float *teacher_state [[buffer(5)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.recurrent_scalar_count == 0u
+      || uniforms.observation_count == 0u || uniforms.action_count == 0u
+      || uniforms.transition_capacity == 0u) return;
+  if (journal->base_generation != uniforms.base_generation
+      || journal->shadow_generation != uniforms.shadow_generation
+      || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return;
+  }
+  device const float *prior = reinterpret_cast<device const float *>(
+    input_hot_state + uniforms.recurrent_offset
+  );
+  device const float *posterior = reinterpret_cast<device const float *>(
+    output_hot_state + uniforms.recurrent_offset
+  );
+  device const float *observations = reinterpret_cast<device const float *>(
+    output_hot_state + uniforms.observation_offset
+  );
+  device const float *actions = reinterpret_cast<device const float *>(
+    output_hot_state + uniforms.somatic_output_offset
+  );
+  device const NBControlHeader *control =
+    reinterpret_cast<device const NBControlHeader *>(
+      output_hot_state + uniforms.control_header_offset
+    );
+  device const NBEventQueueHeader *events =
+    reinterpret_cast<device const NBEventQueueHeader *>(
+      output_hot_state + uniforms.event_queue_offset
+    );
+  device const NBDriveRecord *drives =
+    reinterpret_cast<device const NBDriveRecord *>(
+      output_hot_state + uniforms.drive_offset
+    );
+  device const NBNeuromodulatorRecord *neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorRecord *>(
+      output_hot_state + uniforms.neuromodulation_offset
+    );
+
+  NBCommittedTransitionRecord record = {};
+  record.identifier = consolidation_hash(
+    uniforms.episode_identifier ^ (uniforms.control_step_identifier << 1)
+      ^ (uniforms.shadow_generation << 17)
+  ) | 1ul;
+  record.start_timestamp_microseconds = uniforms.previous_timestamp_microseconds;
+  record.end_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  record.parameter_version_fingerprint = uniforms.parameter_version_fingerprint;
+  record.source_generation = uniforms.shadow_generation;
+  record.physics_state_fingerprint = uniforms.physics_state_fingerprint;
+  record.active_goal_identifier = control->active_goal_identifier;
+  record.active_option_identifier = control->active_option_identifier;
+  record.format_version = NB_MEMORY_RECORD_VERSION;
+  record.flags = 1u;
+  record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 24u);
+  record.observation_sample_count = min(uniforms.observation_count, 24u);
+  record.action_sample_count = min(uniforms.action_count, 16u);
+  record.event_count = min(
+    atomic_load_explicit(&events->count, memory_order_relaxed), events->capacity
+  );
+  record.control_mode = control->mode;
+  record.selected_score = control->selected_score;
+  record.damage_cvar = control->selected_damage_cvar;
+  record.progress = control->progress;
+  record.uncertainty = control->unsupported_uncertainty;
+  float drive_deficit = 0.0f;
+  for (uint index = 0u; index < uniforms.drive_count; ++index) {
+    drive_deficit += max(drives[index].deficit, 0.0f);
+  }
+  record.mean_drive_deficit = uniforms.drive_count == 0u
+    ? 0.0f : drive_deficit / float(uniforms.drive_count);
+  record.pain = uniforms.drive_count > 5u ? drives[5].level : 0.0f;
+  record.model_error = uniforms.neuromodulator_count > 1u
+    ? neuromodulators[1].value : 0.0f;
+  record.predicted_information_gain = control->predicted_information_gain;
+  for (uint component = 0u; component < 24u; ++component) {
+    record.prior_state[component] = prior[
+      component % uniforms.recurrent_scalar_count
+    ];
+    record.posterior_state[component] = posterior[
+      component % uniforms.recurrent_scalar_count
+    ];
+    record.observation[component] = observations[
+      component % uniforms.observation_count
+    ];
+  }
+  for (uint component = 0u; component < 16u; ++component) {
+    record.action[component] = actions[component % uniforms.action_count];
+  }
+  record.factored_reinforcement[0] = -record.mean_drive_deficit;
+  record.factored_reinforcement[1] = control->selected_score;
+  record.factored_reinforcement[2] = uniforms.drive_count > 9u
+    ? drives[9].potential : 0.0f;
+  record.factored_reinforcement[3] = control->predicted_information_gain;
+  record.factored_reinforcement[4] = -record.pain;
+  record.factored_reinforcement[5] = -control->predicted_effort;
+  record.factored_reinforcement[6] = -control->selected_damage_cvar;
+  record.factored_reinforcement[7] = -record.model_error;
+  record.teacher_content_fingerprint = uniforms.teacher_content_fingerprint;
+  record.teacher_scalar_count = min(uniforms.teacher_scalar_count, 24u);
+  record.teacher_flags = uniforms.teacher_flags;
+  for (uint component = 0u; component < record.teacher_scalar_count; ++component) {
+    record.teacher_state[component] = teacher_state[component];
+  }
+
+  const uint slot = uint(
+    uniforms.shadow_generation % ulong(uniforms.transition_capacity)
+  );
+  const ulong destination = uniforms.transition_memory_offset
+    + ulong(slot) * ulong(uniforms.transition_stride);
+  append_memory_record(
+    journal, uniforms, record, destination,
+    NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION, record.identifier
+  );
 }
 
 kernel void segment_and_journal_episode(

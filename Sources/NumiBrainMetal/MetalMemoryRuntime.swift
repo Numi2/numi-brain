@@ -119,6 +119,38 @@ private struct ProspectiveLifecycleUniforms {
   var defaultPriority: Float = 0
 }
 
+private struct CommittedTransitionUniforms {
+  var targetTimestampMicroseconds: UInt64 = 0
+  var previousTimestampMicroseconds: UInt64 = 0
+  var baseGeneration: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
+  var parameterVersionFingerprint: UInt64 = 0
+  var episodeIdentifier: UInt64 = 0
+  var controlStepIdentifier: UInt64 = 0
+  var physicsStateFingerprint: UInt64 = 0
+  var teacherContentFingerprint: UInt64 = 0
+  var recurrentOffset: UInt64 = 0
+  var observationOffset: UInt64 = 0
+  var eventQueueOffset: UInt64 = 0
+  var controlHeaderOffset: UInt64 = 0
+  var somaticOutputOffset: UInt64 = 0
+  var driveOffset: UInt64 = 0
+  var neuromodulationOffset: UInt64 = 0
+  var transitionMemoryOffset: UInt64 = 0
+  var persistentMemoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+  var recurrentScalarCount: UInt32 = 0
+  var observationCount: UInt32 = 0
+  var actionCount: UInt32 = 0
+  var driveCount: UInt32 = 0
+  var neuromodulatorCount: UInt32 = 0
+  var transitionCapacity: UInt32 = 0
+  var transitionStride: UInt32 = 0
+  var journalEntryCapacity: UInt32 = 0
+  var teacherScalarCount: UInt32 = 0
+  var teacherFlags: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalMemoryRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
@@ -134,11 +166,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let retrievalPublishPipeline: any MTLComputePipelineState
   private let consolidationPipeline: any MTLComputePipelineState
   private let prospectiveLifecyclePipeline: any MTLComputePipelineState
+  private let committedTransitionPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
   private let consolidationUniformBuffer: any MTLBuffer
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
+  private let committedTransitionUniformBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -153,6 +187,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryRetrievalUniforms>.stride == 192,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 176,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 192,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -183,6 +218,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "segment_and_journal_episode", "begin_memory_retrieval",
       "score_memory_retrieval_candidates", "publish_memory_retrieval_winner",
       "consolidate_lived_memory_during_rest", "advance_prospective_memory",
+      "journal_committed_learning_transition",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -198,7 +234,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 4
+    descriptor.maxBufferBindCount = 6
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -228,6 +264,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       let prospectiveLifecycleUniformBuffer = device.makeBuffer(
         length: MemoryLayout<ProspectiveLifecycleUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let committedTransitionUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<CommittedTransitionUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -243,6 +283,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     consolidationUniformBuffer.label = "NumiBrain lived-memory consolidation uniforms"
     prospectiveLifecycleUniformBuffer.label =
       "NumiBrain prospective-memory lifecycle uniforms"
+    committedTransitionUniformBuffer.label =
+      "NumiBrain committed learning-transition uniforms"
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.arena = arena
     self.regionalProgram = regionalProgram
@@ -258,16 +300,109 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.retrievalPublishPipeline = pipelines[3]
     self.consolidationPipeline = pipelines[4]
     self.prospectiveLifecyclePipeline = pipelines[5]
+    self.committedTransitionPipeline = pipelines[6]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
     self.consolidationUniformBuffer = consolidationUniformBuffer
     self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
+    self.committedTransitionUniformBuffer = committedTransitionUniformBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, consolidationUniformBuffer, prospectiveLifecycleUniformBuffer]
+    [
+      uniformBuffer, consolidationUniformBuffer,
+      prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
+    ]
       + retrievalUniformBuffers
+  }
+
+  /// Journals one B_t -> B_t+1 learning record from the accepted root shadow.
+  /// The input generation supplies the prior; the output generation supplies
+  /// accepted observations, action, belief, drives, uncertainty, and outcome.
+  public func encodeCommittedTransition(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    previousTimestamp: BrainTimestamp,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    teacherState: MetalTeacherStateBufferLease?
+  ) throws {
+    let hot = try arena.hotStateView(transaction: transaction)
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let transitions = arena.memoryLayout.section(.committedTransitions)
+    let layout = arena.layout
+    let recurrent = layout.section(.regionalRecurrent)
+    let observations = layout.section(.sensoryObservations)
+    let events = layout.section(.eventQueue)
+    let somatic = layout.section(.somaticOutput)
+    let drives = layout.section(.drives)
+    let neuromodulation = layout.section(.neuromodulation)
+    let journalEntryCapacity = (memory.journalByteCount - 48) / 64
+    let counts = [
+      regionalProgram.scalarCount, observations.elementCount,
+      somatic.elementCount, drives.elementCount, neuromodulation.elementCount,
+      transitions.elementCount, transitions.elementStride, journalEntryCapacity,
+    ]
+    guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+      transitions.elementStride >= 640,
+      teacherState == nil
+        || teacherState!.view.timestamp == acceptedPhysicsState.acceptedTimestamp
+    else {
+      throw TissueError.transaction("committed transition exceeds GPU capacity")
+    }
+    var uniforms = CommittedTransitionUniforms(
+      targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
+      previousTimestampMicroseconds: previousTimestamp.rawValue,
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      parameterVersionFingerprint: parameterVersionFingerprint,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      teacherContentFingerprint: teacherState?.view.contentFingerprint ?? 0,
+      recurrentOffset: UInt64(recurrent.byteOffset),
+      observationOffset: UInt64(observations.byteOffset),
+      eventQueueOffset: UInt64(events.byteOffset),
+      controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      somaticOutputOffset: UInt64(somatic.byteOffset),
+      driveOffset: UInt64(drives.byteOffset),
+      neuromodulationOffset: UInt64(neuromodulation.byteOffset),
+      transitionMemoryOffset: UInt64(transitions.byteOffset),
+      persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      journalByteCount: UInt64(memory.journalByteCount),
+      recurrentScalarCount: UInt32(regionalProgram.scalarCount),
+      observationCount: UInt32(observations.elementCount),
+      actionCount: UInt32(somatic.elementCount),
+      driveCount: UInt32(drives.elementCount),
+      neuromodulatorCount: UInt32(neuromodulation.elementCount),
+      transitionCapacity: UInt32(transitions.elementCount),
+      transitionStride: UInt32(transitions.elementStride),
+      journalEntryCapacity: UInt32(journalEntryCapacity),
+      teacherScalarCount: teacherState?.view.scalarCount ?? 0,
+      teacherFlags: teacherState?.view.flags ?? 0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      committedTransitionUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(hot.inputGPUAddress, index: 0)
+    argumentTable.setAddress(hot.outputGPUAddress, index: 1)
+    argumentTable.setAddress(memory.memoryGPUAddress, index: 2)
+    argumentTable.setAddress(memory.journalGPUAddress, index: 3)
+    argumentTable.setAddress(committedTransitionUniformBuffer.gpuAddress, index: 4)
+    argumentTable.setAddress(
+      teacherState?.view.gpuAddress ?? hot.outputGPUAddress, index: 5
+    )
+    encoder.setComputePipelineState(committedTransitionPipeline)
+    encoder.setArgumentTable(argumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
   }
 
   /// Advances prospective intentions only inside an accepted root shadow.

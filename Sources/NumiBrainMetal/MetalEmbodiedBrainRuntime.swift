@@ -466,7 +466,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     transaction: MetalJointAgentStateTransaction,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     rawSensors: [MetalRawSensorBufferLease],
-    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
+    teacherState: MetalTeacherStateBufferLease? = nil
   ) throws -> AcceptedConsequenceView {
     lock.lock()
     defer { lock.unlock() }
@@ -489,7 +490,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     let dynamicResidency = try makeDynamicAcceptedResidency(
       sensors: rawSensors,
-      developmentalEvidence: developmentalEvidence
+      developmentalEvidence: developmentalEvidence,
+      teacherState: teacherState
     )
     defer { dynamicResidency?.endResidency() }
     do {
@@ -568,6 +570,20 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         episodeIdentifier: transaction.jointToken.episodeIdentifier,
         controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
         timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeCommittedTransition(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        previousTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedPhysicsState: acceptedPhysicsState,
+        teacherState: teacherState
       )
       encoder.endEncoding()
       commandBuffer.endCommandBuffer()
@@ -705,12 +721,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   private func makeDynamicAcceptedResidency(
     sensors: [MetalRawSensorBufferLease],
-    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
+    teacherState: MetalTeacherStateBufferLease?
   ) throws -> (any MTLResidencySet)? {
-    guard !sensors.isEmpty || developmentalEvidence != nil else { return nil }
+    guard !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
+    else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
-    descriptor.initialCapacity = sensors.count + (developmentalEvidence == nil ? 0 : 1)
+    descriptor.initialCapacity = sensors.count
+      + (developmentalEvidence == nil ? 0 : 1)
+      + (teacherState == nil ? 0 : 1)
     let set: any MTLResidencySet
     do {
       set = try device.makeResidencySet(descriptor: descriptor)
@@ -719,6 +739,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     for sensor in sensors { set.addAllocation(sensor.buffer) }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
+    if let teacherState { set.addAllocation(teacherState.buffer) }
     set.commit()
     set.requestResidency()
     return set
