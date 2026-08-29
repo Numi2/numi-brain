@@ -3183,21 +3183,28 @@ kernel void generate_motor_spinal_autonomic_state(
       }
       body_evidence_count += 1u;
     }
-    const uint effector_index = gid % max(
-      uniforms.somatic_effector_belief_count, 1u
-    );
-    device const float *effector = reinterpret_cast<device const float *>(
-      hot_state + uniforms.somatic_effector_belief_offset
-        + ulong(effector_index) * 192ul
-    );
-    device const ulong *effector_identity =
-      reinterpret_cast<device const ulong *>(
-        effector + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
-      );
-    const bool effector_valid =
-      uniforms.somatic_effector_belief_count > 0u
-      && (effector_identity[3] & ulong(NB_CONTROL_FLAG_VALID)) != 0ul
-      && uint(effector_identity[5]) == gid;
+    device const float *effector = nullptr;
+    device const ulong *effector_identity = nullptr;
+    for (uint effector_index = 0u;
+        effector_index < uniforms.somatic_effector_belief_count;
+        ++effector_index) {
+      device const float *candidate_effector =
+        reinterpret_cast<device const float *>(
+          hot_state + uniforms.somatic_effector_belief_offset
+            + ulong(effector_index) * 192ul
+        );
+      device const ulong *candidate_identity =
+        reinterpret_cast<device const ulong *>(
+          candidate_effector + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+        );
+      if ((candidate_identity[3] & ulong(NB_CONTROL_FLAG_VALID)) != 0ul
+          && uint(candidate_identity[5]) == gid) {
+        effector = candidate_effector;
+        effector_identity = candidate_identity;
+        break;
+      }
+    }
+    const bool effector_valid = effector != nullptr;
     const float agency_confidence =
       effector_valid
         ? clamp(effector[8], 0.0f, 1.0f) : 0.0f;
@@ -3228,8 +3235,10 @@ kernel void generate_motor_spinal_autonomic_state(
     );
     const bool anatomical_effector = effector_valid
       && effector_identity[2] != 0ul;
-    const uint first_body_identifier = uint(effector_identity[7]);
-    const uint terminal_body_identifier = uint(effector_identity[7] >> 32u);
+    const uint first_body_identifier = anatomical_effector
+      ? uint(effector_identity[7]) : 0u;
+    const uint terminal_body_identifier = anatomical_effector
+      ? uint(effector_identity[7] >> 32u) : 0u;
     const bool effector_targets_body = motor_goal_valid
       && (first_body_identifier == motor_goal->target_body_identifier
         || terminal_body_identifier == motor_goal->target_body_identifier);
@@ -3245,7 +3254,7 @@ kernel void generate_motor_spinal_autonomic_state(
         )
       : float3(0.0f);
     const float3 absolute_task_effect = abs(learned_task_effect);
-    uint task_axis = gid % 3u;
+    uint task_axis = anatomical_effector ? 0u : gid % 3u;
     if (absolute_task_effect.y > absolute_task_effect[task_axis]) {
       task_axis = 1u;
     }
@@ -3390,9 +3399,24 @@ kernel void generate_motor_spinal_autonomic_state(
     );
     NBMotorCommandRecord command;
     command.excitation = clamp(developed_descending, 0.0f, 1.0f);
+    float anatomical_force_target = 0.0f;
+    const float task_effect_magnitude = length(learned_task_effect);
+    if (motor_goal_valid && anatomical_effector
+        && task_effect_magnitude > 1.0e-4f) {
+      anatomical_force_target = clamp(abs(dot(
+        learned_task_effect / task_effect_magnitude,
+        float3(
+          motor_goal->force_target[0],
+          motor_goal->force_target[1],
+          motor_goal->force_target[2]
+        )
+      )), 0.0f, 1.0f);
+    }
     command.force_target = motor_goal_valid
       ? (muscle_excitation
-        ? clamp(abs(motor_goal->force_target[task_axis]), 0.0f, 1.0f)
+        ? (anatomical_effector
+          ? anatomical_force_target
+          : clamp(abs(motor_goal->force_target[task_axis]), 0.0f, 1.0f))
         : clamp(motor_goal->force_target[task_axis], -1.0f, 1.0f))
       : nb_motor_feature(descending, uniforms.actuator_command_kind);
     const float goal_stiffness = motor_goal_valid
@@ -3454,7 +3478,9 @@ kernel void generate_motor_spinal_autonomic_state(
         ];
       }
     }
-    cpg_output = clamp(cpg_output, 0.0f, 1.0f);
+    // Antagonist decoder gains remain signed until final motor-neuron
+    // excitation is bounded; otherwise the negative half of a gait vanishes.
+    cpg_output = clamp(cpg_output, -1.0f, 1.0f);
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
     spinal_state.cpg_output = cpg_output;
