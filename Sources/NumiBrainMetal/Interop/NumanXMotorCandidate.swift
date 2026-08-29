@@ -17,6 +17,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public let brainGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let motorProfileFingerprint: UInt64
+  public let actuatorCommandKind: ActuatorCommandKind
   public let motorOutputHeaderGPUAddress: UInt64
   public let muscleExcitationGPUAddress: UInt64
   public let autonomicCommandGPUAddress: UInt64
@@ -31,6 +32,12 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public let activeSensingCommandCount: UInt32
   public let environmentIdentifier: UInt32
   public let fingerprint: UInt64
+
+  /// Generic aliases for the physical somatic vector. Biological NumanX
+  /// adapters may continue to use the muscle-specific stored names.
+  public var actuatorCommandGPUAddress: UInt64 { muscleExcitationGPUAddress }
+  public var actuatorCommandByteCount: UInt32 { muscleExcitationByteCount }
+  public var actuatorCount: UInt32 { muscleCount }
 
   public init(
     transaction: BrainJointTransactionToken,
@@ -64,6 +71,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.brain_generation = output.brainGeneration
     record.species_template_fingerprint = fastSystems.speciesTemplateFingerprint
     record.motor_profile_fingerprint = output.profileFingerprint
+    record.actuator_command_kind = UInt32(output.actuatorCommandKind.rawValue)
+    record.reserved = 0
     record.motor_output_header_gpu_address = output.headerGPUAddress
     record.muscle_excitation_gpu_address = output.muscleExcitationGPUAddress
     record.random_counter_generation = fastSystems.substep.randomCounterGeneration
@@ -127,6 +136,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     brainGeneration = record.brain_generation
     speciesTemplateFingerprint = record.species_template_fingerprint
     motorProfileFingerprint = record.motor_profile_fingerprint
+    actuatorCommandKind = ActuatorCommandKind(
+      rawValue: UInt16(record.actuator_command_kind)
+    )!
     motorOutputHeaderGPUAddress = record.motor_output_header_gpu_address
     muscleExcitationGPUAddress = record.muscle_excitation_gpu_address
     autonomicCommandGPUAddress = record.autonomic_command_gpu_address
@@ -153,6 +165,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.brain_generation = brainGeneration
     record.species_template_fingerprint = speciesTemplateFingerprint
     record.motor_profile_fingerprint = motorProfileFingerprint
+    record.actuator_command_kind = UInt32(actuatorCommandKind.rawValue)
+    record.reserved = 0
     record.motor_output_header_gpu_address = motorOutputHeaderGPUAddress
     record.muscle_excitation_gpu_address = muscleExcitationGPUAddress
     record.random_counter_generation = randomCounterGeneration

@@ -585,6 +585,17 @@ struct NBMotorChannelDescriptorABI {
     uint reserved1;
 };
 
+struct NBSomaticActuatorDescriptorABI {
+    uint actuator_identifier;
+    uint command_kind;
+    uint flags;
+    uint reserved;
+    float output_minimum;
+    float output_maximum;
+    float neutral_command;
+    float emergency_command;
+};
+
 struct NBMotorOutputHeaderABI {
     uint format_version;
     uint flags;
@@ -596,6 +607,10 @@ struct NBMotorOutputHeaderABI {
     uint environment_identifier;
     float motor_inhibition;
     float autonomic_arousal;
+    uint actuator_command_kind;
+    uint reserved;
+    float output_minimum;
+    float output_maximum;
     ulong output_fingerprint;
 };
 
@@ -779,7 +794,9 @@ static_assert(sizeof(NBAutonomicCommandRecordABI) == 16,
 static_assert(sizeof(NBMotorCommandRecordABI) == 32, "motor command record drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
-static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
+static_assert(sizeof(NBSomaticActuatorDescriptorABI) == 32,
+              "somatic actuator descriptor drift");
+static_assert(sizeof(NBMotorOutputHeaderABI) == 80, "motor output ABI drift");
 static_assert(sizeof(NBBodyLoadFieldUniformsABI) == 32, "body-load uniforms drift");
 static_assert(sizeof(NBBodyLoadFieldRecordABI) == 56, "body-load record drift");
 static_assert(sizeof(NBBodySchemaUniformsABI) == 56, "body-schema uniforms drift");
@@ -817,7 +834,7 @@ constant uint NBProtectiveCommandFlagEmergencyStop = 1u << 1;
 constant uint NBProtectiveCommandFlagWithdrawal = 1u << 2;
 constant uint NBProtectiveCommandFlagPosturalBrace = 1u << 3;
 constant uint NBProtectiveCommandFlagAutonomicArousal = 1u << 4;
-constant uint NBMotorOutputVersion = 2u;
+constant uint NBMotorOutputVersion = 3u;
 constant uint NBMotorOutputFlagValid = 1u << 0;
 constant uint NBMotorOutputFlagEmergencyStop = 1u << 1;
 constant uint NBMotorOutputFlagLocalizedSourceInhibition = 1u << 2;
@@ -905,6 +922,10 @@ inline ulong motor_output_fingerprint(
     protective_mix_uint(hash, header.environment_identifier);
     protective_mix_float(hash, header.motor_inhibition);
     protective_mix_float(hash, header.autonomic_arousal);
+    protective_mix_uint(hash, header.actuator_command_kind);
+    protective_mix_uint(hash, header.reserved);
+    protective_mix_float(hash, header.output_minimum);
+    protective_mix_float(hash, header.output_maximum);
     for (uint index = 0u; index < header.muscle_count; ++index) {
         protective_mix_float(hash, muscleExcitations[index]);
     }
@@ -3098,6 +3119,8 @@ kernel void map_protective_motor_output(
     device const NBFastReflexRuleABI *reflexRules [[buffer(15)]],
     device NBFastReflexStateABI *reflexStates [[buffer(16)]],
     device const NBFastCerebellarStateABI *fastCerebellarStates [[buffer(17)]],
+    device const NBSomaticActuatorDescriptorABI *actuatorDescriptors
+        [[buffer(18)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -3292,8 +3315,16 @@ kernel void map_protective_motor_output(
         }
     }
     bool hasLocalizedSourceInhibition = false;
+    const bool emergencyStop =
+        (command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u;
+    float outputMinimum = actuatorDescriptors[0].output_minimum;
+    float outputMaximum = actuatorDescriptors[0].output_maximum;
     for (uint index = 0u; index < uniforms->muscle_count; ++index) {
         const NBMotorChannelDescriptorABI channel = channels[index];
+        const NBSomaticActuatorDescriptorABI actuator =
+            actuatorDescriptors[index];
+        outputMinimum = min(outputMinimum, actuator.output_minimum);
+        outputMaximum = max(outputMaximum, actuator.output_maximum);
         const NBMuscleAttachmentRecordABI attachment = attachments[index];
         bool sharesLocalizedWithdrawalEndpoint = false;
         if (hasLocalizedWithdrawalSource &&
@@ -3398,9 +3429,19 @@ kernel void map_protective_motor_output(
         const bool inhibitSource = sourceInhibitionMask[index] != 0u ||
             retainedSourceInhibition;
         hasLocalizedSourceInhibition = hasLocalizedSourceInhibition || inhibitSource;
-        muscleExcitations[index] = inhibitSource
-            ? 0.0f
-            : clamp(excitation, 0.0f, channel.maximum_excitation);
+        const float normalizedCommand = clamp(
+            excitation,
+            0.0f,
+            channel.maximum_excitation
+        );
+        const float adaptedCommand = fma(
+            normalizedCommand,
+            actuator.output_maximum - actuator.output_minimum,
+            actuator.output_minimum
+        );
+        muscleExcitations[index] = emergencyStop
+            ? actuator.emergency_command
+            : (inhibitSource ? actuator.neutral_command : adaptedCommand);
     }
     NBMotorOutputHeaderABI header;
     header.format_version = NBMotorOutputVersion;
@@ -3422,6 +3463,10 @@ kernel void map_protective_motor_output(
     header.environment_identifier = command.environment_identifier;
     header.motor_inhibition = command.motor_inhibition;
     header.autonomic_arousal = command.autonomic_arousal;
+    header.actuator_command_kind = actuatorDescriptors[0].command_kind;
+    header.reserved = 0u;
+    header.output_minimum = outputMinimum;
+    header.output_maximum = outputMaximum;
     header.output_fingerprint = motor_output_fingerprint(header, muscleExcitations);
     outputHeader[0] = header;
 }

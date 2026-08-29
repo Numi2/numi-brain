@@ -72,7 +72,9 @@ static_assert(offsetof(NBMotorOutputHeader, profile_fingerprint) == 24);
 static_assert(offsetof(NBMotorOutputHeader, protective_command_fingerprint) == 32);
 static_assert(offsetof(NBMotorOutputHeader, muscle_count) == 40);
 static_assert(offsetof(NBMotorOutputHeader, motor_inhibition) == 48);
-static_assert(offsetof(NBMotorOutputHeader, output_fingerprint) == 56);
+static_assert(offsetof(NBMotorOutputHeader, actuator_command_kind) == 56);
+static_assert(offsetof(NBMotorOutputHeader, output_minimum) == 64);
+static_assert(offsetof(NBMotorOutputHeader, output_fingerprint) == 72);
 static_assert(offsetof(NBNumanXMotorCandidate, format_version) == 0);
 static_assert(offsetof(NBNumanXMotorCandidate, transaction_fingerprint) == 8);
 static_assert(offsetof(NBNumanXMotorCandidate, substep_fingerprint) == 16);
@@ -93,8 +95,9 @@ static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_count) == 100);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_gpu_address) == 104);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_byte_count) == 112);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_count) == 116);
-static_assert(offsetof(NBNumanXMotorCandidate, species_template_fingerprint) == 120);
-static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 128);
+static_assert(offsetof(NBNumanXMotorCandidate, actuator_command_kind) == 120);
+static_assert(offsetof(NBNumanXMotorCandidate, species_template_fingerprint) == 128);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 136);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -1545,6 +1548,10 @@ uint64_t nb_brain_abi_motor_output_fingerprint(
   mix_little_endian(hash, header->environment_identifier);
   mix_float(hash, header->motor_inhibition);
   mix_float(hash, header->autonomic_arousal);
+  mix_little_endian(hash, header->actuator_command_kind);
+  mix_little_endian(hash, header->reserved);
+  mix_float(hash, header->output_minimum);
+  mix_float(hash, header->output_maximum);
   for (uint32_t index = 0; index < header->muscle_count; ++index) {
     mix_float(hash, muscle_excitations[index]);
   }
@@ -1577,13 +1584,20 @@ uint32_t nb_brain_abi_validate_motor_output(
     return NB_MOTOR_OUTPUT_GENERATION;
   }
   if (!std::isfinite(header->motor_inhibition)
-      || !std::isfinite(header->autonomic_arousal)) {
+      || !std::isfinite(header->autonomic_arousal)
+      || !std::isfinite(header->output_minimum)
+      || !std::isfinite(header->output_maximum)) {
     return NB_MOTOR_OUTPUT_NONFINITE;
   }
   if (header->motor_inhibition < 0.0F || header->motor_inhibition > 1.0F
       || header->autonomic_arousal < 0.0F
-      || header->autonomic_arousal > 1.0F) {
+      || header->autonomic_arousal > 1.0F
+      || header->output_minimum >= header->output_maximum) {
     return NB_MOTOR_OUTPUT_RANGE;
+  }
+  if (header->actuator_command_kind < 1
+      || header->actuator_command_kind > 7 || header->reserved != 0) {
+    return NB_MOTOR_OUTPUT_COMMAND_KIND;
   }
   const bool emergency =
       (header->flags & NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP) != 0;
@@ -1591,11 +1605,11 @@ uint32_t nb_brain_abi_validate_motor_output(
     return NB_MOTOR_OUTPUT_RELATION;
   }
   for (uint32_t index = 0; index < header->muscle_count; ++index) {
-    const float excitation = muscle_excitations[index];
-    if (!std::isfinite(excitation)) {
+    const float command = muscle_excitations[index];
+    if (!std::isfinite(command)) {
       return NB_MOTOR_OUTPUT_NONFINITE;
     }
-    if (excitation < 0.0F || excitation > 1.0F) {
+    if (command < header->output_minimum || command > header->output_maximum) {
       return NB_MOTOR_OUTPUT_RANGE;
     }
   }
@@ -1638,6 +1652,8 @@ uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
   mix_little_endian(hash, candidate->active_sensing_command_gpu_address);
   mix_little_endian(hash, candidate->active_sensing_command_byte_count);
   mix_little_endian(hash, candidate->active_sensing_command_count);
+  mix_little_endian(hash, candidate->actuator_command_kind);
+  mix_little_endian(hash, candidate->reserved);
   mix_little_endian(hash, candidate->species_template_fingerprint);
   return hash;
 }
@@ -1668,7 +1684,10 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
           != substep->random_counter_generation
       || candidate->environment_identifier != root->environment_identifier
       || candidate->motor_profile_fingerprint == 0
-      || candidate->species_template_fingerprint == 0) {
+      || candidate->species_template_fingerprint == 0
+      || candidate->actuator_command_kind < 1
+      || candidate->actuator_command_kind > 7
+      || candidate->reserved != 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
   }
   const uint64_t expected_generation =

@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 enum {
-  NB_BRAIN_ABI_VERSION = 5,
+  NB_BRAIN_ABI_VERSION = 6,
   NB_MODULE_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MODULE_CLOCK_STATE_BYTE_COUNT = 16,
   NB_RECEPTOR_EVENT_BYTE_COUNT = 64,
@@ -43,16 +43,16 @@ enum {
   NB_JOINT_COMMIT_TOKEN_BYTE_COUNT = 64,
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
-  NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 64,
+  NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 80,
   NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
   NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT = 16,
-  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 136,
+  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 144,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
-  NB_MOTOR_OUTPUT_VERSION = 2,
-  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 4,
+  NB_MOTOR_OUTPUT_VERSION = 3,
+  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 5,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -451,8 +451,10 @@ typedef struct NBMotorChannelDescriptor {
   uint32_t reserved1;
 } NBMotorChannelDescriptor;
 
-/// Header paired with a contiguous FP32 excitation array. The output remains
-/// neural control input to NumanX; it never authoritatively mutates physics.
+/// Header paired with a contiguous FP32 somatic command array. Command kind 1
+/// is muscle excitation; other kinds are species-adapted physical actuator
+/// commands. The output remains neural control input to NumanX and never
+/// authoritatively mutates physics.
 typedef struct NBMotorOutputHeader {
   uint32_t format_version;
   uint32_t flags;
@@ -464,6 +466,10 @@ typedef struct NBMotorOutputHeader {
   uint32_t environment_identifier;
   float motor_inhibition;
   float autonomic_arousal;
+  uint32_t actuator_command_kind;
+  uint32_t reserved;
+  float output_minimum;
+  float output_maximum;
   uint64_t output_fingerprint;
 } NBMotorOutputHeader;
 
@@ -497,6 +503,9 @@ typedef struct NBNumanXMotorCandidate {
   uint64_t brain_generation;
   uint64_t motor_profile_fingerprint;
   uint64_t motor_output_header_gpu_address;
+  /// GPU address of the physical somatic vector. The historical field name is
+  /// retained for source and binary continuity; actuator_command_kind defines
+  /// how every element must be interpreted.
   uint64_t muscle_excitation_gpu_address;
   uint64_t random_counter_generation;
   uint32_t motor_output_header_byte_count;
@@ -509,6 +518,8 @@ typedef struct NBNumanXMotorCandidate {
   uint64_t active_sensing_command_gpu_address;
   uint32_t active_sensing_command_byte_count;
   uint32_t active_sensing_command_count;
+  uint32_t actuator_command_kind;
+  uint32_t reserved;
   uint64_t species_template_fingerprint;
   uint64_t candidate_fingerprint;
 } NBNumanXMotorCandidate;
@@ -654,7 +665,8 @@ typedef enum NBMotorOutputValidation {
   NB_MOTOR_OUTPUT_NONFINITE = 6,
   NB_MOTOR_OUTPUT_RANGE = 7,
   NB_MOTOR_OUTPUT_RELATION = 8,
-  NB_MOTOR_OUTPUT_FINGERPRINT = 9,
+  NB_MOTOR_OUTPUT_COMMAND_KIND = 9,
+  NB_MOTOR_OUTPUT_FINGERPRINT = 10,
 } NBMotorOutputValidation;
 
 typedef enum NBNumanXMotorCandidateValidation {

@@ -57,6 +57,17 @@ private struct FastAutonomicChannelDescriptor {
   var reserved: Float = 0
 }
 
+private struct SomaticActuatorDescriptor {
+  var actuatorIdentifier: UInt32 = 0
+  var commandKind: UInt32 = 0
+  var flags: UInt32 = 0
+  var reserved: UInt32 = 0
+  var outputMinimum: Float = 0
+  var outputMaximum: Float = 1
+  var neutralCommand: Float = 0
+  var emergencyCommand: Float = 0
+}
+
 private struct BodyLoadFieldUniforms {
   var attachmentCatalogFingerprint: UInt64 = 0
   var bodyCount: UInt32 = 0
@@ -369,6 +380,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let timestamp: BrainTimestamp
     public let brainGeneration: UInt64
     public let profileFingerprint: UInt64
+    public let actuatorCommandKind: ActuatorCommandKind
+
+    /// Species-adapted physical command vector. The muscle-named stored fields
+    /// remain ABI-compatible with the original biological handoff.
+    public var actuatorCommandGPUAddress: UInt64 { muscleExcitationGPUAddress }
+    public var actuatorCommandByteCount: Int { muscleExcitationByteCount }
+    public var actuatorCount: Int { muscleCount }
   }
 
   public struct FastAutonomicOutputBufferView: Equatable, Sendable {
@@ -509,6 +527,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveCommandUniformBuffer: any MTLBuffer
   private let protectiveCommandBuffers: [any MTLBuffer]
   private let protectiveMotorProfileBuffer: any MTLBuffer
+  private let somaticActuatorDescriptorBuffer: any MTLBuffer
   private let protectiveSourceInhibitionMaskBuffer: any MTLBuffer
   private let zeroDescendingSomaticBuffer: any MTLBuffer
   private let descendingSomaticBuffer: any MTLBuffer
@@ -622,6 +641,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var boundFastAutonomicVitalGain: Float = 0
   private var boundFastAutonomicChannelCount: Int = 0
   private var boundActiveSensingChannelCount: Int = 0
+  private var boundActuatorCommandKind: ActuatorCommandKind = .muscleExcitation
   private var stagedCognitiveEventTransactionFingerprint: UInt64?
   private var stagedCognitiveEventMaximumCount: Int = 0
 
@@ -1039,7 +1059,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 18
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 19
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -1321,6 +1341,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<FastAutonomicUniforms>.stride == 40,
       MemoryLayout<FastAutonomicChannelDescriptor>.stride
         == Self.fastAutonomicChannelDescriptorStride,
+      MemoryLayout<SomaticActuatorDescriptor>.stride == 32,
       MetalAgentStateLayout.eventTokenStride == Self.cognitiveEventRecordStride,
       MemoryLayout<FastReflexRule>.stride == Self.fastReflexRuleStride
     else {
@@ -1511,6 +1532,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
       let protectiveMotorProfileBuffer = device.makeBuffer(
+        length: protectiveMotorProfileByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let somaticActuatorDescriptorBuffer = device.makeBuffer(
         length: protectiveMotorProfileByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
@@ -1744,6 +1769,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     firstProtectiveCommandBuffer.label = "NumiBrain protective command generation 0"
     secondProtectiveCommandBuffer.label = "NumiBrain protective command generation 1"
     protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
+    somaticActuatorDescriptorBuffer.label =
+      "NumiBrain immutable somatic actuator command contracts"
     zeroDescendingSomaticBuffer.label = "NumiBrain zero descending somatic command"
     descendingSomaticBuffer.label = "NumiBrain transaction descending somatic command"
     fastCPGUniformBuffer.label = "NumiBrain accepted fast CPG sampling uniforms"
@@ -1956,6 +1983,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       residencySet.addAllocation(buffer)
     }
     residencySet.addAllocation(protectiveMotorProfileBuffer)
+    residencySet.addAllocation(somaticActuatorDescriptorBuffer)
     residencySet.addAllocation(protectiveSourceInhibitionMaskBuffer)
     residencySet.addAllocation(zeroDescendingSomaticBuffer)
     residencySet.addAllocation(descendingSomaticBuffer)
@@ -2089,6 +2117,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveCommandUniformBuffer = protectiveCommandUniformBuffer
     self.protectiveCommandBuffers = protectiveCommandBuffers
     self.protectiveMotorProfileBuffer = protectiveMotorProfileBuffer
+    self.somaticActuatorDescriptorBuffer = somaticActuatorDescriptorBuffer
     self.protectiveSourceInhibitionMaskBuffer = protectiveSourceInhibitionMaskBuffer
     self.zeroDescendingSomaticBuffer = zeroDescendingSomaticBuffer
     self.descendingSomaticBuffer = descendingSomaticBuffer
@@ -2482,6 +2511,31 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: protectiveMotorProfileBuffer,
       size: protectiveMotorProfileByteCount,
       label: "NumiBrain protective motor-profile upload"
+    )
+    let initialActuatorDescriptors = protectiveMotorProfile.channels.indices.map {
+      SomaticActuatorDescriptor(
+        actuatorIdentifier: UInt32($0),
+        commandKind: UInt32(ActuatorCommandKind.muscleExcitation.rawValue),
+        flags: 1,
+        reserved: 0,
+        outputMinimum: 0,
+        outputMaximum: 1,
+        neutralCommand: 0,
+        emergencyCommand: 0
+      )
+    }
+    initialActuatorDescriptors.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: protectiveMotorProfileByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: somaticActuatorDescriptorBuffer,
+      size: protectiveMotorProfileByteCount,
+      label: "NumiBrain default muscle actuator-contract upload"
     )
     protectiveSourceInhibitionMaskBuffer.contents().initializeMemory(
       as: UInt8.self,
@@ -2967,6 +3021,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         * MemoryLayout<FastAutonomicChannelDescriptor>.stride,
       label: "NumiBrain species autonomic-program upload"
     )
+    let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
+      SomaticActuatorDescriptor(
+        actuatorIdentifier: channel.identifier,
+        commandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
+        flags: 1,
+        reserved: 0,
+        outputMinimum: channel.outputMinimum,
+        outputMaximum: channel.outputMaximum,
+        neutralCommand: channel.neutralCommand,
+        emergencyCommand: channel.emergencyCommand
+      )
+    }
+    guard actuatorDescriptors.count == protectiveMotorProfile.channels.count,
+      actuatorDescriptors.count * MemoryLayout<SomaticActuatorDescriptor>.stride
+        == protectiveMotorProfileByteCount
+    else {
+      throw TissueError.metal("species somatic adapter does not match the motor runtime")
+    }
+    actuatorDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: somaticActuatorDescriptorBuffer,
+      size: protectiveMotorProfileByteCount,
+      label: "NumiBrain species somatic actuator-contract upload"
+    )
     boundFastReflexSpeciesFingerprint = species.fingerprint
     boundFastReflexRuleCount = rules.count
     boundFastAutonomicChannelCount = Int(
@@ -2975,6 +3057,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     boundActiveSensingChannelCount = Int(
       species.motor.activeSensingActionDimension
     )
+    boundActuatorCommandKind = species.motor.actuatorCommandKind
     boundFastAutonomicVitalGain = species.innateBehaviors
       .filter { $0.kind == .vitalAutonomic }
       .map(\.gain)
@@ -3432,6 +3515,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         stagedFastCerebellarStateBuffer.gpuAddress,
         index: 17
       )
+      protectiveMotorArgumentTable.setAddress(
+        somaticActuatorDescriptorBuffer.gpuAddress,
+        index: 18
+      )
       encoder.setComputePipelineState(protectiveMotorPipeline)
       encoder.setArgumentTable(protectiveMotorArgumentTable)
       encoder.dispatchThreads(
@@ -3601,7 +3688,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         muscleCount: protectiveMotorProfile.channels.count,
         timestamp: protectiveTimestamp,
         brainGeneration: protectiveMotorGeneration,
-        profileFingerprint: protectiveMotorProfile.fingerprint
+        profileFingerprint: protectiveMotorProfile.fingerprint,
+        actuatorCommandKind: boundActuatorCommandKind
       ),
       fastAutonomicOutput: FastAutonomicOutputBufferView(
         gpuAddress: stagedFastAutonomicOutputBuffer.gpuAddress,
@@ -3718,6 +3806,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       output.headerByteCount == ProtectiveMotorOutput.headerByteCount,
       output.muscleExcitationByteCount == protectiveMuscleExcitationByteCount,
       output.muscleCount == protectiveMotorProfile.channels.count,
+      output.actuatorCommandKind == boundActuatorCommandKind,
       headerBuffer.length >= output.headerByteCount,
       excitationBuffer.length >= output.muscleExcitationByteCount,
       autonomic.gpuAddress == stagedFastAutonomicOutputBuffer.gpuAddress,
@@ -5953,6 +6042,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorArgumentTable.setAddress(
       stagedFastCerebellarStateBuffer.gpuAddress,
       index: 17
+    )
+    protectiveMotorArgumentTable.setAddress(
+      somaticActuatorDescriptorBuffer.gpuAddress,
+      index: 18
     )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)

@@ -187,6 +187,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
   public let environmentIdentifier: UInt32
   public let motorInhibition: Float
   public let autonomicArousal: Float
+  public let actuatorCommandKind: ActuatorCommandKind
+  public let outputMinimum: Float
+  public let outputMaximum: Float
   public let muscleExcitations: [Float]
   public let fingerprint: UInt64
 
@@ -230,6 +233,13 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
         throw BrainRuntimeError.transaction("protective motor output command drift")
       }
     }
+    guard let actuatorCommandKind = ActuatorCommandKind(
+      rawValue: UInt16(header.actuator_command_kind)
+    ) else {
+      throw BrainRuntimeError.transaction(
+        "protective motor output has an unknown actuator command kind"
+      )
+    }
     flags = ProtectiveMotorOutputFlags(rawValue: header.flags)
     timestamp = BrainTimestamp(microseconds: header.timestamp_microseconds)
     brainGeneration = header.brain_generation
@@ -238,6 +248,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     environmentIdentifier = header.environment_identifier
     motorInhibition = header.motor_inhibition
     autonomicArousal = header.autonomic_arousal
+    self.actuatorCommandKind = actuatorCommandKind
+    outputMinimum = header.output_minimum
+    outputMaximum = header.output_maximum
     self.muscleExcitations = muscleExcitations
     fingerprint = header.output_fingerprint
   }
@@ -254,6 +267,10 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     header.environment_identifier = environmentIdentifier
     header.motor_inhibition = motorInhibition
     header.autonomic_arousal = autonomicArousal
+    header.actuator_command_kind = UInt32(actuatorCommandKind.rawValue)
+    header.reserved = 0
+    header.output_minimum = outputMinimum
+    header.output_maximum = outputMaximum
     header.output_fingerprint = fingerprint
     return header
   }
@@ -387,6 +404,10 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     header.environment_identifier = command.environmentIdentifier
     header.motor_inhibition = command.motorInhibition
     header.autonomic_arousal = command.autonomicArousal
+    header.actuator_command_kind = UInt32(ActuatorCommandKind.muscleExcitation.rawValue)
+    header.reserved = 0
+    header.output_minimum = 0
+    header.output_maximum = 1
     header.output_fingerprint = excitations.withUnsafeBufferPointer { buffer in
       withUnsafePointer(to: &header) {
         nb_brain_abi_motor_output_fingerprint($0, buffer.baseAddress)
