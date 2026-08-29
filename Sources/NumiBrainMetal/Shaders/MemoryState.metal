@@ -312,6 +312,7 @@ struct NBMemoryReconsolidationUniforms {
   ulong archive_page_epoch_offset;
   ulong control_header_offset;
   ulong drive_offset;
+  ulong body_belief_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
   uint recurrent_scalar_count;
@@ -334,6 +335,8 @@ struct NBMemoryReconsolidationUniforms {
   uint archive_records_per_page;
   uint archive_page_count;
   uint drive_count;
+  uint body_belief_count;
+  uint reserved_body_belief;
   uint maximum_results;
   uint journal_entry_capacity;
   float learning_rate;
@@ -914,7 +917,7 @@ static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
-static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
+static_assert(sizeof(NBMemoryReconsolidationUniforms) == 288);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 320);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
@@ -2446,6 +2449,31 @@ kernel void reconsolidate_retrieved_memory(
     if (uniforms.drive_count > 11u) accepted_damage = max(
       accepted_damage, drives[11].level
     );
+    for (uint body_index = 0u;
+        body_index < uniforms.body_belief_count; ++body_index) {
+      device const float *body = reinterpret_cast<device const float *>(
+        hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        body + 16
+      );
+      if ((identity[3] & 1ul) == 0ul) continue;
+      if (isfinite(body[5])) {
+        accepted_damage = max(
+          accepted_damage, clamp(body[5], 0.0f, 1.0f)
+        );
+      }
+      if (isfinite(body[7])) {
+        accepted_damage = max(
+          accepted_damage, clamp(body[7], 0.0f, 1.0f)
+        );
+      }
+      if (isfinite(body[11])) {
+        accepted_damage = max(
+          accepted_damage, clamp(body[11], 0.0f, 1.0f)
+        );
+      }
+    }
     accepted_damage = clamp(accepted_damage, 0.0f, uniforms.maximum_damage);
     const float success = clamp(
       control->progress * (1.0f - accepted_damage), 0.0f, 1.0f

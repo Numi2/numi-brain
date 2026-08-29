@@ -159,6 +159,7 @@ private struct MemoryReconsolidationUniforms {
   var archivePageEpochOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -181,6 +182,8 @@ private struct MemoryReconsolidationUniforms {
   var archiveRecordsPerPage: UInt32 = 0
   var archivePageCount: UInt32 = 0
   var driveCount: UInt32 = 0
+  var bodyBeliefCount: UInt32 = 0
+  var reservedBodyBelief: UInt32 = 0
   var maximumResults: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var learningRate: Float = 0
@@ -339,7 +342,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 224,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
-      MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
+      MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 320,
@@ -834,6 +837,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let recurrent = layout.section(.regionalRecurrent)
     let observations = layout.section(.sensoryObservations)
+    let bodyBelief = layout.section(.bodyBelief)
+    guard bodyBelief.elementCount > 0,
+      bodyBelief.elementCount <= Int(UInt32.max)
+    else {
+      throw TissueError.transaction("body belief exceeds reconsolidation capacity")
+    }
     var uniforms = MemoryReconsolidationUniforms(
       targetTimestampMicroseconds: timestamp.rawValue,
       baseGeneration: transaction.baseGeneration,
@@ -855,6 +864,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       driveOffset: UInt64(layout.section(.drives).byteOffset),
+      bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
       recurrentScalarCount: UInt32(recurrent.elementCount),
@@ -881,6 +891,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         layout.section(.archivePageEpochs).elementCount
       ),
       driveCount: UInt32(layout.section(.drives).elementCount),
+      bodyBeliefCount: UInt32(bodyBelief.elementCount),
       maximumResults: UInt32(maximumResults),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       learningRate: 0.10,
