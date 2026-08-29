@@ -13,6 +13,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let source: MetalLearningBatch
   public let rawBytes: MLXArray
   public let validMask: MLXArray
+  public let parameterVersionFingerprints: MLXArray
   public let priorState: MLXArray
   public let posteriorState: MLXArray
   public let observations: MLXArray
@@ -44,13 +45,19 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       raw[0..., byteOffset..<(byteOffset + count * dtype.size)].view(dtype: dtype)
     }
     let format = field(64, count: 1, dtype: .uint32)
-    let validMask = (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
+    let parameterVersionFingerprints = field(24, count: 1, dtype: .uint64)
+    let formatMask = (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
       .asType(.float32)
+    let versionMask = (
+      parameterVersionFingerprints .== source.parameterVersionFingerprint
+    ).asType(.float32)
+    let validMask = formatMask * versionMask
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
     self.source = source
     self.rawBytes = raw
     self.validMask = validMask
+    self.parameterVersionFingerprints = parameterVersionFingerprints
     self.priorState = field(128, count: 24, dtype: .float32)
     self.posteriorState = field(224, count: 24, dtype: .float32)
     self.observations = field(320, count: 24, dtype: .float32)

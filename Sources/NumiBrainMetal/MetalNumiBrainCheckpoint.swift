@@ -80,6 +80,102 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
     }
   }
 
+  /// Creates a new complete-state envelope for a direct successor parameter
+  /// publication. Mutable mind, memory, scheduler, plasticity, and tissue bytes
+  /// are preserved exactly; only the immutable runtime binding changes. The
+  /// parent checkpoint remains valid for deterministic replay under its own
+  /// version, while the returned checkpoint starts the successor cohort from
+  /// the same committed embodied history.
+  public func migrated(
+    from parentVersion: BrainParameterVersion,
+    to successorPublication: BrainParameterPublication
+  ) throws -> Self {
+    try validate()
+    let successor = successorPublication.version
+    let (expectedSequence, overflow) = parentVersion.sequence.addingReportingOverflow(1)
+    let parentTissue = parentVersion.components.first(where: {
+      $0.kind == .tissueDynamics
+    })
+    let successorTissue = successor.components.first(where: {
+      $0.kind == .tissueDynamics
+    })
+    let parentRegional = parentVersion.components.first(where: {
+      $0.kind == .regionalOperator
+    })
+    let successorRegional = successor.components.first(where: {
+      $0.kind == .regionalOperator
+    })
+    guard !overflow,
+      cognitiveState.parameterVersionFingerprint == parentVersion.fingerprint,
+      fastTissueState.parameterVersionFingerprint == parentVersion.fingerprint,
+      successor.parentFingerprint == parentVersion.fingerprint,
+      successor.sequence == expectedSequence,
+      successor.scheduleFingerprint == parentVersion.scheduleFingerprint,
+      successor.regionalShapeFingerprint == parentVersion.regionalShapeFingerprint,
+      successor.regionalProgramFingerprint == parentVersion.regionalProgramFingerprint,
+      successor.scheduleFingerprint == cognitiveState.scheduleFingerprint,
+      successor.regionalProgramFingerprint == cognitiveState.regionalProgramFingerprint,
+      parentTissue == successorTissue,
+      parentRegional == successorRegional,
+      successorPublication.learnerUpdateFingerprint > 0,
+      successorPublication.sourceBatchFingerprint > 0,
+      successorPublication.sourceGeneration > 0
+    else {
+      throw TissueError.transaction(
+        "state migration requires a shape-compatible direct learner successor"
+      )
+    }
+    try successorPublication.sharedArtifact.validate(parameterVersion: successor)
+
+    let migratedCognitive = try MetalBrainCheckpoint(
+      committedGeneration: cognitiveState.committedGeneration,
+      committedTimestamp: cognitiveState.committedTimestamp,
+      environmentIdentifier: cognitiveState.environmentIdentifier,
+      episodeIdentifier: cognitiveState.episodeIdentifier,
+      controlStepIdentifier: cognitiveState.controlStepIdentifier,
+      speciesTemplateFingerprint: cognitiveState.speciesTemplateFingerprint,
+      regionalProgramFingerprint: cognitiveState.regionalProgramFingerprint,
+      scheduleFingerprint: cognitiveState.scheduleFingerprint,
+      parameterVersionFingerprint: successor.fingerprint,
+      hotLayoutFingerprint: cognitiveState.hotLayoutFingerprint,
+      memoryLayoutFingerprint: cognitiveState.memoryLayoutFingerprint,
+      physicalCheckpointFingerprint: cognitiveState.physicalCheckpointFingerprint,
+      hotState: cognitiveState.hotState,
+      persistentMemory: cognitiveState.persistentMemory
+    )
+    let migratedFast = try MetalTissueCheckpoint(
+      width: fastTissueState.width,
+      height: fastTissueState.height,
+      environmentIdentifier: fastTissueState.environmentIdentifier,
+      randomContext: fastTissueState.randomContext,
+      committedStep: fastTissueState.committedStep,
+      committedSchedulerTime: fastTissueState.committedSchedulerTime,
+      committedSchedulerGeneration: fastTissueState.committedSchedulerGeneration,
+      committedHistoryOwnerMask: fastTissueState.committedHistoryOwnerMask,
+      committedRelayHistoryTimestamps:
+        fastTissueState.committedRelayHistoryTimestamps,
+      parameterVersionFingerprint: successor.fingerprint,
+      scheduleFingerprint: fastTissueState.scheduleFingerprint,
+      regionalProgramFingerprint: fastTissueState.regionalProgramFingerprint,
+      sharedArtifactFingerprint:
+        successorPublication.sharedArtifact.artifactFingerprint,
+      protectiveMotorProfileFingerprint:
+        fastTissueState.protectiveMotorProfileFingerprint,
+      attachmentCatalogFingerprint: fastTissueState.attachmentCatalogFingerprint,
+      structureHash: fastTissueState.structureHash,
+      delayFieldHash: fastTissueState.delayFieldHash,
+      connectomeHash: fastTissueState.connectomeHash,
+      eventScheduleHash: fastTissueState.eventScheduleHash,
+      bodyLoadFieldDynamics: fastTissueState.bodyLoadFieldDynamics,
+      bodySchemaDynamics: fastTissueState.bodySchemaDynamics,
+      buffers: fastTissueState.buffers
+    )
+    return try Self(
+      cognitiveState: migratedCognitive,
+      fastTissueState: migratedFast
+    )
+  }
+
   public func encoded() throws -> Data {
     try validate()
     let encoder = PropertyListEncoder()

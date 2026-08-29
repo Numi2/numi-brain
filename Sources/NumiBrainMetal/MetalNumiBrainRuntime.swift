@@ -97,6 +97,33 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     try parameterCohort.validate(runtime: self)
   }
 
+  /// Moves one committed embodied mind into an already-created direct
+  /// successor runtime. The source remains untouched until the successor has
+  /// accepted the complete migrated checkpoint, so a failed activation cannot
+  /// destroy the last valid agent state.
+  @discardableResult
+  public func transferCommittedState(
+    to successor: MetalNumiBrainRuntime,
+    parameterCohort: MetalParameterCohort,
+    controlStepIdentifier: UInt64,
+    physicalCheckpointFingerprint: UInt64
+  ) throws -> MetalNumiBrainCheckpoint {
+    let parentCheckpoint = try saveCheckpoint(
+      controlStepIdentifier: controlStepIdentifier,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    let migratedCheckpoint = try parentCheckpoint.migrated(
+      from: fastTissue.parameterVersion,
+      to: parameterCohort.publication
+    )
+    try successor.validate(parameterCohort: parameterCohort)
+    try successor.loadCheckpoint(
+      migratedCheckpoint,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    return migratedCheckpoint
+  }
+
   /// Captures one causally complete brain checkpoint. The caller supplies the
   /// fingerprint returned by the simultaneously saved NumanX body checkpoint;
   /// the envelope refuses to exist if cognitive and fast generations diverge.
