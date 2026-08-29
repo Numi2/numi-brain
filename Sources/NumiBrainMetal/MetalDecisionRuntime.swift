@@ -21,6 +21,7 @@ private struct DecisionUniforms {
   var somaticOutputOffset: UInt64 = 0
   var activeSensingOffset: UInt64 = 0
   var spatialTransformOffset: UInt64 = 0
+  var objectSlotOffset: UInt64 = 0
   var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
@@ -44,6 +45,7 @@ private struct DecisionUniforms {
   var activeSensingDescriptorOffset: UInt32 = 0
   var communicationDescriptorCount: UInt32 = 0
   var spatialTransformCount: UInt32 = 0
+  var objectSlotCount: UInt32 = 0
   var internalActionCapacity: UInt32 = 0
   var maximumPlanningHorizon: UInt32 = 0
   var riskWeight: Float = 0
@@ -115,7 +117,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 296,
+    guard MemoryLayout<DecisionUniforms>.stride == 312,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -412,6 +414,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       spatialTransformOffset: UInt64(
         arena.layout.section(.spatialTransforms).byteOffset
       ),
+      objectSlotOffset: UInt64(
+        arena.layout.section(.objectSlots).byteOffset
+      ),
       internalActionOffset: UInt64(internalActions.byteOffset),
       developmentalStateOffset: UInt64(
         arena.layout.section(.developmentalState).byteOffset
@@ -445,6 +450,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       communicationDescriptorCount: communicationDescriptorCount,
       spatialTransformCount: UInt32(
         arena.layout.section(.spatialTransforms).elementCount
+      ),
+      objectSlotCount: UInt32(
+        arena.layout.section(.objectSlots).elementCount
       ),
       internalActionCapacity: UInt32(internalActions.elementCount),
       maximumPlanningHorizon: UInt32(maximumPlanningHorizon),

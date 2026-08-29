@@ -32,6 +32,7 @@ struct NBDecisionUniforms {
   ulong somatic_output_offset;
   ulong active_sensing_offset;
   ulong spatial_transform_offset;
+  ulong object_slot_offset;
   ulong internal_action_offset;
   ulong developmental_state_offset;
   ulong cerebellar_expert_memory_offset;
@@ -55,6 +56,7 @@ struct NBDecisionUniforms {
   uint active_sensing_descriptor_offset;
   uint communication_descriptor_count;
   uint spatial_transform_count;
+  uint object_slot_count;
   uint internal_action_capacity;
   uint maximum_planning_horizon;
   float risk_weight;
@@ -221,6 +223,21 @@ struct NBSpatialTransformRecord {
   ulong last_evidence_timestamp_microseconds;
 };
 
+struct NBObjectSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float visibility;
+  float uncertainty;
+  float pose[4];
+  float velocity[4];
+  float affordances[8];
+  float latent[102];
+};
+
 struct NBInternalActionRecord {
   ulong target_identifier;
   ulong timestamp_microseconds;
@@ -254,7 +271,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 296);
+static_assert(sizeof(NBDecisionUniforms) == 312);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -268,6 +285,7 @@ static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
+static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
@@ -509,6 +527,10 @@ kernel void propose_dynamic_options(
     reinterpret_cast<device const NBSpatialTransformRecord *>(
       hot_state + uniforms.spatial_transform_offset
     );
+  device const NBObjectSlotRecord *object_slots =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
   device const NBDriveRecord *drives = reinterpret_cast<device const NBDriveRecord *>(
     hot_state + uniforms.drive_offset
   );
@@ -528,13 +550,20 @@ kernel void propose_dynamic_options(
     candidates[gid] = inactive;
     return;
   }
-  if (gid >= 10u) {
-    const uint workspace_slot = 3u + (gid - 10u);
+  const uint procedural_base = candidate_limit > 4u
+    ? max(10u, candidate_limit - 4u)
+    : candidate_limit;
+  if (gid >= procedural_base) {
+    const uint workspace_slot = 3u + (gid - procedural_base);
+    if (workspace_slot >= uniforms.workspace_capacity) {
+      NBOptionCandidateRecord inactive = {};
+      candidates[gid] = inactive;
+      return;
+    }
     const NBWorkspaceMetadataRecord memory_token =
       workspace_metadata[workspace_slot];
     const uint source_module = memory_token.kind_and_source >> 16;
-    if (workspace_slot >= uniforms.workspace_capacity
-        || source_module != 60u || memory_token.entity_identifier == 0ul
+    if (source_module != 60u || memory_token.entity_identifier == 0ul
         || memory_token.confidence <= 0.0f) {
       NBOptionCandidateRecord inactive = {};
       candidates[gid] = inactive;
@@ -568,6 +597,76 @@ kernel void propose_dynamic_options(
       ];
     }
     candidates[gid] = learned;
+    return;
+  }
+  if (gid >= 10u) {
+    const uint object_index = gid - 10u;
+    if (object_index >= uniforms.object_slot_count) {
+      NBOptionCandidateRecord inactive = {};
+      candidates[gid] = inactive;
+      return;
+    }
+    const NBObjectSlotRecord object = object_slots[object_index];
+    if (object.identifier == 0ul || (object.flags & NB_CONTROL_FLAG_VALID) == 0u
+        || object.existence_probability <= 0.01f) {
+      NBOptionCandidateRecord inactive = {};
+      candidates[gid] = inactive;
+      return;
+    }
+    uint strongest_affordance = 0u;
+    float strongest_affordance_value = object.affordances[0];
+    for (uint affordance = 1u; affordance < 8u; ++affordance) {
+      if (object.affordances[affordance] > strongest_affordance_value) {
+        strongest_affordance = affordance;
+        strongest_affordance_value = object.affordances[affordance];
+      }
+    }
+    const float safety = uniforms.drive_count > 11u
+      ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
+    const float physiological_need =
+      (uniforms.drive_count > 0u ? drives[0].deficit : 0.0f)
+      + (uniforms.drive_count > 1u ? drives[1].deficit : 0.0f);
+    const float distance = length(float3(
+      object.pose[0], object.pose[1], object.pose[2]
+    ));
+    NBOptionCandidateRecord affordance_option = {};
+    affordance_option.option_identifier = 0x4000000000000000ul
+      | (object.identifier & 0x0fffffffffffff00ul)
+      | ulong(strongest_affordance + 1u);
+    affordance_option.goal_identifier = control->active_goal_identifier;
+    affordance_option.task_value = max(strongest_affordance_value, 0.0f)
+      * object.existence_probability * value_parameters[0];
+    affordance_option.homeostatic_value = max(object.affordances[0], 0.0f)
+      * physiological_need * value_parameters[1];
+    affordance_option.social_value = 0.0f;
+    affordance_option.information_gain = object.uncertainty
+      * value_parameters[3];
+    affordance_option.damage_cvar = clamp(
+      safety + 0.25f * object.uncertainty
+        + 0.25f * max(-strongest_affordance_value, 0.0f),
+      0.0f,
+      1.0f
+    );
+    affordance_option.effort_cost = clamp(0.02f * distance, 0.0f, 1.0f);
+    affordance_option.switching_cost = 0.025f;
+    affordance_option.competence = clamp(
+      object.existence_probability * object.identity_confidence
+        * (1.0f - object.uncertainty),
+      0.0f,
+      1.0f
+    );
+    affordance_option.proposal_kind = 20u + strongest_affordance;
+    affordance_option.source_module = 71u;
+    affordance_option.flags = NB_CONTROL_FLAG_VALID;
+    affordance_option.parameter_count = 16u;
+    for (uint component = 0u; component < 4u; ++component) {
+      affordance_option.parameters[component] = object.pose[component];
+      affordance_option.parameters[4u + component] = object.velocity[component];
+    }
+    for (uint component = 0u; component < 8u; ++component) {
+      affordance_option.parameters[8u + component] = object.affordances[component];
+    }
+    candidates[gid] = affordance_option;
     return;
   }
   NBOptionCandidateRecord candidate;
@@ -695,7 +794,8 @@ kernel void simulate_candidate_option_outcomes(
   );
   const uint plan_base = gid * uniforms.maximum_planning_horizon;
   if (plan_base + uniforms.maximum_planning_horizon > uniforms.plan_capacity) return;
-  if (gid >= candidate_limit) {
+  if (gid >= candidate_limit
+      || (candidates[gid].flags & NB_CONTROL_FLAG_VALID) == 0u) {
     for (uint step = 0u; step < uniforms.maximum_planning_horizon; ++step) {
       NBPlanStepRecord inactive = {};
       plans[plan_base + step] = inactive;
