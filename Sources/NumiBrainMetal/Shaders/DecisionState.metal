@@ -13,6 +13,7 @@ constant uint NB_OPTION_PROPOSAL_ACTIVE_SENSING = 4u;
 constant uint NB_OPTION_PROPOSAL_EXPLORATION = 7u;
 constant uint NB_CPG_OUTPUT_SOMATIC_SYNERGY = 1u;
 constant uint NB_CPG_OUTPUT_AUTONOMIC_CHANNEL = 2u;
+constant uint NB_ACTUATOR_COMMAND_MUSCLE_EXCITATION = 1u;
 constant uint NB_OPTION_PROPOSAL_REST_RECOVERY = 3u;
 constant ulong NB_REST_OPTION_IDENTIFIER = NB_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
@@ -89,6 +90,8 @@ struct NBDecisionUniforms {
   uint body_belief_count;
   uint somatic_effector_belief_count;
   ulong active_sensing_efficacy_offset;
+  uint actuator_command_kind;
+  uint reserved_motor_abi;
 };
 
 struct NBDriveRecord {
@@ -392,7 +395,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 400);
+static_assert(sizeof(NBDecisionUniforms) == 408);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -418,6 +421,48 @@ static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
+
+inline bool nb_uses_muscle_excitation(const uint actuator_command_kind) {
+  return actuator_command_kind == NB_ACTUATOR_COMMAND_MUSCLE_EXCITATION;
+}
+
+/// Converts an unconstrained policy logit into the species' normalized neural
+/// command space. Biological muscle excitation is zero-based. Other actuator
+/// kinds are signed around 0.5 so a zero logit is an exact neutral command.
+inline float nb_motor_drive_from_logit(
+  const float logit,
+  const uint actuator_command_kind)
+{
+  const float signed_drive = tanh(logit);
+  return nb_uses_muscle_excitation(actuator_command_kind)
+    ? clamp(signed_drive, 0.0f, 1.0f)
+    : fma(0.5f, signed_drive, 0.5f);
+}
+
+/// Applies gain or inhibition without moving a non-muscle command's neutral.
+inline float nb_scale_motor_drive(
+  const float drive,
+  const float scale,
+  const uint actuator_command_kind)
+{
+  const float bounded_scale = max(scale, 0.0f);
+  return nb_uses_muscle_excitation(actuator_command_kind)
+    ? drive * bounded_scale
+    : fma(drive - 0.5f, bounded_scale, 0.5f);
+}
+
+inline float nb_motor_neutral(const uint actuator_command_kind) {
+  return nb_uses_muscle_excitation(actuator_command_kind) ? 0.0f : 0.5f;
+}
+
+inline float nb_motor_feature(
+  const float drive,
+  const uint actuator_command_kind)
+{
+  return nb_uses_muscle_excitation(actuator_command_kind)
+    ? clamp(drive, 0.0f, 1.0f)
+    : clamp(fma(2.0f, drive, -1.0f), -1.0f, 1.0f);
+}
 
 inline uint nb_active_candidate_limit(
   constant NBDecisionUniforms &uniforms,
@@ -1819,25 +1864,38 @@ kernel void generate_motor_spinal_autonomic_state(
       communication_descriptors[gid];
     const bool communication_actuator =
       (communication_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+    const bool muscle_excitation = nb_uses_muscle_excitation(
+      uniforms.actuator_command_kind
+    );
+    const float motor_neutral = nb_motor_neutral(
+      uniforms.actuator_command_kind
+    );
+    const float motor_logit = candidate.parameters[gid % parameter_count]
+      * uniforms.motor_gain * motor_parameters[0];
     const float ordinary_descending = rest_selected
-      ? 0.0f
-      : 1.0f / (
-          1.0f + exp(
-            -candidate.parameters[gid % parameter_count]
-              * uniforms.motor_gain * motor_parameters[0]
-          )
-        );
+      ? motor_neutral
+      : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
     float descending = ordinary_descending;
     if (communication_selected) {
-      descending = communication_actuator
-        ? clamp(
-            (0.5f + 0.5f * tanh(candidate.parameters[
-              communication_descriptor.local_channel_index % parameter_count
-            ])) * communication_descriptor.gain,
-            0.0f,
-            1.0f
-          )
-        : ordinary_descending * clamp(motor_parameters[8], 0.0f, 1.0f);
+      if (communication_actuator) {
+        const float communication_logit = candidate.parameters[
+          communication_descriptor.local_channel_index % parameter_count
+        ];
+        const float communication_drive = nb_motor_drive_from_logit(
+          communication_logit, uniforms.actuator_command_kind
+        );
+        descending = nb_scale_motor_drive(
+          communication_drive,
+          communication_descriptor.gain,
+          uniforms.actuator_command_kind
+        );
+      } else {
+        descending = nb_scale_motor_drive(
+          ordinary_descending,
+          motor_parameters[8],
+          uniforms.actuator_command_kind
+        );
+      }
     }
     const float inhibition = max(
       (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
@@ -1852,13 +1910,21 @@ kernel void generate_motor_spinal_autonomic_state(
     fast_cerebellar[gid] = fast_state;
     const float fast_cerebellar_residual = fast_correction_active
       ? clamp(fast_state.correction, -0.25f, 0.25f) : 0.0f;
-    NBMotorCommandRecord command;
-    command.excitation = clamp(
-      descending * (1.0f - inhibition) * development->muscle_strength_multiplier,
-      0.0f,
-      1.0f
+    descending = nb_scale_motor_drive(
+      descending,
+      1.0f - inhibition,
+      uniforms.actuator_command_kind
     );
-    command.force_target = descending * (1.0f - inhibition);
+    const float developed_descending = nb_scale_motor_drive(
+      descending,
+      development->muscle_strength_multiplier,
+      uniforms.actuator_command_kind
+    );
+    NBMotorCommandRecord command;
+    command.excitation = clamp(developed_descending, 0.0f, 1.0f);
+    command.force_target = nb_motor_feature(
+      descending, uniforms.actuator_command_kind
+    );
     command.stiffness_target = clamp(
       uniforms.stiffness_gain * motor_parameters[1]
         * (max(safety, body_risk)
@@ -1888,7 +1954,8 @@ kernel void generate_motor_spinal_autonomic_state(
     command.risk_inhibition = inhibition;
     command.synergy_identifier = gid % max(uniforms.synergy_count, 1u);
     command.flags = NB_CONTROL_FLAG_VALID
-      | (communication_selected && communication_actuator ? (1u << 4u) : 0u);
+      | (communication_selected && communication_actuator ? (1u << 4u) : 0u)
+      | (muscle_excitation ? (1u << 5u) : 0u);
     motor[gid] = command;
     float cpg_output = 0.0f;
     const uint actuator_synergy = gid % max(uniforms.synergy_count, 1u);
@@ -2226,7 +2293,10 @@ kernel void predict_delayed_cerebellar_consequences(
         % uniforms.observation_count;
     const uint actuator_index = sample % max(uniforms.actuator_count, 1u);
     const float command_feature = uniforms.actuator_count == 0u
-      ? 0.0f : 2.0f * somatic_output[actuator_index] - 1.0f;
+      ? 0.0f
+      : nb_motor_feature(
+          somatic_output[actuator_index], uniforms.actuator_command_kind
+        );
     const float baseline = observations[observation_index];
     const float learned_effect = clamp(
       cerebellar_parameters[4] + expert.state[28u + sample],

@@ -71,6 +71,8 @@ private struct DecisionUniforms {
   var bodyBeliefCount: UInt32 = 0
   var somaticEffectorBeliefCount: UInt32 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
+  var actuatorCommandKind: UInt32 = 0
+  var reservedMotorABI: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -176,7 +178,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 400,
+    guard MemoryLayout<DecisionUniforms>.stride == 408,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -704,7 +706,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       ),
       activeSensingEfficacyOffset: UInt64(
         arena.layout.section(.activeSensingEfficacy).byteOffset
-      )
+      ),
+      actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
+      reservedMotorABI: 0
     )
   }
 

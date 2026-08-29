@@ -1,6 +1,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant uint NBActuatorCommandMuscleExcitation = 1u;
+
 enum TissueUniformIndex : uint {
     TissueWidth = 0,
     TissueHeight = 1,
@@ -3406,12 +3408,26 @@ kernel void map_protective_motor_output(
             (fastCerebellar.flags & 3u) == 3u
             ? clamp(fastCerebellar.correction, -0.25f, 0.25f)
             : 0.0f;
-        const float descendingExcitation = clamp(
+        const bool muscleExcitation = actuator.command_kind ==
+            NBActuatorCommandMuscleExcitation;
+        const float rawDescendingCommand = clamp(
             descendingSomaticExcitations[index] + sampledCPGOutput
                 + sampledReflexOutput + fastCerebellarCorrection,
             0.0f,
             channel.maximum_excitation
-        ) * (1.0f - clamp(command.motor_inhibition, 0.0f, 1.0f));
+        );
+        const float retainedDescendingDrive = 1.0f - clamp(
+            command.motor_inhibition,
+            0.0f,
+            1.0f
+        );
+        const float descendingExcitation = muscleExcitation
+            ? rawDescendingCommand * retainedDescendingDrive
+            : fma(
+                rawDescendingCommand - 0.5f,
+                retainedDescendingDrive,
+                0.5f
+            );
         const float excitation = min(
             descendingExcitation + protectiveExcitation,
             channel.maximum_excitation
@@ -3434,11 +3450,31 @@ kernel void map_protective_motor_output(
             0.0f,
             channel.maximum_excitation
         );
-        const float adaptedCommand = fma(
-            normalizedCommand,
-            actuator.output_maximum - actuator.output_minimum,
-            actuator.output_minimum
-        );
+        float adaptedCommand;
+        if (muscleExcitation) {
+            adaptedCommand = fma(
+                normalizedCommand,
+                actuator.output_maximum - actuator.output_minimum,
+                actuator.output_minimum
+            );
+        } else {
+            const float signedCommand = clamp(
+                fma(2.0f, normalizedCommand, -1.0f),
+                -1.0f,
+                1.0f
+            );
+            adaptedCommand = signedCommand >= 0.0f
+                ? mix(
+                    actuator.neutral_command,
+                    actuator.output_maximum,
+                    signedCommand
+                )
+                : mix(
+                    actuator.neutral_command,
+                    actuator.output_minimum,
+                    -signedCommand
+                );
+        }
         muscleExcitations[index] = emergencyStop
             ? actuator.emergency_command
             : (inhibitSource ? actuator.neutral_command : adaptedCommand);
