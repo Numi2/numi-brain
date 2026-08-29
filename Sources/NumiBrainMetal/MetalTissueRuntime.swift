@@ -265,6 +265,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let brainSchedule: BrainModuleSchedule
   public let regionalTokenProgram: RegionalTokenProgram
   public let parameterVersion: BrainParameterVersion
+  public let sharedParameterBank: MetalSharedParameterBank
   public let schedulerEnvironmentIdentifier: UInt32
   public let historyCapacity = TissueDelayField.historyCapacity
   public let maximumTissueDelayMicroseconds: UInt64
@@ -454,6 +455,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     brainSchedule requestedBrainSchedule: BrainModuleSchedule? = nil,
     regionalTokenProgram requestedRegionalTokenProgram: RegionalTokenProgram? = nil,
     parameterVersion requestedParameterVersion: BrainParameterVersion? = nil,
+    sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
     initialRegionalTokenValues requestedInitialRegionalTokenValues: [Float]? = nil,
     initialRegionalRoutingState requestedInitialRegionalRoutingState: RegionalRoutingState? = nil,
     protectiveMotorProfile requestedProtectiveMotorProfile: ProtectiveMotorProfile? = nil,
@@ -638,6 +640,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
       throw TissueError.metal("no Metal device is available")
     }
+    let sharedParameterBank = try MetalSharedParameterBank(
+      device: device,
+      parameterVersion: parameterVersion,
+      artifact: sharedParameterArtifact
+    )
     guard let commandQueue = device.makeMTL4CommandQueue() else {
       throw TissueError.metal("device does not provide a Metal 4 command queue")
     }
@@ -780,7 +787,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 26
+    regionalArgumentDescriptor.maxBufferBindCount = 27
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -789,6 +796,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("failed to create the regional-state argument table")
     }
+    regionalArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(.route, minimumScalarCount: 8),
+      index: 26
+    )
     let protectiveArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveArgumentDescriptor.label = "NumiBrain protective-command arguments"
     protectiveArgumentDescriptor.maxBufferBindCount = 6
@@ -1480,6 +1491,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
     residencyDescriptor.initialCapacity = stateBuffers.count + 52
+      + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -1488,6 +1500,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     for buffer in stateBuffers {
       residencySet.addAllocation(buffer)
+    }
+    for allocation in sharedParameterBank.residencyAllocations {
+      residencySet.addAllocation(allocation)
     }
     residencySet.addAllocation(structureBuffer)
     residencySet.addAllocation(delayBuffer)
@@ -1584,6 +1599,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.brainSchedule = brainSchedule
     self.regionalTokenProgram = regionalTokenProgram
     self.parameterVersion = parameterVersion
+    self.sharedParameterBank = sharedParameterBank
     self.protectiveMotorProfile = protectiveMotorProfile
     self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
     self.bodyLoadFieldDynamics = bodyLoadFieldDynamics

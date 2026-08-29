@@ -156,6 +156,7 @@ public enum MetalDispatchPlanRuntime {
     schedule: BrainModuleSchedule,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
+    sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
     initialRegionalStates: [BrainCohortRegionalState]? = nil,
     initialTokenStates: [BrainCohortTokenState]? = nil,
     initialRoutingStates: [BrainCohortRoutingState]? = nil,
@@ -481,6 +482,11 @@ public enum MetalDispatchPlanRuntime {
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
       throw TissueError.metal("no Metal device is available")
     }
+    let sharedParameterBank = try MetalSharedParameterBank(
+      device: device,
+      parameterVersion: parameterVersion,
+      artifact: sharedParameterArtifact
+    )
     guard let commandQueue = device.makeMTL4CommandQueue(),
       let commandAllocator = device.makeCommandAllocator(),
       let commandBuffer = device.makeCommandBuffer()
@@ -568,7 +574,7 @@ public enum MetalDispatchPlanRuntime {
     }
     let tokenArgumentDescriptor = MTL4ArgumentTableDescriptor()
     tokenArgumentDescriptor.label = "NumiBrain cohort regional-token arguments"
-    tokenArgumentDescriptor.maxBufferBindCount = 28
+    tokenArgumentDescriptor.maxBufferBindCount = 29
     tokenArgumentDescriptor.initializeBindings = true
     guard
       let tokenArgumentTable = try? device.makeArgumentTable(
@@ -829,6 +835,7 @@ public enum MetalDispatchPlanRuntime {
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
     residencyDescriptor.initialCapacity = 37
+      + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -876,6 +883,9 @@ public enum MetalDispatchPlanRuntime {
     ]
     for buffer in buffers {
       residencySet.addAllocation(buffer)
+    }
+    for allocation in sharedParameterBank.residencyAllocations {
+      residencySet.addAllocation(allocation)
     }
     residencySet.commit()
     residencySet.requestResidency()
@@ -1178,6 +1188,10 @@ public enum MetalDispatchPlanRuntime {
     tokenArgumentTable.setAddress(outputRouteRuntimeStateBuffer.gpuAddress, index: 25)
     tokenArgumentTable.setAddress(selectedRouteIndexBuffer.gpuAddress, index: 26)
     tokenArgumentTable.setAddress(selectedRouteCountBuffer.gpuAddress, index: 27)
+    tokenArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(.route, minimumScalarCount: 8),
+      index: 28
+    )
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
     let consumerThreadgroupWidth = 64

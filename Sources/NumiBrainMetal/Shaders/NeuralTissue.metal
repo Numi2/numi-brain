@@ -1571,6 +1571,7 @@ kernel void advance_due_regional_tokens(
     device const NBRegionalPlasticModulationRecordABI *plasticModulation
         [[buffer(24)]],
     device const NBRegionalMaturationRecordABI *maturation [[buffer(25)]],
+    device const float *routeParameters [[buffer(26)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
@@ -1717,10 +1718,13 @@ kernel void advance_due_regional_tokens(
                 }
                 NBRegionalRouteRuntimeStateABI state =
                     outputRouteRuntimeStates[routeIndex];
-                state.score = dot / sqrt(float(queryDimension))
-                    + header->salience_gain * salience / float(queryDimension);
+                state.score = routeParameters[0] * dot / sqrt(float(queryDimension))
+                    + routeParameters[1] * header->salience_gain
+                        * salience / float(queryDimension);
                 if (state.active != 0u) {
-                    state.score += header->persistence_bonus;
+                    state.score += routeParameters[2] * header->persistence_bonus;
+                } else {
+                    state.score -= max(routeParameters[4], 0.0f);
                 }
                 outputRouteRuntimeStates[routeIndex] = state;
             }
@@ -1811,9 +1815,9 @@ kernel void advance_due_regional_tokens(
                  selectedIndex < selectedCount;
                  ++selectedIndex) {
                 strengthDenominator += exp(
-                    outputRouteRuntimeStates[
+                    (outputRouteRuntimeStates[
                         selectedRouteIndices[routeBegin + selectedIndex]
-                    ].score - maximumScore
+                    ].score - maximumScore) / max(routeParameters[5], 1.0e-4f)
                 );
             }
             for (uint routeIndex = routeBegin;
@@ -1833,7 +1837,10 @@ kernel void advance_due_regional_tokens(
                 }
                 state.active = isActive ? 1u : 0u;
                 state.strength = isActive && strengthDenominator > 0.0f
-                    ? exp(state.score - maximumScore) / strengthDenominator
+                    ? exp(
+                        (state.score - maximumScore)
+                            / max(routeParameters[5], 1.0e-4f)
+                      ) / strengthDenominator
                     : 0.0f;
                 if (isActive) {
                     if (state.selection_count != ~0u) {
@@ -1926,7 +1933,7 @@ kernel void advance_due_regional_tokens(
                     layout.incoming_route_offset + selectedIndex
                 ];
                 const NBRegionalRouteABI route = routes[routeIndex];
-                routedInput += route.gain
+                routedInput += routeParameters[3] * route.gain
                     * (validMaturation ? maturationRecord.route_gain_multiplier : 1.0f)
                     * outputRouteRuntimeStates[routeIndex].strength
                     * regional_route_message_value(
@@ -2234,6 +2241,7 @@ kernel void advance_cohort_regional_tokens_routed(
     device NBRegionalRouteRuntimeStateABI *outputRouteRuntimeStates [[buffer(25)]],
     device uint *selectedRouteIndices [[buffer(26)]],
     device uint *selectedRouteCounts [[buffer(27)]],
+    device const float *routeParameters [[buffer(28)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
     uint3 threadgroupPosition [[threadgroup_position_in_grid]]
@@ -2394,10 +2402,13 @@ kernel void advance_cohort_regional_tokens_routed(
                 }
                 NBRegionalRouteRuntimeStateABI state =
                     outputRouteRuntimeStates[routeBase + routeIndex];
-                state.score = dot / sqrt(float(queryDimension))
-                    + header->salience_gain * salience / float(queryDimension);
+                state.score = routeParameters[0] * dot / sqrt(float(queryDimension))
+                    + routeParameters[1] * header->salience_gain
+                        * salience / float(queryDimension);
                 if (state.active != 0u) {
-                    state.score += header->persistence_bonus;
+                    state.score += routeParameters[2] * header->persistence_bonus;
+                } else {
+                    state.score -= max(routeParameters[4], 0.0f);
                 }
                 outputRouteRuntimeStates[routeBase + routeIndex] = state;
             }
@@ -2497,11 +2508,11 @@ kernel void advance_cohort_regional_tokens_routed(
                  selectedIndex < selectedCount;
                  ++selectedIndex) {
                 strengthDenominator += exp(
-                    outputRouteRuntimeStates[
+                    (outputRouteRuntimeStates[
                         routeBase + selectedRouteIndices[
                             routeBase + routeBegin + selectedIndex
                         ]
-                    ].score - maximumScore
+                    ].score - maximumScore) / max(routeParameters[5], 1.0e-4f)
                 );
             }
             for (uint routeIndex = routeBegin;
@@ -2523,7 +2534,10 @@ kernel void advance_cohort_regional_tokens_routed(
                 }
                 state.active = isActive ? 1u : 0u;
                 state.strength = isActive && strengthDenominator > 0.0f
-                    ? exp(state.score - maximumScore) / strengthDenominator
+                    ? exp(
+                        (state.score - maximumScore)
+                            / max(routeParameters[5], 1.0e-4f)
+                      ) / strengthDenominator
                     : 0.0f;
                 if (isActive) {
                     if (state.selection_count != ~0u) {
@@ -2609,7 +2623,7 @@ kernel void advance_cohort_regional_tokens_routed(
                     routeBase + layout.incoming_route_offset + selectedIndex
                 ];
                 const NBRegionalRouteABI route = routes[routeIndex];
-                routedInput += route.gain
+                routedInput += routeParameters[3] * route.gain
                     * outputRouteRuntimeStates[routeBase + routeIndex].strength
                     * cohort_regional_route_message_value(
                         routeIndex,
