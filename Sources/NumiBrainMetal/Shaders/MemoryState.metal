@@ -2055,6 +2055,8 @@ kernel void publish_memory_retrieval_winner(
   device const float *value = nullptr;
   device const NBEpisodicSummaryRecord *episodic_value = nullptr;
   device const NBArchivedEpisodicRecord *archived_value = nullptr;
+  device const NBSemanticConceptSummaryRecord *semantic_value = nullptr;
+  device const NBSemanticRelationSummaryRecord *semantic_relation_value = nullptr;
   device const NBProceduralSkillSummaryRecord *procedural_value = nullptr;
   device const NBProspectiveIntentionSummaryRecord *prospective_value = nullptr;
   uint value_count = 0u;
@@ -2128,6 +2130,7 @@ kernel void publish_memory_retrieval_winner(
       kind = 2u;
       identifier = record->identifier;
       score = record->confidence;
+      semantic_value = record;
       value = record->embedding;
       value_count = 19u;
     } else {
@@ -2141,6 +2144,7 @@ kernel void publish_memory_retrieval_winner(
         kind = 5u;
         identifier = record->identifier;
         score = record->confidence;
+        semantic_relation_value = record;
         value = record->evidence_embedding;
         value_count = 10u;
       } else {
@@ -2299,14 +2303,20 @@ kernel void publish_memory_retrieval_winner(
     ? episodic_value->active_goal_identifier
     : (archived_value != nullptr
       ? archived_value->active_goal_identifier
+      : (semantic_value != nullptr && semantic_value->kind == 6u
+        ? semantic_value->identifier
+        : (semantic_relation_value != nullptr
+          ? semantic_relation_value->source_concept_identifier
       : (prospective_value != nullptr
         ? prospective_value->goal_identifier
         : (kind == 3u && procedural_value != nullptr
-          ? procedural_value->initiation_goal_identifier : 0ul)));
+          ? procedural_value->initiation_goal_identifier : 0ul)))));
   token.bound_token_identifier = episodic_value != nullptr
     ? episodic_value->active_option_identifier
     : (archived_value != nullptr
-      ? archived_value->active_option_identifier : 0ul);
+      ? archived_value->active_option_identifier
+      : (semantic_relation_value != nullptr
+        ? semantic_relation_value->destination_concept_identifier : 0ul));
   token.provenance_record_identifier = identifier;
   const uint source_module = kind == 2u
     ? 58u

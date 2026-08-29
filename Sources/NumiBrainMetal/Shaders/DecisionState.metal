@@ -202,6 +202,12 @@ struct NBRetrievedOptionOutcome {
   float reinforcement;
 };
 
+struct NBSemanticGoalOutcome {
+  float support;
+  float damage;
+  float reinforcement;
+};
+
 struct NBMotorCommandRecord {
   float excitation;
   float force_target;
@@ -697,6 +703,47 @@ inline NBRetrievedOptionOutcome nb_retrieved_option_outcome(
     outcome.reinforcement = clamp(
       workspace[memory_base + 13u], -1.0f, 1.0f
     );
+  }
+  return outcome;
+}
+
+inline ulong nb_semantic_hash(ulong value) {
+  value ^= value >> 30u;
+  value *= 0xbf58476d1ce4e5b9ul;
+  value ^= value >> 27u;
+  value *= 0x94d049bb133111ebul;
+  return value ^ (value >> 31u);
+}
+
+inline NBSemanticGoalOutcome nb_retrieved_semantic_goal_outcome(
+  device const float *workspace,
+  device const NBWorkspaceMetadataRecord *workspace_metadata,
+  constant NBDecisionUniforms &uniforms,
+  const ulong goal_identifier)
+{
+  NBSemanticGoalOutcome outcome = {};
+  if (goal_identifier == 0ul || uniforms.workspace_dimension < 14u) {
+    return outcome;
+  }
+  const ulong semantic_goal_identifier = max(
+    nb_semantic_hash(goal_identifier ^ 0x474f414c434f4e43ul)
+      & 0x3ffffffffffffffful,
+    1ul
+  );
+  for (uint memory_slot = 3u;
+      memory_slot < min(uniforms.workspace_capacity, 7u); ++memory_slot) {
+    const NBWorkspaceMetadataRecord memory_token =
+      workspace_metadata[memory_slot];
+    const uint memory_source = memory_token.kind_and_source >> 16u;
+    if (memory_source != 58u
+        || memory_token.goal_identifier != semantic_goal_identifier
+        || memory_token.confidence <= outcome.support) continue;
+    const uint memory_base = memory_slot * uniforms.workspace_dimension;
+    outcome.support = clamp(memory_token.confidence, 0.0f, 1.0f);
+    outcome.reinforcement = clamp(
+      workspace[memory_base + 12u], -1.0f, 1.0f
+    );
+    outcome.damage = clamp(workspace[memory_base + 13u], 0.0f, 1.0f);
   }
   return outcome;
 }
@@ -1326,10 +1373,18 @@ kernel void simulate_candidate_option_outcomes(
             workspace, workspace_metadata, uniforms,
             followup.option_identifier
           );
+        const NBSemanticGoalOutcome followup_semantic =
+          nb_retrieved_semantic_goal_outcome(
+            workspace, workspace_metadata, uniforms,
+            followup.goal_identifier
+          );
         const float followup_risk = clamp(
           max(
-            max(followup.damage_cvar, followup_world.damage_cvar),
-            followup_memory.support * followup_memory.damage
+            max(
+              max(followup.damage_cvar, followup_world.damage_cvar),
+              followup_memory.support * followup_memory.damage
+            ),
+            followup_semantic.support * followup_semantic.damage
           )
             + 0.05f * sqrt(followup_world.aleatoric_variance)
             + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
@@ -1342,6 +1397,8 @@ kernel void simulate_candidate_option_outcomes(
             * followup.information_gain
           + value_parameters[0] * followup_memory.support
             * followup_memory.reinforcement
+          + value_parameters[0] * followup_semantic.support
+            * followup_semantic.reinforcement
           + compatibility - value_parameters[4] * uniforms.risk_weight
             * followup_risk
           - value_parameters[5] * followup.effort_cost
@@ -1360,6 +1417,10 @@ kernel void simulate_candidate_option_outcomes(
     const NBRetrievedOptionOutcome episodic = nb_retrieved_option_outcome(
       workspace, workspace_metadata, uniforms, candidate.option_identifier
     );
+    const NBSemanticGoalOutcome semantic =
+      nb_retrieved_semantic_goal_outcome(
+        workspace, workspace_metadata, uniforms, candidate.goal_identifier
+      );
     const NBCounterfactualWorldOutcome world_outcome =
       nb_counterfactual_world_outcome(
         world, world_parameters, uniforms, candidate, rollout_state,
@@ -1372,8 +1433,11 @@ kernel void simulate_candidate_option_outcomes(
     );
     const float step_damage = clamp(
       max(
-        max(candidate.damage_cvar, world_outcome.damage_cvar),
-        episodic.support * episodic.damage
+        max(
+          max(candidate.damage_cvar, world_outcome.damage_cvar),
+          episodic.support * episodic.damage
+        ),
+        semantic.support * semantic.damage
       )
         + 0.05f * sqrt(world_outcome.aleatoric_variance)
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
@@ -1393,6 +1457,7 @@ kernel void simulate_candidate_option_outcomes(
         + value_parameters[2] * candidate.social_value
         + value_parameters[3] * uniforms.curiosity_weight * step_information
         + value_parameters[0] * episodic.support * episodic.reinforcement
+        + value_parameters[0] * semantic.support * semantic.reinforcement
         - value_parameters[4] * uniforms.risk_weight * step_damage
         - value_parameters[5] * step_effort
         - value_parameters[6]
