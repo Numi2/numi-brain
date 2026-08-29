@@ -12,6 +12,7 @@ private struct AcceptedConsequenceUniforms {
   var physiologyOffset: UInt64 = 0
   var worldModelOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
+  var driveOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
   var workspaceContentOffset: UInt64 = 0
   var workspaceMetadataOffset: UInt64 = 0
@@ -32,6 +33,7 @@ private struct AcceptedConsequenceUniforms {
   var physiologyCount: UInt32 = 0
   var worldModelCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
+  var driveCount: UInt32 = 0
   var fastPlasticityCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -103,7 +105,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 336,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 344,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -384,6 +386,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let integerCounts = [
       hot(.sensoryObservations).elementCount,
       hot(.worldModel).elementCount,
+      hot(.drives).elementCount,
       hot(.fastPlasticity).elementCount,
     ]
     guard integerCounts.allSatisfy({ $0 <= Int(UInt32.max) }) else {
@@ -399,6 +402,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       physiologyOffset: UInt64(hot(.physiologyBelief).byteOffset),
       worldModelOffset: UInt64(hot(.worldModel).byteOffset),
       neuromodulationOffset: UInt64(hot(.neuromodulation).byteOffset),
+      driveOffset: UInt64(hot(.drives).byteOffset),
       fastPlasticityOffset: UInt64(hot(.fastPlasticity).byteOffset),
       workspaceContentOffset: UInt64(hot(.workspaceContent).byteOffset),
       workspaceMetadataOffset: UInt64(hot(.workspaceMetadata).byteOffset),
@@ -427,6 +431,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       physiologyCount: UInt32(species.physiology.stateDimension),
       worldModelCount: UInt32(hot(.worldModel).elementCount),
       neuromodulatorCount: UInt32(NeuromodulatorKind.allCases.count),
+      driveCount: UInt32(hot(.drives).elementCount),
       fastPlasticityCount: UInt32(hot(.fastPlasticity).elementCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),

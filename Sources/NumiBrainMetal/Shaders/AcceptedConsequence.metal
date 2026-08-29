@@ -23,6 +23,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong physiology_offset;
   ulong world_model_offset;
   ulong neuromodulation_offset;
+  ulong drive_offset;
   ulong fast_plasticity_offset;
   ulong workspace_content_offset;
   ulong workspace_metadata_offset;
@@ -43,6 +44,7 @@ struct NBAcceptedConsequenceUniforms {
   uint physiology_count;
   uint world_model_count;
   uint neuromodulator_count;
+  uint drive_count;
   uint fast_plasticity_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -100,6 +102,17 @@ struct NBNeuromodulatorRecord {
   float decay_time_constant_seconds;
   uint kind;
   uint flags;
+};
+
+struct NBDriveStateRecord {
+  float level;
+  float viable_minimum;
+  float viable_maximum;
+  float priority_weight;
+  float estimated_rate;
+  float deficit;
+  float potential;
+  uint kind;
 };
 
 struct NBFastPlasticityRecord {
@@ -267,7 +280,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 336);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 344);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -805,6 +818,60 @@ kernel void update_active_sensing_efficacy(
   states[gid] = state;
 }
 
+inline float2 nb_accepted_embodied_risk(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms)
+{
+  float pain = 0.0f;
+  float threat = 0.0f;
+  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    if (isfinite(body[5])) {
+      pain = max(pain, clamp(body[5], 0.0f, 1.0f));
+    }
+    if (isfinite(body[7])) {
+      threat = max(threat, clamp(body[7], 0.0f, 1.0f));
+    }
+    if (isfinite(body[10])) {
+      threat = max(threat, clamp(body[10], 0.0f, 1.0f));
+    }
+    if (isfinite(body[11])) {
+      const float damage_risk = clamp(body[11], 0.0f, 1.0f);
+      pain = max(pain, damage_risk);
+      threat = max(threat, damage_risk);
+    }
+  }
+  return float2(pain, max(threat, pain));
+}
+
+inline void nb_raise_accepted_drive(
+  device NBDriveStateRecord *drives,
+  uint drive_count,
+  uint index,
+  float signal,
+  float elapsed_seconds)
+{
+  if (index >= drive_count || signal <= 0.0f) return;
+  NBDriveStateRecord state = drives[index];
+  const float previous = state.level;
+  state.level = max(previous, clamp(signal, 0.0f, 1.0f));
+  state.estimated_rate = elapsed_seconds > 0.0f
+    ? (state.level - previous) / elapsed_seconds : 0.0f;
+  state.deficit = state.level < state.viable_minimum
+    ? state.viable_minimum - state.level
+    : (state.level > state.viable_maximum
+      ? state.level - state.viable_maximum : 0.0f);
+  state.potential = state.priority_weight * state.deficit * state.deficit;
+  state.kind = index + 1u;
+  drives[index] = state;
+}
+
 kernel void broadcast_accepted_prediction_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
@@ -842,6 +909,44 @@ kernel void broadcast_accepted_prediction_error(
     reinterpret_cast<device NBNeuromodulatorRecord *>(
       hot_state + uniforms.neuromodulation_offset
     );
+  device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
+    hot_state + uniforms.control_header_offset
+  );
+  const float2 embodied_risk = nb_accepted_embodied_risk(
+    hot_state, uniforms
+  );
+  device NBDriveStateRecord *drives =
+    reinterpret_cast<device NBDriveStateRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  const float elapsed_seconds = float(uniforms.delta_microseconds) * 1.0e-6f;
+  nb_raise_accepted_drive(
+    drives, uniforms.drive_count, 5u, embodied_risk.x, elapsed_seconds
+  );
+  nb_raise_accepted_drive(
+    drives, uniforms.drive_count, 11u, embodied_risk.y, elapsed_seconds
+  );
+  if (uniforms.neuromodulator_count > 4u) {
+    neuromodulators[4].value = max(
+      neuromodulators[4].value, embodied_risk.x
+    );
+    neuromodulators[4].kind = 5u;
+    neuromodulators[4].flags = NB_ACCEPTED_STATE_VALID;
+  }
+  if (uniforms.neuromodulator_count > 5u) {
+    neuromodulators[5].value = max(
+      neuromodulators[5].value, embodied_risk.y
+    );
+    neuromodulators[5].kind = 6u;
+    neuromodulators[5].flags = NB_ACCEPTED_STATE_VALID;
+  }
+  if (uniforms.neuromodulator_count > 6u) {
+    neuromodulators[6].value = max(
+      neuromodulators[6].value, embodied_risk.y
+    );
+    neuromodulators[6].kind = 7u;
+    neuromodulators[6].flags = NB_ACCEPTED_STATE_VALID;
+  }
   if (uniforms.neuromodulator_count > 2u) {
     device const NBActiveSensingEfficacyRecord *sensing_states =
       reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
@@ -903,9 +1008,6 @@ kernel void broadcast_accepted_prediction_error(
     );
     metadata[2] = token;
   }
-  device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
-    hot_state + uniforms.control_header_offset
-  );
   control->unsupported_uncertainty = max(
     max(epistemic * max(world_parameters[157], 0.0f), aleatoric),
     mean_external_disturbance
@@ -1060,33 +1162,6 @@ inline ulong nb_trace_hash(ulong value) {
   return value ^ (value >> 31);
 }
 
-inline float nb_accepted_embodied_damage(
-  device const uchar *hot_state,
-  constant NBAcceptedConsequenceUniforms &uniforms,
-  float planned_damage)
-{
-  float damage = clamp(planned_damage, 0.0f, 1.0f);
-  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
-    device const float *body = reinterpret_cast<device const float *>(
-      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
-    );
-    device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
-    );
-    if ((identity[3] & 1ul) == 0ul) continue;
-    if (isfinite(body[5])) {
-      damage = max(damage, clamp(body[5], 0.0f, 1.0f));
-    }
-    if (isfinite(body[7])) {
-      damage = max(damage, clamp(body[7], 0.0f, 1.0f));
-    }
-    if (isfinite(body[11])) {
-      damage = max(damage, clamp(body[11], 0.0f, 1.0f));
-    }
-  }
-  return damage;
-}
-
 /// Records only the option phases whose physical consequences were accepted.
 /// Completed traces remain in the transactional hot arena until rest-time
 /// procedural consolidation consumes them.
@@ -1129,8 +1204,12 @@ kernel void update_accepted_procedural_trace(
   const NBOptionCandidateRecord candidate = candidates[selected_index];
   if ((candidate.flags & NB_ACCEPTED_STATE_VALID) == 0u
       || candidate.option_identifier != control->active_option_identifier) return;
-  const float accepted_damage = nb_accepted_embodied_damage(
-    hot_state, uniforms, control->selected_damage_cvar
+  const float2 embodied_risk = nb_accepted_embodied_risk(
+    hot_state, uniforms
+  );
+  const float accepted_damage = max(
+    clamp(control->selected_damage_cvar, 0.0f, 1.0f),
+    max(embodied_risk.x, embodied_risk.y)
   );
 
   uint trace_index = uniforms.procedural_trace_record_capacity;
