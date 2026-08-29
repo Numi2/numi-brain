@@ -72,6 +72,8 @@ struct NBCognitiveUniforms {
   uint body_sensing_mask;
   uint autonomic_action_count;
   uint internal_action_count;
+  uint plasticity_parameter_count;
+  uint reserved;
 };
 
 struct NBWorldModelLevelRecord {
@@ -285,7 +287,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 384);
+static_assert(sizeof(NBCognitiveUniforms) == 392);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -1963,6 +1965,7 @@ kernel void advance_fast_plasticity_foundation(
 kernel void reduce_fast_plasticity_by_region(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *plasticity_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.module_count || uniforms.fast_plasticity_count == 0u) return;
@@ -1979,31 +1982,37 @@ kernel void reduce_fast_plasticity_by_region(
       hot_state + uniforms.regional_plastic_modulation_offset
     );
   const uint module_identifier = maturation[gid].module_identifier;
-  float signed_sum = 0.0f;
-  float magnitude_sum = 0.0f;
-  float eligibility_sum = 0.0f;
+  constexpr uint hyperparameter_count = 8u;
+  constexpr uint basis_channel_count = 5u;
+  const uint basis_scalar_count = uniforms.plasticity_parameter_count
+      > hyperparameter_count
+    ? uniforms.plasticity_parameter_count - hyperparameter_count
+    : 0u;
+  const uint basis_capacity = basis_scalar_count
+    / (uniforms.module_count * basis_channel_count);
+  float projection[basis_channel_count] = {};
   uint coefficient_count = 0u;
   for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
     const NBFastPlasticityStateRecord site = sites[index];
     if (uint(site.region_identifier) != module_identifier) continue;
-    signed_sum += site.coefficient;
-    magnitude_sum += abs(site.coefficient);
-    eligibility_sum += site.eligibility;
+    if (basis_capacity == 0u) continue;
+    const uint basis_identifier = uint(site.basis_identifier) % basis_capacity;
+    const uint basis_offset = hyperparameter_count
+      + (gid * basis_capacity + basis_identifier) * basis_channel_count;
+    for (uint channel = 0u; channel < basis_channel_count; ++channel) {
+      projection[channel] += site.coefficient
+        * plasticity_parameters[basis_offset + channel];
+    }
     coefficient_count += 1u;
   }
-  const float divisor = coefficient_count > 0u
-    ? 1.0f / float(coefficient_count) : 0.0f;
-  const float mean = signed_sum * divisor;
-  const float magnitude = magnitude_sum * divisor;
-  const float eligibility = eligibility_sum * divisor;
   NBRegionalPlasticModulationRecord record;
   record.module_identifier = module_identifier;
   record.coefficient_count = coefficient_count;
-  record.recurrent_delta = clamp(0.10f * mean, -0.20f, 0.20f);
-  record.local_delta = clamp(0.08f * mean, -0.15f, 0.15f);
-  record.route_delta = clamp(0.10f * magnitude, 0.0f, 0.20f);
-  record.drive_delta = clamp(0.05f * eligibility, -0.10f, 0.10f);
-  record.gate_delta = clamp(0.05f * mean, -0.10f, 0.10f);
+  record.recurrent_delta = clamp(projection[0], -0.20f, 0.20f);
+  record.local_delta = clamp(projection[1], -0.15f, 0.15f);
+  record.route_delta = clamp(projection[2], -0.20f, 0.20f);
+  record.drive_delta = clamp(projection[3], -0.10f, 0.10f);
+  record.gate_delta = clamp(projection[4], -0.10f, 0.10f);
   record.flags = coefficient_count > 0u ? 1u : 0u;
   regional[gid] = record;
 }

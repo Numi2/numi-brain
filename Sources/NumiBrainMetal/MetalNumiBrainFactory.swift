@@ -79,10 +79,15 @@ extension MetalNumiBrainRuntime {
     if let requestedPublication {
       publication = requestedPublication
     } else {
+      let regionCount = species.enabledModuleIdentifiers.count
+      let plasticityBasisCapacity =
+        (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
+        / regionCount
       let version = try BrainParameterVersion.runtimeFoundationV0(
         schedule: species.regionGraph.schedule,
         regionalProgram: regionalProgram,
-        tissueParameters: configuration.tissueParameters
+        tissueParameters: configuration.tissueParameters,
+        plasticityBasisCapacityPerRegion: plasticityBasisCapacity
       )
       publication = try BrainParameterPublication(
         version: version,

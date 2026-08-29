@@ -62,6 +62,9 @@ public struct BrainParameterPayload: Codable, Equatable, Sendable {
 @frozen
 public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
+  public static let plasticityHyperparameterCount = 8
+  public static let plasticityBasisChannelCount = 5
+  public static let defaultPlasticityBasisCapacityPerRegion = 128
   public static let requiredKinds: [BrainParameterComponentKind] = [
     .sensory, .belief, .world, .route, .memory, .value, .policy,
     .motor, .cerebellar, .plasticity, .regionalDense,
@@ -177,11 +180,14 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   }
 
   public static func foundationPayloads(
-    regionalDenseElementCount: Int = 1
+    regionalDenseElementCount: Int = 1,
+    plasticityElementCount: Int = 64
   ) throws -> [BrainParameterPayload] {
-    guard regionalDenseElementCount > 0 else {
+    guard regionalDenseElementCount > 0,
+      plasticityElementCount >= plasticityHyperparameterCount
+    else {
       throw BrainRuntimeError.invalidParameterVersion(
-        "regional dense parameter count must be positive"
+        "regional dense and plasticity parameter counts are invalid"
       )
     }
     func payload(
@@ -234,8 +240,19 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     ])
     var cerebellar = [Float](repeating: 0, count: 64)
     cerebellar.replaceSubrange(0...7, with: [0.25, 0.1, 0.05, 1, 0.1, 0.01, 0.99, 1])
-    var plasticity = [Float](repeating: 0, count: 64)
+    var plasticity = [Float](repeating: 0, count: plasticityElementCount)
     plasticity.replaceSubrange(0...7, with: [0.001, 0.95, 0.95, 1, 0.1, 0.01, 0.99, 1])
+    // The remainder is an immutable bank of compact shared operator bases.
+    // Per-agent fast coefficients select and combine these values on GPU;
+    // individual minds therefore adapt without copying the shared weights.
+    for index in plasticityHyperparameterCount..<plasticity.count {
+      var bits = UInt64(index) &+ 0xd1b5_4a32_d192_ed03
+      bits = (bits ^ (bits >> 30)) &* 0xbf58_476d_1ce4_e5b9
+      bits = (bits ^ (bits >> 27)) &* 0x94d0_49bb_1331_11eb
+      bits ^= bits >> 31
+      let centered = Float(Int(bits & 0xffff) - 32_768) / 32_768
+      plasticity[index] = centered * 0.025
+    }
     // Small deterministic zero-mean weights activate a true dense local path
     // without overwhelming the explicit recurrent residual at initialization.
     var regionalDense = [Float](repeating: 0, count: regionalDenseElementCount)
@@ -263,18 +280,48 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     guard let denseComponent = parameterVersion.components.first(where: {
       $0.kind == .regionalDense
     }), denseComponent.elementType == .fp32,
-      denseComponent.elementCount <= UInt64(Int.max)
+      denseComponent.elementCount <= UInt64(Int.max),
+      let plasticityComponent = parameterVersion.components.first(where: {
+        $0.kind == .plasticity
+      }), plasticityComponent.elementType == .fp32,
+      plasticityComponent.elementCount <= UInt64(Int.max)
     else {
       throw BrainRuntimeError.invalidParameterVersion(
-        "parameter version is missing executable regional dense weights"
+        "parameter version is missing executable regional or plasticity weights"
       )
     }
     return try Self(
       parameterVersion: parameterVersion,
       payloads: foundationPayloads(
-        regionalDenseElementCount: Int(denseComponent.elementCount)
+        regionalDenseElementCount: Int(denseComponent.elementCount),
+        plasticityElementCount: Int(plasticityComponent.elementCount)
       )
     )
+  }
+
+  public static func plasticityElementCount(
+    regionCount: Int,
+    basisCapacityPerRegion: Int
+  ) throws -> Int {
+    guard regionCount > 0, basisCapacityPerRegion > 0 else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "plasticity basis dimensions must be positive"
+      )
+    }
+    let (basisCount, basisOverflow) = regionCount.multipliedReportingOverflow(
+      by: basisCapacityPerRegion
+    )
+    let (basisScalars, scalarOverflow) = basisCount.multipliedReportingOverflow(
+      by: plasticityBasisChannelCount
+    )
+    let (total, totalOverflow) = plasticityHyperparameterCount
+      .addingReportingOverflow(basisScalars)
+    guard !basisOverflow, !scalarOverflow, !totalOverflow else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "plasticity basis parameter count overflows Int"
+      )
+    }
+    return total
   }
 
   public static func successor(

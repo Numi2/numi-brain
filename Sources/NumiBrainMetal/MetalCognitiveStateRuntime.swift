@@ -71,6 +71,8 @@ private struct CognitiveUniforms {
   var bodySensingMask: UInt32 = 0
   var autonomicActionCount: UInt32 = 0
   var internalActionCount: UInt32 = 0
+  var plasticityParameterCount: UInt32 = 0
+  var reserved: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -151,6 +153,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let worldParameterGPUAddress: UInt64
   private let memoryParameterGPUAddress: UInt64
   private let plasticityParameterGPUAddress: UInt64
+  private let plasticityParameterCount: UInt32
   private let internalActionOffset: UInt64
   private let internalActionCount: UInt32
 
@@ -161,7 +164,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 384,
+    guard MemoryLayout<CognitiveUniforms>.stride == 392,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -384,9 +387,33 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
       .memory, minimumScalarCount: 8
     )
+    let regionCount = species.enabledModuleIdentifiers.count
+    let basisCapacity =
+      (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
+      / regionCount
+    let minimumPlasticityScalarCount = try BrainSharedParameterArtifact
+      .plasticityElementCount(
+        regionCount: regionCount,
+        basisCapacityPerRegion: basisCapacity
+      )
+    let plasticityScalarCount = sharedParameters.scalarCount(.plasticity)
+    let basisScalarCount = plasticityScalarCount
+      - BrainSharedParameterArtifact.plasticityHyperparameterCount
+    let perBasisBankScalarCount = regionCount
+      * BrainSharedParameterArtifact.plasticityBasisChannelCount
+    guard plasticityScalarCount >= minimumPlasticityScalarCount,
+      plasticityScalarCount <= Int(UInt32.max),
+      basisScalarCount >= 0,
+      basisScalarCount % perBasisBankScalarCount == 0
+    else {
+      throw TissueError.metal(
+        "shared plasticity bases do not cover every per-agent coefficient"
+      )
+    }
     self.plasticityParameterGPUAddress = try sharedParameters.gpuAddress(
-      .plasticity, minimumScalarCount: 8
+      .plasticity, minimumScalarCount: minimumPlasticityScalarCount
     )
+    self.plasticityParameterCount = UInt32(plasticityScalarCount)
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -721,7 +748,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       autonomicActionCount: UInt32(
         species.physiology.autonomicActionDimension
       ),
-      internalActionCount: internalActionCount
+      internalActionCount: internalActionCount,
+      plasticityParameterCount: plasticityParameterCount
     )
   }
 

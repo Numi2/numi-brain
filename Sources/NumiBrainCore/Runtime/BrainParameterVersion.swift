@@ -224,7 +224,9 @@ public struct BrainParameterVersion: Codable, Equatable, Hashable, Sendable {
   public static func runtimeFoundationV0(
     schedule: BrainModuleSchedule,
     regionalProgram: RegionalTokenProgram,
-    tissueParameters: TissueParameters
+    tissueParameters: TissueParameters,
+    plasticityBasisCapacityPerRegion: Int =
+      BrainSharedParameterArtifact.defaultPlasticityBasisCapacityPerRegion
   ) throws -> BrainParameterVersion {
     guard regionalProgram.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.invalidParameterVersion(
@@ -249,8 +251,14 @@ public struct BrainParameterVersion: Codable, Equatable, Hashable, Sendable {
       byteCount: UInt64(regionalBytes),
       contentFingerprint: regionalProgram.fingerprint
     )
+    let plasticityElementCount = try BrainSharedParameterArtifact
+      .plasticityElementCount(
+        regionCount: regionalProgram.layouts.count,
+        basisCapacityPerRegion: plasticityBasisCapacityPerRegion
+      )
     let sharedComponents = try BrainSharedParameterArtifact.foundationPayloads(
-      regionalDenseElementCount: regionalProgram.denseParameterCount
+      regionalDenseElementCount: regionalProgram.denseParameterCount,
+      plasticityElementCount: plasticityElementCount
     ).map {
       try $0.component
     }
