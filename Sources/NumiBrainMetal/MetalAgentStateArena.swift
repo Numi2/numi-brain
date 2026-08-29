@@ -143,13 +143,13 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let alignment = 256
   public static let workspaceMetadataStride = 96
   public static let bodyBeliefStride = 256
-  public static let bodyBeliefLayoutVersion: UInt64 = 2
+  public static let bodyBeliefLayoutVersion: UInt64 = 3
   public static let jointBeliefStride = 256
   public static let jointBeliefLayoutVersion: UInt64 = 1
   public static let worldModelLayoutVersion: UInt64 = 2
   public static let cerebellarExpertLayoutVersion: UInt64 = 2
   public static let muscleBeliefStride = 192
-  public static let muscleBeliefLayoutVersion: UInt64 = 3
+  public static let muscleBeliefLayoutVersion: UInt64 = 4
   public static let objectSlotStride = 512
   public static let otherAgentSlotStride = 512
   public static let relationStride = 64

@@ -45,7 +45,8 @@ constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
 constant uint NB_JOINT_OWNERSHIP = 30u;
 constant uint NB_JOINT_PREDICTION_ERROR = 31u;
 constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
-constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
+constant uint NB_MUSCLE_TASK_EFFECT = 13u;
+constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 16u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
@@ -2689,8 +2690,12 @@ inline float nb_cerebellar_embodied_context(
         || (identity[2] != 0ul
           && first_body_identifier != target_body_identifier
           && terminal_body_identifier != target_body_identifier)) continue;
-    const uint features[7] = {0u, 1u, 2u, 3u, 4u, 8u, 9u};
-    for (uint index = 0u; index < 7u; ++index) {
+    const uint features[10] = {
+      0u, 1u, 2u, 3u, 4u, 8u, 9u,
+      NB_MUSCLE_TASK_EFFECT, NB_MUSCLE_TASK_EFFECT + 1u,
+      NB_MUSCLE_TASK_EFFECT + 2u,
+    };
+    for (uint index = 0u; index < 10u; ++index) {
       muscle_total += nb_normalized_muscle_feature_value(
         muscle[features[index]], features[index]
       );
@@ -3122,11 +3127,19 @@ kernel void generate_motor_spinal_autonomic_state(
       hot_state + uniforms.somatic_effector_belief_offset
         + ulong(effector_index) * 192ul
     );
-    const float agency_confidence =
+    device const ulong *effector_identity =
+      reinterpret_cast<device const ulong *>(
+        effector + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+      );
+    const bool effector_valid =
       uniforms.somatic_effector_belief_count > 0u
+      && (effector_identity[3] & ulong(NB_CONTROL_FLAG_VALID)) != 0ul
+      && uint(effector_identity[5]) == gid;
+    const float agency_confidence =
+      effector_valid
         ? clamp(effector[8], 0.0f, 1.0f) : 0.0f;
     const float external_disturbance =
-      uniforms.somatic_effector_belief_count > 0u
+      effector_valid
         ? clamp(effector[9], 0.0f, 1.0f) : 0.0f;
     float joint_uncertainty = 0.0f;
     const float joint_limit_risk = nb_articulated_joint_risk(
@@ -3150,23 +3163,71 @@ kernel void generate_motor_spinal_autonomic_state(
     const float motor_neutral = nb_motor_neutral(
       uniforms.actuator_command_kind
     );
-    const uint task_axis = gid % 3u;
+    const bool anatomical_effector = effector_valid
+      && effector_identity[2] != 0ul;
+    const uint first_body_identifier = uint(effector_identity[7]);
+    const uint terminal_body_identifier = uint(effector_identity[7] >> 32u);
+    const bool effector_targets_body = motor_goal_valid
+      && (first_body_identifier == motor_goal->target_body_identifier
+        || terminal_body_identifier == motor_goal->target_body_identifier);
+    const float endpoint_sign = terminal_body_identifier
+        == motor_goal->target_body_identifier
+      ? 1.0f : -1.0f;
+    const float3 learned_task_effect = anatomical_effector
+      && effector_targets_body
+      ? endpoint_sign * float3(
+          effector[NB_MUSCLE_TASK_EFFECT],
+          effector[NB_MUSCLE_TASK_EFFECT + 1u],
+          effector[NB_MUSCLE_TASK_EFFECT + 2u]
+        )
+      : float3(0.0f);
+    const float3 absolute_task_effect = abs(learned_task_effect);
+    uint task_axis = gid % 3u;
+    if (absolute_task_effect.y > absolute_task_effect[task_axis]) {
+      task_axis = 1u;
+    }
+    if (absolute_task_effect.z > absolute_task_effect[task_axis]) {
+      task_axis = 2u;
+    }
     float task_correction = 0.0f;
     if (motor_goal_valid && target_body_found) {
       device const float *target_body = reinterpret_cast<device const float *>(
         body_belief + ulong(target_body_index) * 256ul
       );
-      const float position_error = motor_goal->task_space_target[task_axis]
-        - target_body[NB_BODY_POSITION + task_axis];
-      const float velocity_error = motor_goal->velocity_target[task_axis]
-        - target_body[NB_BODY_LINEAR_VELOCITY + task_axis];
-      const float force_error = motor_goal->force_target[task_axis]
-        - target_body[NB_BODY_LOCAL_FORCE + task_axis];
-      task_correction = motor_goal->confidence * (
-        motor_parameters[3] * tanh(position_error)
-          + motor_parameters[4] * tanh(velocity_error)
-          + motor_parameters[5] * tanh(force_error)
-      );
+      if (anatomical_effector) {
+        if (effector_targets_body
+            && length_squared(learned_task_effect) > 1.0e-8f) {
+          float3 task_error = float3(0.0f);
+          for (uint component = 0u; component < 3u; ++component) {
+            const float position_error =
+              motor_goal->task_space_target[component]
+                - target_body[NB_BODY_POSITION + component];
+            const float velocity_error = motor_goal->velocity_target[component]
+              - target_body[NB_BODY_LINEAR_VELOCITY + component];
+            const float force_error = motor_goal->force_target[component]
+              - target_body[NB_BODY_LOCAL_FORCE + component];
+            task_error[component] =
+              motor_parameters[3] * tanh(position_error)
+              + motor_parameters[4] * tanh(velocity_error)
+              + motor_parameters[5] * tanh(force_error);
+          }
+          task_correction = motor_goal->confidence * dot(
+            learned_task_effect, task_error
+          );
+        }
+      } else {
+        const float position_error = motor_goal->task_space_target[task_axis]
+          - target_body[NB_BODY_POSITION + task_axis];
+        const float velocity_error = motor_goal->velocity_target[task_axis]
+          - target_body[NB_BODY_LINEAR_VELOCITY + task_axis];
+        const float force_error = motor_goal->force_target[task_axis]
+          - target_body[NB_BODY_LOCAL_FORCE + task_axis];
+        task_correction = motor_goal->confidence * (
+          motor_parameters[3] * tanh(position_error)
+            + motor_parameters[4] * tanh(velocity_error)
+            + motor_parameters[5] * tanh(force_error)
+        );
+      }
     }
     const float goal_synergy = motor_goal_valid
         && motor_goal->synergy_count > 0u

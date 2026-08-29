@@ -722,6 +722,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "assimilate_accepted_joint_schema",
       "assimilate_accepted_muscle_schema",
       "reconcile_accepted_articulated_body_graph",
+      "learn_accepted_muscle_task_effect",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -909,6 +910,14 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     barrier(encoder)
     dispatch(encoder, pipeline: pipelines[12], count: 1)
     barrier(encoder)
+    if species.body.muscleCount > 0 {
+      dispatch(
+        encoder,
+        pipeline: pipelines[13],
+        count: Int(species.body.muscleCount)
+      )
+      barrier(encoder)
+    }
     if let acceptedFastMotorState,
       acceptedFastMotorState.bodySchemaByteCount > 0
     {

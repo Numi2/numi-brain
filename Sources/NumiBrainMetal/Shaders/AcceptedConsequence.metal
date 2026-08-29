@@ -50,6 +50,9 @@ constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 31u;
 constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
 constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
+constant uint NB_BODY_PRIOR_POSITION = 33u;
+constant uint NB_BODY_ACCEPTED_POSITION_DELTA = 36u;
+constant uint NB_BODY_ACCEPTED_POSITION_DELTA_MASK = 39u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 constant uint NB_JOINT_POSITION_VARIANCE = 12u;
 constant uint NB_JOINT_VELOCITY_VARIANCE = 18u;
@@ -57,7 +60,8 @@ constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
 constant uint NB_JOINT_OWNERSHIP = 30u;
 constant uint NB_JOINT_PREDICTION_ERROR = 31u;
 constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
-constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
+constant uint NB_MUSCLE_TASK_EFFECT = 13u;
+constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 16u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
@@ -1371,8 +1375,10 @@ kernel void assimilate_accepted_body_and_physiology(
         : (retained_per_second >= 1.0f ? 1.0f
           : pow(retained_per_second, elapsed_seconds));
       float maximum_proprioceptive_error = 0.0f;
+      uint accepted_position_delta_mask = 0u;
       for (uint component = 0u; component < 3u; ++component) {
         const float prior_position = body[NB_BODY_POSITION + component];
+        body[NB_BODY_PRIOR_POSITION + component] = prior_position;
         const float position_evidence = position_weight[component] > 0.0f
           ? position_total[component] / position_weight[component]
           : prior_position;
@@ -1392,6 +1398,13 @@ kernel void assimilate_accepted_body_and_physiology(
           min(velocity_gain, body_gain)
         );
         body[NB_BODY_POSITION + component] = corrected_position;
+        const bool accepted_delta_valid = prior_valid
+          && position_weight[component] > 0.0f;
+        body[NB_BODY_ACCEPTED_POSITION_DELTA + component] =
+          accepted_delta_valid ? corrected_position - prior_position : 0.0f;
+        if (accepted_delta_valid) {
+          accepted_position_delta_mask |= 1u << component;
+        }
         body[NB_BODY_LINEAR_VELOCITY + component] = corrected_velocity;
         const float position_residual = position_evidence - corrected_position;
         const float prior_variance = prior_valid
@@ -1438,6 +1451,9 @@ kernel void assimilate_accepted_body_and_physiology(
           body[NB_BODY_LOCAL_FORCE + component], force_evidence, body_gain
         );
       }
+      body[NB_BODY_ACCEPTED_POSITION_DELTA_MASK] = float(
+        accepted_position_delta_mask
+      );
       float4 prior_orientation = prior_valid
         ? float4(
           body[NB_BODY_ORIENTATION],
@@ -2119,7 +2135,12 @@ kernel void reconcile_accepted_articulated_body_graph(
         predicted_orientation_variance,
         graph_gain
       );
+      child[NB_BODY_ACCEPTED_POSITION_DELTA + component] = child_valid
+        ? child[NB_BODY_POSITION + component]
+          - child[NB_BODY_PRIOR_POSITION + component]
+        : 0.0f;
     }
+    child[NB_BODY_ACCEPTED_POSITION_DELTA_MASK] = child_valid ? 7.0f : 0.0f;
     float4 child_orientation = child_valid
       ? float4(
           child[NB_BODY_ORIENTATION],
@@ -2151,6 +2172,95 @@ kernel void reconcile_accepted_articulated_body_graph(
     child_identity[2] = uniforms.physics_state_fingerprint;
     child_identity[3] = (child_valid ? child_identity[3] : 0ul)
       | ulong(NB_ACCEPTED_STATE_VALID) | NB_ACCEPTED_BODY_ARTICULATED;
+  }
+}
+
+/// Learns a compact world-space effect vector for each anatomical muscle from
+/// committed endpoint motion and the exact accepted excitation. Rejected
+/// physical candidates never reach this kernel. The vector describes terminal
+/// motion relative to the first endpoint; motor descent reverses it when the
+/// commanded body is the first endpoint.
+kernel void learn_accepted_muscle_task_effect(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.anatomical_muscle_count
+      || gid >= uniforms.muscle_count) return;
+  device float *muscle = reinterpret_cast<device float *>(
+    hot_state + uniforms.muscle_belief_offset + ulong(gid) * 192ul
+  );
+  device const ulong *muscle_identity =
+    reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+  if ((muscle_identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul
+      || muscle_identity[2] == 0ul) return;
+  const uint first_identifier = uint(muscle_identity[7]);
+  const uint terminal_identifier = uint(muscle_identity[7] >> 32u);
+  device const float *first_body = nullptr;
+  device const float *terminal_body = nullptr;
+  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul) continue;
+    const uint identifier = uint(identity[0]);
+    if (identifier == first_identifier) first_body = body;
+    if (identifier == terminal_identifier) terminal_body = body;
+  }
+  if (first_body == nullptr || terminal_body == nullptr) return;
+  const uint first_mask = uint(clamp(
+    first_body[NB_BODY_ACCEPTED_POSITION_DELTA_MASK], 0.0f, 7.0f
+  ));
+  const uint terminal_mask = uint(clamp(
+    terminal_body[NB_BODY_ACCEPTED_POSITION_DELTA_MASK], 0.0f, 7.0f
+  ));
+  const float command = clamp(muscle[11], 0.0f, 1.0f);
+  if (command <= 1.0e-4f) return;
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float velocity_limit = max(belief_parameters[13], 1.0f);
+  const float agency = clamp(muscle[8], 0.0f, 1.0f);
+  const float learning_rate = clamp(
+    min(uniforms.belief_gain, max(belief_parameters[4], 0.0f))
+      * command * (0.25f + 0.75f * agency),
+    0.0f,
+    1.0f
+  );
+  const float command_energy = fma(command, command, 1.0e-4f);
+  for (uint component = 0u; component < 3u; ++component) {
+    const uint component_bit = 1u << component;
+    const bool first_valid = (first_mask & component_bit) != 0u;
+    const bool terminal_valid = (terminal_mask & component_bit) != 0u;
+    const bool first_anchored = !first_valid
+      && first_body[NB_BODY_SUPPORT] >= 0.75f;
+    const bool terminal_anchored = !terminal_valid
+      && terminal_body[NB_BODY_SUPPORT] >= 0.75f;
+    if (!(first_valid || first_anchored)
+        || !(terminal_valid || terminal_anchored)) continue;
+    const float first_delta = first_valid
+      ? first_body[NB_BODY_ACCEPTED_POSITION_DELTA + component] : 0.0f;
+    const float terminal_delta = terminal_valid
+      ? terminal_body[NB_BODY_ACCEPTED_POSITION_DELTA + component] : 0.0f;
+    const float observed_effect = clamp(
+      (terminal_delta - first_delta) / elapsed_seconds / velocity_limit,
+      -1.0f,
+      1.0f
+    );
+    const float prior_effect = muscle[NB_MUSCLE_TASK_EFFECT + component];
+    const float prediction_error = observed_effect - command * prior_effect;
+    muscle[NB_MUSCLE_TASK_EFFECT + component] = clamp(
+      prior_effect
+        + learning_rate * command * prediction_error / command_energy,
+      -1.0f,
+      1.0f
+    );
   }
 }
 
