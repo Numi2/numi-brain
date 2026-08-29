@@ -33,12 +33,20 @@ private struct AcceptedConsequenceUniforms {
   var activeCerebellarCount: UInt32 = 0
   var actuatorCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
+  var visionOffset: UInt32 = 0
+  var visionCount: UInt32 = 0
+  var auditionOffset: UInt32 = 0
+  var auditionCount: UInt32 = 0
   var proprioceptionOffset: UInt32 = 0
   var proprioceptionCount: UInt32 = 0
   var touchOffset: UInt32 = 0
   var touchCount: UInt32 = 0
   var vestibularOffset: UInt32 = 0
   var vestibularCount: UInt32 = 0
+  var olfactionOffset: UInt32 = 0
+  var olfactionCount: UInt32 = 0
+  var gustationOffset: UInt32 = 0
+  var gustationCount: UInt32 = 0
   var interoceptionOffset: UInt32 = 0
   var interoceptionCount: UInt32 = 0
   var beliefGain: Float = 0
@@ -73,7 +81,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 240,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 272,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
@@ -244,9 +252,13 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     func range(_ modality: SensoryModality) -> ObservationRange {
       observationRanges[modality] ?? ObservationRange(offset: 0, count: 0)
     }
+    let vision = range(.vision)
+    let audition = range(.audition)
     let proprioception = range(.proprioception)
     let touch = range(.touch)
     let vestibular = range(.vestibular)
+    let olfaction = range(.olfaction)
+    let gustation = range(.gustation)
     let interoception = range(.interoception)
     let controlHeader = controlLayout.section(.header)
     let motor = controlLayout.section(.motorCommands)
@@ -294,12 +306,20 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       actuatorCount: species.motor.actuatorCount,
       eventCapacity: eventCapacity,
+      visionOffset: vision.offset,
+      visionCount: vision.count,
+      auditionOffset: audition.offset,
+      auditionCount: audition.count,
       proprioceptionOffset: proprioception.offset,
       proprioceptionCount: proprioception.count,
       touchOffset: touch.offset,
       touchCount: touch.count,
       vestibularOffset: vestibular.offset,
       vestibularCount: vestibular.count,
+      olfactionOffset: olfaction.offset,
+      olfactionCount: olfaction.count,
+      gustationOffset: gustation.offset,
+      gustationCount: gustation.count,
       interoceptionOffset: interoception.offset,
       interoceptionCount: interoception.count,
       beliefGain: dynamics.beliefGain,

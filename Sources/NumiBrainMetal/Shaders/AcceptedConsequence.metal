@@ -36,12 +36,20 @@ struct NBAcceptedConsequenceUniforms {
   uint active_cerebellar_count;
   uint actuator_count;
   uint event_capacity;
+  uint vision_offset;
+  uint vision_count;
+  uint audition_offset;
+  uint audition_count;
   uint proprioception_offset;
   uint proprioception_count;
   uint touch_offset;
   uint touch_count;
   uint vestibular_offset;
   uint vestibular_count;
+  uint olfaction_offset;
+  uint olfaction_count;
+  uint gustation_offset;
+  uint gustation_count;
   uint interoception_offset;
   uint interoception_count;
   float belief_gain;
@@ -146,7 +154,7 @@ struct NBCerebellarExpertRecord {
   float state[60];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 240);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 272);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -165,17 +173,70 @@ inline float nb_observation(
   return count == 0u ? 0.0f : observations[offset + index % count];
 }
 
+inline float nb_world_observation(
+  device const float *observations,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  uint world_index)
+{
+  uint local_index = world_index;
+  uint offset = uniforms.vision_offset;
+  uint count = uniforms.vision_count;
+  if (world_index >= 32u) {
+    local_index = world_index - 32u;
+    offset = uniforms.audition_offset;
+    count = uniforms.audition_count;
+  }
+  if (world_index >= 48u) {
+    local_index = world_index - 48u;
+    offset = uniforms.touch_offset;
+    count = uniforms.touch_count;
+  }
+  if (world_index >= 64u) {
+    local_index = world_index - 64u;
+    offset = uniforms.proprioception_offset;
+    count = uniforms.proprioception_count;
+  }
+  if (world_index >= 80u) {
+    local_index = world_index - 80u;
+    offset = uniforms.vestibular_offset;
+    count = uniforms.vestibular_count;
+  }
+  if (world_index >= 96u) {
+    local_index = world_index - 96u;
+    offset = uniforms.olfaction_offset;
+    count = uniforms.olfaction_count;
+  }
+  if (world_index >= 108u) {
+    local_index = world_index - 108u;
+    offset = uniforms.gustation_offset;
+    count = uniforms.gustation_count;
+  }
+  if (world_index >= 116u) {
+    local_index = world_index - 116u;
+    offset = uniforms.interoception_offset;
+    count = uniforms.interoception_count;
+  }
+  if (count > 0u) return nb_observation(observations, offset, count, local_index);
+  const uint fallback = uint(
+    (ulong(world_index) * ulong(uniforms.observation_count))
+      / ulong(NB_WORLD_RECEPTOR_DIMENSION)
+  );
+  return observations[min(fallback, uniforms.observation_count - 1u)];
+}
+
 inline float nb_mean_prediction_error(
   device const float *observations,
-  uint observation_count,
   device const float *world,
-  uint world_count)
+  constant NBAcceptedConsequenceUniforms &uniforms)
 {
-  const bool structured_world_available = world_count
+  const bool structured_world_available = uniforms.world_model_count
     >= 9u * NB_WORLD_RECEPTOR_DIMENSION;
   const uint sample_count = structured_world_available
-    ? min(observation_count, NB_WORLD_RECEPTOR_DIMENSION)
-    : min(min(observation_count, world_count), 256u);
+    ? (uniforms.observation_count > 0u ? NB_WORLD_RECEPTOR_DIMENSION : 0u)
+    : min(
+        min(uniforms.observation_count, uniforms.world_model_count),
+        256u
+      );
   if (sample_count == 0u) return 0.0f;
   float total = 0.0f;
   for (uint index = 0u; index < sample_count; ++index) {
@@ -188,7 +249,10 @@ inline float nb_mean_prediction_error(
         ] / float(NB_WORLD_HEAD_COUNT);
       }
     }
-    total += abs(observations[index] - prediction);
+    const float observed = structured_world_available
+      ? nb_world_observation(observations, uniforms, index)
+      : observations[index];
+    total += abs(observed - prediction);
   }
   return total / float(sample_count);
 }
@@ -324,7 +388,7 @@ kernel void reconcile_accepted_world_model(
   device float *world = reinterpret_cast<device float *>(
     hot_state + uniforms.world_model_offset
   );
-  const float observed = observations[gid % uniforms.observation_count];
+  const float observed = nb_world_observation(observations, uniforms, gid);
   float predicted_mean = 0.0f;
   for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
     predicted_mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + gid]
@@ -359,7 +423,7 @@ kernel void broadcast_accepted_prediction_error(
     hot_state + uniforms.world_model_offset
   );
   const float error = nb_mean_prediction_error(
-    observations, uniforms.observation_count, world, uniforms.world_model_count
+    observations, world, uniforms
   );
   const float epistemic = nb_mean_epistemic_disagreement(
     world, uniforms.world_model_count
@@ -438,7 +502,7 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
       hot_state + uniforms.motor_command_offset
     );
   const float error = nb_mean_prediction_error(
-    observations, uniforms.observation_count, world, uniforms.world_model_count
+    observations, world, uniforms
   );
   NBCerebellarExpertRecord expert = experts[gid];
   expert.prediction_error = error;
@@ -493,7 +557,7 @@ kernel void update_fast_plasticity_from_accepted_error(
       hot_state + uniforms.fast_plasticity_offset
     );
   const float error = nb_mean_prediction_error(
-    observations, uniforms.observation_count, world, uniforms.world_model_count
+    observations, world, uniforms
   );
   NBFastPlasticityRecord site = sites[gid];
   const float modulation = uniforms.neuromodulator_count == 0u

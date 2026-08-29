@@ -25,6 +25,7 @@ private struct CognitiveUniforms {
   var contextBeliefOffset: UInt64 = 0
   var relationSlotOffset: UInt64 = 0
   var spatialTransformOffset: UInt64 = 0
+  var physiologyBeliefOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -53,6 +54,13 @@ private struct CognitiveUniforms {
   var vestibularObservationOffset: UInt32 = 0
   var vestibularObservationCount: UInt32 = 0
   var spatialTransformCount: UInt32 = 0
+  var physiologyBeliefCount: UInt32 = 0
+  var olfactionObservationOffset: UInt32 = 0
+  var olfactionObservationCount: UInt32 = 0
+  var gustationObservationOffset: UInt32 = 0
+  var gustationObservationCount: UInt32 = 0
+  var interoceptionObservationOffset: UInt32 = 0
+  var interoceptionObservationCount: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -122,6 +130,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let proprioceptionObservationCount: UInt32
   private let vestibularObservationOffset: UInt32
   private let vestibularObservationCount: UInt32
+  private let olfactionObservationOffset: UInt32
+  private let olfactionObservationCount: UInt32
+  private let gustationObservationOffset: UInt32
+  private let gustationObservationCount: UInt32
+  private let interoceptionObservationOffset: UInt32
+  private let interoceptionObservationCount: UInt32
   private let beliefParameterGPUAddress: UInt64
   private let worldParameterGPUAddress: UInt64
   private let memoryParameterGPUAddress: UInt64
@@ -135,7 +149,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 288,
+    guard MemoryLayout<CognitiveUniforms>.stride == 328,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -233,6 +247,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     var proprioceptionObservationCount: UInt32 = 0
     var vestibularObservationOffset: UInt32 = 0
     var vestibularObservationCount: UInt32 = 0
+    var olfactionObservationOffset: UInt32 = 0
+    var olfactionObservationCount: UInt32 = 0
+    var gustationObservationOffset: UInt32 = 0
+    var gustationObservationCount: UInt32 = 0
+    var interoceptionObservationOffset: UInt32 = 0
+    var interoceptionObservationCount: UInt32 = 0
     for topology in species.senses where topology.enabled {
       let scalarCount = UInt64(topology.receptorCount)
         * UInt64(topology.observationDimension)
@@ -251,6 +271,15 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       } else if topology.modality == .vestibular {
         vestibularObservationOffset = UInt32(observationScalarOffset)
         vestibularObservationCount = UInt32(scalarCount)
+      } else if topology.modality == .olfaction {
+        olfactionObservationOffset = UInt32(observationScalarOffset)
+        olfactionObservationCount = UInt32(scalarCount)
+      } else if topology.modality == .gustation {
+        gustationObservationOffset = UInt32(observationScalarOffset)
+        gustationObservationCount = UInt32(scalarCount)
+      } else if topology.modality == .interoception {
+        interoceptionObservationOffset = UInt32(observationScalarOffset)
+        interoceptionObservationCount = UInt32(scalarCount)
       }
       observationScalarOffset += scalarCount
     }
@@ -316,6 +345,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.proprioceptionObservationCount = proprioceptionObservationCount
     self.vestibularObservationOffset = vestibularObservationOffset
     self.vestibularObservationCount = vestibularObservationCount
+    self.olfactionObservationOffset = olfactionObservationOffset
+    self.olfactionObservationCount = olfactionObservationCount
+    self.gustationObservationOffset = gustationObservationOffset
+    self.gustationObservationCount = gustationObservationCount
+    self.interoceptionObservationOffset = interoceptionObservationOffset
+    self.interoceptionObservationCount = interoceptionObservationCount
     let controlLayout = try MetalActiveControlLayout(
       arenaLayout: arena.layout,
       species: species
@@ -509,6 +544,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       contextBeliefOffset: offset(.contextBelief),
       relationSlotOffset: offset(.relationSlots),
       spatialTransformOffset: offset(.spatialTransforms),
+      physiologyBeliefOffset: offset(.physiologyBelief),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),
@@ -536,7 +572,14 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       relationSlotCount: count(.relationSlots),
       vestibularObservationOffset: vestibularObservationOffset,
       vestibularObservationCount: vestibularObservationCount,
-      spatialTransformCount: count(.spatialTransforms)
+      spatialTransformCount: count(.spatialTransforms),
+      physiologyBeliefCount: count(.physiologyBelief),
+      olfactionObservationOffset: olfactionObservationOffset,
+      olfactionObservationCount: olfactionObservationCount,
+      gustationObservationOffset: gustationObservationOffset,
+      gustationObservationCount: gustationObservationCount,
+      interoceptionObservationOffset: interoceptionObservationOffset,
+      interoceptionObservationCount: interoceptionObservationCount
     )
   }
 
