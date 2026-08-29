@@ -22,6 +22,12 @@ constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
 constant uint NB_WORLD_CVAR_TAIL_COUNT = 2u;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
+constant uint NB_BODY_SUPPORT = 20u;
+constant uint NB_BODY_PAIN = 24u;
+constant uint NB_BODY_VULNERABILITY = 25u;
+constant uint NB_BODY_LOAD_VARIANCE = 29u;
+constant uint NB_BODY_DAMAGE_RISK = 30u;
+constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -639,12 +645,15 @@ inline float nb_embodied_self_risk(
       body_belief + ulong(body_index) * 256ul
     );
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
     if ((identity[3] & 1ul) == 0ul) continue;
     risk = max(risk, max(
-      clamp(body[5], 0.0f, 1.0f),
-      max(clamp(body[10], 0.0f, 1.0f), clamp(body[11], 0.0f, 1.0f))
+      clamp(body[NB_BODY_PAIN], 0.0f, 1.0f),
+      max(
+        clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
+        clamp(body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
+      )
     ));
   }
   device const uchar *effector_belief =
@@ -2550,15 +2559,18 @@ kernel void generate_motor_spinal_autonomic_state(
         body_belief + ulong(body_index) * 256ul
       );
       device const ulong *identity = reinterpret_cast<device const ulong *>(
-        body + 16
+        body + NB_BODY_IDENTITY_FLOAT_OFFSET
       );
       if ((identity[3] & 1ul) == 0ul) continue;
       body_risk = max(body_risk, max(
-        clamp(body[5], 0.0f, 1.0f),
-        max(clamp(body[10], 0.0f, 1.0f), clamp(body[11], 0.0f, 1.0f))
+        clamp(body[NB_BODY_PAIN], 0.0f, 1.0f),
+        max(
+          clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
+          clamp(body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
+        )
       ));
       support_confidence = max(
-        support_confidence, clamp(body[3], 0.0f, 1.0f)
+        support_confidence, clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f)
       );
       body_evidence_count += 1u;
     }
@@ -2935,10 +2947,13 @@ kernel void generate_motor_spinal_autonomic_state(
           body_belief + ulong(body_index) * 256ul
         );
         device const ulong *identity = reinterpret_cast<device const ulong *>(
-          body + 16
+          body + NB_BODY_IDENTITY_FLOAT_OFFSET
         );
-        if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
-        const float standard_deviation = sqrt(max(body[9], 0.0f));
+        if ((identity[3] & 1ul) == 0ul
+            || !isfinite(body[NB_BODY_LOAD_VARIANCE])) continue;
+        const float standard_deviation = sqrt(
+          max(body[NB_BODY_LOAD_VARIANCE], 0.0f)
+        );
         body_model_uncertainty = max(
           body_model_uncertainty,
           standard_deviation / (1.0f + standard_deviation)
@@ -2957,11 +2972,12 @@ kernel void generate_motor_spinal_autonomic_state(
           body_belief + ulong(body_index) * 256ul
         );
         device const ulong *identity = reinterpret_cast<device const ulong *>(
-          body + 16
+          body + NB_BODY_IDENTITY_FLOAT_OFFSET
         );
         if ((identity[3] & 1ul) == 0ul) continue;
         support_uncertainty = max(
-          support_uncertainty, 1.0f - clamp(body[3], 0.0f, 1.0f)
+          support_uncertainty,
+          1.0f - clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f)
         );
       }
       modality_uncertainty = max(modality_uncertainty, support_uncertainty);

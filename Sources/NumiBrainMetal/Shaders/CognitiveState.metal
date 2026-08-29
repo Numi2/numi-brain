@@ -2,6 +2,8 @@
 using namespace metal;
 
 constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
+constant uint NB_BODY_LOAD_VARIANCE = 29u;
+constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBCognitiveUniforms {
   ulong target_timestamp_microseconds;
@@ -1042,10 +1044,13 @@ kernel void update_curiosity_drive_from_world_model(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
     );
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
-    if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
-    const float standard_deviation = sqrt(max(body[9], 0.0f));
+    if ((identity[3] & 1ul) == 0ul
+        || !isfinite(body[NB_BODY_LOAD_VARIANCE])) continue;
+    const float standard_deviation = sqrt(
+      max(body[NB_BODY_LOAD_VARIANCE], 0.0f)
+    );
     body_model_uncertainty = max(
       body_model_uncertainty,
       standard_deviation / (1.0f + standard_deviation)

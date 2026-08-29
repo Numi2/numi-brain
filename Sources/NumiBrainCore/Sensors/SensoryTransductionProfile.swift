@@ -71,6 +71,10 @@ public enum BodyReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
   case localForce = 5
   case nociception = 6
   case vestibularStability = 7
+  case orientation = 8
+  case angularVelocity = 9
+  case positionVariance = 10
+  case orientationVariance = 11
 }
 
 /// Immutable anatomical attribution for one receptor feature. Multiple
@@ -84,6 +88,7 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
   public let receptorIndex: UInt32
   public let featureIndex: UInt32
   public let signal: BodyReceptorSignal
+  public let component: UInt16
   public let scale: Float
   public let bias: Float
   public let weight: Float
@@ -95,6 +100,7 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
     receptorIndex: UInt32,
     featureIndex: UInt32,
     signal: BodyReceptorSignal,
+    component: UInt16 = 0,
     scale: Float = 1,
     bias: Float = 0,
     weight: Float = 1
@@ -112,9 +118,39 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
     self.receptorIndex = receptorIndex
     self.featureIndex = featureIndex
     self.signal = signal
+    self.component = component
     self.scale = scale
     self.bias = bias
     self.weight = weight
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case identifier
+    case bodyIdentifier
+    case modality
+    case receptorIndex
+    case featureIndex
+    case signal
+    case component
+    case scale
+    case bias
+    case weight
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      identifier: values.decode(UInt32.self, forKey: .identifier),
+      bodyIdentifier: values.decode(UInt32.self, forKey: .bodyIdentifier),
+      modality: values.decode(SensoryModality.self, forKey: .modality),
+      receptorIndex: values.decode(UInt32.self, forKey: .receptorIndex),
+      featureIndex: values.decode(UInt32.self, forKey: .featureIndex),
+      signal: values.decode(BodyReceptorSignal.self, forKey: .signal),
+      component: values.decodeIfPresent(UInt16.self, forKey: .component) ?? 0,
+      scale: values.decode(Float.self, forKey: .scale),
+      bias: values.decode(Float.self, forKey: .bias),
+      weight: values.decode(Float.self, forKey: .weight)
+    )
   }
 }
 
@@ -163,10 +199,17 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       }
     }
     for binding in bodyReceptorBindings {
+      let componentCount: UInt16 = switch binding.signal {
+      case .orientation: 4
+      case .position, .velocity, .localForce, .angularVelocity,
+        .positionVariance, .orientationVariance: 3
+      case .contact, .support, .nociception, .vestibularStability: 1
+      }
       guard binding.bodyIdentifier < species.body.bodyCount,
         let topology = topologyByModality[binding.modality], topology.enabled,
         binding.receptorIndex < topology.receptorCount,
-        binding.featureIndex < topology.observationDimension
+        binding.featureIndex < topology.observationDimension,
+        binding.component < componentCount
       else {
         throw BrainRuntimeError.invalidDescriptor(
           "body receptor binding exceeds species anatomy"
@@ -199,6 +242,7 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       Self.mix(UInt64(binding.receptorIndex), into: &hash)
       Self.mix(UInt64(binding.featureIndex), into: &hash)
       Self.mix(UInt64(binding.signal.rawValue), into: &hash)
+      Self.mix(UInt64(binding.component), into: &hash)
       Self.mix(UInt64(binding.scale.bitPattern), into: &hash)
       Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
       Self.mix(UInt64(binding.weight.bitPattern), into: &hash)

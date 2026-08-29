@@ -204,7 +204,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         bodyIdentifier: binding.bodyIdentifier,
         signal: UInt32(binding.signal.rawValue),
         observationScalarIndex: UInt32(scalarIndex),
-        flags: 1,
+        flags: 1 | (UInt32(binding.component) << 16),
         scale: binding.scale,
         bias: binding.bias,
         weight: binding.weight,

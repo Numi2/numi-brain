@@ -44,6 +44,12 @@ constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
   NB_MEMORY_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_MEMORY_ARCHIVE_CLUSTER_COUNT = 256u;
+constant uint NB_BODY_PAIN = 24u;
+constant uint NB_BODY_VULNERABILITY = 25u;
+constant uint NB_BODY_LOAD = 28u;
+constant uint NB_BODY_LOAD_VARIANCE = 29u;
+constant uint NB_BODY_DAMAGE_RISK = 30u;
+constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBMemoryUniforms {
   ulong target_timestamp_microseconds;
@@ -2913,22 +2919,22 @@ kernel void reconsolidate_retrieved_memory(
         hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
       );
       device const ulong *identity = reinterpret_cast<device const ulong *>(
-        body + 16
+        body + NB_BODY_IDENTITY_FLOAT_OFFSET
       );
       if ((identity[3] & 1ul) == 0ul) continue;
-      if (isfinite(body[5])) {
+      if (isfinite(body[NB_BODY_PAIN])) {
         accepted_damage = max(
-          accepted_damage, clamp(body[5], 0.0f, 1.0f)
+          accepted_damage, clamp(body[NB_BODY_PAIN], 0.0f, 1.0f)
         );
       }
-      if (isfinite(body[10])) {
+      if (isfinite(body[NB_BODY_VULNERABILITY])) {
         accepted_damage = max(
-          accepted_damage, clamp(body[10], 0.0f, 1.0f)
+          accepted_damage, clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f)
         );
       }
-      if (isfinite(body[11])) {
+      if (isfinite(body[NB_BODY_DAMAGE_RISK])) {
         accepted_damage = max(
-          accepted_damage, clamp(body[11], 0.0f, 1.0f)
+          accepted_damage, clamp(body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
         );
       }
     }
@@ -4548,18 +4554,26 @@ kernel void journal_committed_learning_transition(
       accepted_body_belief + ulong(body_index) * 256ul
     );
     device const ulong *prior_identity =
-      reinterpret_cast<device const ulong *>(prior_body + 16);
+      reinterpret_cast<device const ulong *>(
+        prior_body + NB_BODY_IDENTITY_FLOAT_OFFSET
+      );
     device const ulong *accepted_identity =
-      reinterpret_cast<device const ulong *>(accepted_body + 16);
+      reinterpret_cast<device const ulong *>(
+        accepted_body + NB_BODY_IDENTITY_FLOAT_OFFSET
+      );
     if ((prior_identity[3] & 1ul) != 0ul
-        && isfinite(prior_body[8]) && isfinite(prior_body[9])
-        && isfinite(prior_body[10]) && isfinite(prior_body[11])) {
-      const float load = max(prior_body[8], 0.0f);
-      const float uncertainty = sqrt(max(prior_body[9], 0.0f));
+        && isfinite(prior_body[NB_BODY_LOAD])
+        && isfinite(prior_body[NB_BODY_LOAD_VARIANCE])
+        && isfinite(prior_body[NB_BODY_VULNERABILITY])
+        && isfinite(prior_body[NB_BODY_DAMAGE_RISK])) {
+      const float load = max(prior_body[NB_BODY_LOAD], 0.0f);
+      const float uncertainty = sqrt(
+        max(prior_body[NB_BODY_LOAD_VARIANCE], 0.0f)
+      );
       const float values[4] = {
         load / (1.0f + load), uncertainty / (1.0f + uncertainty),
-        clamp(prior_body[10], 0.0f, 1.0f),
-        clamp(prior_body[11], 0.0f, 1.0f)
+        clamp(prior_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
+        clamp(prior_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
       };
       for (uint value = 0u; value < 4u; ++value) {
         record.body_schema_trace[2u * value] += values[value];
@@ -4570,14 +4584,18 @@ kernel void journal_committed_learning_transition(
       prior_body_count += 1u;
     }
     if ((accepted_identity[3] & 1ul) != 0ul
-        && isfinite(accepted_body[8]) && isfinite(accepted_body[9])
-        && isfinite(accepted_body[10]) && isfinite(accepted_body[11])) {
-      const float load = max(accepted_body[8], 0.0f);
-      const float uncertainty = sqrt(max(accepted_body[9], 0.0f));
+        && isfinite(accepted_body[NB_BODY_LOAD])
+        && isfinite(accepted_body[NB_BODY_LOAD_VARIANCE])
+        && isfinite(accepted_body[NB_BODY_VULNERABILITY])
+        && isfinite(accepted_body[NB_BODY_DAMAGE_RISK])) {
+      const float load = max(accepted_body[NB_BODY_LOAD], 0.0f);
+      const float uncertainty = sqrt(
+        max(accepted_body[NB_BODY_LOAD_VARIANCE], 0.0f)
+      );
       const float values[4] = {
         load / (1.0f + load), uncertainty / (1.0f + uncertainty),
-        clamp(accepted_body[10], 0.0f, 1.0f),
-        clamp(accepted_body[11], 0.0f, 1.0f)
+        clamp(accepted_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
+        clamp(accepted_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
       };
       for (uint value = 0u; value < 4u; ++value) {
         const uint base = 8u + 2u * value;
@@ -5033,17 +5051,23 @@ kernel void segment_and_journal_episode(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
     );
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
     if ((identity[3] & 1ul) == 0ul
-        || !isfinite(body[8]) || !isfinite(body[9])
-        || !isfinite(body[10]) || !isfinite(body[11])) continue;
-    const float load = max(body[8], 0.0f);
+        || !isfinite(body[NB_BODY_LOAD])
+        || !isfinite(body[NB_BODY_LOAD_VARIANCE])
+        || !isfinite(body[NB_BODY_VULNERABILITY])
+        || !isfinite(body[NB_BODY_DAMAGE_RISK])) continue;
+    const float load = max(body[NB_BODY_LOAD], 0.0f);
     const float normalized_load = load / (1.0f + load);
-    const float uncertainty = sqrt(max(body[9], 0.0f));
+    const float uncertainty = sqrt(max(body[NB_BODY_LOAD_VARIANCE], 0.0f));
     const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
-    const float vulnerability = clamp(body[10], 0.0f, 1.0f);
-    const float damage_risk = clamp(body[11], 0.0f, 1.0f);
+    const float vulnerability = clamp(
+      body[NB_BODY_VULNERABILITY], 0.0f, 1.0f
+    );
+    const float damage_risk = clamp(
+      body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f
+    );
     const float salience = max(
       max(damage_risk, vulnerability), 0.5f * normalized_load
     );

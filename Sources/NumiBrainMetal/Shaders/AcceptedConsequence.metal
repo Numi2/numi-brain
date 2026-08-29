@@ -21,24 +21,28 @@ constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
 constant ulong NB_ACCEPTED_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 
-// Canonical 256-byte body-belief scalar prefix. Keep this order aligned with
-// BodyNodeBelief: the first eight values are embodied self-state, followed by
-// the compatible fast load posterior. Slots 6 and 7 are not generic error or
-// threat storage; downstream planning and memory must preserve their meaning.
-constant uint NB_BODY_POSITION = 0u;
-constant uint NB_BODY_VELOCITY = 1u;
-constant uint NB_BODY_CONTACT = 2u;
-constant uint NB_BODY_SUPPORT = 3u;
-constant uint NB_BODY_LOCAL_FORCE = 4u;
-constant uint NB_BODY_PAIN = 5u;
-constant uint NB_BODY_REACHABILITY = 6u;
-constant uint NB_BODY_OWNERSHIP = 7u;
-constant uint NB_BODY_LOAD = 8u;
-constant uint NB_BODY_LOAD_VARIANCE = 9u;
-constant uint NB_BODY_VULNERABILITY = 10u;
-constant uint NB_BODY_DAMAGE_RISK = 11u;
-constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 12u;
-constant uint NB_BODY_EXTERNAL_DISTURBANCE = 13u;
+// Canonical full-vector BodyNodeBelief prefix inside each 256-byte record.
+// Forty FP32 values precede eight UInt64 identity/provenance fields. This is
+// layout version 2 and must remain aligned across every shader consumer.
+constant uint NB_BODY_POSITION = 0u;               // float3
+constant uint NB_BODY_ORIENTATION = 3u;            // float4 quaternion
+constant uint NB_BODY_LINEAR_VELOCITY = 7u;        // float3
+constant uint NB_BODY_ANGULAR_VELOCITY = 10u;      // float3
+constant uint NB_BODY_POSITION_VARIANCE = 13u;     // float3
+constant uint NB_BODY_ORIENTATION_VARIANCE = 16u;  // float3
+constant uint NB_BODY_CONTACT = 19u;
+constant uint NB_BODY_SUPPORT = 20u;
+constant uint NB_BODY_LOCAL_FORCE = 21u;            // float3
+constant uint NB_BODY_PAIN = 24u;
+constant uint NB_BODY_VULNERABILITY = 25u;
+constant uint NB_BODY_REACHABILITY = 26u;
+constant uint NB_BODY_OWNERSHIP = 27u;
+constant uint NB_BODY_LOAD = 28u;
+constant uint NB_BODY_LOAD_VARIANCE = 29u;
+constant uint NB_BODY_DAMAGE_RISK = 30u;
+constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 31u;
+constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
+constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -766,7 +770,7 @@ inline float nb_body_schema_epistemic_uncertainty(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
     );
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
     if ((identity[3] & 1ul) == 0ul
         || !isfinite(body[NB_BODY_LOAD_VARIANCE])) continue;
@@ -822,17 +826,29 @@ kernel void assimilate_accepted_body_and_physiology(
       observations, uniforms.vestibular_offset,
       uniforms.vestibular_count, gid
     );
-    const float prior_position = body[NB_BODY_POSITION];
-    float position_total = 0.0f;
-    float position_weight = 0.0f;
-    float velocity_total = 0.0f;
-    float velocity_weight = 0.0f;
+    device ulong *identity = reinterpret_cast<device ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    const bool prior_valid =
+      (identity[3] & NB_ACCEPTED_STATE_VALID) != 0ul;
+    float position_total[3] = {0.0f, 0.0f, 0.0f};
+    float position_weight[3] = {0.0f, 0.0f, 0.0f};
+    float velocity_total[3] = {0.0f, 0.0f, 0.0f};
+    float velocity_weight[3] = {0.0f, 0.0f, 0.0f};
+    float orientation_total[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float orientation_weight[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float angular_velocity_total[3] = {0.0f, 0.0f, 0.0f};
+    float angular_velocity_weight[3] = {0.0f, 0.0f, 0.0f};
+    float position_variance_total[3] = {0.0f, 0.0f, 0.0f};
+    float position_variance_weight[3] = {0.0f, 0.0f, 0.0f};
+    float orientation_variance_total[3] = {0.0f, 0.0f, 0.0f};
+    float orientation_variance_weight[3] = {0.0f, 0.0f, 0.0f};
     float contact_total = 0.0f;
     float contact_weight = 0.0f;
     float support_total = 0.0f;
     float support_weight = 0.0f;
-    float force_total = 0.0f;
-    float force_weight = 0.0f;
+    float force_total[3] = {0.0f, 0.0f, 0.0f};
+    float force_weight[3] = {0.0f, 0.0f, 0.0f};
     float pain_total = 0.0f;
     float pain_weight = 0.0f;
     float vestibular_total = 0.0f;
@@ -867,15 +883,20 @@ kernel void assimilate_accepted_body_and_physiology(
         binding.scale,
         binding.bias
       );
+      const uint component = (binding.flags >> 16u) & 0xffffu;
       body_binding_count += 1u;
       switch (binding.signal) {
         case 1u:
-          position_total += evidence * binding.weight;
-          position_weight += binding.weight;
+          if (component < 3u) {
+            position_total[component] += evidence * binding.weight;
+            position_weight[component] += binding.weight;
+          }
           break;
         case 2u:
-          velocity_total += evidence * binding.weight;
-          velocity_weight += binding.weight;
+          if (component < 3u) {
+            velocity_total[component] += evidence * binding.weight;
+            velocity_weight[component] += binding.weight;
+          }
           break;
         case 3u:
           contact_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
@@ -886,8 +907,10 @@ kernel void assimilate_accepted_body_and_physiology(
           support_weight += binding.weight;
           break;
         case 5u:
-          force_total += abs(evidence) * binding.weight;
-          force_weight += binding.weight;
+          if (component < 3u) {
+            force_total[component] += evidence * binding.weight;
+            force_weight[component] += binding.weight;
+          }
           break;
         case 6u:
           pain_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
@@ -898,12 +921,36 @@ kernel void assimilate_accepted_body_and_physiology(
             * binding.weight;
           vestibular_weight += binding.weight;
           break;
+        case 8u:
+          if (component < 4u) {
+            orientation_total[component] += evidence * binding.weight;
+            orientation_weight[component] += binding.weight;
+          }
+          break;
+        case 9u:
+          if (component < 3u) {
+            angular_velocity_total[component] += evidence * binding.weight;
+            angular_velocity_weight[component] += binding.weight;
+          }
+          break;
+        case 10u:
+          if (component < 3u) {
+            position_variance_total[component] += max(evidence, 0.0f)
+              * binding.weight;
+            position_variance_weight[component] += binding.weight;
+          }
+          break;
+        case 11u:
+          if (component < 3u) {
+            orientation_variance_total[component] += max(evidence, 0.0f)
+              * binding.weight;
+            orientation_variance_weight[component] += binding.weight;
+          }
+          break;
         default:
           break;
       }
     }
-    const float position_evidence = position_weight > 0.0f
-      ? position_total / position_weight : proprioception;
     const float contact_evidence = contact_weight > 0.0f
       ? contact_total / contact_weight
       : clamp(abs(touch), 0.0f, 1.0f);
@@ -913,18 +960,9 @@ kernel void assimilate_accepted_body_and_physiology(
       1.0f - abs(vestibular), 0.0f, 1.0f
     );
     const float velocity_limit = max(belief_parameters[13], 1.0f);
-    const float observed_velocity = clamp(
-      velocity_weight > 0.0f
-        ? velocity_total / velocity_weight
-        : (position_evidence - prior_position) / elapsed_seconds,
-      -velocity_limit,
-      velocity_limit
-    );
     const float support_evidence = support_weight > 0.0f
       ? support_total / support_weight
       : contact_evidence * vestibular_stability;
-    const float force_evidence = force_weight > 0.0f
-      ? force_total / force_weight : abs(touch);
     const float pain_evidence = pain_weight > 0.0f
       ? pain_total / pain_weight
       : (body_binding_count == 0u ? clamp(abs(touch), 0.0f, 1.0f) : 0.0f);
@@ -934,12 +972,109 @@ kernel void assimilate_accepted_body_and_physiology(
     const float pain_retention = retained_per_second <= 0.0f ? 0.0f
       : (retained_per_second >= 1.0f ? 1.0f
         : pow(retained_per_second, elapsed_seconds));
-    body[NB_BODY_POSITION] = mix(
-      prior_position, position_evidence, body_gain
+    float maximum_proprioceptive_error = 0.0f;
+    for (uint component = 0u; component < 3u; ++component) {
+      const float prior_position = body[NB_BODY_POSITION + component];
+      const float position_evidence = position_weight[component] > 0.0f
+        ? position_total[component] / position_weight[component]
+        : (component == 0u ? proprioception : prior_position);
+      const float observed_velocity = clamp(
+        velocity_weight[component] > 0.0f
+          ? velocity_total[component] / velocity_weight[component]
+          : (position_evidence - prior_position) / elapsed_seconds,
+        -velocity_limit,
+        velocity_limit
+      );
+      const float corrected_position = mix(
+        prior_position, position_evidence, body_gain
+      );
+      const float corrected_velocity = mix(
+        body[NB_BODY_LINEAR_VELOCITY + component],
+        observed_velocity,
+        min(velocity_gain, body_gain)
+      );
+      body[NB_BODY_POSITION + component] = corrected_position;
+      body[NB_BODY_LINEAR_VELOCITY + component] = corrected_velocity;
+      const float position_residual = position_evidence - corrected_position;
+      const float prior_variance = prior_valid
+        ? max(body[NB_BODY_POSITION_VARIANCE + component], 0.0f) : 1.0f;
+      const bool has_position_evidence = position_weight[component] > 0.0f
+        || (component == 0u && uniforms.proprioception_count > 0u);
+      const float variance_evidence = position_variance_weight[component] > 0.0f
+        ? position_variance_total[component]
+          / position_variance_weight[component]
+        : (has_position_evidence
+          ? position_residual * position_residual : prior_variance);
+      body[NB_BODY_POSITION_VARIANCE + component] = max(mix(
+        prior_variance, variance_evidence, body_gain
+      ), 0.0f);
+      maximum_proprioceptive_error = max(
+        maximum_proprioceptive_error,
+        abs(observed_velocity - corrected_velocity)
+      );
+      const float angular_target = angular_velocity_weight[component] > 0.0f
+        ? angular_velocity_total[component]
+          / angular_velocity_weight[component]
+        : 0.0f;
+      body[NB_BODY_ANGULAR_VELOCITY + component] = mix(
+        body[NB_BODY_ANGULAR_VELOCITY + component],
+        angular_target,
+        body_gain
+      );
+      const float prior_orientation_variance = prior_valid
+        ? max(body[NB_BODY_ORIENTATION_VARIANCE + component], 0.0f) : 1.0f;
+      const float orientation_variance_evidence =
+        orientation_variance_weight[component] > 0.0f
+        ? orientation_variance_total[component]
+          / orientation_variance_weight[component]
+        : prior_orientation_variance;
+      body[NB_BODY_ORIENTATION_VARIANCE + component] = max(mix(
+        prior_orientation_variance,
+        orientation_variance_evidence,
+        body_gain
+      ), 0.0f);
+      const float force_evidence = force_weight[component] > 0.0f
+        ? force_total[component] / force_weight[component]
+        : (component == 2u && body_binding_count == 0u ? abs(touch) : 0.0f);
+      body[NB_BODY_LOCAL_FORCE + component] = mix(
+        body[NB_BODY_LOCAL_FORCE + component], force_evidence, body_gain
+      );
+    }
+    float4 prior_orientation = prior_valid
+      ? float4(
+          body[NB_BODY_ORIENTATION],
+          body[NB_BODY_ORIENTATION + 1u],
+          body[NB_BODY_ORIENTATION + 2u],
+          body[NB_BODY_ORIENTATION + 3u]
+        )
+      : float4(0.0f, 0.0f, 0.0f, 1.0f);
+    if (length_squared(prior_orientation) <= 1.0e-8f) {
+      prior_orientation = float4(0.0f, 0.0f, 0.0f, 1.0f);
+    } else {
+      prior_orientation = normalize(prior_orientation);
+    }
+    float4 orientation_evidence = prior_orientation;
+    bool has_orientation_evidence = false;
+    for (uint component = 0u; component < 4u; ++component) {
+      if (orientation_weight[component] <= 0.0f) continue;
+      orientation_evidence[component] = orientation_total[component]
+        / orientation_weight[component];
+      has_orientation_evidence = true;
+    }
+    if (has_orientation_evidence
+        && length_squared(orientation_evidence) > 1.0e-8f) {
+      orientation_evidence = normalize(orientation_evidence);
+    } else {
+      orientation_evidence = prior_orientation;
+    }
+    float4 corrected_orientation = mix(
+      prior_orientation, orientation_evidence, body_gain
     );
-    body[NB_BODY_VELOCITY] = mix(
-      body[NB_BODY_VELOCITY], observed_velocity, min(velocity_gain, body_gain)
-    );
+    corrected_orientation = length_squared(corrected_orientation) > 1.0e-8f
+      ? normalize(corrected_orientation) : prior_orientation;
+    for (uint component = 0u; component < 4u; ++component) {
+      body[NB_BODY_ORIENTATION + component] = corrected_orientation[component];
+    }
     body[NB_BODY_CONTACT] = mix(
       body[NB_BODY_CONTACT], contact_evidence, min(contact_gain, body_gain)
     );
@@ -948,17 +1083,11 @@ kernel void assimilate_accepted_body_and_physiology(
       support_evidence,
       body_gain
     );
-    body[NB_BODY_LOCAL_FORCE] = mix(
-      body[NB_BODY_LOCAL_FORCE], force_evidence, body_gain
-    );
     body[NB_BODY_PAIN] = max(
       body[NB_BODY_PAIN] * pain_retention,
       pain_evidence
     );
-    body[NB_BODY_PROPRIOCEPTIVE_ERROR] = abs(
-      observed_velocity - body[NB_BODY_VELOCITY]
-    );
-    device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+    body[NB_BODY_PROPRIOCEPTIVE_ERROR] = maximum_proprioceptive_error;
     identity[0] = ulong(gid);
     identity[1] = uniforms.target_timestamp_microseconds;
     identity[2] = uniforms.physics_state_fingerprint;
@@ -1120,7 +1249,9 @@ kernel void assimilate_accepted_fast_body_schema(
   body[NB_BODY_LOAD_VARIANCE] = max(schema.epistemic_variance, 0.0f);
   body[NB_BODY_VULNERABILITY] = clamp(schema.vulnerability, 0.0f, 1.0f);
   body[NB_BODY_DAMAGE_RISK] = clamp(schema.damage_risk, 0.0f, 1.0f);
-  device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+  device ulong *identity = reinterpret_cast<device ulong *>(
+    body + NB_BODY_IDENTITY_FLOAT_OFFSET
+  );
   identity[0] = ulong(schema.body_identifier);
   identity[1] = uniforms.target_timestamp_microseconds;
   identity[3] |= 1ul;
@@ -1147,7 +1278,9 @@ kernel void update_accepted_embodied_self_model(
   device float *body = reinterpret_cast<device float *>(
     hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
   );
-  device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+  device ulong *identity = reinterpret_cast<device ulong *>(
+    body + NB_BODY_IDENTITY_FLOAT_OFFSET
+  );
   if ((identity[3] & NB_ACCEPTED_STATE_VALID) == 0ul) return;
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
@@ -1395,7 +1528,7 @@ inline float3 nb_accepted_embodied_risk(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
     );
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + 16
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
     if ((identity[3] & 1ul) == 0ul) continue;
     evidence = 1.0f;
