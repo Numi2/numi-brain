@@ -11,6 +11,7 @@ let package = Package(
     .library(name: "NumiBrainABI", targets: ["NumiBrainABI"]),
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
+    .library(name: "NumiBrainMLX", targets: ["NumiBrainMLX"]),
     .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
     .executable(name: "numi-brain-dispatch", targets: ["NumiBrainDispatchCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
@@ -18,6 +19,12 @@ let package = Package(
       name: "numi-brain-numanx-interop",
       targets: ["NumiBrainNumanXInteropCLI"]
     ),
+  ],
+  dependencies: [
+    .package(
+      url: "https://github.com/ml-explore/mlx-swift.git",
+      exact: "0.31.3"
+    )
   ],
   targets: [
     .target(
@@ -32,6 +39,14 @@ let package = Package(
       name: "NumiBrainMetal",
       dependencies: ["NumiBrainABI", "NumiBrainCore"],
       resources: [.process("Shaders")]
+    ),
+    .target(
+      name: "NumiBrainMLX",
+      dependencies: [
+        "NumiBrainCore",
+        "NumiBrainMetal",
+        .product(name: "MLX", package: "mlx-swift"),
+      ]
     ),
     .executableTarget(
       name: "NumiBrainSchedulerCLI",

@@ -273,6 +273,24 @@ public struct BrainRolloutCohortLease: Equatable, Hashable, Sendable {
   }
 }
 
+/// Atomic slow-parameter publication consumed by a new rollout runtime. The
+/// manifest and its exact shared bytes can never be observed from different
+/// registry generations.
+@frozen
+public struct BrainParameterPublication: Equatable, Sendable {
+  public let version: BrainParameterVersion
+  public let sharedArtifact: BrainSharedParameterArtifact
+
+  public init(
+    version: BrainParameterVersion,
+    sharedArtifact: BrainSharedParameterArtifact
+  ) throws {
+    try sharedArtifact.validate(parameterVersion: version)
+    self.version = version
+    self.sharedArtifact = sharedArtifact
+  }
+}
+
 /// Thread-safe publication boundary. A learner can construct a successor at
 /// any time, but publication fails while a rollout cohort owns the current
 /// immutable version.
@@ -280,9 +298,18 @@ public final class BrainParameterRegistry: @unchecked Sendable {
   private let lock = NSLock()
   private var activeCohorts: [UUID: UInt64] = [:]
   private var storedVersion: BrainParameterVersion
+  private var storedArtifact: BrainSharedParameterArtifact?
 
   public init(initialVersion: BrainParameterVersion) {
     storedVersion = initialVersion
+    storedArtifact = try? BrainSharedParameterArtifact.foundation(
+      parameterVersion: initialVersion
+    )
+  }
+
+  public init(initialPublication: BrainParameterPublication) {
+    storedVersion = initialPublication.version
+    storedArtifact = initialPublication.sharedArtifact
   }
 
   public var currentVersion: BrainParameterVersion {
@@ -291,6 +318,20 @@ public final class BrainParameterRegistry: @unchecked Sendable {
 
   public var activeCohortCount: Int {
     lock.withLock { activeCohorts.count }
+  }
+
+  public func currentPublication() throws -> BrainParameterPublication {
+    try lock.withLock {
+      guard let storedArtifact else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "current parameter version has no exact shared artifact"
+        )
+      }
+      return try BrainParameterPublication(
+        version: storedVersion,
+        sharedArtifact: storedArtifact
+      )
+    }
   }
 
   public func beginCohort(
@@ -347,12 +388,32 @@ public final class BrainParameterRegistry: @unchecked Sendable {
         )
       }
       storedVersion = candidate
+      storedArtifact = nil
     }
   }
 
   public func publish(_ update: BrainLearnerUpdate) throws {
-    let parent = currentVersion
-    try update.validate(parentVersion: parent)
-    try publish(update.candidateVersion)
+    try lock.withLock {
+      guard activeCohorts.isEmpty else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "cannot publish while a rollout cohort is active"
+        )
+      }
+      try update.validate(parentVersion: storedVersion)
+      let candidate = update.candidateVersion
+      let (expectedSequence, overflow) = storedVersion.sequence.addingReportingOverflow(1)
+      guard !overflow,
+        candidate.sequence == expectedSequence,
+        candidate.parentFingerprint == storedVersion.fingerprint,
+        candidate.scheduleFingerprint == storedVersion.scheduleFingerprint,
+        candidate.regionalShapeFingerprint == storedVersion.regionalShapeFingerprint
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "learner publication is not a shape-compatible direct successor"
+        )
+      }
+      storedVersion = candidate
+      storedArtifact = update.sharedArtifact
+    }
   }
 }

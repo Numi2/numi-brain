@@ -465,7 +465,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       layout.byteCount % MemoryLayout<UInt32>.stride == 0,
       let snapshot = device.makeBuffer(
         length: layout.byteCount,
-        options: [.storageModePrivate, .hazardTrackingModeTracked]
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate persistent-section snapshot")
