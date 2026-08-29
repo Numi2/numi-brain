@@ -662,10 +662,11 @@ constant uint NBProtectiveCommandFlagEmergencyStop = 1u << 1;
 constant uint NBProtectiveCommandFlagWithdrawal = 1u << 2;
 constant uint NBProtectiveCommandFlagPosturalBrace = 1u << 3;
 constant uint NBProtectiveCommandFlagAutonomicArousal = 1u << 4;
-constant uint NBMotorOutputVersion = 1u;
+constant uint NBMotorOutputVersion = 2u;
 constant uint NBMotorOutputFlagValid = 1u << 0;
 constant uint NBMotorOutputFlagEmergencyStop = 1u << 1;
 constant uint NBMotorOutputFlagLocalizedSourceInhibition = 1u << 2;
+constant uint NBMotorOutputFlagLocalizedWithdrawal = 1u << 3;
 constant ulong NBInterruptPain = 1ul << 0;
 constant ulong NBInterruptDamagingContact = 1ul << 1;
 constant ulong NBInterruptLossOfSupport = 1ul << 2;
@@ -2858,15 +2859,60 @@ kernel void map_protective_motor_output(
         return;
     }
     const NBProtectiveCommandABI command = commandBuffer[0];
+    const ulong unlocalizedWithdrawalCauses =
+        NBInterruptPain | NBInterruptDamagingContact | NBInterruptJointLimit;
+    bool hasLocalizedWithdrawalSource = false;
+    if ((command.interrupt_mask & NBInterruptMuscleOverload) != 0ul &&
+        (command.interrupt_mask & unlocalizedWithdrawalCauses) == 0ul) {
+        for (uint sourceIndex = 0u;
+             sourceIndex < uniforms->muscle_count;
+             ++sourceIndex) {
+            hasLocalizedWithdrawalSource = hasLocalizedWithdrawalSource ||
+                sourceInhibitionMask[sourceIndex] != 0u;
+        }
+    }
     bool hasLocalizedSourceInhibition = false;
     for (uint index = 0u; index < uniforms->muscle_count; ++index) {
         const NBMotorChannelDescriptorABI channel = channels[index];
+        const NBMuscleAttachmentRecordABI attachment = attachments[index];
+        bool sharesLocalizedWithdrawalEndpoint = false;
+        if (hasLocalizedWithdrawalSource &&
+            attachment.muscle_identifier == channel.muscle_id) {
+            for (uint sourceIndex = 0u;
+                 sourceIndex < uniforms->muscle_count;
+                 ++sourceIndex) {
+                if (sourceInhibitionMask[sourceIndex] == 0u) {
+                    continue;
+                }
+                const NBMuscleAttachmentRecordABI sourceAttachment =
+                    attachments[sourceIndex];
+                if (sourceAttachment.muscle_identifier !=
+                    channels[sourceIndex].muscle_id) {
+                    continue;
+                }
+                sharesLocalizedWithdrawalEndpoint =
+                    attachment.first_body_identifier ==
+                        sourceAttachment.first_body_identifier ||
+                    attachment.first_body_identifier ==
+                        sourceAttachment.terminal_body_identifier ||
+                    attachment.terminal_body_identifier ==
+                        sourceAttachment.first_body_identifier ||
+                    attachment.terminal_body_identifier ==
+                        sourceAttachment.terminal_body_identifier;
+                if (sharesLocalizedWithdrawalEndpoint) {
+                    break;
+                }
+            }
+        }
+        const float withdrawalDrive =
+            !hasLocalizedWithdrawalSource || sharesLocalizedWithdrawalEndpoint
+            ? command.withdrawal_drive
+            : 0.0f;
         const float withdrawalExcitation = fma(
-            command.withdrawal_drive,
+            withdrawalDrive,
             channel.withdrawal_gain,
             channel.resting_excitation
         );
-        const NBMuscleAttachmentRecordABI attachment = attachments[index];
         float localizedRisk = 0.0f;
         if (attachment.muscle_identifier == channel.muscle_id) {
             if (attachment.first_body_identifier < bodyLoadUniforms->body_count) {
@@ -2921,6 +2967,9 @@ kernel void map_protective_motor_output(
     }
     if (hasLocalizedSourceInhibition) {
         header.flags |= NBMotorOutputFlagLocalizedSourceInhibition;
+    }
+    if (hasLocalizedWithdrawalSource) {
+        header.flags |= NBMotorOutputFlagLocalizedWithdrawal;
     }
     header.timestamp_microseconds = command.timestamp_microseconds;
     header.brain_generation = command.brain_generation;

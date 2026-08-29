@@ -1548,7 +1548,8 @@ uint32_t nb_brain_abi_validate_motor_output(
   }
   constexpr uint32_t known_flags =
       NB_MOTOR_OUTPUT_FLAG_VALID | NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP
-      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION;
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL;
   if ((header->flags & NB_MOTOR_OUTPUT_FLAG_VALID) == 0
       || (header->flags & ~known_flags) != 0) {
     return NB_MOTOR_OUTPUT_FLAGS;

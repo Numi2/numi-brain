@@ -55,9 +55,9 @@ public struct ProtectiveMuscleChannel: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-/// Immutable species/body mapping used by both the CPU oracle and Metal. The
-/// current command is global, so this first profile can choose per-muscle gains
-/// but cannot yet localize withdrawal to one receptor or body side.
+/// Immutable species/body mapping used by both the CPU oracle and Metal.
+/// Muscle-load withdrawal is localized through the bound attachment catalog;
+/// receptor events without a body mapping retain a global protective fallback.
 @frozen
 public struct ProtectiveMotorProfile: Codable, Equatable, Hashable, Sendable {
   public static let formatVersion = UInt32(NB_MOTOR_PROFILE_VERSION)
@@ -167,6 +167,9 @@ public struct ProtectiveMotorOutputFlags: OptionSet, Codable, Hashable, Sendable
   public static let localizedSourceInhibition = Self(
     rawValue: UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION)
   )
+  public static let localizedWithdrawal = Self(
+    rawValue: UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL)
+  )
 }
 
 /// Bounded muscle-excitation residual plus the inhibition and autonomic values
@@ -261,6 +264,7 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     command: ProtectiveMotorCommand,
     profile: ProtectiveMotorProfile,
     sourceInhibitedMuscleIdentifiers: Set<UInt32> = [],
+    localizedWithdrawalSourceMuscleIdentifiers: Set<UInt32> = [],
     bodySchema: [BodySchemaPosteriorCell] = [],
     attachmentCatalog: NumanXMuscleAttachmentCatalog? = nil
   ) throws -> Self {
@@ -273,38 +277,79 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
         "protective source-inhibition identifiers are absent from the motor profile"
       )
     }
-    guard (bodySchema.isEmpty && attachmentCatalog == nil)
-      || (!bodySchema.isEmpty && attachmentCatalog != nil)
+    guard
+      localizedWithdrawalSourceMuscleIdentifiers.isSubset(
+        of: Set(profile.channels.map(\.muscleIdentifier))
+      )
     else {
       throw BrainRuntimeError.transaction(
-        "protective body-schema mapping requires both schema and attachment catalog"
+        "localized withdrawal identifiers are absent from the motor profile"
+      )
+    }
+    guard bodySchema.isEmpty || attachmentCatalog != nil else {
+      throw BrainRuntimeError.transaction(
+        "protective body-schema mapping requires an attachment catalog"
+      )
+    }
+    guard localizedWithdrawalSourceMuscleIdentifiers.isEmpty
+      || attachmentCatalog != nil
+    else {
+      throw BrainRuntimeError.transaction(
+        "localized withdrawal requires a bound attachment catalog"
       )
     }
     let schemaByBody = Dictionary(
       uniqueKeysWithValues: bodySchema.map { ($0.bodyIdentifier, $0) }
     )
     if let attachmentCatalog {
-      guard bodySchema.count == Int(attachmentCatalog.bodyCount),
-        schemaByBody.count == bodySchema.count
-      else {
-        throw BrainRuntimeError.transaction(
-          "protective body-schema mapping does not cover the attachment catalog"
-        )
+      try attachmentCatalog.validate(profile: profile)
+      if !bodySchema.isEmpty {
+        guard bodySchema.count == Int(attachmentCatalog.bodyCount),
+          schemaByBody.count == bodySchema.count
+        else {
+          throw BrainRuntimeError.transaction(
+            "protective body-schema mapping does not cover the attachment catalog"
+          )
+        }
       }
+    }
+    let localizedWithdrawalBodies: Set<UInt32>
+    if let attachmentCatalog {
+      localizedWithdrawalBodies = Set(
+        localizedWithdrawalSourceMuscleIdentifiers.flatMap { muscleIdentifier in
+          guard
+            let attachment = attachmentCatalog.attachment(
+              forMuscleIdentifier: muscleIdentifier
+            )
+          else { return [UInt32]() }
+          return [attachment.firstBodyIdentifier, attachment.terminalBodyIdentifier]
+        }
+      )
+    } else {
+      localizedWithdrawalBodies = []
     }
     let excitations = profile.channels.map { channel in
       guard !sourceInhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) else {
         return Float.zero
       }
+      let attachment = attachmentCatalog?.attachment(
+        forMuscleIdentifier: channel.muscleIdentifier
+      )
+      let sharesLocalizedWithdrawalBody = attachment.map {
+        localizedWithdrawalBodies.contains($0.firstBodyIdentifier)
+          || localizedWithdrawalBodies.contains($0.terminalBodyIdentifier)
+      } ?? false
+      let withdrawalDrive = localizedWithdrawalBodies.isEmpty
+        || sharesLocalizedWithdrawalBody
+        ? command.withdrawalDrive
+        : 0
       let withdrawalExcitation = fmaf(
-        command.withdrawalDrive,
+        withdrawalDrive,
         channel.withdrawalGain,
         channel.restingExcitation
       )
       let localizedRisk: Float
-      if let attachment = attachmentCatalog?.attachment(
-        forMuscleIdentifier: channel.muscleIdentifier
-      ) {
+      if let attachment {
         localizedRisk = max(
           schemaByBody[attachment.firstBodyIdentifier]?.damageRisk ?? 0,
           schemaByBody[attachment.terminalBodyIdentifier]?.damageRisk ?? 0
@@ -330,6 +375,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
     }
     if !sourceInhibitedMuscleIdentifiers.isEmpty {
       header.flags |= UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION)
+    }
+    if !localizedWithdrawalBodies.isEmpty {
+      header.flags |= UInt32(NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL)
     }
     header.timestamp_microseconds = command.timestamp.rawValue
     header.brain_generation = command.brainGeneration
