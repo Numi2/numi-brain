@@ -145,6 +145,38 @@ private struct ExternalGoalDirectiveRecord {
   var target13: Float = 0
   var target14: Float = 0
   var target15: Float = 0
+  var success0: Float = 0
+  var success1: Float = 0
+  var success2: Float = 0
+  var success3: Float = 0
+  var success4: Float = 0
+  var success5: Float = 0
+  var success6: Float = 0
+  var success7: Float = 0
+  var success8: Float = 0
+  var success9: Float = 0
+  var success10: Float = 0
+  var success11: Float = 0
+  var success12: Float = 0
+  var success13: Float = 0
+  var success14: Float = 0
+  var success15: Float = 0
+  var failure0: Float = 0
+  var failure1: Float = 0
+  var failure2: Float = 0
+  var failure3: Float = 0
+  var failure4: Float = 0
+  var failure5: Float = 0
+  var failure6: Float = 0
+  var failure7: Float = 0
+  var failure8: Float = 0
+  var failure9: Float = 0
+  var failure10: Float = 0
+  var failure11: Float = 0
+  var failure12: Float = 0
+  var failure13: Float = 0
+  var failure14: Float = 0
+  var failure15: Float = 0
 }
 
 @available(macOS 26.0, *)
@@ -213,7 +245,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
       MemoryLayout<DecisionAutonomicChannelDescriptor>.stride == 48,
       MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride == 16,
-      MemoryLayout<ExternalGoalDirectiveRecord>.stride == 112,
+      MemoryLayout<ExternalGoalDirectiveRecord>.stride == 240,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -528,7 +560,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         externalGoal.identifier <= 0x007f_ffff_ffff_ffff,
         externalGoal.createdTimestamp <= timestamp,
         externalGoal.deadline == nil || externalGoal.deadline! >= timestamp,
-        externalGoal.targetState.values.count <= 16
+        externalGoal.targetState.values.count <= 16,
+        externalGoal.successModel.values.count <= 16,
+        externalGoal.failureModel.values.count <= 16
       else {
         throw TissueError.transaction(
           "external goal directive is invalid at this control boundary"
@@ -536,6 +570,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       }
       var target = externalGoal.targetState.values
       target.append(contentsOf: repeatElement(0, count: 16 - target.count))
+      var success = externalGoal.successModel.values
+      success.append(contentsOf: repeatElement(0, count: 16 - success.count))
+      var failure = externalGoal.failureModel.values
+      failure.append(contentsOf: repeatElement(0, count: 16 - failure.count))
       externalDirective = ExternalGoalDirectiveRecord(
         identifier: externalGoal.identifier,
         deadlineTimestampMicroseconds: externalGoal.deadline?.rawValue ?? 0,
@@ -550,7 +588,19 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         target6: target[6], target7: target[7], target8: target[8],
         target9: target[9], target10: target[10], target11: target[11],
         target12: target[12], target13: target[13], target14: target[14],
-        target15: target[15]
+        target15: target[15],
+        success0: success[0], success1: success[1], success2: success[2],
+        success3: success[3], success4: success[4], success5: success[5],
+        success6: success[6], success7: success[7], success8: success[8],
+        success9: success[9], success10: success[10], success11: success[11],
+        success12: success[12], success13: success[13],
+        success14: success[14], success15: success[15],
+        failure0: failure[0], failure1: failure[1], failure2: failure[2],
+        failure3: failure[3], failure4: failure[4], failure5: failure[5],
+        failure6: failure[6], failure7: failure[7], failure8: failure[8],
+        failure9: failure[9], failure10: failure[10], failure11: failure[11],
+        failure12: failure[12], failure13: failure[13],
+        failure14: failure[14], failure15: failure[15]
       )
     }
     withUnsafeBytes(of: &externalDirective) { bytes in

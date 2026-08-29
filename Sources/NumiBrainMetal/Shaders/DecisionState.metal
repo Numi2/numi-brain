@@ -6,6 +6,7 @@ constant uint NB_CONTROL_MODE_PROCEDURAL = 2u;
 constant uint NB_CONTROL_MODE_PLANNING = 3u;
 constant uint NB_CONTROL_FLAG_VALID = 1u;
 constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_CONTROL_FLAG_EXTERNAL_GOAL_FAILED = 1u << 8;
 constant uint NB_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
@@ -123,6 +124,8 @@ struct NBExternalGoalDirectiveRecord {
   float persistence;
   float reserved;
   float target[16];
+  float success_model[16];
+  float failure_model[16];
 };
 
 struct NBWorkspaceMetadataRecord {
@@ -456,7 +459,7 @@ static_assert(sizeof(NBFastCerebellarStateRecord) == 64);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
-static_assert(sizeof(NBExternalGoalDirectiveRecord) == 112);
+static_assert(sizeof(NBExternalGoalDirectiveRecord) == 240);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
@@ -891,6 +894,8 @@ kernel void generate_active_goal_state(
   float external_goal_risk_budget = uniforms.damage_risk_budget;
   float external_goal_persistence = 0.0f;
   float external_goal_target[16] = {};
+  float external_goal_success_model[16] = {};
+  float external_goal_failure_model[16] = {};
   for (uint drive_index = 0u; drive_index < uniforms.drive_count; ++drive_index) {
     uint origin = 1u;
     if (drive_index == 8u) origin = 5u;
@@ -944,6 +949,10 @@ kernel void generate_active_goal_state(
     external_goal_persistence = clamp(external_goal->persistence, 0.0f, 1.0f);
     for (uint component = 0u; component < 16u; ++component) {
       external_goal_target[component] = external_goal->target[component];
+      external_goal_success_model[component] =
+        external_goal->success_model[component];
+      external_goal_failure_model[component] =
+        external_goal->failure_model[component];
     }
     external_goal_base_priority = external_goal->priority
       * max(value_parameters[1], 0.0f);
@@ -953,7 +962,8 @@ kernel void generate_active_goal_state(
     }
     const bool completed_same_directive = external_goal_identifier
         == previous_goal_identifier
-      && header->progress >= 0.95f
+      && (header->progress >= 0.95f
+        || (header->flags & NB_CONTROL_FLAG_EXTERNAL_GOAL_FAILED) != 0u)
       && external_goal_created_timestamp <= header->selected_timestamp_microseconds;
     for (uint rank = 0u; rank < 4u && !completed_same_directive
         && isfinite(external_goal_priority)
@@ -985,7 +995,8 @@ kernel void generate_active_goal_state(
       && (token.goal_identifier & (1ul << 55u)) != 0ul
       && token.provenance_record_identifier != 0ul
       && !(token.goal_identifier == previous_goal_identifier
-        && header->progress >= 0.95f)
+        && (header->progress >= 0.95f
+          || (header->flags & NB_CONTROL_FLAG_EXTERNAL_GOAL_FAILED) != 0u))
       && (token.bound_token_identifier == 0ul
         || uniforms.target_timestamp_microseconds
           <= token.bound_token_identifier);
@@ -1007,6 +1018,12 @@ kernel void generate_active_goal_state(
         external_goal_target[component] = uniforms.workspace_dimension
             > 4u + component
           ? workspace[external_base + 4u + component] : 0.0f;
+        external_goal_success_model[component] = uniforms.workspace_dimension
+            > 23u + component
+          ? workspace[external_base + 23u + component] : 0.0f;
+        external_goal_failure_model[component] = uniforms.workspace_dimension
+            > 39u + component
+          ? workspace[external_base + 39u + component] : 0.0f;
       }
       external_goal_priority = external_goal_base_priority
         + (external_goal_identifier == previous_goal_identifier
@@ -1154,6 +1171,10 @@ kernel void generate_active_goal_state(
           value = external_goal_persistence;
         } else if (feature == 22u) {
           value = external_goal_base_priority;
+        } else if (feature >= 23u && feature < 39u) {
+          value = external_goal_success_model[feature - 23u];
+        } else if (feature >= 39u && feature < 55u) {
+          value = external_goal_failure_model[feature - 39u];
         }
       }
       workspace[base + feature] = value;

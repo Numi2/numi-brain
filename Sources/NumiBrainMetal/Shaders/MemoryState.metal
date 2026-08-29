@@ -35,8 +35,10 @@ constant uint NB_PROCEDURAL_SKILL_COMPOSED = 32u;
 constant uint NB_PROCEDURAL_SKILL_LIFECYCLE_MASK = 7u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_MEMORY_CONTROL_FLAG_EXTERNAL_GOAL_FAILED = 1u << 8;
 constant uint NB_MEMORY_LIFECYCLE_STOP_ACTIVE = 1u;
 constant uint NB_MEMORY_LIFECYCLE_STOP_ONSET = 1u << 1;
+constant uint NB_MEMORY_LIFECYCLE_EXTERNAL_GOAL_FAILED = 1u << 2;
 constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
@@ -2917,6 +2919,8 @@ kernel void advance_prospective_memory(
     == NB_MEMORY_RECORD_VERSION;
   const bool current_stop =
     (control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u;
+  const bool current_external_failure =
+    (control->flags & NB_MEMORY_CONTROL_FLAG_EXTERNAL_GOAL_FAILED) != 0u;
   const bool previous_stop = lifecycle_valid
     && (lifecycle->flags & NB_MEMORY_LIFECYCLE_STOP_ACTIVE) != 0u;
   const bool stop_onset = current_stop && !previous_stop;
@@ -2950,6 +2954,7 @@ kernel void advance_prospective_memory(
       if (control->progress >= uniforms.completion_threshold) {
         next_status = 3u;
       } else if ((control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
+          || current_external_failure
           || control->selected_damage_cvar >= uniforms.failure_risk_threshold) {
         next_status = 4u;
       } else {
@@ -2973,6 +2978,7 @@ kernel void advance_prospective_memory(
 
   const bool interrupted_goal = goal_changed && previous_goal != 0ul
     && previous_intention_identifier == 0ul
+    && (lifecycle->flags & NB_MEMORY_LIFECYCLE_EXTERNAL_GOAL_FAILED) == 0u
     && lifecycle->previous_goal_timestamp_microseconds != 0ul
     && lifecycle->previous_progress < uniforms.completion_threshold;
   if (interrupted_goal) {
@@ -3032,7 +3038,9 @@ kernel void advance_prospective_memory(
   lifecycle->format_version = NB_MEMORY_RECORD_VERSION;
   lifecycle->previous_control_mode = control->mode;
   lifecycle->flags = (current_stop ? NB_MEMORY_LIFECYCLE_STOP_ACTIVE : 0u)
-    | (stop_onset ? NB_MEMORY_LIFECYCLE_STOP_ONSET : 0u);
+    | (stop_onset ? NB_MEMORY_LIFECYCLE_STOP_ONSET : 0u)
+    | (current_external_failure
+      ? NB_MEMORY_LIFECYCLE_EXTERNAL_GOAL_FAILED : 0u);
   lifecycle->previous_progress = control->progress;
   for (uint component = 0u; component < 51u; ++component) {
     lifecycle->context[component] = recurrent[

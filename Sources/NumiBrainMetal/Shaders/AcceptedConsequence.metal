@@ -6,6 +6,7 @@ constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
 constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
 constant uint NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_ACCEPTED_CONTROL_EXTERNAL_GOAL_FAILED = 1u << 8;
 constant uint NB_ACCEPTED_CONTROL_MODE_REFLEX = 1u;
 constant uint NB_ACCEPTED_REFLEX_ACTIVATED_IN_ROOT = 1u << 5;
 constant uint NB_ACCEPTED_PROTECTIVE_VALID = 1u;
@@ -1382,20 +1383,82 @@ kernel void broadcast_accepted_prediction_error(
     const uint goal_origin = uint(control->active_goal_identifier >> 56u);
     const ulong goal_code = control->active_goal_identifier
       & NB_ACCEPTED_GOAL_SOURCE_MASK;
+    const bool external_goal = goal_origin == 2u
+      && (goal_code & (1ul << 55u)) != 0ul;
     const uint drive_index = goal_code > 0ul ? uint(goal_code - 1ul) : ~0u;
     const bool drive_bound_goal = drive_index < uniforms.drive_count
       && (goal_origin == 1u || goal_origin == 2u || goal_origin == 4u
         || goal_origin == 5u || goal_origin == 6u);
     float satisfaction = 0.0f;
     float progress_time_constant = 2.0f;
-    if (drive_bound_goal) {
+    bool external_goal_evaluated = false;
+    if (external_goal && uniforms.workspace_dimension >= 55u) {
+      device const float *workspace = reinterpret_cast<device const float *>(
+        hot_state + uniforms.workspace_content_offset
+      );
+      device const NBWorkspaceMetadataRecord *metadata =
+        reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+          hot_state + uniforms.workspace_metadata_offset
+        );
+      for (uint slot = 7u; slot < min(uniforms.workspace_capacity, 11u); ++slot) {
+        const NBWorkspaceMetadataRecord goal_token = metadata[slot];
+        if (goal_token.goal_identifier != control->active_goal_identifier
+            || goal_token.provenance_record_identifier == 0ul) continue;
+        const uint base = slot * uniforms.workspace_dimension;
+        const float accepted_features[16] = {
+          1.0f,
+          1.0f - clamp(error, 0.0f, 1.0f),
+          clamp(mean_agency, 0.0f, 1.0f),
+          clamp(mean_external_disturbance, 0.0f, 1.0f),
+          clamp(embodied_risk.x, 0.0f, 1.0f),
+          clamp(embodied_risk.y, 0.0f, 1.0f),
+          clamp(embodied_risk.z, 0.0f, 1.0f),
+          clamp(protective_risk, 0.0f, 1.0f),
+          clamp(physiological_critical, 0.0f, 1.0f),
+          clamp(epistemic, 0.0f, 1.0f),
+          clamp(aleatoric, 0.0f, 1.0f),
+          0.0f,
+          clamp(control->confidence, 0.0f, 1.0f),
+          clamp(control->vigor, 0.0f, 1.0f),
+          1.0f - clamp(control->predicted_effort, 0.0f, 1.0f),
+          1.0f - clamp(control->unsupported_uncertainty, 0.0f, 1.0f),
+        };
+        float success_logit = 0.0f;
+        float failure_logit = 0.0f;
+        for (uint component = 0u; component < 16u; ++component) {
+          success_logit += workspace[base + 23u + component]
+            * accepted_features[component];
+          failure_logit += workspace[base + 39u + component]
+            * accepted_features[component];
+        }
+        const float success_probability = 1.0f / (
+          1.0f + exp(-clamp(success_logit * 0.25f, -20.0f, 20.0f))
+        );
+        const float failure_probability = 1.0f / (
+          1.0f + exp(-clamp(failure_logit * 0.25f, -20.0f, 20.0f))
+        );
+        satisfaction = success_probability * (1.0f - failure_probability);
+        if (failure_probability >= 0.8f) {
+          control->flags |= NB_ACCEPTED_CONTROL_EXTERNAL_GOAL_FAILED;
+        } else {
+          control->progress = max(
+            clamp(control->progress, 0.0f, 1.0f),
+            success_probability >= 0.95f ? 1.0f : satisfaction
+          );
+        }
+        external_goal_evaluated = true;
+        break;
+      }
+    }
+    if (!external_goal_evaluated && drive_bound_goal) {
       const NBDriveStateRecord goal_drive = drives[drive_index];
       const float viable_span = max(
         abs(goal_drive.viable_maximum - goal_drive.viable_minimum), 0.1f
       );
       const float deficit = max(goal_drive.deficit, 0.0f);
       satisfaction = viable_span / (viable_span + deficit);
-    } else if (control->active_goal_identifier != 0ul) {
+    } else if (!external_goal_evaluated
+        && control->active_goal_identifier != 0ul) {
       const float accepted_risk = max(
         max(embodied_risk.x, embodied_risk.y), protective_risk
       );
@@ -1406,7 +1469,10 @@ kernel void broadcast_accepted_prediction_error(
         0.0f, 1.0f
       );
     }
-    if (drive_bound_goal) {
+    if (external_goal_evaluated) {
+      // External success/failure predicates consume accepted features above;
+      // generic prediction quality must not double-advance the same task.
+    } else if (drive_bound_goal) {
       // A viable accepted drive state is completion evidence now; retaining a
       // lag here would turn a satisfied disappearing goal into a false
       // prospective-memory interruption on the following root.
