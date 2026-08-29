@@ -432,6 +432,68 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
   }
 
+  /// Assimilates the exact accepted O(t+1) receptor state into the structured
+  /// belief factors before B(t+1) is journaled and committed. This deliberately
+  /// excludes world prediction, plasticity, routing, goals, options, and motor
+  /// generation so the cached decision cannot be resampled after physics.
+  public func encodeAcceptedBeliefAssimilation(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int
+  ) throws {
+    guard transaction.layoutFingerprint == layoutFingerprint,
+      deltaMicroseconds > 0,
+      receptorEventCapacity >= 0,
+      receptorEventCapacity < arena.layout.section(.eventQueue).elementCount,
+      receptorEventCapacity <= Int(UInt32.max)
+    else {
+      throw TissueError.transaction(
+        "accepted belief assimilation identity or event capacity is invalid"
+      )
+    }
+    let hot = try arena.hotStateView(transaction: transaction)
+    var uniforms = try makeUniforms(
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCount: UInt32(receptorEventCapacity)
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    try dispatch(
+      encoder: encoder,
+      pipeline: entityStatePipeline,
+      threadCount: max(
+        arena.layout.section(.objectSlots).elementCount,
+        arena.layout.section(.otherAgentSlots).elementCount
+      )
+    )
+    barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: relationStatePipeline,
+      threadCount: arena.layout.section(.relationSlots).elementCount
+    )
+    barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: spatialStatePipeline,
+      threadCount: arena.layout.section(.spatialTransforms).elementCount
+    )
+    barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: socialContextPipeline,
+      threadCount: 1
+    )
+  }
+
   public func encodeAcceptedCognitiveStep(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,

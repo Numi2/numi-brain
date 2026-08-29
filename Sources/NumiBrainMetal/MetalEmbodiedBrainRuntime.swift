@@ -771,6 +771,18 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      try cognitiveRuntime.encodeAcceptedBeliefAssimilation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
       try developmentalRuntime.encodeAcceptedProgress(
         encoder: encoder,
         transaction: transaction.agentStateToken,
