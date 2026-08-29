@@ -27,6 +27,9 @@ struct NBCognitiveUniforms {
   ulong physiology_belief_offset;
   ulong body_belief_offset;
   ulong active_sensing_efficacy_offset;
+  ulong somatic_output_offset;
+  ulong accepted_autonomic_output_offset;
+  ulong accepted_active_sensing_output_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -65,6 +68,8 @@ struct NBCognitiveUniforms {
   uint interoception_observation_count;
   uint active_sensing_count;
   uint body_sensing_mask;
+  uint autonomic_action_count;
+  uint internal_action_count;
 };
 
 struct NBWorldModelLevelRecord {
@@ -161,6 +166,20 @@ struct NBInternalActionRecord {
   float priority;
   float confidence;
   float parameters[6];
+};
+
+struct NBAutonomicCommandRecord {
+  float command;
+  float target;
+  float confidence;
+  uint flags;
+};
+
+struct NBActiveSensingCommandRecord {
+  float command;
+  float confidence;
+  uint attention_allocation_mask;
+  uint kind_and_flags;
 };
 
 struct NBObjectSlotRecord {
@@ -264,7 +283,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 352);
+static_assert(sizeof(NBCognitiveUniforms) == 384);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -274,6 +293,8 @@ static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBInternalActionRecord) == 64);
+static_assert(sizeof(NBAutonomicCommandRecord) == 16);
+static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
 static_assert(sizeof(NBRelationSlotRecord) == 64);
@@ -574,6 +595,70 @@ kernel void advance_homeostasis_and_neuromodulation(
   }
 }
 
+inline float nb_world_action_context(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  const uint level,
+  const uint component)
+{
+  device const float *somatic = reinterpret_cast<device const float *>(
+    hot_state + uniforms.somatic_output_offset
+  );
+  device const NBAutonomicCommandRecord *autonomic =
+    reinterpret_cast<device const NBAutonomicCommandRecord *>(
+      hot_state + uniforms.accepted_autonomic_output_offset
+    );
+  device const NBActiveSensingCommandRecord *sensing =
+    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
+      hot_state + uniforms.accepted_active_sensing_output_offset
+    );
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const float somatic_value = uniforms.actuator_count > 0u
+    ? somatic[component % uniforms.actuator_count] : 0.0f;
+  const NBAutonomicCommandRecord autonomic_record = autonomic[
+    component % max(uniforms.autonomic_action_count, 1u)
+  ];
+  const float autonomic_value = uniforms.autonomic_action_count > 0u
+      && (autonomic_record.flags & 1u) != 0u
+    ? autonomic_record.command : 0.0f;
+  const NBActiveSensingCommandRecord sensing_record = sensing[
+    component % max(uniforms.active_sensing_count, 1u)
+  ];
+  const float sensing_value = uniforms.active_sensing_count > 0u
+      && (sensing_record.kind_and_flags & (1u << 16u)) != 0u
+    ? sensing_record.command : 0.0f;
+  const NBInternalActionRecord internal_record = internal_actions[
+    component % max(uniforms.internal_action_count, 1u)
+  ];
+  const float internal_value = uniforms.internal_action_count > 0u
+      && (internal_record.flags & 1u) != 0u
+    ? internal_record.priority * internal_record.confidence : 0.0f;
+  float action_context;
+  switch (level) {
+    case 0u:
+      action_context = 0.5f * somatic_value + 0.5f * sensing_value;
+      break;
+    case 1u:
+      action_context = 0.5f * somatic_value + 0.25f * autonomic_value
+        + 0.25f * sensing_value;
+      break;
+    case 2u:
+      action_context = 0.35f * somatic_value + 0.4f * sensing_value
+        + 0.25f * internal_value;
+      break;
+    case 3u:
+      action_context = 0.4f * autonomic_value + 0.6f * internal_value;
+      break;
+    default:
+      action_context = 0.25f * autonomic_value + 0.75f * internal_value;
+      break;
+  }
+  return isfinite(action_context) ? clamp(action_context, -1.0f, 1.0f) : 0.0f;
+}
+
 kernel void advance_hierarchical_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
@@ -644,6 +729,9 @@ kernel void advance_hierarchical_world_model(
   const float previous_latent = world[latent_index];
   const float drive = drives[gid % uniforms.drive_count].deficit;
   const float modulation = neuromodulators[gid % uniforms.neuromodulator_count].value;
+  const float action_context = nb_world_action_context(
+    hot_state, uniforms, level.level, gid
+  );
   float mean_prediction = 0.0f;
   float head_predictions[5];
   for (uint head = 0u; head < 5u; ++head) {
@@ -654,6 +742,7 @@ kernel void advance_hierarchical_world_model(
         + world_parameters[parameter_base + 2u] * top_down
         + world_parameters[parameter_base + 3u] * drive
         + world_parameters[parameter_base + 4u] * modulation
+        + world_parameters[160u + level.level * 5u + head] * action_context
         + world_parameters[parameter_base + 5u]
     );
     head_predictions[head] = prediction;

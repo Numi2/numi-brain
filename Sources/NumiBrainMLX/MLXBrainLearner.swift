@@ -347,6 +347,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       + Float(2) * batch.acceptedStopMask)
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
+    let worldActionContext = completeAction.mean(axis: 1, keepDims: true)
+    let worldActionGain = world[160..<185].mean()
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
     let activeSensingTrace = batch.activeSensingTrace
     let predictedActiveSensingGain = clip(
@@ -388,11 +390,13 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let oneStepWorld = tanh(
       world[0] * burnInState + world[1] * oneStepObservation
         + world[2] * oneStepAction.mean(axis: 1, keepDims: true)
+        + worldActionGain * oneStepAction.mean(axis: 1, keepDims: true)
         + world[5]
     )
     let twoStepWorld = tanh(
       world[0] * oneStepWorld + world[1] * twoStepObservation
         + world[2] * twoStepAction.mean(axis: 1, keepDims: true)
+        + worldActionGain * twoStepAction.mean(axis: 1, keepDims: true)
         + world[5]
     )
     var eventRiskHeads: [MLXArray] = []
@@ -410,11 +414,26 @@ public final class MLXBrainLearner: @unchecked Sendable {
       )
     }
     let eventRiskPredictions = concatenated(eventRiskHeads, axis: 1)
+    var actionConditionedWorldLoss = MLXArray(Float(0))
+    for level in 0..<5 {
+      for head in 0..<5 {
+        let base = (level * 5 + head) * 6
+        let prediction = tanh(
+          world[base] * prior
+            + world[base + 1] * observation
+            + world[base + 3] * metrics[0..., 4..<5]
+            + world[base + 4] * metrics[0..., 6..<7]
+            + world[160 + level * 5 + head] * worldActionContext
+            + world[base + 5]
+        )
+        actionConditionedWorldLoss = actionConditionedWorldLoss
+          + batch.maskedMeanSquaredError(
+            prediction, posterior, mask: transitionMask
+          ) / Float(25)
+      }
+    }
     let worldLoss =
-      batch.maskedMeanSquaredError(
-        tanh(world[0] * prior + world[1] * observation + world[5]), posterior,
-        mask: transitionMask
-      )
+      actionConditionedWorldLoss
       + batch.maskedMeanSquaredError(
         oneStepWorld, oneStepTarget, mask: oneStepMask
       ) + Float(0.5)

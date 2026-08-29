@@ -28,6 +28,9 @@ private struct CognitiveUniforms {
   var physiologyBeliefOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
+  var somaticOutputOffset: UInt64 = 0
+  var acceptedAutonomicOutputOffset: UInt64 = 0
+  var acceptedActiveSensingOutputOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -66,6 +69,8 @@ private struct CognitiveUniforms {
   var interoceptionObservationCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
   var bodySensingMask: UInt32 = 0
+  var autonomicActionCount: UInt32 = 0
+  var internalActionCount: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -147,6 +152,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let memoryParameterGPUAddress: UInt64
   private let plasticityParameterGPUAddress: UInt64
   private let internalActionOffset: UInt64
+  private let internalActionCount: UInt32
 
   public init(
     device: any MTLDevice,
@@ -155,7 +161,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 352,
+    guard MemoryLayout<CognitiveUniforms>.stride == 384,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -363,14 +369,17 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       arenaLayout: arena.layout,
       species: species
     )
-    self.internalActionOffset = UInt64(
-      controlLayout.section(.internalActions).byteOffset
-    )
+    let internalActions = controlLayout.section(.internalActions)
+    guard internalActions.elementCount <= Int(UInt32.max) else {
+      throw TissueError.metal("cognitive internal-action capacity exceeds UInt32")
+    }
+    self.internalActionOffset = UInt64(internalActions.byteOffset)
+    self.internalActionCount = UInt32(internalActions.elementCount)
     self.beliefParameterGPUAddress = try sharedParameters.gpuAddress(
       .belief, minimumScalarCount: 8
     )
     self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
-      .world, minimumScalarCount: 150
+      .world, minimumScalarCount: 185
     )
     self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
       .memory, minimumScalarCount: 8
@@ -606,6 +615,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       physiologyBeliefOffset: offset(.physiologyBelief),
       bodyBeliefOffset: offset(.bodyBelief),
       activeSensingEfficacyOffset: offset(.activeSensingEfficacy),
+      somaticOutputOffset: offset(.somaticOutput),
+      acceptedAutonomicOutputOffset: offset(.acceptedAutonomicOutput),
+      acceptedActiveSensingOutputOffset: offset(.acceptedActiveSensingOutput),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),
@@ -643,7 +655,11 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       interoceptionObservationOffset: interoceptionObservationOffset,
       interoceptionObservationCount: interoceptionObservationCount,
       activeSensingCount: UInt32(species.motor.activeSensingActionDimension),
-      bodySensingMask: bodySensingMask
+      bodySensingMask: bodySensingMask,
+      autonomicActionCount: UInt32(
+        species.physiology.autonomicActionDimension
+      ),
+      internalActionCount: internalActionCount
     )
   }
 
