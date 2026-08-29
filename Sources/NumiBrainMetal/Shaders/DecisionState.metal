@@ -81,6 +81,10 @@ struct NBDecisionUniforms {
   uint observation_count;
   uint cerebellar_expert_capacity;
   ulong fast_cerebellar_state_offset;
+  ulong body_belief_offset;
+  ulong somatic_effector_belief_offset;
+  uint body_belief_count;
+  uint somatic_effector_belief_count;
 };
 
 struct NBDriveRecord {
@@ -366,7 +370,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 368);
+static_assert(sizeof(NBDecisionUniforms) == 392);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -1649,6 +1653,47 @@ kernel void generate_motor_spinal_autonomic_state(
     device float *descending_baseline = reinterpret_cast<device float *>(
       hot_state + uniforms.descending_somatic_baseline_offset
     );
+    device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+    float body_risk = 0.0f;
+    float support_confidence = 0.0f;
+    uint body_evidence_count = 0u;
+    for (uint body_index = 0u;
+        body_index < uniforms.body_belief_count; ++body_index) {
+      device const float *body = reinterpret_cast<device const float *>(
+        body_belief + ulong(body_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        body + 16
+      );
+      if ((identity[3] & 1ul) == 0ul) continue;
+      body_risk = max(
+        body_risk,
+        max(clamp(body[5], 0.0f, 1.0f), clamp(body[7], 0.0f, 1.0f))
+      );
+      support_confidence = max(
+        support_confidence, clamp(body[3], 0.0f, 1.0f)
+      );
+      body_evidence_count += 1u;
+    }
+    const uint effector_index = gid % max(
+      uniforms.somatic_effector_belief_count, 1u
+    );
+    device const float *effector = reinterpret_cast<device const float *>(
+      hot_state + uniforms.somatic_effector_belief_offset
+        + ulong(effector_index) * 192ul
+    );
+    const float agency_confidence =
+      uniforms.somatic_effector_belief_count > 0u
+        ? clamp(effector[8], 0.0f, 1.0f) : 0.0f;
+    const float external_disturbance =
+      uniforms.somatic_effector_belief_count > 0u
+        ? clamp(effector[9], 0.0f, 1.0f) : 0.0f;
+    const float embodied_risk = clamp(
+      body_risk * max(motor_parameters[11], 0.0f)
+        + external_disturbance * max(motor_parameters[12], 0.0f),
+      0.0f,
+      1.0f
+    );
     const NBCommunicationChannelDescriptor communication_descriptor =
       communication_descriptors[gid];
     const bool communication_actuator =
@@ -1674,7 +1719,8 @@ kernel void generate_motor_spinal_autonomic_state(
         : ordinary_descending * clamp(motor_parameters[8], 0.0f, 1.0f);
     }
     const float inhibition = max(
-      (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
+      (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
+        ? 1.0f : max(safety, embodied_risk),
       deliberate_inhibition
     );
     NBFastCerebellarStateRecord fast_state = fast_cerebellar[gid];
@@ -1694,7 +1740,10 @@ kernel void generate_motor_spinal_autonomic_state(
     command.force_target = descending * (1.0f - inhibition);
     command.stiffness_target = clamp(
       uniforms.stiffness_gain * motor_parameters[1]
-        * (safety + abs(candidate.parameters[(gid + 1u) % 16u])),
+        * (max(safety, body_risk)
+          + (body_evidence_count > 0u ? 1.0f - support_confidence : 0.0f)
+            * max(motor_parameters[13], 0.0f)
+          + abs(candidate.parameters[(gid + 1u) % 16u])),
       0.0f,
       1.0f
     );
@@ -1709,7 +1758,7 @@ kernel void generate_motor_spinal_autonomic_state(
           learned_cerebellar_residual
             - header->unsupported_uncertainty * motor_parameters[10],
           -0.25f, 0.25f
-        );
+        ) * (0.5f + 0.5f * agency_confidence);
     command.cerebellar_residual = clamp(
       slow_cerebellar_residual + fast_cerebellar_residual,
       -0.25f,

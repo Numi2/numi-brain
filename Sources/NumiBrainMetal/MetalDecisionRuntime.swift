@@ -66,6 +66,10 @@ private struct DecisionUniforms {
   var observationCount: UInt32 = 0
   var cerebellarExpertCapacity: UInt32 = 0
   var fastCerebellarStateOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
+  var somaticEffectorBeliefOffset: UInt64 = 0
+  var bodyBeliefCount: UInt32 = 0
+  var somaticEffectorBeliefCount: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -163,7 +167,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 368,
+    guard MemoryLayout<DecisionUniforms>.stride == 392,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -646,6 +650,18 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       ),
       fastCerebellarStateOffset: UInt64(
         arena.layout.section(.fastCerebellarState).byteOffset
+      ),
+      bodyBeliefOffset: UInt64(
+        arena.layout.section(.bodyBelief).byteOffset
+      ),
+      somaticEffectorBeliefOffset: UInt64(
+        arena.layout.section(.muscleBelief).byteOffset
+      ),
+      bodyBeliefCount: UInt32(
+        arena.layout.section(.bodyBelief).elementCount
+      ),
+      somaticEffectorBeliefCount: UInt32(
+        arena.layout.section(.muscleBelief).elementCount
       )
     )
   }
