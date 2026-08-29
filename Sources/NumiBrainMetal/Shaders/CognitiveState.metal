@@ -974,6 +974,55 @@ kernel void update_curiosity_drive_from_world_model(
       standard_deviation / (1.0f + standard_deviation)
     );
   }
+  float structured_belief_uncertainty = 0.0f;
+  device const NBObjectSlotRecord *objects =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
+  for (uint index = 0u; index < uniforms.object_slot_count; ++index) {
+    const NBObjectSlotRecord object = objects[index];
+    if (object.identifier == 0ul || object.existence_probability <= 0.0f) continue;
+    structured_belief_uncertainty = max(
+      structured_belief_uncertainty,
+      object.existence_probability * clamp(object.uncertainty, 0.0f, 1.0f)
+    );
+  }
+  device const NBOtherAgentSlotRecord *agents =
+    reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+      hot_state + uniforms.other_agent_slot_offset
+    );
+  for (uint index = 0u; index < uniforms.other_agent_slot_count; ++index) {
+    const NBOtherAgentSlotRecord agent = agents[index];
+    if (agent.identifier == 0ul || agent.existence_probability <= 0.0f) continue;
+    structured_belief_uncertainty = max(
+      structured_belief_uncertainty,
+      agent.existence_probability * clamp(agent.uncertainty, 0.0f, 1.0f)
+    );
+  }
+  device const NBRelationSlotRecord *relations =
+    reinterpret_cast<device const NBRelationSlotRecord *>(
+      hot_state + uniforms.relation_slot_offset
+    );
+  for (uint index = 0u; index < uniforms.relation_slot_count; ++index) {
+    const NBRelationSlotRecord relation = relations[index];
+    if ((relation.flags & 1u) == 0u || relation.probability <= 0.0f) continue;
+    structured_belief_uncertainty = max(
+      structured_belief_uncertainty,
+      relation.probability * clamp(relation.uncertainty, 0.0f, 1.0f)
+    );
+  }
+  device const NBSpatialTransformRecord *transforms =
+    reinterpret_cast<device const NBSpatialTransformRecord *>(
+      hot_state + uniforms.spatial_transform_offset
+    );
+  for (uint index = 0u; index < uniforms.spatial_transform_count; ++index) {
+    const NBSpatialTransformRecord transform = transforms[index];
+    if ((transform.flags & 1u) == 0u) continue;
+    structured_belief_uncertainty = max(
+      structured_belief_uncertainty,
+      clamp(transform.uncertainty, 0.0f, 1.0f)
+    );
+  }
   const float fatigue = uniforms.drive_count > 4u
     ? clamp(drives[4].level, 0.0f, 1.0f) : 0.0f;
   const float pain = uniforms.drive_count > 5u
@@ -995,7 +1044,10 @@ kernel void update_curiosity_drive_from_world_model(
   curiosity.level = development->stage > 0u
     ? clamp(
         max(
-          sqrt(max(epistemic_variance, 0.0f)) * best_sensing_efficacy,
+          max(
+            sqrt(max(epistemic_variance, 0.0f)) * best_sensing_efficacy,
+            structured_belief_uncertainty * best_sensing_efficacy
+          ),
           body_model_uncertainty * best_body_sensing_efficacy
         ) * safe_capacity,
         0.0f,
