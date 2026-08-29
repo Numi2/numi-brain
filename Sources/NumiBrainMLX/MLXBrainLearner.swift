@@ -85,6 +85,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     try parentArtifact.validate(parameterVersion: parentVersion)
     let batch = try MLXCommittedTransitionBatch(sourceBatch)
     let replay = try MLXReplayLearningBatch(sourceBatch)
+    let counterfactuals = try MLXCounterfactualLearningBatch(sourceBatch)
     let kinds = BrainSharedParameterArtifact.requiredKinds
     let parentParameters = kinds.map { kind -> MLXArray in
       let payload = parentArtifact.payload(kind)
@@ -99,7 +100,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
         parameters: parameters,
         parentParameters: parentParameters,
         batch: batch,
-        replay: replay
+        replay: replay,
+        counterfactuals: counterfactuals
       )
       var total = MLXArray(Float(0))
       for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
@@ -136,7 +138,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       parameters: updatedParameters,
       parentParameters: parentParameters,
       batch: batch,
-      replay: replay
+      replay: replay,
+      counterfactuals: counterfactuals
     )
     eval(updatedParameters + updatedTerms)
     let payloads = try zip(kinds, updatedParameters).map { kind, parameter in
@@ -171,7 +174,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     parameters: [MLXArray],
     parentParameters: [MLXArray],
     batch: MLXCommittedTransitionBatch,
-    replay: MLXReplayLearningBatch
+    replay: MLXReplayLearningBatch,
+    counterfactuals: MLXCounterfactualLearningBatch
   ) -> [MLXArray] {
     let sensory = parameters[0]
     let belief = parameters[1]
@@ -247,10 +251,20 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let replaySkillValue = (
       replay.skillExpectedFactoredValue * value[0..<8]
     ).sum(axis: 1, keepDims: true)
+    let imaginedValue = counterfactuals.predictedState.mean(
+      axis: 1, keepDims: true
+    ) * value[12]
+      + counterfactuals.predictedDriveChange * value[13]
+      - counterfactuals.predictedEffort * value[14]
+      + counterfactuals.predictedInformationGain * value[15]
     let valueLoss = batch.maskedMeanSquaredError(
       predictedValue, metrics[0..., 0..<1], mask: transitionMask
     ) + replay.skillMaskedMeanSquaredError(
       replaySkillValue, replay.skillExpectedValue
+    ) + counterfactuals.maskedMeanSquaredError(
+      imaginedValue,
+      counterfactuals.objectiveValue,
+      mask: counterfactuals.validMask
     )
     let replayEpisodeRisk = sigmoid(
       abs(replay.episodeRetrievalKeys).mean(axis: 1, keepDims: true) * value[8]
@@ -259,6 +273,12 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let replaySkillRisk = sigmoid(
       abs(replay.skillPolicyCode).mean(axis: 1, keepDims: true) * value[10]
         + replay.skillOutcomeUncertainty * value[11]
+    )
+    let imaginedRisk = sigmoid(
+      abs(counterfactuals.actionParameters).mean(axis: 1, keepDims: true)
+        * value[16]
+        + counterfactuals.epistemicUncertainty * value[17]
+        + counterfactuals.predictedEffort * value[18]
     )
     let riskLoss = batch.maskedMeanSquaredError(
       abs(action).mean(axis: 1, keepDims: true) * value[4],
@@ -270,21 +290,39 @@ public final class MLXBrainLearner: @unchecked Sendable {
       mask: replay.episodeReplayWeights + Float(2) * replay.episodeThreatWeights
     ) + replay.skillMaskedMeanSquaredError(
       replaySkillRisk, replay.skillDamageCVaR
+    ) + counterfactuals.maskedMeanSquaredError(
+      imaginedRisk,
+      counterfactuals.damageCVaR,
+      mask: counterfactuals.riskMask
+    )
+    let imaginedPolicyAction = tanh(
+      counterfactuals.predictedState * policy[16..<32] + policy[9]
     )
     let policyLoss = batch.maskedMeanSquaredError(
       predictedPolicyAction, action,
       mask: transitionMask
+    ) + counterfactuals.maskedMeanSquaredError(
+      imaginedPolicyAction,
+      counterfactuals.actionParameters,
+      mask: counterfactuals.actorMask
     )
     let replaySkillCompetence = sigmoid(
       replay.skillInitiationModel.mean(axis: 1, keepDims: true) * policy[2]
         + replay.skillExpectedValue * policy[3]
         - replay.skillDamageCVaR * policy[4]
     )
+    let imaginedAdmissibility = sigmoid(
+      counterfactuals.objectiveValue * policy[5]
+        - counterfactuals.damageCVaR * policy[6]
+        - counterfactuals.epistemicUncertainty * policy[7]
+    )
     let optionLoss = batch.maskedMeanSquaredError(
       sigmoid(predictedValue * policy[1]), metrics[0..., 2..<3],
       mask: transitionMask
     ) + replay.skillMaskedMeanSquaredError(
       replaySkillCompetence, replay.skillCompetence
+    ) + counterfactuals.maskedMeanSquaredError(
+      imaginedAdmissibility, counterfactuals.admissibility
     )
     let cerebellarLoss = batch.maskedMeanSquaredError(
       stateDelta[0..., 0..<16] * cerebellar[3], action,

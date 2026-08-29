@@ -383,12 +383,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let replayQueue = try agentStateRuntime.snapshotPersistentSection(
       .replayQueue
     )
+    let counterfactualRollouts = try agentStateRuntime.snapshotPersistentSection(
+      .counterfactualRollouts
+    )
     return try MetalLearningBatch(
       transitions: transitions,
       livedEpisodes: livedEpisodes,
       warmEpisodes: warmEpisodes,
       proceduralSkills: proceduralSkills,
       replayQueue: replayQueue,
+      counterfactualRollouts: counterfactualRollouts,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
@@ -708,6 +712,19 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         previousTimestamp: transaction.jointToken.committedTimestamp,
         acceptedPhysicsState: acceptedPhysicsState,
         teacherState: teacherState
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeCommittedCounterfactuals(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        sourceBeliefTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp
       )
       encoder.endEncoding()
       commandBuffer.endCommandBuffer()

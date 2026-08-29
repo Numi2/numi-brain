@@ -13,6 +13,11 @@ constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION = 6u;
 constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
+constant uint NB_MEMORY_MUTATION_SECTION_COUNTERFACTUAL_ROLLOUT = 10u;
+constant uint NB_COUNTERFACTUAL_RECORD_VERSION = 1u;
+constant uint NB_COUNTERFACTUAL_VALID = 1u;
+constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
+constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
@@ -386,6 +391,29 @@ struct NBCommittedTransitionUniforms {
   uint teacher_flags;
 };
 
+struct NBCounterfactualLearningUniforms {
+  ulong target_timestamp_microseconds;
+  ulong source_belief_timestamp_microseconds;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong parameter_version_fingerprint;
+  ulong episode_identifier;
+  ulong control_step_identifier;
+  ulong candidate_offset;
+  ulong plan_offset;
+  ulong counterfactual_memory_offset;
+  ulong persistent_memory_byte_count;
+  ulong journal_byte_count;
+  uint candidate_capacity;
+  uint plan_capacity;
+  uint maximum_planning_horizon;
+  uint counterfactual_capacity;
+  uint counterfactual_stride;
+  uint journal_entry_capacity;
+  uint maximum_samples;
+  uint reserved;
+};
+
 struct NBWorkspaceMetadataRecord {
   ulong identifier;
   ulong source_timestamp_microseconds;
@@ -423,6 +451,42 @@ struct NBControlHeader {
   ulong reserved1;
   ulong reserved2;
   ulong reserved3;
+};
+
+struct NBOptionCandidateRecord {
+  ulong option_identifier;
+  ulong goal_identifier;
+  float task_value;
+  float homeostatic_value;
+  float social_value;
+  float information_gain;
+  float damage_cvar;
+  float effort_cost;
+  float switching_cost;
+  float competence;
+  uint proposal_kind;
+  uint source_module;
+  uint flags;
+  uint parameter_count;
+  float parameters[16];
+};
+
+struct NBPlanStepRecord {
+  ulong option_identifier;
+  ulong goal_identifier;
+  float objective_value;
+  float damage_cvar;
+  float epistemic_uncertainty;
+  float predicted_effort;
+  float predicted_information_gain;
+  float duration_seconds;
+  float predicted_drive_change;
+  float admissibility;
+  uint sequence;
+  uint flags;
+  uint parameter_count;
+  uint reserved;
+  float predicted_state[16];
 };
 
 struct NBInternalActionRecord {
@@ -662,6 +726,35 @@ struct NBCommittedTransitionRecord {
   float reserved_tail[4];
 };
 
+/// Planning-only learner record. Its explicit imagined flag and disjoint
+/// persistent section prevent counterfactual predictions from becoming lived
+/// episodic records while preserving them for actor, value, and risk updates.
+struct NBCounterfactualLearningRecord {
+  ulong identifier;
+  ulong source_timestamp_microseconds;
+  ulong parameter_version_fingerprint;
+  ulong source_generation;
+  ulong episode_identifier;
+  ulong control_step_identifier;
+  ulong option_identifier;
+  ulong goal_identifier;
+  uint format_version;
+  uint flags;
+  uint sequence;
+  uint state_component_count;
+  float objective_value;
+  float damage_cvar;
+  float epistemic_uncertainty;
+  float predicted_effort;
+  float predicted_information_gain;
+  float duration_seconds;
+  float predicted_drive_change;
+  float admissibility;
+  float predicted_state[16];
+  float action_parameters[16];
+  float reserved[4];
+};
+
 struct NBReplayQueueSummaryRecord {
   uint queue_kind;
   uint record_kind;
@@ -684,8 +777,11 @@ static_assert(sizeof(NBMemoryConsolidationUniforms) == 232);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
+static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBOptionCandidateRecord) == 128);
+static_assert(sizeof(NBPlanStepRecord) == 128);
 static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
@@ -701,6 +797,7 @@ static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
 static_assert(sizeof(NBCommittedTransitionRecord) == 640);
+static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
 inline ulong consolidation_hash(ulong value) {
@@ -3436,6 +3533,137 @@ kernel void journal_committed_learning_transition(
     journal, uniforms, record, destination,
     NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION, record.identifier
   );
+}
+
+/// Freezes a bounded, risk-balanced subset of the option planner's imagined
+/// trajectories only after the physical root is accepted. The records occupy
+/// a disjoint persistent ring and are never visible to episodic retrieval.
+kernel void journal_committed_counterfactual_rollouts(
+  device const uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(2)]],
+  device NBMemoryJournalHeader *journal [[buffer(3)]],
+  constant NBCounterfactualLearningUniforms &uniforms [[buffer(4)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.candidate_capacity == 0u
+      || uniforms.plan_capacity == 0u
+      || uniforms.maximum_planning_horizon == 0u
+      || uniforms.counterfactual_capacity == 0u
+      || uniforms.maximum_samples == 0u) return;
+  if (journal->base_generation != uniforms.base_generation
+      || journal->shadow_generation != uniforms.shadow_generation
+      || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return;
+  }
+  device const NBOptionCandidateRecord *candidates =
+    reinterpret_cast<device const NBOptionCandidateRecord *>(
+      hot_state + uniforms.candidate_offset
+    );
+  device const NBPlanStepRecord *plans =
+    reinterpret_cast<device const NBPlanStepRecord *>(
+      hot_state + uniforms.plan_offset
+    );
+  const uint candidate_count = min(uniforms.candidate_capacity, 32u);
+  const uint sample_limit = min(
+    min(uniforms.maximum_samples, candidate_count), 8u
+  );
+  bool selected[32] = {};
+  for (uint sample = 0u; sample < sample_limit; ++sample) {
+    uint selected_candidate = candidate_count;
+    uint selected_plan_index = uniforms.plan_capacity;
+    float selected_score = -INFINITY;
+    for (uint candidate_index = 0u; candidate_index < candidate_count;
+        ++candidate_index) {
+      if (selected[candidate_index]) continue;
+      const uint plan_base = candidate_index * uniforms.maximum_planning_horizon;
+      if (plan_base + uniforms.maximum_planning_horizon
+          > uniforms.plan_capacity) continue;
+      uint terminal_index = uniforms.plan_capacity;
+      for (uint step = 0u; step < uniforms.maximum_planning_horizon; ++step) {
+        const uint plan_index = plan_base + step;
+        if ((plans[plan_index].flags & 1u) != 0u) terminal_index = plan_index;
+      }
+      if (terminal_index == uniforms.plan_capacity) continue;
+      const NBPlanStepRecord terminal = plans[terminal_index];
+      const float score = (sample & 1u) == 0u
+        ? terminal.objective_value - terminal.damage_cvar
+          + 0.1f * terminal.predicted_information_gain
+        : terminal.damage_cvar + 0.25f * terminal.epistemic_uncertainty
+          - 0.05f * terminal.objective_value;
+      if (selected_candidate == candidate_count || score > selected_score
+          || (score == selected_score
+            && candidate_index < selected_candidate)) {
+        selected_candidate = candidate_index;
+        selected_plan_index = terminal_index;
+        selected_score = score;
+      }
+    }
+    if (selected_candidate == candidate_count
+        || selected_plan_index == uniforms.plan_capacity) break;
+    selected[selected_candidate] = true;
+    const NBPlanStepRecord terminal = plans[selected_plan_index];
+    uint action_candidate = selected_candidate;
+    for (uint candidate_index = 0u; candidate_index < candidate_count;
+        ++candidate_index) {
+      if ((candidates[candidate_index].flags & 1u) != 0u
+          && candidates[candidate_index].option_identifier
+            == terminal.option_identifier) {
+        action_candidate = candidate_index;
+        break;
+      }
+    }
+    NBCounterfactualLearningRecord record = {};
+    record.identifier = consolidation_hash(
+      uniforms.episode_identifier
+        ^ (uniforms.control_step_identifier << 1)
+        ^ (uniforms.shadow_generation << 17)
+        ^ (ulong(selected_candidate + 1u) << 48)
+        ^ terminal.option_identifier
+    ) | 1ul;
+    record.source_timestamp_microseconds =
+      uniforms.source_belief_timestamp_microseconds;
+    record.parameter_version_fingerprint =
+      uniforms.parameter_version_fingerprint;
+    record.source_generation = uniforms.shadow_generation;
+    record.episode_identifier = uniforms.episode_identifier;
+    record.control_step_identifier = uniforms.control_step_identifier;
+    record.option_identifier = terminal.option_identifier;
+    record.goal_identifier = terminal.goal_identifier;
+    record.format_version = NB_COUNTERFACTUAL_RECORD_VERSION;
+    record.flags = NB_COUNTERFACTUAL_VALID | NB_COUNTERFACTUAL_IMAGINED
+      | (terminal.admissibility > 0.5f ? NB_COUNTERFACTUAL_ADMISSIBLE : 0u);
+    record.sequence = terminal.sequence;
+    record.state_component_count = 16u;
+    record.objective_value = terminal.objective_value;
+    record.damage_cvar = terminal.damage_cvar;
+    record.epistemic_uncertainty = terminal.epistemic_uncertainty;
+    record.predicted_effort = terminal.predicted_effort;
+    record.predicted_information_gain = terminal.predicted_information_gain;
+    record.duration_seconds = terminal.duration_seconds;
+    record.predicted_drive_change = terminal.predicted_drive_change;
+    record.admissibility = terminal.admissibility;
+    for (uint component = 0u; component < 16u; ++component) {
+      record.predicted_state[component] = terminal.predicted_state[component];
+      record.action_parameters[component] =
+        candidates[action_candidate].parameters[component];
+    }
+    const uint slot = uint(
+      (uniforms.shadow_generation * ulong(sample_limit) + ulong(sample))
+        % ulong(uniforms.counterfactual_capacity)
+    );
+    append_memory_record(
+      journal,
+      uniforms,
+      record,
+      uniforms.counterfactual_memory_offset
+        + ulong(slot) * ulong(uniforms.counterfactual_stride),
+      NB_MEMORY_MUTATION_SECTION_COUNTERFACTUAL_ROLLOUT,
+      record.identifier
+    );
+  }
 }
 
 kernel void segment_and_journal_episode(

@@ -63,6 +63,8 @@ public enum MetalAgentPersistentSection: UInt16, Codable, CaseIterable, Sendable
   case prospectiveIntentions = 7
   case replayQueue = 8
   case committedTransitions = 9
+  /// Planning-only trajectories; never addressable as lived episodic memory.
+  case counterfactualRollouts = 10
 }
 
 @frozen
@@ -436,6 +438,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let prospectiveIntentionStride = 640
   public static let replayQueueStride = 32
   public static let committedTransitionStride = 768
+  public static let counterfactualRolloutStride = 256
 
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]
   public let totalByteCount: Int
@@ -493,6 +496,17 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
       .committedTransitions,
       count: committedTransitionCount,
       stride: Self.committedTransitionStride
+    )
+    let counterfactualCount = max(
+      try MetalAgentStateLayout.checkedMultiply(
+        Int(capacities.activeOptionCandidateCapacity), 16
+      ),
+      256
+    )
+    try builder.append(
+      .counterfactualRollouts,
+      count: counterfactualCount,
+      stride: Self.counterfactualRolloutStride
     )
     let mutationCapacity = max(
       Int(capacities.activeEpisodicCapacity)

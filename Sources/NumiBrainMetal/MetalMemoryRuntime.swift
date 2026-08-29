@@ -241,6 +241,29 @@ private struct CommittedTransitionUniforms {
   var teacherFlags: UInt32 = 0
 }
 
+private struct CounterfactualLearningUniforms {
+  var targetTimestampMicroseconds: UInt64 = 0
+  var sourceBeliefTimestampMicroseconds: UInt64 = 0
+  var baseGeneration: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
+  var parameterVersionFingerprint: UInt64 = 0
+  var episodeIdentifier: UInt64 = 0
+  var controlStepIdentifier: UInt64 = 0
+  var candidateOffset: UInt64 = 0
+  var planOffset: UInt64 = 0
+  var counterfactualMemoryOffset: UInt64 = 0
+  var persistentMemoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+  var candidateCapacity: UInt32 = 0
+  var planCapacity: UInt32 = 0
+  var maximumPlanningHorizon: UInt32 = 0
+  var counterfactualCapacity: UInt32 = 0
+  var counterfactualStride: UInt32 = 0
+  var journalEntryCapacity: UInt32 = 0
+  var maximumSamples: UInt32 = 0
+  var reserved: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalMemoryRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
@@ -261,6 +284,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let consolidationPipeline: any MTLComputePipelineState
   private let prospectiveLifecyclePipeline: any MTLComputePipelineState
   private let committedTransitionPipeline: any MTLComputePipelineState
+  private let counterfactualLearningPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
@@ -268,6 +292,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let consolidationUniformBuffer: any MTLBuffer
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
   private let committedTransitionUniformBuffer: any MTLBuffer
+  private let counterfactualLearningUniformBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -285,6 +310,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryConsolidationUniforms>.stride == 232,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
+      MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -321,6 +347,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "reconsolidate_retrieved_memory",
       "consolidate_lived_memory_during_rest", "advance_prospective_memory",
       "journal_committed_learning_transition",
+      "journal_committed_counterfactual_rollouts",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -374,6 +401,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       let committedTransitionUniformBuffer = device.makeBuffer(
         length: MemoryLayout<CommittedTransitionUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let counterfactualLearningUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<CounterfactualLearningUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -393,6 +424,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "NumiBrain prospective-memory lifecycle uniforms"
     committedTransitionUniformBuffer.label =
       "NumiBrain committed learning-transition uniforms"
+    counterfactualLearningUniformBuffer.label =
+      "NumiBrain imagined counterfactual-learning uniforms"
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.memory, minimumScalarCount: 8),
       index: 6
@@ -417,6 +450,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.consolidationPipeline = pipelines[8]
     self.prospectiveLifecyclePipeline = pipelines[9]
     self.committedTransitionPipeline = pipelines[10]
+    self.counterfactualLearningPipeline = pipelines[11]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
@@ -424,6 +458,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.consolidationUniformBuffer = consolidationUniformBuffer
     self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
     self.committedTransitionUniformBuffer = committedTransitionUniformBuffer
+    self.counterfactualLearningUniformBuffer = counterfactualLearningUniformBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -431,6 +466,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       uniformBuffer, consolidationUniformBuffer,
       reconsolidationUniformBuffer,
       prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
+      counterfactualLearningUniformBuffer,
     ]
       + retrievalUniformBuffers
   }
@@ -516,6 +552,79 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       teacherState?.view.gpuAddress ?? hot.outputGPUAddress, index: 5
     )
     encoder.setComputePipelineState(committedTransitionPipeline)
+    encoder.setArgumentTable(argumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+  }
+
+  /// Journals a bounded risk-balanced subset of the accepted decision's
+  /// planning-only trajectories. The destination is a disjoint learner ring,
+  /// so no imagined sample can be retrieved or consolidated as lived memory.
+  public func encodeCommittedCounterfactuals(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    sourceBeliefTimestamp: BrainTimestamp,
+    acceptedTimestamp: BrainTimestamp
+  ) throws {
+    let hot = try arena.hotStateView(transaction: transaction)
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let candidates = controlLayout.section(.optionCandidates)
+    let plans = controlLayout.section(.planSteps)
+    let counterfactuals = arena.memoryLayout.section(.counterfactualRollouts)
+    let journalEntryCapacity = (memory.journalByteCount - 48) / 64
+    guard acceptedTimestamp >= sourceBeliefTimestamp,
+      candidates.elementCount > 0,
+      plans.elementCount > 0,
+      plans.elementCount % candidates.elementCount == 0,
+      counterfactuals.elementStride >= 256
+    else {
+      throw TissueError.transaction("counterfactual learner geometry is invalid")
+    }
+    let maximumPlanningHorizon = plans.elementCount / candidates.elementCount
+    let counts = [
+      candidates.elementCount, plans.elementCount, maximumPlanningHorizon,
+      counterfactuals.elementCount, counterfactuals.elementStride,
+      journalEntryCapacity,
+    ]
+    guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }) else {
+      throw TissueError.transaction("counterfactual learner capacity is invalid")
+    }
+    var uniforms = CounterfactualLearningUniforms(
+      targetTimestampMicroseconds: acceptedTimestamp.rawValue,
+      sourceBeliefTimestampMicroseconds: sourceBeliefTimestamp.rawValue,
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      parameterVersionFingerprint: parameterVersionFingerprint,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      candidateOffset: UInt64(candidates.byteOffset),
+      planOffset: UInt64(plans.byteOffset),
+      counterfactualMemoryOffset: UInt64(counterfactuals.byteOffset),
+      persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      journalByteCount: UInt64(memory.journalByteCount),
+      candidateCapacity: UInt32(candidates.elementCount),
+      planCapacity: UInt32(plans.elementCount),
+      maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
+      counterfactualCapacity: UInt32(counterfactuals.elementCount),
+      counterfactualStride: UInt32(counterfactuals.elementStride),
+      journalEntryCapacity: UInt32(journalEntryCapacity),
+      maximumSamples: UInt32(min(candidates.elementCount, 8))
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      counterfactualLearningUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(memory.memoryGPUAddress, index: 2)
+    argumentTable.setAddress(memory.journalGPUAddress, index: 3)
+    argumentTable.setAddress(counterfactualLearningUniformBuffer.gpuAddress, index: 4)
+    encoder.setComputePipelineState(counterfactualLearningPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),

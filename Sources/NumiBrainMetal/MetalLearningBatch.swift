@@ -12,6 +12,18 @@ public enum MetalLearningBatchSection: UInt16, CaseIterable, Sendable {
   case warmEpisodes = 3
   case proceduralSkills = 4
   case replayQueue = 5
+  case imaginedCounterfactuals = 6
+}
+
+@frozen
+public struct MetalCounterfactualLearningFlags: OptionSet, Sendable {
+  public let rawValue: UInt32
+
+  public init(rawValue: UInt32) { self.rawValue = rawValue }
+
+  public static let valid = Self(rawValue: 1 << 0)
+  public static let imagined = Self(rawValue: 1 << 1)
+  public static let admissible = Self(rawValue: 1 << 2)
 }
 
 /// Retains one immutable shared Metal allocation while an external batch
@@ -40,29 +52,33 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 }
 
 /// Immutable, generation-consistent GPU snapshot of accepted transitions,
-/// lived episodic summaries, procedural skills, and replay priorities. A
-/// learner may retain it while rollout resumes because every section resides
-/// in a distinct frozen allocation.
+/// lived episodic summaries, procedural skills, replay priorities, and a
+/// disjoint explicitly imagined planning ring. A learner may retain it while
+/// rollout resumes because every section resides in a distinct allocation.
 @available(macOS 26.0, *)
 public final class MetalLearningBatch: @unchecked Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
   public static let transitionRecordVersion: UInt32 = 1
   public static let episodicRecordVersion: UInt32 = 1
   public static let proceduralRecordVersion =
     MetalAgentMemoryLayout.proceduralSkillRecordVersion
   public static let replayRecordVersion: UInt32 = 1
+  public static let counterfactualRecordVersion: UInt32 = 1
   public static let transitionStride = MetalAgentMemoryLayout.committedTransitionStride
   public static let episodicStride = MetalAgentMemoryLayout.activeEpisodeStride
   public static let warmEpisodicStride =
     MetalAgentMemoryLayout.compressedEpisodeMetadataStride
   public static let proceduralStride = MetalAgentMemoryLayout.proceduralSkillStride
   public static let replayStride = MetalAgentMemoryLayout.replayQueueStride
+  public static let counterfactualStride =
+    MetalAgentMemoryLayout.counterfactualRolloutStride
 
   public let formatVersion: UInt32
   public let transitionRecordVersion: UInt32
   public let episodicRecordVersion: UInt32
   public let proceduralRecordVersion: UInt32
   public let replayRecordVersion: UInt32
+  public let counterfactualRecordVersion: UInt32
   public let sourceGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
@@ -73,11 +89,13 @@ public final class MetalLearningBatch: @unchecked Sendable {
   public let warmEpisodicCapacity: Int
   public let proceduralCapacity: Int
   public let replayCapacity: Int
+  public let counterfactualCapacity: Int
   public let transitionStride: Int
   public let episodicStride: Int
   public let warmEpisodicStride: Int
   public let proceduralStride: Int
   public let replayStride: Int
+  public let counterfactualStride: Int
   public let byteCount: Int
   public let gpuAddress: UInt64
   public let metadataFingerprint: UInt64
@@ -92,6 +110,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     warmEpisodes: MetalAgentStateRuntime.PersistentSectionSnapshot,
     proceduralSkills: MetalAgentStateRuntime.PersistentSectionSnapshot,
     replayQueue: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    counterfactualRollouts: MetalAgentStateRuntime.PersistentSectionSnapshot,
     speciesTemplateFingerprint: UInt64,
     regionalProgramFingerprint: UInt64,
     scheduleFingerprint: UInt64,
@@ -107,6 +126,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
       (.warmEpisodes, warmEpisodes, Self.warmEpisodicStride),
       (.proceduralSkills, proceduralSkills, Self.proceduralStride),
       (.replayQueue, replayQueue, Self.replayStride),
+      (.imaginedCounterfactuals, counterfactualRollouts, Self.counterfactualStride),
     ]
     guard transitions.generation > 0,
       sections.allSatisfy({ _, snapshot, stride in
@@ -127,7 +147,8 @@ public final class MetalLearningBatch: @unchecked Sendable {
     for value in [
       UInt64(Self.formatVersion), UInt64(Self.transitionRecordVersion),
       UInt64(Self.episodicRecordVersion), UInt64(Self.proceduralRecordVersion),
-      UInt64(Self.replayRecordVersion), transitions.generation,
+      UInt64(Self.replayRecordVersion), UInt64(Self.counterfactualRecordVersion),
+      transitions.generation,
       speciesTemplateFingerprint, regionalProgramFingerprint,
       scheduleFingerprint, parameterVersionFingerprint,
     ] {
@@ -166,6 +187,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     self.episodicRecordVersion = Self.episodicRecordVersion
     self.proceduralRecordVersion = Self.proceduralRecordVersion
     self.replayRecordVersion = Self.replayRecordVersion
+    self.counterfactualRecordVersion = Self.counterfactualRecordVersion
     self.sourceGeneration = transitions.generation
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
     self.regionalProgramFingerprint = regionalProgramFingerprint
@@ -176,11 +198,13 @@ public final class MetalLearningBatch: @unchecked Sendable {
     self.warmEpisodicCapacity = warmEpisodes.elementCount
     self.proceduralCapacity = proceduralSkills.elementCount
     self.replayCapacity = replayQueue.elementCount
+    self.counterfactualCapacity = counterfactualRollouts.elementCount
     self.transitionStride = transitions.elementStride
     self.episodicStride = livedEpisodes.elementStride
     self.warmEpisodicStride = warmEpisodes.elementStride
     self.proceduralStride = proceduralSkills.elementStride
     self.replayStride = replayQueue.elementStride
+    self.counterfactualStride = counterfactualRollouts.elementStride
     self.byteCount = totalByteCount
     self.gpuAddress = transitions.buffer.gpuAddress
     self.metadataFingerprint = metadataHash
