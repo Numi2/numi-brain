@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import Metal
+import NumiBrainABI
 import NumiBrainCore
 
 private struct MemoryUniforms {
@@ -238,6 +239,7 @@ private struct CommittedTransitionUniforms {
   var cerebellarOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var transitionMemoryOffset: UInt64 = 0
+  var regionalTransitionMemoryOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -254,6 +256,9 @@ private struct CommittedTransitionUniforms {
   var cerebellarExpertCapacity: UInt32 = 0
   var transitionCapacity: UInt32 = 0
   var transitionStride: UInt32 = 0
+  var regionalTransitionCapacity: UInt32 = 0
+  var regionalTransitionStride: UInt32 = 0
+  var regionalModuleCount: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var teacherScalarCount: UInt32 = 0
   var teacherFlags: UInt32 = 0
@@ -314,6 +319,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
   private let committedTransitionUniformBuffer: any MTLBuffer
   private let counterfactualLearningUniformBuffer: any MTLBuffer
+  private let regionalLayoutBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -330,11 +336,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 288,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 304,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
-      parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
+      parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
+      regionalProgram.layouts.allSatisfy({ $0.tokenDimension <= 256 })
     else {
       throw TissueError.metal("memory runtime ABI or parameter binding drift")
     }
@@ -384,7 +391,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 7
+    descriptor.maxBufferBindCount = 8
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -426,6 +433,11 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       let counterfactualLearningUniformBuffer = device.makeBuffer(
         length: MemoryLayout<CounterfactualLearningUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let regionalLayoutBuffer = device.makeBuffer(
+        length: regionalProgram.layouts.count
+          * MemoryLayout<NBRegionalTokenLayout>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -447,10 +459,20 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       "NumiBrain committed learning-transition uniforms"
     counterfactualLearningUniformBuffer.label =
       "NumiBrain imagined counterfactual-learning uniforms"
+    regionalLayoutBuffer.label = "NumiBrain regional learning layouts"
+    let regionalLayoutRecords = regionalProgram.layouts.map(\.abiRecord)
+    regionalLayoutRecords.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      regionalLayoutBuffer.contents().copyMemory(
+        from: source,
+        byteCount: bytes.count
+      )
+    }
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.memory, minimumScalarCount: 8),
       index: 6
     )
+    argumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 7)
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.arena = arena
     self.regionalProgram = regionalProgram
@@ -483,6 +505,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
     self.committedTransitionUniformBuffer = committedTransitionUniformBuffer
     self.counterfactualLearningUniformBuffer = counterfactualLearningUniformBuffer
+    self.regionalLayoutBuffer = regionalLayoutBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -490,7 +513,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       uniformBuffer, consolidationUniformBuffer,
       reconsolidationUniformBuffer,
       prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
-      counterfactualLearningUniformBuffer,
+      counterfactualLearningUniformBuffer, regionalLayoutBuffer,
     ]
       + retrievalUniformBuffers
   }
@@ -510,6 +533,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
     let transitions = arena.memoryLayout.section(.committedTransitions)
+    let regionalTransitions = arena.memoryLayout.section(.regionalTransitions)
     let layout = arena.layout
     let recurrent = layout.section(.regionalRecurrent)
     let observations = layout.section(.sensoryObservations)
@@ -533,9 +557,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
       transitions.elementCount, transitions.elementStride, journalEntryCapacity,
+      regionalTransitions.elementCount, regionalTransitions.elementStride,
+      regionalProgram.layouts.count,
     ]
     guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       transitions.elementStride >= 640,
+      regionalTransitions.elementStride
+        == MetalAgentMemoryLayout.regionalTransitionStride,
       teacherState == nil
         || teacherState!.view.timestamp == acceptedPhysicsState.acceptedTimestamp
     else {
@@ -571,6 +599,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       cerebellarOffset: UInt64(cerebellar.byteOffset),
       cerebellarExpertMemoryOffset: UInt64(cerebellarExpertMemory.byteOffset),
       transitionMemoryOffset: UInt64(transitions.byteOffset),
+      regionalTransitionMemoryOffset: UInt64(regionalTransitions.byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
@@ -589,6 +618,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       cerebellarExpertCapacity: UInt32(cerebellarExpertMemory.elementCount),
       transitionCapacity: UInt32(transitions.elementCount),
       transitionStride: UInt32(transitions.elementStride),
+      regionalTransitionCapacity: UInt32(regionalTransitions.elementCount),
+      regionalTransitionStride: UInt32(regionalTransitions.elementStride),
+      regionalModuleCount: UInt32(regionalProgram.layouts.count),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       teacherScalarCount: teacherState?.view.scalarCount ?? 0,
       teacherFlags: teacherState?.view.flags ?? 0

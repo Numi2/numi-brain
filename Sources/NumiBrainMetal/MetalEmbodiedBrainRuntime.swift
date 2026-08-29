@@ -449,6 +449,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let semanticRelations = try agentStateRuntime.snapshotPersistentSection(
       .semanticRelations
     )
+    let regionalTransitions = try agentStateRuntime.snapshotPersistentSection(
+      .regionalTransitions
+    )
     return try MetalLearningBatch(
       transitions: transitions,
       livedEpisodes: livedEpisodes,
@@ -458,6 +461,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       counterfactualRollouts: counterfactualRollouts,
       semanticConcepts: semanticConcepts,
       semanticRelations: semanticRelations,
+      regionalTransitions: regionalTransitions,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
@@ -685,6 +689,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     transaction: MetalJointAgentStateTransaction,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil
   ) throws -> AcceptedConsequenceView {
@@ -733,6 +738,18 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         randomCounterGeneration: transaction.cachedRandomCounterGeneration,
         targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
         deltaMicroseconds: UInt32(duration)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try cognitiveRuntime.encodeAcceptedRegionalRecurrentIngest(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: duration,
+        regionalRecurrentInput: acceptedRegionalRecurrentInput
       )
       encoder.barrier(
         afterEncoderStages: .dispatch,

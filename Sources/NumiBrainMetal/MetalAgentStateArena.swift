@@ -85,6 +85,8 @@ public enum MetalAgentPersistentSection: UInt16, Codable, CaseIterable, Sendable
   case committedTransitions = 9
   /// Planning-only trajectories; never addressable as lived episodic memory.
   case counterfactualRollouts = 10
+  /// Accepted regional pre/post token pairs used only by the off-rollout learner.
+  case regionalTransitions = 11
 }
 
 @frozen
@@ -501,7 +503,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 12
+  public static let recordLayoutVersion: UInt32 = 13
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
@@ -514,6 +516,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let replayQueueStride = 32
   public static let committedTransitionStride = 1_040
   public static let counterfactualRolloutStride = 256
+  public static let regionalTransitionStride = 1_104
 
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]
   public let totalByteCount: Int
@@ -582,6 +585,15 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
       .counterfactualRollouts,
       count: counterfactualCount,
       stride: Self.counterfactualRolloutStride
+    )
+    let regionalTransitionCount = max(
+      min(species.enabledModuleIdentifiers.count, 64),
+      16
+    )
+    try builder.append(
+      .regionalTransitions,
+      count: regionalTransitionCount,
+      stride: Self.regionalTransitionStride
     )
     let mutationCapacity = max(
       Int(capacities.activeEpisodicCapacity)

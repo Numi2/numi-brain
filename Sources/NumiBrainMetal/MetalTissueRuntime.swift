@@ -903,6 +903,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       parameterVersion: parameterVersion,
       artifact: sharedParameterArtifact
     )
+    guard sharedParameterBank.scalarCount(.regionalDense)
+      == regionalTokenProgram.denseParameterCount
+    else {
+      throw TissueError.metal(
+        "regional dense parameter shape does not match the compiled program"
+      )
+    }
     guard let commandQueue = device.makeMTL4CommandQueue() else {
       throw TissueError.metal("device does not provide a Metal 4 command queue")
     }

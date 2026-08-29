@@ -504,10 +504,12 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         acceptedFastMotorState,
         transaction: transaction.cognitiveTransaction
       )
+      let acceptedRegionalRecurrent = try fastTissue.pendingRegionalRecurrentBufferView()
       let consequence = try cognitive.finalizeAcceptedControl(
         transaction: transaction.cognitiveTransaction,
         acceptedPhysicsState: accepted,
         rawSensors: acceptedSensors,
+        acceptedRegionalRecurrentInput: acceptedRegionalRecurrent,
         developmentalEvidence: developmentalEvidence,
         teacherState: teacherState
       )

@@ -282,6 +282,19 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
         "successor must replace every shared slow component atomically"
       )
     }
+    for payload in updatedPayloads {
+      guard let parent = parentVersion.components.first(where: {
+        $0.kind == payload.kind
+      }), let updated = try? payload.component,
+        updated.elementType == parent.elementType,
+        updated.elementCount == parent.elementCount,
+        updated.byteCount == parent.byteCount
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "successor shared parameter shapes must remain immutable"
+        )
+      }
+    }
     let retainedComponents = parentVersion.components.filter {
       !updatedKinds.contains($0.kind)
     }

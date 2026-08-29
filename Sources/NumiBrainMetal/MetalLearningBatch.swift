@@ -15,6 +15,7 @@ public enum MetalLearningBatchSection: UInt16, CaseIterable, Sendable {
   case imaginedCounterfactuals = 6
   case semanticConcepts = 7
   case semanticRelations = 8
+  case regionalTransitions = 9
 }
 
 @frozen
@@ -59,7 +60,7 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 /// rollout resumes because every section resides in a distinct allocation.
 @available(macOS 26.0, *)
 public final class MetalLearningBatch: @unchecked Sendable {
-  public static let formatVersion: UInt32 = 7
+  public static let formatVersion: UInt32 = 8
   public static let transitionRecordVersion: UInt32 = 4
   public static let episodicRecordVersion: UInt32 = 1
   public static let proceduralRecordVersion =
@@ -67,6 +68,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
   public static let replayRecordVersion: UInt32 = 1
   public static let counterfactualRecordVersion: UInt32 = 1
   public static let semanticRecordVersion: UInt32 = 1
+  public static let regionalTransitionRecordVersion: UInt32 = 1
   public static let transitionStride = MetalAgentMemoryLayout.committedTransitionStride
   public static let episodicStride = MetalAgentMemoryLayout.activeEpisodeStride
   public static let warmEpisodicStride =
@@ -79,6 +81,8 @@ public final class MetalLearningBatch: @unchecked Sendable {
     MetalAgentMemoryLayout.semanticConceptStride
   public static let semanticRelationStride =
     MetalAgentMemoryLayout.semanticRelationStride
+  public static let regionalTransitionStride =
+    MetalAgentMemoryLayout.regionalTransitionStride
 
   public let formatVersion: UInt32
   public let transitionRecordVersion: UInt32
@@ -87,6 +91,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
   public let replayRecordVersion: UInt32
   public let counterfactualRecordVersion: UInt32
   public let semanticRecordVersion: UInt32
+  public let regionalTransitionRecordVersion: UInt32
   public let sourceGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
@@ -100,6 +105,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
   public let counterfactualCapacity: Int
   public let semanticConceptCapacity: Int
   public let semanticRelationCapacity: Int
+  public let regionalTransitionCapacity: Int
   public let transitionStride: Int
   public let episodicStride: Int
   public let warmEpisodicStride: Int
@@ -108,6 +114,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
   public let counterfactualStride: Int
   public let semanticConceptStride: Int
   public let semanticRelationStride: Int
+  public let regionalTransitionStride: Int
   public let byteCount: Int
   public let gpuAddress: UInt64
   public let metadataFingerprint: UInt64
@@ -125,6 +132,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     counterfactualRollouts: MetalAgentStateRuntime.PersistentSectionSnapshot,
     semanticConcepts: MetalAgentStateRuntime.PersistentSectionSnapshot,
     semanticRelations: MetalAgentStateRuntime.PersistentSectionSnapshot,
+    regionalTransitions: MetalAgentStateRuntime.PersistentSectionSnapshot,
     speciesTemplateFingerprint: UInt64,
     regionalProgramFingerprint: UInt64,
     scheduleFingerprint: UInt64,
@@ -143,6 +151,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
       (.imaginedCounterfactuals, counterfactualRollouts, Self.counterfactualStride),
       (.semanticConcepts, semanticConcepts, Self.semanticConceptStride),
       (.semanticRelations, semanticRelations, Self.semanticRelationStride),
+      (.regionalTransitions, regionalTransitions, Self.regionalTransitionStride),
     ]
     guard transitions.generation > 0,
       sections.allSatisfy({ _, snapshot, stride in
@@ -165,6 +174,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
       UInt64(Self.episodicRecordVersion), UInt64(Self.proceduralRecordVersion),
       UInt64(Self.replayRecordVersion), UInt64(Self.counterfactualRecordVersion),
       UInt64(Self.semanticRecordVersion), transitions.generation,
+      UInt64(Self.regionalTransitionRecordVersion),
       speciesTemplateFingerprint, regionalProgramFingerprint,
       scheduleFingerprint, parameterVersionFingerprint,
     ] {
@@ -205,6 +215,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     self.replayRecordVersion = Self.replayRecordVersion
     self.counterfactualRecordVersion = Self.counterfactualRecordVersion
     self.semanticRecordVersion = Self.semanticRecordVersion
+    self.regionalTransitionRecordVersion = Self.regionalTransitionRecordVersion
     self.sourceGeneration = transitions.generation
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
     self.regionalProgramFingerprint = regionalProgramFingerprint
@@ -218,6 +229,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     self.counterfactualCapacity = counterfactualRollouts.elementCount
     self.semanticConceptCapacity = semanticConcepts.elementCount
     self.semanticRelationCapacity = semanticRelations.elementCount
+    self.regionalTransitionCapacity = regionalTransitions.elementCount
     self.transitionStride = transitions.elementStride
     self.episodicStride = livedEpisodes.elementStride
     self.warmEpisodicStride = warmEpisodes.elementStride
@@ -226,6 +238,7 @@ public final class MetalLearningBatch: @unchecked Sendable {
     self.counterfactualStride = counterfactualRollouts.elementStride
     self.semanticConceptStride = semanticConcepts.elementStride
     self.semanticRelationStride = semanticRelations.elementStride
+    self.regionalTransitionStride = regionalTransitions.elementStride
     self.byteCount = totalByteCount
     self.gpuAddress = transitions.buffer.gpuAddress
     self.metadataFingerprint = metadataHash

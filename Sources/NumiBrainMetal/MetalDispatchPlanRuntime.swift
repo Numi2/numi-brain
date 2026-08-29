@@ -487,6 +487,13 @@ public enum MetalDispatchPlanRuntime {
       parameterVersion: parameterVersion,
       artifact: sharedParameterArtifact
     )
+    guard sharedParameterBank.scalarCount(.regionalDense)
+      == regionalProgram.denseParameterCount
+    else {
+      throw TissueError.metal(
+        "regional dense parameter shape does not match the cohort program"
+      )
+    }
     guard let commandQueue = device.makeMTL4CommandQueue(),
       let commandAllocator = device.makeCommandAllocator(),
       let commandBuffer = device.makeCommandBuffer()

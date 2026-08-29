@@ -381,6 +381,45 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     [uniformBuffer, worldModelDescriptorBuffer]
   }
 
+  /// Imports the accepted fast regional generation into the cognitive shadow
+  /// without rerunning slow belief, workspace, or plasticity updates. This is
+  /// the causal B_t -> B_t+1 boundary used by committed regional learning.
+  public func encodeAcceptedRegionalRecurrentIngest(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView
+  ) throws {
+    guard transaction.layoutFingerprint == layoutFingerprint,
+      deltaMicroseconds > 0,
+      regionalRecurrentInput.scalarCount == regionalProgram.scalarCount,
+      regionalRecurrentInput.regionalProgramFingerprint == regionalProgram.fingerprint
+    else {
+      throw TissueError.transaction(
+        "accepted regional recurrent input does not match the cognitive shadow"
+      )
+    }
+    let hot = try arena.hotStateView(transaction: transaction)
+    var uniforms = try makeUniforms(
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCount: 0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(regionalRecurrentInput.gpuAddress, index: 2)
+    try dispatch(
+      encoder: encoder,
+      pipeline: ingestPipeline,
+      threadCount: regionalProgram.scalarCount
+    )
+  }
+
   public func encodeAcceptedCognitiveStep(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,

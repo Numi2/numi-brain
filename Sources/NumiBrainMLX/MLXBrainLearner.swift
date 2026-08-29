@@ -55,6 +55,7 @@ private struct MLXPreparedMindLearningBatch {
   let replay: MLXReplayLearningBatch
   let counterfactuals: MLXCounterfactualLearningBatch
   let semantics: MLXSemanticLearningBatch
+  let regional: MLXRegionalLearningBatch
 
   init(_ source: MetalLearningBatch) throws {
     let transitions = try MLXCommittedTransitionBatch(source)
@@ -63,6 +64,7 @@ private struct MLXPreparedMindLearningBatch {
     self.replay = try MLXReplayLearningBatch(source)
     self.counterfactuals = try MLXCounterfactualLearningBatch(source)
     self.semantics = try MLXSemanticLearningBatch(source)
+    self.regional = try MLXRegionalLearningBatch(source)
   }
 }
 
@@ -260,7 +262,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       sequences: batches[0].sequences,
       replay: batches[0].replay,
       counterfactuals: batches[0].counterfactuals,
-      semantics: batches[0].semantics
+      semantics: batches[0].semantics,
+      regional: batches[0].regional
     )
     for batch in batches.dropFirst() {
       let terms = lossTerms(
@@ -270,7 +273,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
         sequences: batch.sequences,
         replay: batch.replay,
         counterfactuals: batch.counterfactuals,
-        semantics: batch.semantics
+        semantics: batch.semantics,
+        regional: batch.regional
       )
       for index in totals.indices {
         totals[index] = totals[index] + terms[index]
@@ -287,7 +291,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     sequences: MLXCommittedSequenceBatch,
     replay: MLXReplayLearningBatch,
     counterfactuals: MLXCounterfactualLearningBatch,
-    semantics: MLXSemanticLearningBatch
+    semantics: MLXSemanticLearningBatch,
+    regional: MLXRegionalLearningBatch
   ) -> [MLXArray] {
     let sensory = parameters[0]
     let belief = parameters[1]
@@ -299,6 +304,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let motor = parameters[7]
     let cerebellar = parameters[8]
     let plasticity = parameters[9]
+    let regionalDense = parameters[10]
     let prior = batch.priorState
     let posterior = batch.posteriorState
     let observation = batch.observations
@@ -383,6 +389,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
       * batch.maskedMeanSquaredError(
         twoStepWorld, twoStepTarget, mask: twoStepMask
       )
+      + regional.predictionLoss(denseWeights: regionalDense)
     let bodyLoss = batch.maskedMeanSquaredError(
       tanh(
         belief[7] * prior[0..., 0..<8]

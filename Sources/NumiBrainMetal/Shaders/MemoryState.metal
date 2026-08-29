@@ -14,6 +14,7 @@ constant uint NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION = 6u;
 constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
 constant uint NB_MEMORY_MUTATION_SECTION_COUNTERFACTUAL_ROLLOUT = 10u;
+constant uint NB_MEMORY_MUTATION_SECTION_REGIONAL_TRANSITION = 11u;
 constant uint NB_COUNTERFACTUAL_RECORD_VERSION = 1u;
 constant uint NB_COUNTERFACTUAL_VALID = 1u;
 constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
@@ -21,6 +22,7 @@ constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
 constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 4u;
+constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 1u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
@@ -389,6 +391,7 @@ struct NBCommittedTransitionUniforms {
   ulong cerebellar_offset;
   ulong cerebellar_expert_memory_offset;
   ulong transition_memory_offset;
+  ulong regional_transition_memory_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
   uint recurrent_scalar_count;
@@ -405,9 +408,28 @@ struct NBCommittedTransitionUniforms {
   uint cerebellar_expert_capacity;
   uint transition_capacity;
   uint transition_stride;
+  uint regional_transition_capacity;
+  uint regional_transition_stride;
+  uint regional_module_count;
   uint journal_entry_capacity;
   uint teacher_scalar_count;
   uint teacher_flags;
+};
+
+struct NBRegionalTokenLayoutRecord {
+  uint scalar_offset;
+  uint scalar_count;
+  uint parameter_offset;
+  uint incoming_route_offset;
+  uint dense_weight_offset;
+  uint dense_weight_count;
+  ushort module_id;
+  ushort token_count;
+  ushort token_dimension;
+  ushort incoming_route_count;
+  uint flags;
+  ushort normal_route_budget;
+  ushort reserved;
 };
 
 struct NBCounterfactualLearningUniforms {
@@ -813,6 +835,29 @@ struct NBCommittedTransitionRecord {
   float internal_action[32];
 };
 
+/// One committed full-token sample for the exact dense matrix of one module.
+/// FP16 storage bounds persistent cohort memory while the learner promotes the
+/// values to FP32 before differentiation.
+struct NBRegionalTransitionRecord {
+  ulong identifier;
+  ulong start_timestamp_microseconds;
+  ulong end_timestamp_microseconds;
+  ulong parameter_version_fingerprint;
+  ulong source_generation;
+  uint format_version;
+  uint flags;
+  uint module_index;
+  uint module_identifier;
+  uint token_index;
+  uint feature_count;
+  uint dense_weight_offset;
+  uint dense_weight_count;
+  uint reserved_0;
+  uint reserved_1;
+  half prior_state[256];
+  half posterior_state[256];
+};
+
 /// Planning-only learner record. Its explicit imagined flag and disjoint
 /// persistent section prevent counterfactual predictions from becoming lived
 /// episodic records while preserving them for actor, value, and risk updates.
@@ -863,7 +908,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 288);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 304);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -890,6 +935,8 @@ static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
 static_assert(sizeof(NBCommittedTransitionRecord) == 1040);
+static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
+static_assert(sizeof(NBRegionalTransitionRecord) == 1104);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
 
@@ -3725,11 +3772,14 @@ kernel void journal_committed_learning_transition(
   device NBMemoryJournalHeader *journal [[buffer(3)]],
   constant NBCommittedTransitionUniforms &uniforms [[buffer(4)]],
   device const float *teacher_state [[buffer(5)]],
+  device const NBRegionalTokenLayoutRecord *regional_layouts [[buffer(7)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.recurrent_scalar_count == 0u
       || uniforms.observation_count == 0u || uniforms.action_count == 0u
-      || uniforms.transition_capacity == 0u) return;
+      || uniforms.transition_capacity == 0u
+      || uniforms.regional_transition_capacity == 0u
+      || uniforms.regional_module_count == 0u) return;
   if (journal->base_generation != uniforms.base_generation
       || journal->shadow_generation != uniforms.shadow_generation
       || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
@@ -4001,6 +4051,67 @@ kernel void journal_committed_learning_transition(
   append_memory_record(
     journal, uniforms, record, destination,
     NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION, record.identifier
+  );
+
+  const uint module_index = uint(
+    uniforms.control_step_identifier % ulong(uniforms.regional_module_count)
+  );
+  const NBRegionalTokenLayoutRecord regional_layout =
+    regional_layouts[module_index];
+  if (regional_layout.token_count == 0u
+      || regional_layout.token_dimension == 0u
+      || regional_layout.token_dimension > 256u
+      || regional_layout.dense_weight_count
+        != uint(regional_layout.token_dimension)
+          * uint(regional_layout.token_dimension)) return;
+  NBRegionalTransitionRecord regional_record = {};
+  regional_record.identifier = consolidation_hash(
+    record.identifier ^ (ulong(module_index) << 32) ^ 0x524547494f4e414cul
+  ) | 1ul;
+  regional_record.start_timestamp_microseconds =
+    uniforms.previous_timestamp_microseconds;
+  regional_record.end_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  regional_record.parameter_version_fingerprint =
+    uniforms.parameter_version_fingerprint;
+  regional_record.source_generation = uniforms.shadow_generation;
+  regional_record.format_version = NB_REGIONAL_TRANSITION_RECORD_VERSION;
+  regional_record.flags = 0u;
+  regional_record.module_index = module_index;
+  regional_record.module_identifier = uint(regional_layout.module_id);
+  regional_record.token_index = uint(
+    (uniforms.control_step_identifier / ulong(uniforms.regional_module_count))
+      % ulong(regional_layout.token_count)
+  );
+  regional_record.feature_count = uint(regional_layout.token_dimension);
+  regional_record.dense_weight_offset = regional_layout.dense_weight_offset;
+  regional_record.dense_weight_count = regional_layout.dense_weight_count;
+  const uint regional_scalar_offset = regional_layout.scalar_offset
+    + regional_record.token_index * uint(regional_layout.token_dimension);
+  float regional_delta_energy = 0.0f;
+  bool regional_values_finite = true;
+  for (uint feature = 0u; feature < regional_record.feature_count; ++feature) {
+    const float prior_value = prior[regional_scalar_offset + feature];
+    const float posterior_value = posterior[regional_scalar_offset + feature];
+    regional_values_finite = regional_values_finite
+      && isfinite(prior_value) && isfinite(posterior_value);
+    const float delta = posterior_value - prior_value;
+    regional_delta_energy += delta * delta;
+    regional_record.prior_state[feature] = half(prior_value);
+    regional_record.posterior_state[feature] = half(posterior_value);
+  }
+  regional_record.flags = regional_values_finite
+      && regional_delta_energy > 1.0e-10f
+    ? 1u : 0u;
+  const uint regional_slot = uint(
+    uniforms.shadow_generation % ulong(uniforms.regional_transition_capacity)
+  );
+  const ulong regional_destination = uniforms.regional_transition_memory_offset
+    + ulong(regional_slot) * ulong(uniforms.regional_transition_stride);
+  append_memory_record(
+    journal, uniforms, regional_record, regional_destination,
+    NB_MEMORY_MUTATION_SECTION_REGIONAL_TRANSITION,
+    regional_record.identifier
   );
 }
 
