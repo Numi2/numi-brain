@@ -1270,6 +1270,47 @@ kernel void reduce_fast_plasticity_by_region(
   regional[gid] = record;
 }
 
+/// Converts the prior committed routing request into a bounded per-region
+/// gain overlay consumed by the fast regional tissue runtime. The immutable
+/// species route graph remains authoritative; this action only allocates
+/// bandwidth within that graph.
+kernel void apply_internal_route_allocation(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.module_count == 0u) return;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord request = internal_actions[3];
+  if (request.kind != 4u || (request.flags & 1u) == 0u
+      || request.target_identifier == 0ul) return;
+  device const NBRegionalMaturationRecord *maturation =
+    reinterpret_cast<device const NBRegionalMaturationRecord *>(
+      hot_state + uniforms.regional_maturation_offset
+    );
+  device NBRegionalPlasticModulationRecord *regional =
+    reinterpret_cast<device NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  for (uint index = 0u; index < uniforms.module_count; ++index) {
+    if (ulong(maturation[index].module_identifier) != request.target_identifier
+        || maturation[index].unlocked == 0u) continue;
+    NBRegionalPlasticModulationRecord record = regional[index];
+    record.route_delta = clamp(
+      record.route_delta + 0.5f * request.priority * request.confidence,
+      0.0f,
+      1.0f
+    );
+    record.coefficient_count = max(record.coefficient_count, 1u);
+    record.flags |= 1u | (1u << 1u);
+    regional[index] = record;
+    return;
+  }
+}
+
 /// Applies the prior committed clear request before this tick publishes new
 /// workspace state. One lane owns both metadata and content so matching and
 /// clearing are deterministic and race-free.

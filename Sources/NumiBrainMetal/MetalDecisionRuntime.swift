@@ -88,6 +88,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let dynamics: DecisionDynamics
   private let controlLayout: MetalActiveControlLayout
   private let goalPipeline: any MTLComputePipelineState
+  private let workspaceActionPipeline: any MTLComputePipelineState
   private let proposalPipeline: any MTLComputePipelineState
   private let planningPipeline: any MTLComputePipelineState
   private let selectionPipeline: any MTLComputePipelineState
@@ -147,7 +148,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       throw TissueError.metal("decision-state Metal 4 compilation failed: \(error)")
     }
     let names = [
-      "generate_active_goal_state", "propose_dynamic_options",
+      "generate_active_goal_state", "apply_internal_workspace_write",
+      "propose_dynamic_options",
       "simulate_candidate_option_outcomes",
       "select_option_and_control_mode", "generate_internal_action_state",
       "select_cerebellar_context_experts",
@@ -240,12 +242,13 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.dynamics = dynamics
     self.controlLayout = controlLayout
     self.goalPipeline = pipelines[0]
-    self.proposalPipeline = pipelines[1]
-    self.planningPipeline = pipelines[2]
-    self.selectionPipeline = pipelines[3]
-    self.internalActionPipeline = pipelines[4]
-    self.cerebellarPipeline = pipelines[5]
-    self.motorPipeline = pipelines[6]
+    self.workspaceActionPipeline = pipelines[1]
+    self.proposalPipeline = pipelines[2]
+    self.planningPipeline = pipelines[3]
+    self.selectionPipeline = pipelines[4]
+    self.internalActionPipeline = pipelines[5]
+    self.cerebellarPipeline = pipelines[6]
+    self.motorPipeline = pipelines[7]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
@@ -290,6 +293,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(communicationDescriptorBuffer.gpuAddress, index: 6)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
+    dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: proposalPipeline,
@@ -304,7 +309,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     barrier(encoder)
     dispatch(encoder, pipeline: selectionPipeline, count: 1)
     barrier(encoder)
-    dispatch(encoder, pipeline: internalActionPipeline, count: 8)
+    dispatch(
+      encoder,
+      pipeline: internalActionPipeline,
+      count: InternalActionKind.allCases.count
+    )
     barrier(encoder)
     dispatch(
       encoder,

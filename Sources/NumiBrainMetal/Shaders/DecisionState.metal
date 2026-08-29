@@ -364,12 +364,15 @@ kernel void generate_active_goal_state(
   for (uint slot = 0u; slot < active_workspace_capacity; ++slot) {
     const NBWorkspaceMetadataRecord token = metadata[slot];
     const uint source_module = token.kind_and_source >> 16;
+    const uint token_kind = token.kind_and_source & 0xffffu;
     const bool prospective = source_module == 61u;
     const bool social = source_module == 44u;
     const bool communication = source_module == 51u;
-    if ((!prospective && !social && !communication)
+    const bool active_plan = source_module == 25u && token_kind == 9u;
+    if ((!prospective && !social && !communication && !active_plan)
         || token.entity_identifier == 0ul) continue;
-    const uint origin = prospective ? 3u : (communication ? 8u : 4u);
+    const uint origin = prospective ? 3u
+      : (communication ? 8u : (active_plan ? 7u : 4u));
     const ulong identifier = nb_goal_identifier(origin, token.entity_identifier);
     float priority = clamp(token.confidence, 0.0f, 1.0f)
       * max(value_parameters[min(origin - 1u, 7u)], 0.0f);
@@ -423,6 +426,60 @@ kernel void generate_active_goal_state(
     token.confidence = clamp(goal_priorities[rank], 0.0f, 1.0f);
     metadata[slot] = token;
   }
+}
+
+/// Materializes the prior committed workspace-write request after ordinary
+/// goal publication. Slot ten is the reserved internal-action handoff in the
+/// complete workspace; reduced developmental capacities use their final
+/// non-foundational slot.
+kernel void apply_internal_workspace_write(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.workspace_dimension == 0u) return;
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  const uint active_capacity = min(
+    uniforms.workspace_capacity, development->workspace_capacity
+  );
+  if (active_capacity <= 2u) return;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord request = internal_actions[1];
+  if (request.kind != 2u || (request.flags & NB_CONTROL_FLAG_VALID) == 0u
+      || request.target_identifier == 0ul) return;
+  const uint slot = min(active_capacity, 11u) - 1u;
+  const uint base = slot * uniforms.workspace_dimension;
+  device float *workspace = reinterpret_cast<device float *>(
+    hot_state + uniforms.workspace_offset
+  );
+  for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+    float value = feature < min(request.parameter_count, 6u)
+      ? request.parameters[feature] : 0.0f;
+    if (feature == 6u) value = request.priority;
+    if (feature == 7u) value = request.confidence;
+    workspace[base + feature] = value;
+  }
+  device NBWorkspaceMetadataRecord *metadata =
+    reinterpret_cast<device NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  NBWorkspaceMetadataRecord token = {};
+  token.identifier = (uniforms.target_timestamp_microseconds << 8u)
+    | ulong(slot + 1u);
+  token.source_timestamp_microseconds = request.timestamp_microseconds;
+  token.last_refresh_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  token.entity_identifier = request.target_identifier;
+  token.goal_identifier = request.target_identifier;
+  token.kind_and_source = 9u | (25u << 16u);
+  token.confidence = clamp(request.confidence * request.priority, 0.0f, 1.0f);
+  metadata[slot] = token;
 }
 
 kernel void propose_dynamic_options(
@@ -797,6 +854,17 @@ kernel void select_option_and_control_mode(
     uniforms.maximum_planning_horizon
   );
   const float safety = uniforms.drive_count > 11u ? drives[11].level : 0.0f;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord planning_request = internal_actions[4];
+  const NBInternalActionRecord planning_end_request = internal_actions[5];
+  const bool continue_planning = planning_request.kind == 5u
+    && (planning_request.flags & NB_CONTROL_FLAG_VALID) != 0u;
+  const bool end_planning = planning_end_request.kind == 6u
+    && (planning_end_request.flags & NB_CONTROL_FLAG_VALID) != 0u;
+  const uint previous_mode = header->mode;
   const ulong previous_option_identifier = header->active_option_identifier;
   const ulong previous_selected_timestamp = header->selected_timestamp_microseconds;
   const float previous_controller_phase = header->controller_phase;
@@ -838,10 +906,11 @@ kernel void select_option_and_control_mode(
     flags |= NB_CONTROL_FLAG_HYPERDIRECT_STOP;
     mode = NB_CONTROL_MODE_REFLEX;
   } else if (development->stage >= 8u
-      && (plans[selected * uniforms.maximum_planning_horizon
+      && (continue_planning || (!end_planning
+        && (plans[selected * uniforms.maximum_planning_horizon
           + active_horizon - 1u].epistemic_uncertainty > 0.25f
       || plans[selected * uniforms.maximum_planning_horizon
-          + active_horizon - 1u].damage_cvar > 0.25f)) {
+          + active_horizon - 1u].damage_cvar > 0.25f)))) {
     mode = NB_CONTROL_MODE_PLANNING;
   }
   const NBOptionCandidateRecord candidate = candidates[selected];
@@ -877,6 +946,7 @@ kernel void select_option_and_control_mode(
   header->predicted_information_gain = plan.predicted_information_gain;
   header->unsupported_uncertainty = plan.epistemic_uncertainty;
   header->reserved0 = ulong(selected);
+  header->reserved1 = ulong(previous_mode);
 }
 
 /// Emits compact transactional internal actions. These records describe
@@ -962,10 +1032,12 @@ kernel void generate_internal_action_state(
     action.priority = max(epistemic, candidate.information_gain);
     action.target_identifier = ulong(candidate.source_module);
   } else if (gid == 4u) {
-    action.priority = header->mode == NB_CONTROL_MODE_PLANNING ? 1.0f : 0.0f;
+    action.priority = header->mode == NB_CONTROL_MODE_PLANNING
+      && uint(header->reserved1) != NB_CONTROL_MODE_PLANNING ? 1.0f : 0.0f;
     action.target_identifier = header->active_option_identifier;
   } else if (gid == 5u) {
     action.priority = header->mode != NB_CONTROL_MODE_PLANNING
+      && uint(header->reserved1) == NB_CONTROL_MODE_PLANNING
       && header->confidence > 0.75f ? header->confidence : 0.0f;
     action.target_identifier = header->active_option_identifier;
   } else if (gid == 6u) {
@@ -1098,6 +1170,15 @@ kernel void generate_motor_spinal_autonomic_state(
   const bool rest_selected = header->active_option_identifier
     == NB_REST_OPTION_IDENTIFIER;
   const float safety = uniforms.drive_count > 11u ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord inhibition_request = internal_actions[6];
+  const float deliberate_inhibition = inhibition_request.kind == 7u
+      && (inhibition_request.flags & NB_CONTROL_FLAG_VALID) != 0u
+    ? clamp(inhibition_request.priority, 0.0f, 1.0f)
+    : 0.0f;
   device const NBCerebellarExpertRecord *experts =
     reinterpret_cast<device const NBCerebellarExpertRecord *>(
       hot_state + uniforms.cerebellar_offset
@@ -1140,16 +1221,17 @@ kernel void generate_motor_spinal_autonomic_state(
           )
         : ordinary_descending * clamp(motor_parameters[8], 0.0f, 1.0f);
     }
-    const float inhibition = (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
-      ? 1.0f
-      : safety;
+    const float inhibition = max(
+      (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
+      deliberate_inhibition
+    );
     NBMotorCommandRecord command;
     command.excitation = clamp(
       descending * (1.0f - inhibition) * development->muscle_strength_multiplier,
       0.0f,
       1.0f
     );
-    command.force_target = descending;
+    command.force_target = descending * (1.0f - inhibition);
     command.stiffness_target = clamp(
       uniforms.stiffness_gain * motor_parameters[1]
         * (safety + abs(candidate.parameters[(gid + 1u) % 16u])),
@@ -1202,7 +1284,8 @@ kernel void generate_motor_spinal_autonomic_state(
         ? communication_descriptor.gain
         : clamp(motor_parameters[8], 0.0f, 1.0f))
       : policy_parameters[7];
-    synergies[gid] = candidate.parameters[parameter_index] * gain;
+    synergies[gid] = candidate.parameters[parameter_index] * gain
+      * (1.0f - deliberate_inhibition);
   }
   if (gid < uniforms.autonomic_dimension) {
     device NBAutonomicCommandRecord *autonomic =

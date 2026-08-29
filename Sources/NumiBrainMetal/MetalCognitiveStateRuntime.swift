@@ -105,6 +105,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let spatialStatePipeline: any MTLComputePipelineState
   private let fastPlasticityPipeline: any MTLComputePipelineState
   private let regionalPlasticityPipeline: any MTLComputePipelineState
+  private let routeActionPipeline: any MTLComputePipelineState
   private let clearWorkspacePipeline: any MTLComputePipelineState
   private let workspacePipeline: any MTLComputePipelineState
   private let socialContextPipeline: any MTLComputePipelineState
@@ -171,6 +172,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "advance_spatial_coordinate_transforms",
       "advance_fast_plasticity_foundation",
       "reduce_fast_plasticity_by_region",
+      "apply_internal_route_allocation",
       "clear_requested_workspace_token",
       "broadcast_foundation_workspace",
       "broadcast_social_context",
@@ -294,9 +296,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.spatialStatePipeline = pipelines[5]
     self.fastPlasticityPipeline = pipelines[6]
     self.regionalPlasticityPipeline = pipelines[7]
-    self.clearWorkspacePipeline = pipelines[8]
-    self.workspacePipeline = pipelines[9]
-    self.socialContextPipeline = pipelines[10]
+    self.routeActionPipeline = pipelines[8]
+    self.clearWorkspacePipeline = pipelines[9]
+    self.workspacePipeline = pipelines[10]
+    self.socialContextPipeline = pipelines[11]
     self.argumentTable = argumentTable
     self.worldModelArgumentTables = [
       firstWorldTable, secondWorldTable, thirdWorldTable,
@@ -436,6 +439,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       encoder: encoder,
       pipeline: regionalPlasticityPipeline,
       threadCount: species.enabledModuleIdentifiers.count
+    )
+    barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: routeActionPipeline,
+      threadCount: 1
     )
     barrier(encoder)
     let workspaceContent = Int(species.capacities.workspaceTokenCapacity)
