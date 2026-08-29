@@ -91,6 +91,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
   private let worldParameterGPUAddress: UInt64
+  private let memoryParameterGPUAddress: UInt64
+  private let motorParameterGPUAddress: UInt64
+  private let plasticityParameterGPUAddress: UInt64
 
   public init(
     device: any MTLDevice,
@@ -230,6 +233,15 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
       .world, minimumScalarCount: 150
     )
+    self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
+      .memory, minimumScalarCount: 8
+    )
+    self.motorParameterGPUAddress = try sharedParameters.gpuAddress(
+      .motor, minimumScalarCount: 15
+    )
+    self.plasticityParameterGPUAddress = try sharedParameters.gpuAddress(
+      .plasticity, minimumScalarCount: 8
+    )
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -301,6 +313,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    argumentTable.setAddress(plasticityParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
       pipeline: fastPlasticityPipeline,
@@ -315,12 +328,14 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     barrier(encoder)
     let workspaceContent = Int(species.capacities.workspaceTokenCapacity)
       * Int(species.capacities.workspaceTokenDimension)
+    argumentTable.setAddress(memoryParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
       pipeline: workspacePipeline,
       threadCount: max(workspaceContent, Int(species.capacities.workspaceTokenCapacity))
     )
     barrier(encoder)
+    argumentTable.setAddress(motorParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
       pipeline: motorPipeline,

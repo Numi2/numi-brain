@@ -401,6 +401,7 @@ kernel void advance_hierarchical_world_model(
 kernel void advance_fast_plasticity_foundation(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *plasticity_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.fast_plasticity_count
@@ -433,24 +434,29 @@ kernel void advance_fast_plasticity_foundation(
       maturation[gid % uniforms.module_count].module_identifier
     );
     site.basis_identifier = ushort(gid / uniforms.module_count);
-    site.coefficient_retention = 0.999f;
-    site.eligibility_retention = 0.95f;
-    site.learning_rate = 0.001f;
-    site.maximum_magnitude = 1.0f;
+    site.coefficient_retention = clamp(plasticity_parameters[1], 0.0f, 1.0f);
+    site.eligibility_retention = clamp(plasticity_parameters[2], 0.0f, 1.0f);
+    site.learning_rate = max(plasticity_parameters[0], 0.0f);
+    site.maximum_magnitude = max(plasticity_parameters[7], 1.0e-4f);
   }
   const uint pre_index = gid % uniforms.recurrent_scalar_count;
   const uint post_index = (pre_index + 1u) % uniforms.recurrent_scalar_count;
   const float activity_product = recurrent[pre_index] * recurrent[post_index];
-  site.eligibility = site.eligibility_retention * site.eligibility + activity_product;
+  site.eligibility = min(
+    site.eligibility_retention,
+    clamp(plasticity_parameters[2], 0.0f, 1.0f)
+  ) * site.eligibility + plasticity_parameters[3] * activity_product;
   const float local_modulation = neuromodulators[
     uint(site.region_identifier - 1u) % uniforms.neuromodulator_count
   ].value;
   site.coefficient = clamp(
-    site.coefficient_retention * site.coefficient
-      + site.learning_rate * development->learning_rate_multiplier
+    min(site.coefficient_retention, clamp(plasticity_parameters[1], 0.0f, 1.0f))
+      * site.coefficient
+      + min(site.learning_rate, max(plasticity_parameters[0], 0.0f))
+        * development->learning_rate_multiplier
         * local_modulation * site.eligibility,
-    -site.maximum_magnitude,
-    site.maximum_magnitude
+    -min(site.maximum_magnitude, max(plasticity_parameters[7], 1.0e-4f)),
+    min(site.maximum_magnitude, max(plasticity_parameters[7], 1.0e-4f))
   );
   sites[gid] = site;
 }
@@ -506,6 +512,7 @@ kernel void reduce_fast_plasticity_by_region(
 kernel void broadcast_foundation_workspace(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *memory_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -544,7 +551,7 @@ kernel void broadcast_foundation_workspace(
     } else if (slot == 1u) {
       content[gid] = recurrent[feature % uniforms.recurrent_scalar_count];
     } else {
-      content[gid] *= 0.995f;
+      content[gid] *= clamp(memory_parameters[7], 0.0f, 1.0f);
     }
   }
   if (gid < active_workspace_capacity && gid < 2u) {
@@ -561,6 +568,7 @@ kernel void broadcast_foundation_workspace(
 kernel void advance_foundation_motor_control(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *motor_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.active_control_scalar_count
@@ -579,12 +587,16 @@ kernel void advance_foundation_motor_control(
   if (gid < uniforms.actuator_count) {
     const uint source = (uniforms.recurrent_scalar_count - 1u -
       (gid % uniforms.recurrent_scalar_count));
-    const float descending = 1.0f / (1.0f + exp(-recurrent[source]));
-    control[gid] = nb_saturate(descending * (1.0f - safety));
+    const float descending = 1.0f / (
+      1.0f + exp(-motor_parameters[0] * recurrent[source])
+    );
+    control[gid] = nb_saturate(
+      descending * (1.0f - motor_parameters[3] * safety)
+    );
   } else if (gid < uniforms.actuator_count + uniforms.synergy_count) {
     const uint source = gid % uniforms.recurrent_scalar_count;
-    control[gid] = tanh(recurrent[source]);
+    control[gid] = tanh(motor_parameters[1] * recurrent[source]);
   } else {
-    control[gid] *= 0.999f;
+    control[gid] *= clamp(motor_parameters[14], 0.0f, 1.0f);
   }
 }
