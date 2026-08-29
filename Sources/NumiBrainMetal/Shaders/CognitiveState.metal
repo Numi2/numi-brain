@@ -1831,8 +1831,13 @@ kernel void advance_entity_and_social_slots(
 
       const bool had_identity = slot.identifier != 0ul;
       float body_change = 0.0f;
+      float observed_body_velocity[8];
       for (uint component = 0u; component < 8u; ++component) {
-        body_change += abs(observed_body[component] - slot.body_pose[component])
+        const float body_delta = observed_body[component]
+          - slot.body_pose[component];
+        observed_body_velocity[component] = had_identity
+          ? body_delta / elapsed_seconds : 0.0f;
+        body_change += abs(body_delta)
           * 0.125f;
       }
       const float identity_cue = max(visual_presence, olfactory_energy);
@@ -1932,7 +1937,10 @@ kernel void advance_entity_and_social_slots(
       if (slot.existence_probability > observed_presence + 0.05f) slot.flags |= 4u;
       if (communication > 0.05f) slot.flags |= 8u;
       if (olfactory_energy > 0.05f) slot.flags |= 16u;
-      for (uint component = 0u; component < 102u; ++component) {
+      // The final eight latent channels are an explicit morphology-neutral
+      // observed body-velocity code. Decision code can map this movement into
+      // the learner's body frame without copying foreign joint coordinates.
+      for (uint component = 0u; component < 94u; ++component) {
         const float visual = nb_observation_feature(
           observations,
           validity,
@@ -1960,6 +1968,13 @@ kernel void advance_entity_and_social_slots(
             + belief_parameters[5] * recurrent[
               (gid * 107u + component) % uniforms.recurrent_scalar_count
             ]),
+          correction_gain * observed_presence
+        );
+      }
+      for (uint component = 0u; component < 8u; ++component) {
+        slot.latent[94u + component] = mix(
+          retention * slot.latent[94u + component],
+          tanh(observed_body_velocity[component]),
           correction_gain * observed_presence
         );
       }

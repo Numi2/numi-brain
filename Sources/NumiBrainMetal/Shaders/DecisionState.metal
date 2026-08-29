@@ -12,6 +12,7 @@ constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
 constant uint NB_OPTION_PROPOSAL_ACTIVE_SENSING = 4u;
 constant uint NB_OPTION_PROPOSAL_EXPLORATION = 7u;
+constant uint NB_OPTION_PROPOSAL_IMITATION = 8u;
 constant uint NB_CPG_OUTPUT_SOMATIC_SYNERGY = 1u;
 constant uint NB_CPG_OUTPUT_AUTONOMIC_CHANNEL = 2u;
 constant uint NB_ACTUATOR_COMMAND_MUSCLE_EXCITATION = 1u;
@@ -1853,6 +1854,7 @@ kernel void propose_dynamic_options(
     const uint social_token_kind = social_token.kind_and_source & 0xffffu;
     if ((social_token_source == 44u || social_token_source == 51u)
         && (social_token_kind == 4u || social_token_kind == 10u)
+        && (social_token.flags & NB_CONTROL_FLAG_VALID) != 0u
         && social_token.entity_identifier != 0ul) {
       social_token_confidence = clamp(social_token.confidence, 0.0f, 1.0f);
       social_workspace_base = 11u * uniforms.workspace_dimension;
@@ -1899,7 +1901,87 @@ kernel void propose_dynamic_options(
   if (gid == 8u && social_token_confidence > 0.0f) {
     candidate.source_module = social_token_source;
     candidate.competence = max(candidate.competence, social_token_confidence);
-    if (uniforms.spatial_transform_count > 4u
+    if (social_token_source == 44u && uniforms.workspace_dimension > 116u) {
+      float3 body_relative_velocity = float3(
+        workspace[social_workspace_base + 114u],
+        workspace[social_workspace_base + 115u],
+        workspace[social_workspace_base + 116u]
+      );
+      if (uniforms.spatial_transform_count > 4u
+          && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u) {
+        const NBSpatialTransformRecord sensor_to_body = spatial_transforms[4];
+        body_relative_velocity = nb_rotate_vector(
+          body_relative_velocity,
+          float4(
+            sensor_to_body.rotation[0], sensor_to_body.rotation[1],
+            sensor_to_body.rotation[2], sensor_to_body.rotation[3]
+          )
+        );
+        candidate.competence *= sensor_to_body.confidence;
+      }
+      const float movement_magnitude = clamp(
+        length(body_relative_velocity), 0.0f, 1.0f
+      );
+      const float predicted_action = clamp(
+        workspace[social_workspace_base + 5u], 0.0f, 1.0f
+      );
+      const float goal_confidence = clamp(
+        workspace[social_workspace_base + 3u], 0.0f, 1.0f
+      );
+      const float observation_uncertainty = clamp(
+        workspace[social_workspace_base + 6u], 0.0f, 1.0f
+      );
+      for (uint index = 0u; index < 16u; ++index) {
+        candidate.parameters[index] = 0.0f;
+      }
+      for (uint axis = 0u; axis < 3u; ++axis) {
+        const float movement = body_relative_velocity[axis]
+          * max(predicted_action, movement_magnitude);
+        candidate.parameters[axis] = movement;
+        candidate.parameters[4u + axis] = body_relative_velocity[axis];
+        candidate.parameters[8u + axis] = movement;
+      }
+      candidate.parameters[3] = goal_confidence;
+      candidate.parameters[7] = observation_uncertainty;
+      candidate.parameters[11] = predicted_action;
+      candidate.proposal_kind = NB_OPTION_PROPOSAL_IMITATION;
+      candidate.task_value += movement_magnitude * goal_confidence
+        * social_token_confidence * value_parameters[0];
+      candidate.social_value += movement_magnitude
+        * social_token_confidence * value_parameters[2];
+      candidate.damage_cvar = clamp(
+        candidate.damage_cvar + 0.25f * observation_uncertainty,
+        0.0f,
+        1.0f
+      );
+      candidate.competence = clamp(
+        candidate.competence * goal_confidence
+          * (1.0f - observation_uncertainty),
+        0.0f,
+        1.0f
+      );
+      if (movement_magnitude > 0.01f) {
+        uint movement_signature = 0u;
+        movement_signature |= body_relative_velocity.x >= 0.0f ? 1u : 0u;
+        movement_signature |= body_relative_velocity.y >= 0.0f ? 2u : 0u;
+        movement_signature |= body_relative_velocity.z >= 0.0f ? 4u : 0u;
+        const float3 absolute_velocity = abs(body_relative_velocity);
+        uint dominant_axis = 0u;
+        if (absolute_velocity.y > absolute_velocity.x) dominant_axis = 1u;
+        if (absolute_velocity.z > absolute_velocity[dominant_axis]) {
+          dominant_axis = 2u;
+        }
+        movement_signature |= dominant_axis << 4u;
+        movement_signature |= uint(
+          floor(3.0f * movement_magnitude + 0.5f)
+        ) << 8u;
+        candidate.option_identifier = 0x5000000000000000ul
+          | (nb_semantic_hash(
+              ulong(movement_signature) ^ 0x494d49544154494ful
+            ) & 0x0ffffffffffffffful);
+        candidate.flags |= 1u << 4u;
+      }
+    } else if (uniforms.spatial_transform_count > 4u
         && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u) {
       const NBSpatialTransformRecord sensor_to_body = spatial_transforms[4];
       const float3 sensor_relative = float3(
