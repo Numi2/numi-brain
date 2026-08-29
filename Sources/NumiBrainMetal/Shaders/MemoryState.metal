@@ -72,6 +72,8 @@ struct NBMemoryUniforms {
   ulong workspace_content_offset;
   ulong control_header_offset;
   ulong body_belief_offset;
+  ulong joint_belief_offset;
+  ulong muscle_belief_offset;
   ulong accepted_active_sensing_offset;
   ulong active_sensing_efficacy_offset;
   ulong object_slot_offset;
@@ -100,10 +102,11 @@ struct NBMemoryUniforms {
   uint journal_entry_capacity;
   uint surprise_sample_count;
   uint body_belief_count;
+  uint joint_belief_count;
+  uint muscle_belief_count;
   uint active_sensing_count;
   uint object_slot_count;
   uint regional_plastic_modulation_count;
-  uint reserved_regional_modulation;
   float boundary_threshold;
   float event_salience_weight;
 };
@@ -1044,7 +1047,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 280);
+static_assert(sizeof(NBMemoryUniforms) == 296);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -5265,6 +5268,7 @@ kernel void segment_and_journal_episode(
   float embodied_salience = 0.0f;
   float embodied_uncertainty = 0.0f;
   uint embodied_source = 0u;
+  uint embodied_event_kind = 9u;
   for (uint body_index = 0u;
       body_index < uniforms.body_belief_count; ++body_index) {
     device const float *body = reinterpret_cast<device const float *>(
@@ -5293,15 +5297,97 @@ kernel void segment_and_journal_episode(
     );
     if (salience > embodied_salience) {
       embodied_salience = salience;
-      embodied_source = body_index;
+      embodied_source = uint(identity[0]);
+      embodied_event_kind = 9u;
     }
     embodied_uncertainty = max(
       embodied_uncertainty, normalized_uncertainty
     );
     damage = max(damage, damage_risk);
   }
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    float maximum_limit = 0.0f;
+    float maximum_variance = 0.0f;
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      if (isfinite(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate])) {
+        maximum_limit = max(
+          maximum_limit,
+          clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f)
+        );
+      }
+      if (isfinite(joint[NB_JOINT_POSITION_VARIANCE + coordinate])
+          && isfinite(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate])) {
+        maximum_variance = max(
+          maximum_variance,
+          max(
+            max(joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f),
+            max(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f)
+          )
+        );
+      }
+    }
+    const float standard_deviation = sqrt(maximum_variance);
+    const float uncertainty = standard_deviation
+      / (1.0f + standard_deviation);
+    const float raw_prediction_error = isfinite(
+      joint[NB_JOINT_PREDICTION_ERROR]
+    ) ? abs(joint[NB_JOINT_PREDICTION_ERROR]) : 0.0f;
+    const float prediction_error = raw_prediction_error
+      / (1.0f + raw_prediction_error);
+    const float salience = max(
+      maximum_limit, max(prediction_error, 0.5f * uncertainty)
+    );
+    if (salience > embodied_salience) {
+      embodied_salience = salience;
+      embodied_source = uint(identity[0]);
+      embodied_event_kind = 6u;
+    }
+    embodied_uncertainty = max(
+      embodied_uncertainty, max(uncertainty, prediction_error)
+    );
+  }
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    const float fatigue = isfinite(muscle[NB_MUSCLE_FATIGUE])
+      ? clamp(muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f) : 0.0f;
+    const float disturbance = isfinite(
+      muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE]
+    ) ? clamp(muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f) : 0.0f;
+    const float raw_prediction_error = isfinite(
+      muscle[NB_MUSCLE_PREDICTION_ERROR]
+    ) ? abs(muscle[NB_MUSCLE_PREDICTION_ERROR]) : 0.0f;
+    const float prediction_error = raw_prediction_error
+      / (1.0f + raw_prediction_error);
+    const float salience = max(fatigue, max(disturbance, prediction_error));
+    if (salience > embodied_salience) {
+      embodied_salience = salience;
+      const ulong source_identifier = identity[0] != 0ul
+        ? identity[0] : identity[5];
+      embodied_source = uint(
+        source_identifier ^ (source_identifier >> 32u)
+      );
+      embodied_event_kind = 7u;
+    }
+    embodied_uncertainty = max(embodied_uncertainty, prediction_error);
+  }
   if (embodied_salience > event_salience) {
-    strongest_event_kind = 9u;
+    strongest_event_kind = embodied_event_kind;
     strongest_source = embodied_source;
     strongest_flags = 0u;
   }

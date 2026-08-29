@@ -15,6 +15,8 @@ private struct MemoryUniforms {
   var workspaceContentOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var jointBeliefOffset: UInt64 = 0
+  var muscleBeliefOffset: UInt64 = 0
   var acceptedActiveSensingOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var objectSlotOffset: UInt64 = 0
@@ -43,10 +45,11 @@ private struct MemoryUniforms {
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
   var bodyBeliefCount: UInt32 = 0
+  var jointBeliefCount: UInt32 = 0
+  var muscleBeliefCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
   var objectSlotCount: UInt32 = 0
   var regionalPlasticModulationCount: UInt32 = 0
-  var reservedRegionalModulation: UInt32 = 0
   var boundaryThreshold: Float = 0
   var eventSalienceWeight: Float = 0
 }
@@ -365,7 +368,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 280,
+    guard MemoryLayout<MemoryUniforms>.stride == 296,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1267,6 +1270,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
     let bodyBelief = arena.layout.section(.bodyBelief)
+    let jointBelief = arena.layout.section(.jointBelief)
+    let muscleBelief = arena.layout.section(.muscleBelief)
     let acceptedActiveSensing = arena.layout.section(.acceptedActiveSensingOutput)
     let activeSensingEfficacy = arena.layout.section(.activeSensingEfficacy)
     let objectSlots = arena.layout.section(.objectSlots)
@@ -1284,6 +1289,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       replayQueue.elementStride <= Int(UInt32.max),
       bodyBelief.elementCount > 0,
       bodyBelief.elementCount <= Int(UInt32.max),
+      jointBelief.elementCount <= Int(UInt32.max),
+      muscleBelief.elementCount <= Int(UInt32.max),
       acceptedActiveSensing.elementCount <= Int(UInt32.max),
       objectSlots.elementCount <= Int(UInt32.max),
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max)
@@ -1302,6 +1309,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       workspaceContentOffset: UInt64(workspace.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
+      jointBeliefOffset: UInt64(jointBelief.byteOffset),
+      muscleBeliefOffset: UInt64(muscleBelief.byteOffset),
       acceptedActiveSensingOffset: UInt64(acceptedActiveSensing.byteOffset),
       activeSensingEfficacyOffset: UInt64(activeSensingEfficacy.byteOffset),
       objectSlotOffset: UInt64(objectSlots.byteOffset),
@@ -1342,6 +1351,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
       bodyBeliefCount: UInt32(bodyBelief.elementCount),
+      jointBeliefCount: UInt32(jointBelief.elementCount),
+      muscleBeliefCount: UInt32(muscleBelief.elementCount),
       activeSensingCount: UInt32(activeSensingCount),
       objectSlotCount: UInt32(objectSlots.elementCount),
       regionalPlasticModulationCount: UInt32(
