@@ -89,6 +89,28 @@ private struct AcceptedActuatorDescriptor {
   var emergencyCommand: Float = 0
 }
 
+private struct AcceptedBodyReceptorBindingTableHeader {
+  var bindingCount: UInt32 = 0
+  var bodyCount: UInt32 = 0
+  var profileFingerprint: UInt64 = 0
+}
+
+private struct AcceptedBodyReceptorBindingRange {
+  var bindingOffset: UInt32 = 0
+  var bindingCount: UInt32 = 0
+}
+
+private struct AcceptedBodyReceptorBindingRecord {
+  var bodyIdentifier: UInt32 = 0
+  var signal: UInt32 = 0
+  var observationScalarIndex: UInt32 = 0
+  var flags: UInt32 = 0
+  var scale: Float = 0
+  var bias: Float = 0
+  var weight: Float = 0
+  var reserved: Float = 0
+}
+
 private struct ObservationRange: Sendable {
   let offset: UInt32
   let count: UInt32
@@ -108,6 +130,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let actuatorDescriptorBuffer: any MTLBuffer
+  private let bodyReceptorBindingBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
   private let plasticityParameterCount: UInt32
 
@@ -116,11 +139,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
     dynamics: AcceptedConsequenceDynamics,
+    sensoryProfile: SensoryTransductionProfile,
     sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 408,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
-      arena.layout.speciesTemplateFingerprint == species.fingerprint
+      MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
+      MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
+      MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride == 32,
+      arena.layout.speciesTemplateFingerprint == species.fingerprint,
+      sensoryProfile.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
     }
@@ -142,6 +170,65 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     guard Int(offset) == arena.layout.section(.sensoryObservations).elementCount else {
       throw TissueError.metal("accepted sensory ranges do not cover the arena")
     }
+    guard sensoryProfile.bodyReceptorBindings.count <= Int(UInt32.max) else {
+      throw TissueError.metal("accepted body receptor bindings exceed UInt32")
+    }
+    let topologyByModality = Dictionary(
+      uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+    )
+    let canonicalBodyBindings = sensoryProfile.bodyReceptorBindings.sorted {
+      if $0.bodyIdentifier != $1.bodyIdentifier {
+        return $0.bodyIdentifier < $1.bodyIdentifier
+      }
+      if $0.signal.rawValue != $1.signal.rawValue {
+        return $0.signal.rawValue < $1.signal.rawValue
+      }
+      return $0.identifier < $1.identifier
+    }
+    let bodyReceptorBindings = try canonicalBodyBindings.map {
+      binding -> AcceptedBodyReceptorBindingRecord in
+      guard let range = ranges[binding.modality],
+        let topology = topologyByModality[binding.modality]
+      else {
+        throw TissueError.metal("accepted body receptor topology is unavailable")
+      }
+      let scalarIndex = UInt64(range.offset)
+        + UInt64(binding.receptorIndex)
+          * UInt64(topology.observationDimension)
+        + UInt64(binding.featureIndex)
+      guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
+      else {
+        throw TissueError.metal("accepted body receptor scalar exceeds its arena")
+      }
+      return AcceptedBodyReceptorBindingRecord(
+        bodyIdentifier: binding.bodyIdentifier,
+        signal: UInt32(binding.signal.rawValue),
+        observationScalarIndex: UInt32(scalarIndex),
+        flags: 1,
+        scale: binding.scale,
+        bias: binding.bias,
+        weight: binding.weight,
+        reserved: 0
+      )
+    }
+    var bodyReceptorRanges = [AcceptedBodyReceptorBindingRange](
+      repeating: AcceptedBodyReceptorBindingRange(),
+      count: Int(species.body.bodyCount)
+    )
+    var bindingCursor = 0
+    for bodyIdentifier in 0..<Int(species.body.bodyCount) {
+      let begin = bindingCursor
+      while bindingCursor < canonicalBodyBindings.count,
+        canonicalBodyBindings[bindingCursor].bodyIdentifier
+          == UInt32(bodyIdentifier)
+      {
+        bindingCursor += 1
+      }
+      bodyReceptorRanges[bodyIdentifier] = AcceptedBodyReceptorBindingRange(
+        bindingOffset: UInt32(begin),
+        bindingCount: UInt32(bindingCursor - begin)
+      )
+    }
     let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
       AcceptedActuatorDescriptor(
         actuatorIdentifier: channel.identifier,
@@ -160,6 +247,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
           * MemoryLayout<AcceptedActuatorDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
+      let bodyReceptorBindingBuffer = device.makeBuffer(
+        length: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
+          + bodyReceptorRanges.count
+            * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+          + max(
+            bodyReceptorBindings.count,
+            1
+          ) * MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
       let neutralProtectiveCommandBuffer = device.makeBuffer(
         length: ProtectiveMotorCommand.byteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -169,6 +266,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     actuatorDescriptorBuffer.label =
       "NumiBrain immutable accepted actuator descriptors"
+    bodyReceptorBindingBuffer.label =
+      "NumiBrain immutable anatomical body receptor bindings"
     neutralProtectiveCommandBuffer.label =
       "NumiBrain neutral accepted protective command"
     neutralProtectiveCommandBuffer.contents().initializeMemory(
@@ -181,6 +280,31 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       actuatorDescriptorBuffer.contents().copyMemory(
         from: source, byteCount: bytes.count
       )
+    }
+    var bodyReceptorHeader = AcceptedBodyReceptorBindingTableHeader(
+      bindingCount: UInt32(bodyReceptorBindings.count),
+      bodyCount: species.body.bodyCount,
+      profileFingerprint: sensoryProfile.fingerprint
+    )
+    withUnsafeBytes(of: &bodyReceptorHeader) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      bodyReceptorBindingBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    bodyReceptorRanges.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      bodyReceptorBindingBuffer.contents().advanced(
+        by: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
+      ).copyMemory(from: source, byteCount: bytes.count)
+    }
+    bodyReceptorBindings.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      bodyReceptorBindingBuffer.contents().advanced(
+        by: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
+          + bodyReceptorRanges.count
+            * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+      ).copyMemory(from: source, byteCount: bytes.count)
     }
     let sourceURL =
       Bundle.module.url(
@@ -227,7 +351,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 9
+    descriptor.maxBufferBindCount = 10
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -276,6 +400,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     )
     argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
     argumentTable.setAddress(neutralProtectiveCommandBuffer.gpuAddress, index: 8)
+    argumentTable.setAddress(bodyReceptorBindingBuffer.gpuAddress, index: 9)
     self.arena = arena
     self.species = species
     self.dynamics = dynamics
@@ -288,12 +413,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
+    self.bodyReceptorBindingBuffer = bodyReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
     self.plasticityParameterCount = UInt32(plasticityScalarCount)
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, actuatorDescriptorBuffer, neutralProtectiveCommandBuffer]
+    [
+      uniformBuffer, actuatorDescriptorBuffer, bodyReceptorBindingBuffer,
+      neutralProtectiveCommandBuffer,
+    ]
   }
 
   public func encode(

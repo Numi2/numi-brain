@@ -277,6 +277,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       species: species,
       dynamics: requestedAcceptedConsequenceDynamics
         ?? AcceptedConsequenceDynamics.foundationV1,
+      sensoryProfile: sensoryProfile,
       sharedParameters: sharedParameterBank
     )
     let residencyDescriptor = MTLResidencySetDescriptor()

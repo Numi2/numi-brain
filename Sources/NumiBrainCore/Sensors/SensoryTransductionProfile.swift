@@ -60,6 +60,64 @@ public struct ReceptorEventRule: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+/// Semantic contribution of one causal receptor feature to the learned body
+/// graph. Bindings are species calibration, not inferred authoritative state.
+@frozen
+public enum BodyReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
+  case position = 1
+  case velocity = 2
+  case contact = 3
+  case support = 4
+  case localForce = 5
+  case nociception = 6
+  case vestibularStability = 7
+}
+
+/// Immutable anatomical attribution for one receptor feature. Multiple
+/// bindings may contribute to the same body signal; `weight` controls their
+/// normalized evidence fusion after scale and bias calibration.
+@frozen
+public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let bodyIdentifier: UInt32
+  public let modality: SensoryModality
+  public let receptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let signal: BodyReceptorSignal
+  public let scale: Float
+  public let bias: Float
+  public let weight: Float
+
+  public init(
+    identifier: UInt32,
+    bodyIdentifier: UInt32,
+    modality: SensoryModality,
+    receptorIndex: UInt32,
+    featureIndex: UInt32,
+    signal: BodyReceptorSignal,
+    scale: Float = 1,
+    bias: Float = 0,
+    weight: Float = 1
+  ) throws {
+    guard identifier > 0, scale.isFinite, bias.isFinite,
+      weight.isFinite, weight > 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "body receptor binding calibration is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.bodyIdentifier = bodyIdentifier
+    self.modality = modality
+    self.receptorIndex = receptorIndex
+    self.featureIndex = featureIndex
+    self.signal = signal
+    self.scale = scale
+    self.bias = bias
+    self.weight = weight
+  }
+}
+
 /// Immutable receptor calibration and explicit event thresholds for one
 /// species/morphology generation. Event meaning is supplied by the template;
 /// the GPU runtime never invents anatomical thresholds.
@@ -67,11 +125,13 @@ public struct ReceptorEventRule: Codable, Equatable, Hashable, Sendable {
 public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
   public let speciesTemplateFingerprint: UInt64
   public let eventRules: [ReceptorEventRule]
+  public let bodyReceptorBindings: [BodyReceptorBinding]
   public let fingerprint: UInt64
 
   public init(
     species: SpeciesTemplate,
     eventRules: [ReceptorEventRule],
+    bodyReceptorBindings: [BodyReceptorBinding] = [],
     includePhysiologicalCriticalRules: Bool = true
   ) throws {
     var compiledRules = eventRules
@@ -80,6 +140,13 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     }
     guard Set(compiledRules.map(\.identifier)).count == compiledRules.count else {
       throw BrainRuntimeError.invalidEvent("receptor event-rule identifiers are duplicated")
+    }
+    guard Set(bodyReceptorBindings.map(\.identifier)).count
+      == bodyReceptorBindings.count
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "body receptor binding identifiers are duplicated"
+      )
     }
     let topologyByModality = Dictionary(
       uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
@@ -93,6 +160,17 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       let (end, overflow) = rule.receptorStart.addingReportingOverflow(rule.receptorCount)
       guard !overflow, end <= topology.receptorCount else {
         throw BrainRuntimeError.invalidEvent("receptor event rule exceeds receptor topology")
+      }
+    }
+    for binding in bodyReceptorBindings {
+      guard binding.bodyIdentifier < species.body.bodyCount,
+        let topology = topologyByModality[binding.modality], topology.enabled,
+        binding.receptorIndex < topology.receptorCount,
+        binding.featureIndex < topology.observationDimension
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "body receptor binding exceeds species anatomy"
+        )
       }
     }
     var hash: UInt64 = 14_695_981_039_346_656_037
@@ -111,8 +189,23 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       Self.mix(UInt64(rule.sourceIdentifier), into: &hash)
       Self.mix(UInt64(rule.usesAbsoluteThreshold ? 1 : 0), into: &hash)
     }
+    let canonicalBindings = bodyReceptorBindings.sorted {
+      $0.identifier < $1.identifier
+    }
+    for binding in canonicalBindings {
+      Self.mix(UInt64(binding.identifier), into: &hash)
+      Self.mix(UInt64(binding.bodyIdentifier), into: &hash)
+      Self.mix(UInt64(binding.modality.rawValue), into: &hash)
+      Self.mix(UInt64(binding.receptorIndex), into: &hash)
+      Self.mix(UInt64(binding.featureIndex), into: &hash)
+      Self.mix(UInt64(binding.signal.rawValue), into: &hash)
+      Self.mix(UInt64(binding.scale.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.weight.bitPattern), into: &hash)
+    }
     self.speciesTemplateFingerprint = species.fingerprint
     self.eventRules = compiledRules.sorted { $0.identifier < $1.identifier }
+    self.bodyReceptorBindings = canonicalBindings
     self.fingerprint = hash
   }
 

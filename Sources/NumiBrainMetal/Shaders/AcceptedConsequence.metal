@@ -265,6 +265,28 @@ struct NBAcceptedActuatorDescriptor {
   float emergency_command;
 };
 
+struct NBBodyReceptorBindingTableHeader {
+  uint binding_count;
+  uint body_count;
+  ulong profile_fingerprint;
+};
+
+struct NBBodyReceptorBindingRange {
+  uint binding_offset;
+  uint binding_count;
+};
+
+struct NBBodyReceptorBindingRecord {
+  uint body_identifier;
+  uint signal;
+  uint observation_scalar_index;
+  uint flags;
+  float scale;
+  float bias;
+  float weight;
+  float reserved;
+};
+
 struct NBFastBodySchemaRecord {
   uint body_identifier;
   uint flags;
@@ -402,6 +424,9 @@ static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
+static_assert(sizeof(NBBodyReceptorBindingTableHeader) == 16);
+static_assert(sizeof(NBBodyReceptorBindingRange) == 8);
+static_assert(sizeof(NBBodyReceptorBindingRecord) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
 static_assert(sizeof(NBFastAutonomicStateRecord) == 64);
@@ -762,6 +787,8 @@ kernel void assimilate_accepted_body_and_physiology(
   device const float *belief_parameters [[buffer(2)]],
   device const NBAcceptedActuatorDescriptor *actuator_descriptors
     [[buffer(6)]],
+  device const NBBodyReceptorBindingTableHeader *body_receptor_table
+    [[buffer(9)]],
   uint gid [[thread_position_in_grid]])
 {
   device const float *observations = reinterpret_cast<device const float *>(
@@ -796,23 +823,120 @@ kernel void assimilate_accepted_body_and_physiology(
       uniforms.vestibular_count, gid
     );
     const float prior_position = body[NB_BODY_POSITION];
-    const float contact_evidence = clamp(abs(touch), 0.0f, 1.0f);
-    const float vestibular_stability = clamp(
+    float position_total = 0.0f;
+    float position_weight = 0.0f;
+    float velocity_total = 0.0f;
+    float velocity_weight = 0.0f;
+    float contact_total = 0.0f;
+    float contact_weight = 0.0f;
+    float support_total = 0.0f;
+    float support_weight = 0.0f;
+    float force_total = 0.0f;
+    float force_weight = 0.0f;
+    float pain_total = 0.0f;
+    float pain_weight = 0.0f;
+    float vestibular_total = 0.0f;
+    float vestibular_weight = 0.0f;
+    uint body_binding_count = 0u;
+    device const NBBodyReceptorBindingRange *body_receptor_ranges =
+      reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+        body_receptor_table + 1
+      );
+    device const NBBodyReceptorBindingRecord *body_receptor_bindings =
+      reinterpret_cast<device const NBBodyReceptorBindingRecord *>(
+        body_receptor_ranges + body_receptor_table->body_count
+      );
+    const NBBodyReceptorBindingRange body_receptor_range =
+      gid < body_receptor_table->body_count
+        ? body_receptor_ranges[gid] : NBBodyReceptorBindingRange{0u, 0u};
+    const uint binding_end = min(
+      body_receptor_range.binding_offset + body_receptor_range.binding_count,
+      body_receptor_table->binding_count
+    );
+    for (uint binding_index = body_receptor_range.binding_offset;
+        binding_index < binding_end; ++binding_index) {
+      const NBBodyReceptorBindingRecord binding =
+        body_receptor_bindings[binding_index];
+      if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+          || binding.body_identifier != gid
+          || binding.observation_scalar_index >= uniforms.observation_count
+          || !isfinite(binding.scale) || !isfinite(binding.bias)
+          || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+      const float evidence = fma(
+        observations[binding.observation_scalar_index],
+        binding.scale,
+        binding.bias
+      );
+      body_binding_count += 1u;
+      switch (binding.signal) {
+        case 1u:
+          position_total += evidence * binding.weight;
+          position_weight += binding.weight;
+          break;
+        case 2u:
+          velocity_total += evidence * binding.weight;
+          velocity_weight += binding.weight;
+          break;
+        case 3u:
+          contact_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
+          contact_weight += binding.weight;
+          break;
+        case 4u:
+          support_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
+          support_weight += binding.weight;
+          break;
+        case 5u:
+          force_total += abs(evidence) * binding.weight;
+          force_weight += binding.weight;
+          break;
+        case 6u:
+          pain_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
+          pain_weight += binding.weight;
+          break;
+        case 7u:
+          vestibular_total += clamp(evidence, 0.0f, 1.0f)
+            * binding.weight;
+          vestibular_weight += binding.weight;
+          break;
+        default:
+          break;
+      }
+    }
+    const float position_evidence = position_weight > 0.0f
+      ? position_total / position_weight : proprioception;
+    const float contact_evidence = contact_weight > 0.0f
+      ? contact_total / contact_weight
+      : clamp(abs(touch), 0.0f, 1.0f);
+    const float vestibular_stability = vestibular_weight > 0.0f
+      ? vestibular_total / vestibular_weight
+      : clamp(
       1.0f - abs(vestibular), 0.0f, 1.0f
     );
     const float velocity_limit = max(belief_parameters[13], 1.0f);
     const float observed_velocity = clamp(
-      (proprioception - prior_position) / elapsed_seconds,
+      velocity_weight > 0.0f
+        ? velocity_total / velocity_weight
+        : (position_evidence - prior_position) / elapsed_seconds,
       -velocity_limit,
       velocity_limit
     );
+    const float support_evidence = support_weight > 0.0f
+      ? support_total / support_weight
+      : contact_evidence * vestibular_stability;
+    const float force_evidence = force_weight > 0.0f
+      ? force_total / force_weight : abs(touch);
+    const float pain_evidence = pain_weight > 0.0f
+      ? pain_total / pain_weight
+      : (body_binding_count == 0u ? clamp(abs(touch), 0.0f, 1.0f) : 0.0f);
     const float retained_per_second = clamp(
       belief_parameters[7], 0.0f, 1.0f
     );
     const float pain_retention = retained_per_second <= 0.0f ? 0.0f
       : (retained_per_second >= 1.0f ? 1.0f
         : pow(retained_per_second, elapsed_seconds));
-    body[NB_BODY_POSITION] = mix(prior_position, proprioception, body_gain);
+    body[NB_BODY_POSITION] = mix(
+      prior_position, position_evidence, body_gain
+    );
     body[NB_BODY_VELOCITY] = mix(
       body[NB_BODY_VELOCITY], observed_velocity, min(velocity_gain, body_gain)
     );
@@ -821,15 +945,15 @@ kernel void assimilate_accepted_body_and_physiology(
     );
     body[NB_BODY_SUPPORT] = mix(
       body[NB_BODY_SUPPORT],
-      contact_evidence * vestibular_stability,
+      support_evidence,
       body_gain
     );
     body[NB_BODY_LOCAL_FORCE] = mix(
-      body[NB_BODY_LOCAL_FORCE], abs(touch), body_gain
+      body[NB_BODY_LOCAL_FORCE], force_evidence, body_gain
     );
     body[NB_BODY_PAIN] = max(
       body[NB_BODY_PAIN] * pain_retention,
-      clamp(abs(touch), 0.0f, 1.0f)
+      pain_evidence
     );
     body[NB_BODY_PROPRIOCEPTIVE_ERROR] = abs(
       observed_velocity - body[NB_BODY_VELOCITY]
