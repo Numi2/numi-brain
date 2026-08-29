@@ -2375,6 +2375,37 @@ inline bool nb_workspace_identity_matches(
     && token.entity_identifier == entity_identifier;
 }
 
+inline bool nb_decay_workspace_slot(
+  device float *content,
+  device NBWorkspaceMetadataRecord *metadata,
+  const uint slot,
+  const uint dimension,
+  const float retained_per_second,
+  const float elapsed_seconds,
+  const float minimum_score)
+{
+  NBWorkspaceMetadataRecord token = metadata[slot];
+  if (token.identifier == 0ul || (token.flags & 1u) == 0u) return false;
+  const float persistence = clamp(token.persistence_priority, 0.0f, 1.0f);
+  const float effective_retention = mix(
+    clamp(retained_per_second, 0.0f, 1.0f),
+    1.0f,
+    0.75f * persistence
+  );
+  const float retention = nb_time_scaled_retention(
+    effective_retention, elapsed_seconds
+  );
+  token.confidence = clamp(token.confidence, 0.0f, 1.0f) * retention;
+  token.selection_score = clamp(token.selection_score, 0.0f, 1.0f)
+    * retention;
+  if (token.selection_score < minimum_score) {
+    nb_clear_workspace_slot(content, metadata, slot, dimension);
+    return false;
+  }
+  metadata[slot] = token;
+  return true;
+}
+
 /// Selects and merges the foundational drive and embodied-self broadcasts.
 /// One lane owns the complete operation so identity refresh, persistence, and
 /// replacement are deterministic. Slots 2+ remain owned by accepted error,
@@ -2745,13 +2776,26 @@ kernel void broadcast_social_context(
     uniforms.workspace_capacity, development->workspace_capacity
   );
 
+  const float social_elapsed_seconds = float(uniforms.delta_microseconds)
+    * 1.0e-6f;
+  const float social_retention = clamp(belief_parameters[7], 0.0f, 1.0f);
+  const float social_minimum_score = max(belief_parameters[6], 0.01f);
   for (uint slot = 11u; slot < uniforms.workspace_capacity; ++slot) {
-    const uint base = slot * uniforms.workspace_dimension;
-    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
-      workspace[base + feature] = 0.0f;
+    if (slot >= active_workspace_capacity) {
+      nb_clear_workspace_slot(
+        workspace, metadata, slot, uniforms.workspace_dimension
+      );
+      continue;
     }
-    NBWorkspaceMetadataRecord empty = {};
-    metadata[slot] = empty;
+    nb_decay_workspace_slot(
+      workspace,
+      metadata,
+      slot,
+      uniforms.workspace_dimension,
+      social_retention,
+      social_elapsed_seconds,
+      social_minimum_score
+    );
   }
 
   uint best_agent_index = 0xffffffffu;
@@ -2875,7 +2919,8 @@ kernel void broadcast_social_context(
     neuromodulators[8] = social_modulator;
   }
 
-  ulong object_token_identifier = 0ul;
+  ulong object_token_identifier = active_workspace_capacity > 12u
+    ? metadata[12].identifier : 0ul;
   if (best_object_index != 0xffffffffu && active_workspace_capacity > 12u) {
     const uint slot = 12u;
     const uint base = slot * uniforms.workspace_dimension;
@@ -2891,12 +2936,19 @@ kernel void broadcast_social_context(
       else value = best_object.latent[(feature - 20u) % 102u];
       workspace[base + feature] = value;
     }
-    object_token_identifier = (uniforms.target_timestamp_microseconds << 8u)
-      | ulong(slot + 1u);
-    NBWorkspaceMetadataRecord object_token = {};
-    object_token.identifier = object_token_identifier;
-    object_token.source_timestamp_microseconds =
-      best_object.last_seen_timestamp_microseconds;
+    const NBWorkspaceMetadataRecord prior_object = metadata[slot];
+    const bool same_object = nb_workspace_identity_matches(
+      prior_object, 3u, 39u, best_object.identifier
+    );
+    NBWorkspaceMetadataRecord object_token = same_object
+      ? prior_object : NBWorkspaceMetadataRecord{};
+    if (!same_object) {
+      object_token.identifier =
+        (uniforms.target_timestamp_microseconds << 8u) | ulong(slot + 1u);
+      object_token.source_timestamp_microseconds =
+        best_object.last_seen_timestamp_microseconds;
+    }
+    object_token_identifier = object_token.identifier;
     object_token.last_refresh_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     object_token.entity_identifier = best_object.identifier;
@@ -2962,19 +3014,26 @@ kernel void broadcast_social_context(
     const bool communication_token = development->stage >= 10u
       && selected_agent.communication_evidence
         > max(belief_parameters[4], 0.01f);
-    NBWorkspaceMetadataRecord token = {};
-    token.identifier = (uniforms.target_timestamp_microseconds << 8u)
-      | ulong(target_slot + 1u);
-    token.source_timestamp_microseconds =
-      selected_agent.last_seen_timestamp_microseconds;
+    const uint token_kind = communication_token ? 10u : 4u;
+    const uint source_module = communication_token ? 51u : 44u;
+    const NBWorkspaceMetadataRecord prior_token = metadata[target_slot];
+    const bool same_agent = nb_workspace_identity_matches(
+      prior_token, token_kind, source_module, selected_agent.identifier
+    );
+    NBWorkspaceMetadataRecord token = same_agent
+      ? prior_token : NBWorkspaceMetadataRecord{};
+    if (!same_agent) {
+      token.identifier = (uniforms.target_timestamp_microseconds << 8u)
+        | ulong(target_slot + 1u);
+      token.source_timestamp_microseconds =
+        selected_agent.last_seen_timestamp_microseconds;
+    }
     token.last_refresh_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     token.entity_identifier = selected_agent.identifier;
     token.bound_token_identifier = rank == 0u
       ? object_token_identifier : 0ul;
-    token.kind_and_source = communication_token
-      ? (10u | (51u << 16u))
-      : (4u | (44u << 16u));
+    token.kind_and_source = token_kind | (source_module << 16u);
     token.confidence = nb_saturate(selected_score);
     token.persistence_priority = communication_token ? 0.8f : 0.65f;
     token.selection_score = nb_saturate(selected_score);
