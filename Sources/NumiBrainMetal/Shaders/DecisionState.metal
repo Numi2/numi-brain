@@ -9,6 +9,8 @@ constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant uint NB_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
+constant uint NB_OPTION_PROPOSAL_ACTIVE_SENSING = 4u;
+constant uint NB_OPTION_PROPOSAL_EXPLORATION = 7u;
 constant uint NB_CPG_OUTPUT_SOMATIC_SYNERGY = 1u;
 constant uint NB_CPG_OUTPUT_AUTONOMIC_CHANNEL = 2u;
 constant uint NB_OPTION_PROPOSAL_REST_RECOVERY = 3u;
@@ -940,13 +942,23 @@ kernel void propose_dynamic_options(
   const float epistemic = uniforms.neuromodulator_count > 3u
     ? neuromodulators[3].value
     : 0.0f;
+  const float usable_information_opportunity = uniforms.drive_count > 8u
+    ? clamp(drives[8].level, 0.0f, 1.0f) : 0.0f;
+  const bool information_option = gid == NB_OPTION_PROPOSAL_ACTIVE_SENSING
+    || gid == NB_OPTION_PROPOSAL_EXPLORATION;
+  const bool curiosity_goal = (control->active_goal_identifier >> 56u) == 5ul;
   candidate.task_value = task_signal * value_parameters[0];
   const float fatigue_deficit = uniforms.drive_count > 4u ? drives[4].deficit : 0.0f;
   const float injury_deficit = uniforms.drive_count > 6u ? drives[6].deficit : 0.0f;
   const float sleep_deficit = uniforms.drive_count > 7u ? drives[7].deficit : 0.0f;
   candidate.homeostatic_value = gid == NB_OPTION_PROPOSAL_REST_RECOVERY
     ? (fatigue_deficit + injury_deficit + sleep_deficit) * value_parameters[1]
-    : -policy_parameters[8] * homeostatic * value_parameters[1];
+    : (information_option
+      ? 0.0f
+      : -policy_parameters[8] * homeostatic * value_parameters[1]);
+  if (curiosity_goal && information_option && uniforms.drive_count > 8u) {
+    candidate.homeostatic_value += drives[8].deficit * value_parameters[1];
+  }
   float social_token_confidence = 0.0f;
   uint social_token_source = 0u;
   uint social_workspace_base = 0u;
@@ -967,8 +979,9 @@ kernel void propose_dynamic_options(
   if (gid == 8u && social_token_source == 51u) {
     candidate.task_value += social_token_confidence * value_parameters[0];
   }
-  candidate.information_gain = (gid == 4u || gid == 7u)
-    ? epistemic * value_parameters[3] : 0.0f;
+  candidate.information_gain = information_option
+    ? max(epistemic, usable_information_opportunity) * value_parameters[3]
+    : 0.0f;
   if (gid == 8u && social_token_confidence > 0.0f
       && uniforms.workspace_dimension > 6u) {
     candidate.information_gain = max(
@@ -988,7 +1001,7 @@ kernel void propose_dynamic_options(
     1.0f
   );
   candidate.proposal_kind = gid % 10u;
-  candidate.source_module = 72u;
+  candidate.source_module = information_option ? 65u : 72u;
   candidate.flags = NB_CONTROL_FLAG_VALID;
   candidate.parameter_count = 16u;
   for (uint index = 0u; index < 16u; ++index) {
@@ -1560,8 +1573,13 @@ kernel void advance_cpg_state(
     (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
     deliberate_inhibition
   );
-  const bool locomotor_active = candidate.source_module == 72u
-    && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
+  const bool locomotor_active = ((
+    candidate.source_module == 72u
+      && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
+  ) || (
+    candidate.source_module == 65u
+      && candidate.proposal_kind == NB_OPTION_PROPOSAL_EXPLORATION
+  ))
     && (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) == 0u;
 
   device NBEventQueueHeader *event_header =
