@@ -231,6 +231,66 @@ public struct JointReceptorBinding: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+@frozen
+public enum MuscleReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
+  case length = 1
+  case lengthVelocity = 2
+  case tendonForce = 3
+  case fatigue = 4
+}
+
+/// Causal proprioceptive evidence for one muscle in the immutable NumanX
+/// attachment graph. Motor-neuron efference copy remains an internal accepted
+/// command and is never disguised as a physical receptor observation.
+@frozen
+public struct MuscleReceptorBinding: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let sourceModelFingerprint: UInt64
+  public let sourceEndpointIdentifier: UInt64
+  public let muscleIdentifier: UInt32
+  public let modality: SensoryModality
+  public let receptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let signal: MuscleReceptorSignal
+  public let scale: Float
+  public let bias: Float
+  public let weight: Float
+
+  public init(
+    identifier: UInt32,
+    sourceModelFingerprint: UInt64,
+    sourceEndpointIdentifier: UInt64,
+    muscleIdentifier: UInt32,
+    modality: SensoryModality,
+    receptorIndex: UInt32,
+    featureIndex: UInt32,
+    signal: MuscleReceptorSignal,
+    scale: Float = 1,
+    bias: Float = 0,
+    weight: Float = 1
+  ) throws {
+    guard identifier > 0, sourceModelFingerprint > 0,
+      sourceEndpointIdentifier > 0, scale.isFinite, bias.isFinite,
+      weight.isFinite, weight > 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "muscle receptor binding calibration is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.sourceModelFingerprint = sourceModelFingerprint
+    self.sourceEndpointIdentifier = sourceEndpointIdentifier
+    self.muscleIdentifier = muscleIdentifier
+    self.modality = modality
+    self.receptorIndex = receptorIndex
+    self.featureIndex = featureIndex
+    self.signal = signal
+    self.scale = scale
+    self.bias = bias
+    self.weight = weight
+  }
+}
+
 /// Immutable receptor calibration and explicit event thresholds for one
 /// species/morphology generation. Event meaning is supplied by the template;
 /// the GPU runtime never invents anatomical thresholds.
@@ -240,6 +300,7 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
   public let eventRules: [ReceptorEventRule]
   public let bodyReceptorBindings: [BodyReceptorBinding]
   public let jointReceptorBindings: [JointReceptorBinding]
+  public let muscleReceptorBindings: [MuscleReceptorBinding]
   public let fingerprint: UInt64
 
   public init(
@@ -248,6 +309,8 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     bodyReceptorBindings: [BodyReceptorBinding] = [],
     jointTopologyCatalog: NumanXJointTopologyCatalog? = nil,
     jointReceptorBindings: [JointReceptorBinding] = [],
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog? = nil,
+    muscleReceptorBindings: [MuscleReceptorBinding] = [],
     includePhysiologicalCriticalRules: Bool = true
   ) throws {
     var compiledRules = eventRules
@@ -276,6 +339,23 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     }
     if let jointTopologyCatalog {
       try jointTopologyCatalog.validate(species: species)
+    }
+    guard
+      (species.body.muscleCount == 0 && muscleAttachmentCatalog == nil
+        && muscleReceptorBindings.isEmpty)
+        || (species.body.muscleCount > 0
+          && species.body.bodyCount == muscleAttachmentCatalog?.bodyCount
+          && species.body.muscleCount
+            == UInt32(muscleAttachmentCatalog?.attachments.count ?? 0)
+          && species.body.muscleAttachmentFingerprint
+            == muscleAttachmentCatalog?.fingerprint
+          && !muscleReceptorBindings.isEmpty),
+      Set(muscleReceptorBindings.map(\.identifier)).count
+        == muscleReceptorBindings.count
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "muscle receptor bindings require the exact attachment catalog"
+      )
     }
     let topologyByModality = Dictionary(
       uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
@@ -322,6 +402,30 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       else {
         throw BrainRuntimeError.invalidDescriptor(
           "joint receptor binding exceeds species articulation anatomy"
+        )
+      }
+    }
+    let muscleIdentifiers = Set(
+      muscleAttachmentCatalog?.attachments.map(\.muscleIdentifier) ?? []
+    )
+    var muscleSignals: [UInt32: Set<MuscleReceptorSignal>] = [:]
+    for binding in muscleReceptorBindings {
+      guard muscleIdentifiers.contains(binding.muscleIdentifier),
+        let topology = topologyByModality[binding.modality], topology.enabled,
+        binding.receptorIndex < topology.receptorCount,
+        binding.featureIndex < topology.observationDimension
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "muscle receptor binding exceeds species anatomy"
+        )
+      }
+      muscleSignals[binding.muscleIdentifier, default: []].insert(binding.signal)
+    }
+    for muscleIdentifier in muscleIdentifiers {
+      guard muscleSignals[muscleIdentifier] == Set(MuscleReceptorSignal.allCases)
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "every muscle requires length, velocity, force, and fatigue receptors"
         )
       }
     }
@@ -375,10 +479,27 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
       Self.mix(UInt64(binding.weight.bitPattern), into: &hash)
     }
+    let canonicalMuscleBindings = muscleReceptorBindings.sorted {
+      $0.identifier < $1.identifier
+    }
+    for binding in canonicalMuscleBindings {
+      Self.mix(UInt64(binding.identifier), into: &hash)
+      Self.mix(binding.sourceModelFingerprint, into: &hash)
+      Self.mix(binding.sourceEndpointIdentifier, into: &hash)
+      Self.mix(UInt64(binding.muscleIdentifier), into: &hash)
+      Self.mix(UInt64(binding.modality.rawValue), into: &hash)
+      Self.mix(UInt64(binding.receptorIndex), into: &hash)
+      Self.mix(UInt64(binding.featureIndex), into: &hash)
+      Self.mix(UInt64(binding.signal.rawValue), into: &hash)
+      Self.mix(UInt64(binding.scale.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.weight.bitPattern), into: &hash)
+    }
     self.speciesTemplateFingerprint = species.fingerprint
     self.eventRules = compiledRules.sorted { $0.identifier < $1.identifier }
     self.bodyReceptorBindings = canonicalBindings
     self.jointReceptorBindings = canonicalJointBindings
+    self.muscleReceptorBindings = canonicalMuscleBindings
     self.fingerprint = hash
   }
 

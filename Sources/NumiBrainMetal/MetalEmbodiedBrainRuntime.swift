@@ -205,6 +205,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
     sensoryProfile: SensoryTransductionProfile,
     jointTopologyCatalog: NumanXJointTopologyCatalog,
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
     decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
     acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
       AcceptedConsequenceDynamics? = nil,
@@ -282,6 +283,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         ?? AcceptedConsequenceDynamics.foundationV1,
       sensoryProfile: sensoryProfile,
       jointTopologyCatalog: jointTopologyCatalog,
+      muscleAttachmentCatalog: muscleAttachmentCatalog,
       sharedParameters: sharedParameterBank
     )
     let residencyDescriptor = MTLResidencySetDescriptor()

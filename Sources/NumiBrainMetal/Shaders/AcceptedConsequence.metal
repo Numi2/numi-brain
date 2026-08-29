@@ -2,6 +2,10 @@
 using namespace metal;
 
 constant uint NB_ACCEPTED_STATE_VALID = 1u;
+constant uint NB_ACCEPTED_MUSCLE_LENGTH_VALID = 1u << 1;
+constant uint NB_ACCEPTED_MUSCLE_VELOCITY_VALID = 1u << 2;
+constant uint NB_ACCEPTED_MUSCLE_FORCE_VALID = 1u << 3;
+constant uint NB_ACCEPTED_MUSCLE_FATIGUE_VALID = 1u << 4;
 constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
 constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
@@ -82,6 +86,7 @@ struct NBAcceptedConsequenceUniforms {
   uint observation_count;
   uint body_count;
   uint joint_count;
+  uint anatomical_muscle_count;
   uint muscle_count;
   uint physiology_count;
   uint object_slot_count;
@@ -325,6 +330,24 @@ struct NBJointReceptorBindingRecord {
   uint flags;
 };
 
+struct NBMuscleReceptorBindingTableHeader {
+  uint binding_count;
+  uint muscle_count;
+  ulong profile_fingerprint;
+  ulong attachment_fingerprint;
+};
+
+struct NBMuscleReceptorBindingRecord {
+  uint muscle_index;
+  uint signal;
+  uint observation_scalar_index;
+  uint flags;
+  float scale;
+  float bias;
+  float weight;
+  float reserved;
+};
+
 struct NBFastBodySchemaRecord {
   uint body_identifier;
   uint flags;
@@ -468,6 +491,8 @@ static_assert(sizeof(NBBodyReceptorBindingRecord) == 32);
 static_assert(sizeof(NBJointReceptorBindingTableHeader) == 24);
 static_assert(sizeof(NBJointTopologyRecord) == 88);
 static_assert(sizeof(NBJointReceptorBindingRecord) == 32);
+static_assert(sizeof(NBMuscleReceptorBindingTableHeader) == 24);
+static_assert(sizeof(NBMuscleReceptorBindingRecord) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
 static_assert(sizeof(NBFastAutonomicStateRecord) == 64);
@@ -1289,11 +1314,21 @@ kernel void assimilate_accepted_body_and_physiology(
       reinterpret_cast<device const float *>(
         hot_state + uniforms.accepted_somatic_output_offset
       );
-    bool proprioception_valid = false;
-    const float sensed_proprioception = nb_valid_observation(
-      observations, validity, uniforms.proprioception_offset,
-      uniforms.proprioception_count, gid, proprioception_valid
+    device ulong *effector_identity = reinterpret_cast<device ulong *>(
+      muscle + 16
     );
+    const bool anatomical_muscle = gid < uniforms.anatomical_muscle_count;
+    bool proprioception_valid = anatomical_muscle
+      && effector_identity[1] == uniforms.target_timestamp_microseconds
+      && (effector_identity[3]
+        & ulong(NB_ACCEPTED_MUSCLE_LENGTH_VALID)) != 0ul;
+    float sensed_proprioception = muscle[1];
+    if (!anatomical_muscle) {
+      sensed_proprioception = nb_valid_observation(
+        observations, validity, uniforms.proprioception_offset,
+        uniforms.proprioception_count, gid, proprioception_valid
+      );
+    }
     const uint actuator_index = gid % max(uniforms.actuator_count, 1u);
     const NBAcceptedActuatorDescriptor actuator =
       actuator_descriptors[actuator_index];
@@ -1308,7 +1343,8 @@ kernel void assimilate_accepted_body_and_physiology(
       // feature after consequence assimilation, never the rejected decision.
       somatic[gid] = command;
     }
-    const float prior_proprioception = muscle[1];
+    const float prior_proprioception = anatomical_muscle
+      ? muscle[12] : muscle[1];
     const float proprioception = proprioception_valid
       ? sensed_proprioception : prior_proprioception;
     const float observed_delta = proprioception - prior_proprioception;
@@ -1373,20 +1409,22 @@ kernel void assimilate_accepted_body_and_physiology(
       agency_update_gain
     ), 0.0f, 1.0f);
     muscle[0] = mix(muscle[0], command, gain);
-    muscle[1] = mix(muscle[1], proprioception, gain);
-    muscle[2] = proprioception_valid
-      ? observed_delta : muscle[2] * state_retention;
-    muscle[3] = proprioception_valid
-      ? mix(muscle[3], abs(proprioception), gain) : muscle[3];
-    muscle[4] = clamp(
-      muscle[4]
-        + elapsed_seconds * (
-          max(belief_parameters[11], 0.0f) * abs(command)
-            - max(belief_parameters[12], 0.0f) * (1.0f - abs(command))
-        ),
-      0.0f,
-      1.0f
-    );
+    if (!anatomical_muscle) {
+      muscle[1] = mix(muscle[1], proprioception, gain);
+      muscle[2] = proprioception_valid
+        ? observed_delta : muscle[2] * state_retention;
+      muscle[3] = proprioception_valid
+        ? mix(muscle[3], abs(proprioception), gain) : muscle[3];
+      muscle[4] = clamp(
+        muscle[4]
+          + elapsed_seconds * (
+            max(belief_parameters[11], 0.0f) * abs(command)
+              - max(belief_parameters[12], 0.0f) * (1.0f - abs(command))
+          ),
+        0.0f,
+        1.0f
+      );
+    }
     muscle[5] = effect_error;
     muscle[6] = learned_effect_gain;
     muscle[7] = learned_effect_bias;
@@ -1394,13 +1432,15 @@ kernel void assimilate_accepted_body_and_physiology(
     muscle[9] = external_disturbance;
     muscle[10] = predicted_delta;
     muscle[11] = command;
-    device ulong *effector_identity = reinterpret_cast<device ulong *>(
-      muscle + 16
-    );
     effector_identity[0] = ulong(actuator.actuator_identifier);
     effector_identity[1] = uniforms.target_timestamp_microseconds;
-    effector_identity[2] = ulong(actuator.command_kind);
-    effector_identity[3] = NB_ACCEPTED_STATE_VALID;
+    if (!anatomical_muscle) {
+      effector_identity[2] = 0ul;
+      effector_identity[3] = NB_ACCEPTED_STATE_VALID;
+      effector_identity[4] = uniforms.physics_state_fingerprint;
+    }
+    effector_identity[5] = ulong(actuator.actuator_identifier);
+    effector_identity[6] = ulong(actuator.command_kind);
   }
   if (gid < uniforms.physiology_count) {
     device float *physiology = reinterpret_cast<device float *>(
@@ -1415,6 +1455,113 @@ kernel void assimilate_accepted_body_and_physiology(
       physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
     }
   }
+}
+
+/// Fuses NumanX muscle length, velocity, tendon force, and fatigue receptors
+/// into the biological muscle graph before causal command-effect learning.
+kernel void assimilate_accepted_muscle_schema(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  device const NBMuscleReceptorBindingTableHeader *muscle_receptor_table
+    [[buffer(11)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.anatomical_muscle_count
+      || gid >= muscle_receptor_table->muscle_count) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
+  device const NBBodyReceptorBindingRange *ranges =
+    reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+      muscle_receptor_table + 1
+    );
+  device const NBMuscleReceptorBindingRecord *bindings =
+    reinterpret_cast<device const NBMuscleReceptorBindingRecord *>(
+      ranges + muscle_receptor_table->muscle_count
+    );
+  const NBBodyReceptorBindingRange range = ranges[gid];
+  const uint binding_end = min(
+    range.binding_offset + range.binding_count,
+    muscle_receptor_table->binding_count
+  );
+  float totals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float weights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  for (uint binding_index = range.binding_offset;
+      binding_index < binding_end; ++binding_index) {
+    const NBMuscleReceptorBindingRecord binding = bindings[binding_index];
+    if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+        || binding.muscle_index != gid || binding.signal == 0u
+        || binding.signal > 4u
+        || binding.observation_scalar_index >= uniforms.observation_count
+        || validity[binding.observation_scalar_index] == 0u
+        || !isfinite(binding.scale) || !isfinite(binding.bias)
+        || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+    const float evidence = fma(
+      observations[binding.observation_scalar_index],
+      binding.scale,
+      binding.bias
+    );
+    if (!isfinite(evidence)) continue;
+    const uint slot = binding.signal - 1u;
+    totals[slot] += evidence * binding.weight;
+    weights[slot] += binding.weight;
+  }
+  uint flags = 0u;
+  if (weights[0] > 0.0f) flags |= NB_ACCEPTED_MUSCLE_LENGTH_VALID;
+  if (weights[1] > 0.0f) flags |= NB_ACCEPTED_MUSCLE_VELOCITY_VALID;
+  if (weights[2] > 0.0f) flags |= NB_ACCEPTED_MUSCLE_FORCE_VALID;
+  if (weights[3] > 0.0f) flags |= NB_ACCEPTED_MUSCLE_FATIGUE_VALID;
+  if (flags == 0u) return;
+  flags |= NB_ACCEPTED_STATE_VALID;
+  device float *muscle = reinterpret_cast<device float *>(
+    hot_state + uniforms.muscle_belief_offset + ulong(gid) * 192ul
+  );
+  device ulong *identity = reinterpret_cast<device ulong *>(muscle + 16u);
+  const bool prior_valid = (identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul;
+  muscle[12] = prior_valid ? muscle[1] : 0.0f;
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float gain = clamp(min(
+    uniforms.belief_gain,
+    nb_physical_alpha(elapsed_seconds, max(belief_parameters[8], 1.0e-4f))
+  ), 0.0f, 1.0f);
+  if (weights[0] > 0.0f) {
+    muscle[1] = mix(
+      prior_valid ? muscle[1] : totals[0] / weights[0],
+      totals[0] / weights[0],
+      gain
+    );
+  }
+  if (weights[1] > 0.0f) {
+    muscle[2] = mix(
+      prior_valid ? muscle[2] : totals[1] / weights[1],
+      totals[1] / weights[1],
+      gain
+    );
+  }
+  if (weights[2] > 0.0f) {
+    muscle[3] = max(mix(
+      prior_valid ? muscle[3] : totals[2] / weights[2],
+      totals[2] / weights[2],
+      gain
+    ), 0.0f);
+  }
+  if (weights[3] > 0.0f) {
+    muscle[4] = clamp(mix(
+      prior_valid ? muscle[4] : totals[3] / weights[3],
+      totals[3] / weights[3],
+      gain
+    ), 0.0f, 1.0f);
+  }
+  identity[1] = uniforms.target_timestamp_microseconds;
+  identity[2] = muscle_receptor_table->attachment_fingerprint;
+  identity[3] = ulong(flags);
+  identity[4] = uniforms.physics_state_fingerprint;
 }
 
 /// Fuses only valid causal proprioceptors into the articulated joint

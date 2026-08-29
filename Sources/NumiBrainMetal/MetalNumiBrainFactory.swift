@@ -127,8 +127,14 @@ extension MetalNumiBrainRuntime {
         for: species,
         jointTopologyCatalog: configuration.jointTopologyCatalog
       )
+    let compiledMuscleBindings = try configuration.numanXReceptorAnatomyCatalog
+      .compiledMuscleBindings(
+        for: species,
+        muscleAttachmentCatalog: configuration.muscleAttachmentCatalog
+      )
     guard compiledBindings == configuration.sensoryProfile.bodyReceptorBindings,
-      compiledJointBindings == configuration.sensoryProfile.jointReceptorBindings
+      compiledJointBindings == configuration.sensoryProfile.jointReceptorBindings,
+      compiledMuscleBindings == configuration.sensoryProfile.muscleReceptorBindings
     else {
       throw TissueError.metal(
         "NumanX receptor anatomy catalog does not own all sensory profile bindings"
@@ -152,7 +158,8 @@ extension MetalNumiBrainRuntime {
       parameterVersion: version,
       sharedParameterArtifact: publication.sharedArtifact,
       sensoryProfile: configuration.sensoryProfile,
-      jointTopologyCatalog: configuration.jointTopologyCatalog
+      jointTopologyCatalog: configuration.jointTopologyCatalog,
+      muscleAttachmentCatalog: configuration.muscleAttachmentCatalog
     )
     let fastTissue = try MetalTissueRuntime(
       initialState: configuration.initialTissueState,

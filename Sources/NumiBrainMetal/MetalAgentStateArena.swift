@@ -149,6 +149,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let worldModelLayoutVersion: UInt64 = 2
   public static let cerebellarExpertLayoutVersion: UInt64 = 2
   public static let muscleBeliefStride = 192
+  public static let muscleBeliefLayoutVersion: UInt64 = 2
   public static let objectSlotStride = 512
   public static let otherAgentSlotStride = 512
   public static let relationStride = 64
@@ -485,6 +486,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     Self.mix(regionalProgram.fingerprint, into: &hash)
     Self.mix(Self.bodyBeliefLayoutVersion, into: &hash)
     Self.mix(Self.jointBeliefLayoutVersion, into: &hash)
+    Self.mix(Self.muscleBeliefLayoutVersion, into: &hash)
     Self.mix(Self.worldModelLayoutVersion, into: &hash)
     Self.mix(Self.cerebellarExpertLayoutVersion, into: &hash)
     for section in builder.sections {

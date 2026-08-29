@@ -183,33 +183,110 @@ public struct NumanXJointReceptorEndpoint: Codable, Equatable, Hashable, Sendabl
   }
 }
 
+/// One immutable NumanX proprioceptor attributed to an exact muscle in the
+/// content-addressed attachment graph.
+@frozen
+public struct NumanXMuscleReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let sourceEndpointIdentifier: UInt64
+  public let muscleIdentifier: UInt32
+  public let modality: SensoryModality
+  public let receptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let signal: MuscleReceptorSignal
+  public let scale: Float
+  public let bias: Float
+  public let weight: Float
+
+  public init(
+    identifier: UInt32,
+    sourceEndpointIdentifier: UInt64,
+    muscleIdentifier: UInt32,
+    modality: SensoryModality = .proprioception,
+    receptorIndex: UInt32,
+    featureIndex: UInt32,
+    signal: MuscleReceptorSignal,
+    scale: Float = 1,
+    bias: Float = 0,
+    weight: Float = 1
+  ) throws {
+    guard identifier > 0, sourceEndpointIdentifier > 0,
+      scale.isFinite, bias.isFinite, weight.isFinite, weight > 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX muscle receptor endpoint calibration is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.sourceEndpointIdentifier = sourceEndpointIdentifier
+    self.muscleIdentifier = muscleIdentifier
+    self.modality = modality
+    self.receptorIndex = receptorIndex
+    self.featureIndex = featureIndex
+    self.signal = signal
+    self.scale = scale
+    self.bias = bias
+    self.weight = weight
+  }
+
+  public func compiledBinding(
+    sourceModelFingerprint: UInt64
+  ) throws -> MuscleReceptorBinding {
+    try MuscleReceptorBinding(
+      identifier: identifier,
+      sourceModelFingerprint: sourceModelFingerprint,
+      sourceEndpointIdentifier: sourceEndpointIdentifier,
+      muscleIdentifier: muscleIdentifier,
+      modality: modality,
+      receptorIndex: receptorIndex,
+      featureIndex: featureIndex,
+      signal: signal,
+      scale: scale,
+      bias: bias,
+      weight: weight
+    )
+  }
+}
+
 /// Content-addressed bridge between one NumanX physical model and the
 /// receptor topology declared by one species template. The catalog is kept on
 /// the orchestration side; only its compiled scalar binding table enters the
 /// GPU hot path.
 @frozen
 public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
 
   public let numanXModelFingerprint: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let jointTopologyFingerprint: UInt64
+  public let muscleAttachmentFingerprint: UInt64
   public let endpoints: [NumanXReceptorEndpoint]
   public let jointEndpoints: [NumanXJointReceptorEndpoint]
+  public let muscleEndpoints: [NumanXMuscleReceptorEndpoint]
   public let fingerprint: UInt64
 
   public init(
     species: SpeciesTemplate,
     jointTopologyCatalog: NumanXJointTopologyCatalog,
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
     numanXModelFingerprint: UInt64,
     endpoints: [NumanXReceptorEndpoint],
-    jointEndpoints: [NumanXJointReceptorEndpoint]
+    jointEndpoints: [NumanXJointReceptorEndpoint],
+    muscleEndpoints: [NumanXMuscleReceptorEndpoint]
   ) throws {
     guard numanXModelFingerprint > 0, species.fingerprint > 0,
       !endpoints.isEmpty, !jointEndpoints.isEmpty,
       jointTopologyCatalog.numanXModelFingerprint == numanXModelFingerprint,
-      Set(endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)).count
-        == endpoints.count + jointEndpoints.count
+      (species.body.muscleCount == 0 && muscleAttachmentCatalog == nil
+        && muscleEndpoints.isEmpty)
+        || (species.body.muscleCount > 0
+          && muscleAttachmentCatalog?.fingerprint
+            == species.body.muscleAttachmentFingerprint
+          && !muscleEndpoints.isEmpty),
+      Set(
+        endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)
+          + muscleEndpoints.map(\.identifier)
+      ).count == endpoints.count + jointEndpoints.count + muscleEndpoints.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX receptor anatomy catalog identity is incomplete"
@@ -222,21 +299,33 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       species: species,
       jointTopologyCatalog: jointTopologyCatalog
     )
+    try Self.validate(
+      muscleEndpoints: muscleEndpoints,
+      species: species,
+      muscleAttachmentCatalog: muscleAttachmentCatalog
+    )
     let canonicalEndpoints = endpoints.sorted { $0.identifier < $1.identifier }
     let canonicalJointEndpoints = jointEndpoints.sorted {
+      $0.identifier < $1.identifier
+    }
+    let canonicalMuscleEndpoints = muscleEndpoints.sorted {
       $0.identifier < $1.identifier
     }
     self.numanXModelFingerprint = numanXModelFingerprint
     self.speciesTemplateFingerprint = species.fingerprint
     self.jointTopologyFingerprint = jointTopologyCatalog.fingerprint
+    self.muscleAttachmentFingerprint = muscleAttachmentCatalog?.fingerprint ?? 0
     self.endpoints = canonicalEndpoints
     self.jointEndpoints = canonicalJointEndpoints
+    self.muscleEndpoints = canonicalMuscleEndpoints
     self.fingerprint = Self.computeFingerprint(
       numanXModelFingerprint: numanXModelFingerprint,
       speciesTemplateFingerprint: species.fingerprint,
       jointTopologyFingerprint: jointTopologyCatalog.fingerprint,
+      muscleAttachmentFingerprint: muscleAttachmentCatalog?.fingerprint ?? 0,
       endpoints: canonicalEndpoints,
-      jointEndpoints: canonicalJointEndpoints
+      jointEndpoints: canonicalJointEndpoints,
+      muscleEndpoints: canonicalMuscleEndpoints
     )
   }
 
@@ -275,6 +364,27 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       jointTopologyCatalog: jointTopologyCatalog
     )
     return try jointEndpoints.map {
+      try $0.compiledBinding(sourceModelFingerprint: numanXModelFingerprint)
+    }
+  }
+
+  public func compiledMuscleBindings(
+    for species: SpeciesTemplate,
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+  ) throws -> [MuscleReceptorBinding] {
+    guard speciesTemplateFingerprint == species.fingerprint,
+      muscleAttachmentFingerprint == (muscleAttachmentCatalog?.fingerprint ?? 0)
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX muscle receptor anatomy identity drift"
+      )
+    }
+    try Self.validate(
+      muscleEndpoints: muscleEndpoints,
+      species: species,
+      muscleAttachmentCatalog: muscleAttachmentCatalog
+    )
+    return try muscleEndpoints.map {
       try $0.compiledBinding(sourceModelFingerprint: numanXModelFingerprint)
     }
   }
@@ -354,13 +464,65 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     }
   }
 
+  private static func validate(
+    muscleEndpoints: [NumanXMuscleReceptorEndpoint],
+    species: SpeciesTemplate,
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+  ) throws {
+    guard
+      (species.body.muscleCount == 0 && muscleAttachmentCatalog == nil
+        && muscleEndpoints.isEmpty)
+        || (species.body.muscleCount > 0
+          && species.body.bodyCount == muscleAttachmentCatalog?.bodyCount
+          && species.body.muscleCount
+            == UInt32(muscleAttachmentCatalog?.attachments.count ?? 0)
+          && species.body.muscleAttachmentFingerprint
+            == muscleAttachmentCatalog?.fingerprint
+          && !muscleEndpoints.isEmpty),
+      Set(muscleEndpoints.map(\.identifier)).count == muscleEndpoints.count
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX muscle receptor anatomy is incomplete"
+      )
+    }
+    let topologyByModality = Dictionary(
+      uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+    )
+    let muscleIdentifiers = Set(
+      muscleAttachmentCatalog?.attachments.map(\.muscleIdentifier) ?? []
+    )
+    var suppliedSignals: [UInt32: Set<MuscleReceptorSignal>] = [:]
+    for endpoint in muscleEndpoints {
+      guard muscleIdentifiers.contains(endpoint.muscleIdentifier),
+        let topology = topologyByModality[endpoint.modality], topology.enabled,
+        endpoint.receptorIndex < topology.receptorCount,
+        endpoint.featureIndex < topology.observationDimension
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "NumanX muscle receptor endpoint exceeds species anatomy"
+        )
+      }
+      suppliedSignals[endpoint.muscleIdentifier, default: []].insert(endpoint.signal)
+    }
+    for muscleIdentifier in muscleIdentifiers {
+      guard suppliedSignals[muscleIdentifier] == Set(MuscleReceptorSignal.allCases)
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "every NumanX muscle requires length, velocity, force, and fatigue receptors"
+        )
+      }
+    }
+  }
+
   private enum CodingKeys: String, CodingKey {
     case formatVersion
     case numanXModelFingerprint
     case speciesTemplateFingerprint
     case jointTopologyFingerprint
+    case muscleAttachmentFingerprint
     case endpoints
     case jointEndpoints
+    case muscleEndpoints
     case fingerprint
   }
 
@@ -370,8 +532,10 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     try values.encode(numanXModelFingerprint, forKey: .numanXModelFingerprint)
     try values.encode(speciesTemplateFingerprint, forKey: .speciesTemplateFingerprint)
     try values.encode(jointTopologyFingerprint, forKey: .jointTopologyFingerprint)
+    try values.encode(muscleAttachmentFingerprint, forKey: .muscleAttachmentFingerprint)
     try values.encode(endpoints, forKey: .endpoints)
     try values.encode(jointEndpoints, forKey: .jointEndpoints)
+    try values.encode(muscleEndpoints, forKey: .muscleEndpoints)
     try values.encode(fingerprint, forKey: .fingerprint)
   }
 
@@ -394,18 +558,28 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     let jointTopologyFingerprint = try values.decode(
       UInt64.self, forKey: .jointTopologyFingerprint
     )
+    let muscleAttachmentFingerprint = try values.decode(
+      UInt64.self, forKey: .muscleAttachmentFingerprint
+    )
     let endpoints = try values.decode(
       [NumanXReceptorEndpoint].self, forKey: .endpoints
     ).sorted { $0.identifier < $1.identifier }
     let jointEndpoints = try values.decode(
       [NumanXJointReceptorEndpoint].self, forKey: .jointEndpoints
     ).sorted { $0.identifier < $1.identifier }
+    let muscleEndpoints = try values.decode(
+      [NumanXMuscleReceptorEndpoint].self, forKey: .muscleEndpoints
+    ).sorted { $0.identifier < $1.identifier }
     guard numanXModelFingerprint > 0, speciesTemplateFingerprint > 0,
       jointTopologyFingerprint > 0, !endpoints.isEmpty, !jointEndpoints.isEmpty,
+      (muscleAttachmentFingerprint == 0) == muscleEndpoints.isEmpty,
       Set(endpoints.map(\.identifier)).count == endpoints.count,
       Set(jointEndpoints.map(\.identifier)).count == jointEndpoints.count,
-      Set(endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)).count
-        == endpoints.count + jointEndpoints.count
+      Set(muscleEndpoints.map(\.identifier)).count == muscleEndpoints.count,
+      Set(
+        endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)
+          + muscleEndpoints.map(\.identifier)
+      ).count == endpoints.count + jointEndpoints.count + muscleEndpoints.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "decoded NumanX receptor anatomy catalog is incomplete"
@@ -415,8 +589,10 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       numanXModelFingerprint: numanXModelFingerprint,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       jointTopologyFingerprint: jointTopologyFingerprint,
+      muscleAttachmentFingerprint: muscleAttachmentFingerprint,
       endpoints: endpoints,
-      jointEndpoints: jointEndpoints
+      jointEndpoints: jointEndpoints,
+      muscleEndpoints: muscleEndpoints
     )
     guard fingerprint == (try values.decode(UInt64.self, forKey: .fingerprint))
     else {
@@ -427,8 +603,10 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     self.numanXModelFingerprint = numanXModelFingerprint
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
     self.jointTopologyFingerprint = jointTopologyFingerprint
+    self.muscleAttachmentFingerprint = muscleAttachmentFingerprint
     self.endpoints = endpoints
     self.jointEndpoints = jointEndpoints
+    self.muscleEndpoints = muscleEndpoints
     self.fingerprint = fingerprint
   }
 
@@ -436,14 +614,17 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     numanXModelFingerprint: UInt64,
     speciesTemplateFingerprint: UInt64,
     jointTopologyFingerprint: UInt64,
+    muscleAttachmentFingerprint: UInt64,
     endpoints: [NumanXReceptorEndpoint],
-    jointEndpoints: [NumanXJointReceptorEndpoint]
+    jointEndpoints: [NumanXJointReceptorEndpoint],
+    muscleEndpoints: [NumanXMuscleReceptorEndpoint]
   ) -> UInt64 {
     var hash: UInt64 = 14_695_981_039_346_656_037
     mix(UInt64(formatVersion), into: &hash)
     mix(numanXModelFingerprint, into: &hash)
     mix(speciesTemplateFingerprint, into: &hash)
     mix(jointTopologyFingerprint, into: &hash)
+    mix(muscleAttachmentFingerprint, into: &hash)
     mix(UInt64(endpoints.count), into: &hash)
     for endpoint in endpoints {
       mix(UInt64(endpoint.identifier), into: &hash)
@@ -464,6 +645,19 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       mix(endpoint.sourceEndpointIdentifier, into: &hash)
       mix(UInt64(endpoint.jointIdentifier), into: &hash)
       mix(UInt64(endpoint.coordinateIdentifier), into: &hash)
+      mix(UInt64(endpoint.modality.rawValue), into: &hash)
+      mix(UInt64(endpoint.receptorIndex), into: &hash)
+      mix(UInt64(endpoint.featureIndex), into: &hash)
+      mix(UInt64(endpoint.signal.rawValue), into: &hash)
+      mix(UInt64(endpoint.scale.bitPattern), into: &hash)
+      mix(UInt64(endpoint.bias.bitPattern), into: &hash)
+      mix(UInt64(endpoint.weight.bitPattern), into: &hash)
+    }
+    mix(UInt64(muscleEndpoints.count), into: &hash)
+    for endpoint in muscleEndpoints {
+      mix(UInt64(endpoint.identifier), into: &hash)
+      mix(endpoint.sourceEndpointIdentifier, into: &hash)
+      mix(UInt64(endpoint.muscleIdentifier), into: &hash)
       mix(UInt64(endpoint.modality.rawValue), into: &hash)
       mix(UInt64(endpoint.receptorIndex), into: &hash)
       mix(UInt64(endpoint.featureIndex), into: &hash)
@@ -495,6 +689,7 @@ extension SensoryTransductionProfile {
     eventRules: [ReceptorEventRule],
     numanXReceptorAnatomy: NumanXReceptorAnatomyCatalog,
     jointTopologyCatalog: NumanXJointTopologyCatalog,
+    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
     includePhysiologicalCriticalRules: Bool = true
   ) throws {
     try self.init(
@@ -505,6 +700,11 @@ extension SensoryTransductionProfile {
       jointReceptorBindings: numanXReceptorAnatomy.compiledJointBindings(
         for: species,
         jointTopologyCatalog: jointTopologyCatalog
+      ),
+      muscleAttachmentCatalog: muscleAttachmentCatalog,
+      muscleReceptorBindings: numanXReceptorAnatomy.compiledMuscleBindings(
+        for: species,
+        muscleAttachmentCatalog: muscleAttachmentCatalog
       ),
       includePhysiologicalCriticalRules: includePhysiologicalCriticalRules
     )
