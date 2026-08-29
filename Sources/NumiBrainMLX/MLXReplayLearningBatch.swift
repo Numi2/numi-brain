@@ -115,6 +115,15 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
         field(warmEpisodes, byteOffset, count: count, dtype: dtype),
       ])
     }
+    func finite(_ values: MLXArray) -> MLXArray {
+      which(isFinite(values), values, MLXArray(Float(0)))
+    }
+    func allFinite(_ values: MLXArray, count: Int) -> MLXArray {
+      (
+        isFinite(values).asType(.float32).sum(axis: 1, keepDims: true)
+          .== Float(count)
+      ).asType(.float32)
+    }
 
     let episodeIdentifiers = episodeField(0, count: 1, dtype: .uint64)
     let episodeStartTimestamps = episodeField(8, count: 1, dtype: .uint64)
@@ -122,29 +131,73 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
     let episodeSourceGenerations = episodeField(32, count: 1, dtype: .uint64)
     let episodeOptionIdentifiers = episodeField(48, count: 1, dtype: .uint64)
     let episodeFormats = episodeField(56, count: 1, dtype: .uint32)
+    let episodeFlags = episodeField(68, count: 1, dtype: .uint32)
+    let rawEpisodeSalience = episodeField(72, count: 1, dtype: .float32)
+    let rawEpisodeUncertainty = episodeField(76, count: 1, dtype: .float32)
+    let rawEpisodeDamage = episodeField(80, count: 1, dtype: .float32)
+    let rawEpisodeReinforcement = episodeField(84, count: 1, dtype: .float32)
+    let rawEpisodeRetrievalKeys = episodeField(88, count: 10, dtype: .float32)
+    let episodeFiniteMask = allFinite(rawEpisodeRetrievalKeys, count: 10)
+      * isFinite(rawEpisodeSalience).asType(.float32)
+      * isFinite(rawEpisodeUncertainty).asType(.float32)
+      * isFinite(rawEpisodeDamage).asType(.float32)
+      * isFinite(rawEpisodeReinforcement).asType(.float32)
     let episodeValidMask = (
       (episodeIdentifiers .> UInt64(0))
         * (episodeFormats .== source.episodicRecordVersion)
+        * ((episodeFlags & UInt32(1)) .== UInt32(1))
+        * (episodeSourceGenerations .> UInt64(0))
         * (episodeSourceGenerations .<= source.sourceGeneration)
         * (episodeEndTimestamps .>= episodeStartTimestamps)
-    ).asType(.float32)
+        * (rawEpisodeSalience .>= Float(0))
+        * (rawEpisodeUncertainty .>= Float(0))
+        * (rawEpisodeDamage .>= Float(0))
+        * (rawEpisodeDamage .<= Float(1))
+    ).asType(.float32) * episodeFiniteMask
 
     let skillIdentifiers = field(skills, 0, count: 1, dtype: .uint64)
     let skillFormats = field(skills, 64, count: 1, dtype: .uint32)
     let skillFlags = field(skills, 68, count: 1, dtype: .uint32)
+    let rawSkillCompetence = field(skills, 80, count: 1, dtype: .float32)
+    let rawSkillDamage = field(skills, 84, count: 1, dtype: .float32)
+    let rawSkillEffort = field(skills, 88, count: 1, dtype: .float32)
+    let rawSkillValue = field(skills, 92, count: 1, dtype: .float32)
+    let rawSkillUncertainty = field(skills, 104, count: 1, dtype: .float32)
+    let rawSkillFactoredValue = field(skills, 112, count: 8, dtype: .float32)
+    let rawSkillInitiationModel = field(skills, 144, count: 16, dtype: .float32)
+    let rawSkillPolicyCode = field(skills, 208, count: 16, dtype: .float32)
+    let rawSkillOutcomeModel = field(skills, 304, count: 16, dtype: .float32)
+    let skillFiniteMask = isFinite(rawSkillCompetence).asType(.float32)
+      * isFinite(rawSkillDamage).asType(.float32)
+      * isFinite(rawSkillEffort).asType(.float32)
+      * isFinite(rawSkillValue).asType(.float32)
+      * isFinite(rawSkillUncertainty).asType(.float32)
+      * allFinite(rawSkillFactoredValue, count: 8)
+      * allFinite(rawSkillInitiationModel, count: 16)
+      * allFinite(rawSkillPolicyCode, count: 16)
+      * allFinite(rawSkillOutcomeModel, count: 16)
     let skillValidMask = (
       (skillIdentifiers .> UInt64(0))
         * (skillFormats .== source.proceduralRecordVersion)
+        * ((skillFlags & UInt32(3)) .!= UInt32(0))
         * ((skillFlags & UInt32(4)) .== UInt32(0))
-    ).asType(.float32)
+        * (rawSkillCompetence .>= Float(0))
+        * (rawSkillCompetence .<= Float(1))
+        * (rawSkillDamage .>= Float(0))
+        * (rawSkillDamage .<= Float(1))
+        * (rawSkillEffort .>= Float(0))
+        * (rawSkillUncertainty .>= Float(0))
+    ).asType(.float32) * skillFiniteMask
 
     let replayQueueKinds = field(replay, 0, count: 1, dtype: .uint32)
     let replayRecordKinds = field(replay, 4, count: 1, dtype: .uint32)
     let replayIdentifiers = field(replay, 8, count: 1, dtype: .uint64)
     let replayPriorities = field(replay, 16, count: 1, dtype: .float32)
     let replayCounts = field(replay, 20, count: 1, dtype: .uint32).asType(.float32)
+    let replayTimestamps = field(replay, 24, count: 1, dtype: .uint64)
     let replayValidMask = (
       (replayIdentifiers .> UInt64(0))
+        * (replayTimestamps .> UInt64(0))
         * (replayQueueKinds .>= UInt32(ReplayQueueKind.episodic.rawValue))
         * (replayQueueKinds .<= UInt32(ReplayQueueKind.rareEvent.rawValue))
         * (replayRecordKinds .>= UInt32(ReplayRecordKind.episode.rawValue))
@@ -193,11 +246,11 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
     self.episodeStartTimestamps = episodeStartTimestamps
     self.episodeEndTimestamps = episodeEndTimestamps
     self.episodeOptionIdentifiers = episodeOptionIdentifiers
-    self.episodeSalience = episodeField(72, count: 1, dtype: .float32)
-    self.episodeUncertainty = episodeField(76, count: 1, dtype: .float32)
-    self.episodeDamage = episodeField(80, count: 1, dtype: .float32)
-    self.episodeReinforcement = episodeField(84, count: 1, dtype: .float32)
-    self.episodeRetrievalKeys = episodeField(88, count: 10, dtype: .float32)
+    self.episodeSalience = finite(rawEpisodeSalience)
+    self.episodeUncertainty = finite(rawEpisodeUncertainty)
+    self.episodeDamage = finite(rawEpisodeDamage)
+    self.episodeReinforcement = finite(rawEpisodeReinforcement)
+    self.episodeRetrievalKeys = finite(rawEpisodeRetrievalKeys)
     self.episodeReplayWeights = weights(
       identifiers: episodeIdentifiers, recordKind: .episode
     ) * episodeValidMask
@@ -212,15 +265,15 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
       queueKind: .rareEvent
     ) * episodeValidMask
     self.skillValidMask = skillValidMask
-    self.skillCompetence = field(skills, 80, count: 1, dtype: .float32)
-    self.skillDamageCVaR = field(skills, 84, count: 1, dtype: .float32)
-    self.skillExpectedEffort = field(skills, 88, count: 1, dtype: .float32)
-    self.skillExpectedValue = field(skills, 92, count: 1, dtype: .float32)
-    self.skillOutcomeUncertainty = field(skills, 104, count: 1, dtype: .float32)
-    self.skillExpectedFactoredValue = field(skills, 112, count: 8, dtype: .float32)
-    self.skillInitiationModel = field(skills, 144, count: 16, dtype: .float32)
-    self.skillPolicyCode = field(skills, 208, count: 16, dtype: .float32)
-    self.skillOutcomeModel = field(skills, 304, count: 16, dtype: .float32)
+    self.skillCompetence = finite(rawSkillCompetence)
+    self.skillDamageCVaR = finite(rawSkillDamage)
+    self.skillExpectedEffort = finite(rawSkillEffort)
+    self.skillExpectedValue = finite(rawSkillValue)
+    self.skillOutcomeUncertainty = finite(rawSkillUncertainty)
+    self.skillExpectedFactoredValue = finite(rawSkillFactoredValue)
+    self.skillInitiationModel = finite(rawSkillInitiationModel)
+    self.skillPolicyCode = finite(rawSkillPolicyCode)
+    self.skillOutcomeModel = finite(rawSkillOutcomeModel)
     self.skillReplayWeights = weights(
       identifiers: skillIdentifiers, recordKind: .skill
     ) * skillValidMask
