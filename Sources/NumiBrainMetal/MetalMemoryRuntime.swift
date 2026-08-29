@@ -13,6 +13,7 @@ private struct MemoryUniforms {
   var recurrentOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var workspaceContentOffset: UInt64 = 0
+  var workspaceMetadataOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
   var jointBeliefOffset: UInt64 = 0
@@ -32,6 +33,8 @@ private struct MemoryUniforms {
   var regionalPlasticModulationOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceScalarCount: UInt32 = 0
+  var workspaceCapacity: UInt32 = 0
+  var workspaceDimension: UInt32 = 0
   var activeEpisodeCapacity: UInt32 = 0
   var activeEpisodeStride: UInt32 = 0
   var compressedEpisodeCapacity: UInt32 = 0
@@ -374,7 +377,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 296,
+    guard MemoryLayout<MemoryUniforms>.stride == 312,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 304,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1284,6 +1287,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let recurrent = arena.layout.section(.regionalRecurrent)
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
+    let workspaceMetadata = arena.layout.section(.workspaceMetadata)
     let bodyBelief = arena.layout.section(.bodyBelief)
     let jointBelief = arena.layout.section(.jointBelief)
     let muscleBelief = arena.layout.section(.muscleBelief)
@@ -1294,6 +1298,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     guard transaction.layoutFingerprint == arena.layout.fingerprint,
       regionalProgram.scalarCount <= Int(UInt32.max),
       workspace.elementCount <= Int(UInt32.max),
+      workspaceMetadata.elementCount > 0,
+      workspaceMetadata.elementCount <= Int(UInt32.max),
+      workspace.elementCount % workspaceMetadata.elementCount == 0,
       activeEpisodes.elementCount <= Int(UInt32.max),
       activeEpisodes.elementStride <= Int(UInt32.max),
       compressedEpisodes.elementCount <= Int(UInt32.max),
@@ -1322,6 +1329,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       recurrentOffset: UInt64(recurrent.byteOffset),
       eventQueueOffset: UInt64(events.byteOffset),
       workspaceContentOffset: UInt64(workspace.byteOffset),
+      workspaceMetadataOffset: UInt64(workspaceMetadata.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
       jointBeliefOffset: UInt64(jointBelief.byteOffset),
@@ -1349,6 +1357,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceScalarCount: UInt32(workspace.elementCount),
+      workspaceCapacity: UInt32(workspaceMetadata.elementCount),
+      workspaceDimension: UInt32(
+        workspace.elementCount / workspaceMetadata.elementCount
+      ),
       activeEpisodeCapacity: UInt32(activeEpisodes.elementCount),
       activeEpisodeStride: UInt32(activeEpisodes.elementStride),
       compressedEpisodeCapacity: UInt32(compressedEpisodes.elementCount),

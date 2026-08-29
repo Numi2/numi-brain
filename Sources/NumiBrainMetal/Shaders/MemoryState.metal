@@ -39,6 +39,9 @@ constant uint NB_MEMORY_CONTROL_FLAG_EXTERNAL_GOAL_FAILED = 1u << 8;
 constant uint NB_MEMORY_LIFECYCLE_STOP_ACTIVE = 1u;
 constant uint NB_MEMORY_LIFECYCLE_STOP_ONSET = 1u << 1;
 constant uint NB_MEMORY_LIFECYCLE_EXTERNAL_GOAL_FAILED = 1u << 2;
+constant uint NB_MEMORY_EPISODE_INFORMATION_ENTITY = 1u << 8;
+constant uint NB_MEMORY_EPISODE_COMMUNICATION_GROUNDING = 1u << 9;
+constant uint NB_MEMORY_INTERNAL_EVENT_COMMUNICATION = 14u;
 constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
@@ -70,6 +73,7 @@ struct NBMemoryUniforms {
   ulong recurrent_offset;
   ulong event_queue_offset;
   ulong workspace_content_offset;
+  ulong workspace_metadata_offset;
   ulong control_header_offset;
   ulong body_belief_offset;
   ulong joint_belief_offset;
@@ -89,6 +93,8 @@ struct NBMemoryUniforms {
   ulong regional_plastic_modulation_offset;
   uint recurrent_scalar_count;
   uint workspace_scalar_count;
+  uint workspace_capacity;
+  uint workspace_dimension;
   uint active_episode_capacity;
   uint active_episode_stride;
   uint compressed_episode_capacity;
@@ -1053,7 +1059,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 296);
+static_assert(sizeof(NBMemoryUniforms) == 312);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -2626,16 +2632,27 @@ kernel void publish_memory_retrieval_winner(
     reinterpret_cast<device NBWorkspaceMetadataRecord *>(
       hot_state + uniforms.workspace_metadata_offset
     );
-  const uint source_module = kind == 2u
-    ? 58u
-    : (kind == 5u ? 59u
-      : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
+  const bool semantic_symbol = kind == 2u && semantic_value != nullptr
+    && semantic_value->kind == 8u;
+  const bool communication_relation = kind == 5u
+    && semantic_relation_value != nullptr
+    && semantic_relation_value->kind == 9u;
+  const uint published_token_kind = semantic_symbol || communication_relation
+    ? 10u : 5u;
+  const uint source_module = semantic_symbol || communication_relation
+    ? 51u
+    : (kind == 2u
+      ? 58u
+      : (kind == 5u ? 59u
+        : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u))));
+  const ulong published_entity_identifier = communication_relation
+    ? semantic_relation_value->source_concept_identifier : identifier;
   const NBWorkspaceMetadataRecord prior = metadata[slot];
   const bool same_record = prior.identifier != 0ul
     && (prior.flags & 1u) != 0u
-    && (prior.kind_and_source & 0xffffu) == 5u
+    && (prior.kind_and_source & 0xffffu) == published_token_kind
     && (prior.kind_and_source >> 16u) == source_module
-    && prior.entity_identifier == identifier;
+    && prior.entity_identifier == published_entity_identifier;
   NBWorkspaceMetadataRecord token = same_record
     ? prior : NBWorkspaceMetadataRecord{};
   if (!same_record) {
@@ -2651,7 +2668,7 @@ kernel void publish_memory_retrieval_winner(
   }
   token.last_refresh_timestamp_microseconds =
     uniforms.target_timestamp_microseconds;
-  token.entity_identifier = identifier;
+  token.entity_identifier = published_entity_identifier;
   token.goal_identifier = episodic_value != nullptr
     ? episodic_value->active_goal_identifier
     : (archived_value != nullptr
@@ -2682,7 +2699,7 @@ kernel void publish_memory_retrieval_winner(
           : (prospective_value != nullptr
             ? prospective_value->deadline_timestamp_microseconds : 0ul))));
   token.provenance_record_identifier = identifier;
-  token.kind_and_source = 5u | (source_module << 16);
+  token.kind_and_source = published_token_kind | (source_module << 16);
   const float retrieval_confidence = sqrt(
     clamp(score, 0.0f, 1.0f) * clamp(retrieval_relevance, 0.0f, 1.0f)
   );
@@ -3487,6 +3504,23 @@ kernel void advance_prospective_memory(
   }
 }
 
+inline uint episode_communication_referent_code(
+  device const NBEpisodicSummaryRecord *episode)
+{
+  if (episode->event_kind != NB_MEMORY_INTERNAL_EVENT_COMMUNICATION
+      || (episode->flags
+        & NB_MEMORY_EPISODE_COMMUNICATION_GROUNDING) == 0u) return 0u;
+  const uint low = uint(clamp(
+    floor(clamp(episode->retrieval_key[8], 0.0f, 1.0f) * 65535.0f + 0.5f),
+    0.0f, 65535.0f
+  ));
+  const uint high = uint(clamp(
+    floor(clamp(episode->retrieval_key[9], 0.0f, 1.0f) * 65535.0f + 0.5f),
+    0.0f, 65535.0f
+  ));
+  return low | (high << 16u);
+}
+
 /// Consolidates only previously committed lived episodes. The kernel is
 /// intentionally single-lane: slot choice, evidence aggregation, and journal
 /// ordering must remain deterministic for replay and rollback.
@@ -3756,6 +3790,10 @@ kernel void consolidate_lived_memory_during_rest(
   float accumulated_damage = 0.0f;
   float accumulated_value = 0.0f;
   float accumulated_procedural_uncertainty = 0.0f;
+  const uint latest_communication_referent =
+    episode_communication_referent_code(latest);
+  uint communication_support_count = 0u;
+  uint communication_contradiction_count = 0u;
   for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
     device const NBEpisodicSummaryRecord *episode =
       reinterpret_cast<device const NBEpisodicSummaryRecord *>(
@@ -3778,6 +3816,14 @@ kernel void consolidate_lived_memory_during_rest(
       semantic_embedding[11] += episode->epistemic_uncertainty;
       semantic_embedding[12] += episode->damage_severity;
       semantic_embedding[13] += episode->factored_reinforcement;
+      if (latest_communication_referent != 0u) {
+        const uint referent = episode_communication_referent_code(episode);
+        if (referent == latest_communication_referent) {
+          communication_support_count += 1u;
+        } else if (referent != 0u) {
+          communication_contradiction_count += 1u;
+        }
+      }
     }
     if (latest->active_option_identifier != 0ul
         && episode->active_option_identifier == latest->active_option_identifier
@@ -3814,6 +3860,14 @@ kernel void consolidate_lived_memory_during_rest(
       semantic_embedding[11] += episode->epistemic_uncertainty;
       semantic_embedding[12] += episode->damage_severity;
       semantic_embedding[13] += episode->factored_reinforcement;
+      if (latest_communication_referent != 0u) {
+        const uint referent = episode_communication_referent_code(episode);
+        if (referent == latest_communication_referent) {
+          communication_support_count += 1u;
+        } else if (referent != 0u) {
+          communication_contradiction_count += 1u;
+        }
+      }
     }
     if (latest->active_option_identifier != 0ul
         && episode->active_option_identifier == latest->active_option_identifier
@@ -3835,6 +3889,7 @@ kernel void consolidate_lived_memory_during_rest(
   const uint semantic_slot = uint(
     semantic_identifier % ulong(uniforms.semantic_capacity)
   );
+  bool semantic_concept_available = false;
   if (semantic_count >= 2u) {
     const ulong destination = uniforms.semantic_memory_offset
       + ulong(semantic_slot) * ulong(uniforms.semantic_stride);
@@ -3846,6 +3901,9 @@ kernel void consolidate_lived_memory_during_rest(
         == NB_MEMORY_RECORD_VERSION
       && existing->identifier != 0ul
       && existing->identifier != semantic_identifier;
+    semantic_concept_available = !collision
+      && existing->format_version == NB_MEMORY_RECORD_VERSION
+      && existing->identifier == semantic_identifier;
     if (!collision && (existing->identifier == 0ul
         || existing->source_episode_identifier != latest->identifier
         || existing->usage_count < ulong(semantic_count))) {
@@ -3857,7 +3915,8 @@ kernel void consolidate_lived_memory_during_rest(
       concept.usage_count = ulong(semantic_count);
       concept.source_episode_identifier = latest->identifier;
       concept.format_version = NB_MEMORY_RECORD_VERSION;
-      concept.kind = 5u;
+      concept.kind = latest->event_kind == NB_MEMORY_INTERNAL_EVENT_COMMUNICATION
+        ? 8u : 5u;
       concept.flags = 1u;
       concept.confidence = clamp(
         1.0f - exp(-semantic_learning_rate * float(semantic_count)),
@@ -3880,6 +3939,7 @@ kernel void consolidate_lived_memory_during_rest(
         journal, uniforms, concept, destination,
         NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, concept.identifier
       )) {
+        semantic_concept_available = true;
         enqueue_semantic_consolidation_replay(
           persistent_memory,
           journal,
@@ -3889,6 +3949,151 @@ kernel void consolidate_lived_memory_during_rest(
           concept.confidence,
           semantic_count
         );
+      }
+    }
+  }
+
+  // Repeated causal communication evidence becomes an explicit symbol-to-
+  // referent binding. Both concepts retain the latest lived episode as
+  // provenance; conflicting referents reduce relation confidence instead of
+  // silently rewriting the prior association.
+  if (semantic_count >= 2u && latest_communication_referent != 0u
+      && communication_support_count > 0u) {
+    const ulong referent_identifier = max(
+      consolidation_hash(
+        ulong(latest_communication_referent) ^ 0x454e544954595245ul
+      ) & 0x3ffffffffffffffful,
+      1ul
+    );
+    const uint referent_slot = uint(
+      referent_identifier % ulong(uniforms.semantic_capacity)
+    );
+    const ulong referent_destination = uniforms.semantic_memory_offset
+      + ulong(referent_slot) * ulong(uniforms.semantic_stride);
+    device const NBSemanticConceptSummaryRecord *existing_referent =
+      reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+        persistent_memory + referent_destination
+      );
+    const bool referent_collision = referent_slot == semantic_slot
+      || referent_identifier == semantic_identifier
+      || (existing_referent->format_version == NB_MEMORY_RECORD_VERSION
+        && existing_referent->identifier != 0ul
+        && existing_referent->identifier != referent_identifier);
+    const uint communication_evidence_count = communication_support_count
+      + communication_contradiction_count;
+    const float support_fraction = float(communication_support_count)
+      / float(max(communication_evidence_count, 1u));
+    const float contradiction_fraction = float(communication_contradiction_count)
+      / float(max(communication_evidence_count, 1u));
+    const float binding_confidence = support_fraction * clamp(
+      1.0f - exp(
+        -semantic_learning_rate * float(communication_evidence_count)
+      ),
+      0.0f, 1.0f
+    );
+    bool referent_concept_available = !referent_collision
+      && existing_referent->format_version == NB_MEMORY_RECORD_VERSION
+      && existing_referent->identifier == referent_identifier;
+    if (semantic_concept_available && !referent_collision
+        && (existing_referent->identifier == 0ul
+          || existing_referent->source_episode_identifier != latest->identifier
+          || existing_referent->usage_count
+            < ulong(communication_support_count))) {
+      NBSemanticConceptSummaryRecord referent = {};
+      referent.identifier = referent_identifier;
+      referent.last_used_timestamp_microseconds =
+        latest->end_timestamp_microseconds;
+      referent.usage_count = ulong(communication_support_count);
+      referent.source_episode_identifier = latest->identifier;
+      referent.format_version = NB_MEMORY_RECORD_VERSION;
+      referent.kind = 1u;
+      referent.flags = 1u;
+      referent.confidence = binding_confidence;
+      referent.embedding[0] = float(
+        latest_communication_referent & 0xffffu
+      ) / 65535.0f;
+      referent.embedding[1] = float(
+        latest_communication_referent >> 16u
+      ) / 65535.0f;
+      for (uint component = 0u; component < 10u; ++component) {
+        referent.embedding[component + 2u] = latest->retrieval_key[component];
+      }
+      referent.embedding[12] = support_fraction;
+      referent.embedding[13] = contradiction_fraction;
+      if (append_memory_record(
+        journal, uniforms, referent, referent_destination,
+        NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, referent.identifier
+      )) {
+        referent_concept_available = true;
+        enqueue_semantic_consolidation_replay(
+          persistent_memory,
+          journal,
+          uniforms,
+          3u,
+          referent.identifier,
+          referent.confidence,
+          communication_support_count
+        );
+      }
+    }
+
+    if (semantic_concept_available && referent_concept_available) {
+      const ulong relation_identifier = max(
+        consolidation_hash(
+          semantic_identifier ^ (referent_identifier << 1u)
+            ^ 0x434f4d4d554e4943ul
+        ) & 0x3ffffffffffffffful,
+        1ul
+      );
+      const uint relation_slot = uint(
+        relation_identifier % ulong(uniforms.semantic_relation_capacity)
+      );
+      const ulong relation_destination = uniforms.semantic_relation_memory_offset
+        + ulong(relation_slot) * ulong(uniforms.semantic_relation_stride);
+      device const NBSemanticRelationSummaryRecord *existing_relation =
+        reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+          persistent_memory + relation_destination
+        );
+      const bool relation_collision = existing_relation->format_version
+          == NB_MEMORY_RECORD_VERSION
+        && existing_relation->identifier != 0ul
+        && existing_relation->identifier != relation_identifier;
+      if (!relation_collision && (existing_relation->identifier == 0ul
+          || existing_relation->supporting_episode_count
+            < communication_support_count
+          || existing_relation->last_used_timestamp_microseconds
+            < latest->end_timestamp_microseconds)) {
+        NBSemanticRelationSummaryRecord relation = {};
+        relation.identifier = relation_identifier;
+        relation.source_concept_identifier = semantic_identifier;
+        relation.destination_concept_identifier = referent_identifier;
+        relation.last_used_timestamp_microseconds =
+          latest->end_timestamp_microseconds;
+        relation.format_version = NB_MEMORY_RECORD_VERSION;
+        relation.kind = 9u;
+        relation.flags = 1u
+          | (communication_contradiction_count > 0u ? 2u : 0u);
+        relation.supporting_episode_count = communication_support_count;
+        relation.confidence = binding_confidence;
+        relation.contradiction = contradiction_fraction;
+        for (uint component = 0u; component < 10u; ++component) {
+          relation.evidence_embedding[component] =
+            latest->retrieval_key[component];
+        }
+        if (append_memory_record(
+          journal, uniforms, relation, relation_destination,
+          NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION, relation.identifier
+        )) {
+          enqueue_semantic_consolidation_replay(
+            persistent_memory,
+            journal,
+            uniforms,
+            4u,
+            relation.identifier,
+            relation.confidence,
+            communication_support_count
+          );
+        }
       }
     }
   }
@@ -5361,6 +5566,10 @@ kernel void segment_and_journal_episode(
   device const float *workspace = reinterpret_cast<device const float *>(
     hot_state + uniforms.workspace_content_offset
   );
+  device const NBWorkspaceMetadataRecord *workspace_metadata =
+    reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
   device const NBControlHeader *control = reinterpret_cast<device const NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
@@ -5404,6 +5613,7 @@ kernel void segment_and_journal_episode(
   }
   surprise = sample_count > 0u ? surprise / float(sample_count) : 0.0f;
   float event_salience = 0.0f;
+  float communication_transient_salience = 0.0f;
   uint strongest_event_kind = 0u;
   uint strongest_source = 0u;
   uint strongest_flags = 0u;
@@ -5418,6 +5628,11 @@ kernel void segment_and_journal_episode(
     }
     if (event.kind == 8u || event.kind == 9u) {
       damage = max(damage, event.magnitude);
+    }
+    if (event.kind == 10u || event.kind == 11u) {
+      communication_transient_salience = max(
+        communication_transient_salience, event.magnitude
+      );
     }
   }
   float embodied_salience = 0.0f;
@@ -5584,13 +5799,70 @@ kernel void segment_and_journal_episode(
     strongest_source = uint(
       information_entity_identifier ^ (information_entity_identifier >> 32u)
     );
-    strongest_flags = 1u << 8u;
+    strongest_flags = NB_MEMORY_EPISODE_INFORMATION_ENTITY;
+  }
+
+  // Communication is grounded only when a receptor-derived auditory or
+  // visual transient coincides with the sensory association published by the
+  // social system. The compact signature describes the inferred signal, not
+  // a privileged language token. Slot 12 is the joint-attention referent.
+  float communication_salience = 0.0f;
+  float communication_uncertainty = 0.0f;
+  uint communication_signature = 0u;
+  ulong communication_referent_code = 0ul;
+  if (communication_transient_salience > 0.0f
+      && uniforms.workspace_dimension > 20u
+      && uniforms.workspace_capacity > 12u) {
+    const NBWorkspaceMetadataRecord referent = workspace_metadata[12];
+    for (uint slot = 11u; slot < uniforms.workspace_capacity; ++slot) {
+      if (slot == 12u) continue;
+      const NBWorkspaceMetadataRecord token = workspace_metadata[slot];
+      const uint token_kind = token.kind_and_source & 0xffffu;
+      const uint source_module = token.kind_and_source >> 16u;
+      const bool bound_referent = token.bound_token_identifier != 0ul
+        && token.bound_token_identifier == referent.identifier
+        && referent.entity_identifier != 0ul;
+      if ((token.flags & 1u) == 0u || token_kind != 10u
+          || source_module != 51u || token.provenance_kind != 5u
+          || !bound_referent) continue;
+      const uint base = slot * uniforms.workspace_dimension;
+      const float evidence = uniforms.workspace_dimension > 7u
+        ? clamp(workspace[base + 7u], 0.0f, 1.0f) : 0.0f;
+      const float salience = communication_transient_salience
+        * max(clamp(token.confidence, 0.0f, 1.0f), evidence);
+      if (salience <= communication_salience) continue;
+      uint signature = 0u;
+      const uint signature_count = min(uniforms.workspace_dimension - 20u, 24u);
+      for (uint feature = 0u; feature < signature_count; ++feature) {
+        const float value = workspace[base + 20u + feature];
+        signature |= (isfinite(value) && value >= 0.0f ? 1u : 0u) << feature;
+      }
+      communication_salience = salience;
+      communication_signature = max(signature, 1u);
+      communication_uncertainty = uniforms.workspace_dimension > 6u
+        ? clamp(workspace[base + 6u], 0.0f, 1.0f) : 1.0f;
+      communication_referent_code = consolidation_hash(
+        referent.entity_identifier ^ 0x5245464552454e54ul
+      ) & 0xfffffffful;
+      if (communication_referent_code == 0ul) {
+        communication_referent_code = 1ul;
+      }
+    }
+  }
+  if (communication_salience > max(
+      max(max(event_salience, embodied_salience), control_interrupt_salience),
+      information_salience
+    )) {
+    strongest_event_kind = NB_MEMORY_INTERNAL_EVENT_COMMUNICATION;
+    strongest_source = communication_signature;
+    strongest_flags = NB_MEMORY_EPISODE_COMMUNICATION_GROUNDING;
   }
   const float raw_boundary_score = max(memory_parameters[0], 0.0f) * surprise
     + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
       * max(max(event_salience, embodied_salience), control_interrupt_salience)
     + 0.25f * embodied_uncertainty
-    + 0.25f * information_salience;
+    + 0.25f * information_salience
+    + 0.50f * communication_salience;
   const float boundary_score = raw_boundary_score
     * episodic_memory_write_multiplier(hot_state, uniforms);
   device NBActiveEpisodeAccumulator *accumulator =
@@ -5649,27 +5921,44 @@ kernel void segment_and_journal_episode(
     accumulator->maximum_salience, boundary_score
   );
   accumulator->epistemic_sum += max(
-    max(surprise, embodied_uncertainty), information_prior_uncertainty
+    max(max(surprise, embodied_uncertainty), information_prior_uncertainty),
+    communication_uncertainty
   );
   accumulator->maximum_damage = max(accumulator->maximum_damage, damage);
   accumulator->reinforcement_sum += information_salience - damage;
   accumulator->latest_surprise = surprise;
   accumulator->latest_boundary_score = boundary_score;
   const float accepted_salience = max(
-    max(max(event_salience, embodied_salience), control_interrupt_salience),
-    information_salience
+    max(
+      max(max(event_salience, embodied_salience), control_interrupt_salience),
+      information_salience
+    ),
+    communication_salience
   );
   if (accepted_salience >= accumulator->latest_event_salience) {
     accumulator->event_kind = strongest_event_kind;
     accumulator->source_identifier = strongest_source;
     accumulator->flags |= strongest_flags;
     accumulator->latest_event_salience = accepted_salience;
-    if ((strongest_flags & (1u << 8u)) != 0u) {
+    if ((strongest_flags & NB_MEMORY_EPISODE_INFORMATION_ENTITY) != 0u) {
       accumulator->reserved_identity = information_entity_identifier;
+    } else if ((strongest_flags
+          & NB_MEMORY_EPISODE_COMMUNICATION_GROUNDING) != 0u) {
+      accumulator->reserved_identity = communication_referent_code;
     }
   }
   for (uint index = 0u; index < 30u; ++index) {
-    if (index == 8u && accumulator->reserved_identity != 0ul) {
+    if (accumulator->event_kind == NB_MEMORY_INTERNAL_EVENT_COMMUNICATION
+        && (accumulator->flags
+          & NB_MEMORY_EPISODE_COMMUNICATION_GROUNDING) != 0u
+        && accumulator->reserved_identity != 0ul
+        && (index == 8u || index == 9u)) {
+      const uint identity_half = index == 8u
+        ? uint(accumulator->reserved_identity) & 0xffffu
+        : (uint(accumulator->reserved_identity) >> 16u) & 0xffffu;
+      accumulator->retrieval_key_sum[index] =
+        float(identity_half) / 65535.0f * float(accumulator->sample_count);
+    } else if (index == 8u && accumulator->reserved_identity != 0ul) {
       accumulator->retrieval_key_sum[index] += float(
         uint(accumulator->reserved_identity)
       ) / 4294967295.0f;
@@ -5688,6 +5977,7 @@ kernel void segment_and_journal_episode(
     || event_count > 0u
     || embodied_salience >= uniforms.boundary_threshold
     || information_salience >= uniforms.boundary_threshold
+    || communication_salience >= uniforms.boundary_threshold
     || control_interrupt_onset
     || uniforms.target_timestamp_microseconds
       - accumulator->start_timestamp_microseconds >= 2000000ul;
