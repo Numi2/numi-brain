@@ -835,21 +835,20 @@ inline NBExternalGoalContext nb_external_goal_context(
   return context;
 }
 
-inline float nb_external_goal_alignment(
+inline float nb_external_goal_state_alignment(
   const NBExternalGoalContext context,
-  const NBOptionCandidateRecord candidate)
+  thread const float *predicted_state)
 {
   if (context.valid <= 0.0f) return 0.0f;
   float dot_product = 0.0f;
   float target_norm = 1.0e-6f;
-  float candidate_norm = 1.0e-6f;
+  float state_norm = 1.0e-6f;
   for (uint component = 0u; component < 16u; ++component) {
-    dot_product += context.target[component] * candidate.parameters[component];
+    dot_product += context.target[component] * predicted_state[component];
     target_norm += context.target[component] * context.target[component];
-    candidate_norm += candidate.parameters[component]
-      * candidate.parameters[component];
+    state_norm += predicted_state[component] * predicted_state[component];
   }
-  return dot_product * rsqrt(target_norm * candidate_norm);
+  return dot_product * rsqrt(target_norm * state_norm);
 }
 
 kernel void generate_active_goal_state(
@@ -1703,8 +1702,18 @@ kernel void simulate_candidate_option_outcomes(
             workspace, workspace_metadata, uniforms,
             followup.goal_identifier
           );
+        float predicted_followup_state[16];
+        for (uint component = 0u; component < 16u; ++component) {
+          predicted_followup_state[component] = tanh(
+            policy_parameters[11] * rollout_state[component]
+              + policy_parameters[12] * followup_world.mean_prediction
+              + policy_parameters[13] * followup.parameters[component]
+          );
+        }
         const float followup_goal_alignment =
-          nb_external_goal_alignment(followup_external, followup);
+          nb_external_goal_state_alignment(
+            followup_external, predicted_followup_state
+          );
         const float followup_risk = clamp(
           max(
             max(
@@ -1752,14 +1761,22 @@ kernel void simulate_candidate_option_outcomes(
     const NBExternalGoalContext external = nb_external_goal_context(
       workspace, workspace_metadata, uniforms, candidate.goal_identifier
     );
-    const float external_goal_alignment =
-      nb_external_goal_alignment(external, candidate);
     const NBCounterfactualWorldOutcome world_outcome =
       nb_counterfactual_world_outcome(
         world, world_parameters, uniforms, candidate, rollout_state,
         step, structured_world_available
       );
     const float ensemble_mean = world_outcome.mean_prediction;
+    float predicted_state[16];
+    for (uint component = 0u; component < 16u; ++component) {
+      predicted_state[component] = tanh(
+        policy_parameters[11] * rollout_state[component]
+          + policy_parameters[12] * ensemble_mean
+          + policy_parameters[13] * candidate.parameters[component]
+      );
+    }
+    const float external_goal_alignment =
+      nb_external_goal_state_alignment(external, predicted_state);
     const float epistemic = max(
       world_outcome.epistemic_uncertainty,
       episodic.support * episodic.uncertainty
@@ -1813,11 +1830,7 @@ kernel void simulate_candidate_option_outcomes(
     plan.flags = NB_CONTROL_FLAG_VALID;
     plan.parameter_count = 16u;
     for (uint component = 0u; component < 16u; ++component) {
-      rollout_state[component] = tanh(
-        policy_parameters[11] * rollout_state[component]
-          + policy_parameters[12] * ensemble_mean
-          + policy_parameters[13] * candidate.parameters[component]
-      );
+      rollout_state[component] = predicted_state[component];
       plan.predicted_state[component] = rollout_state[component];
     }
     plans[plan_base + step] = plan;
