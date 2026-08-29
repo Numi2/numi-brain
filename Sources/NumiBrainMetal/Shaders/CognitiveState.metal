@@ -1573,9 +1573,16 @@ kernel void advance_spatial_coordinate_transforms(
     uniforms.vestibular_observation_count,
     gid * 23u + 3u
   );
+  float translation_evidence = 0.0f;
+  if (gid == 0u || gid == 3u) translation_evidence = visual_energy;
+  else if (gid == 1u) translation_evidence = proprioceptive_energy;
+  else if (gid == 2u) {
+    translation_evidence = max(proprioceptive_energy, vestibular_energy);
+  } else {
+    translation_evidence = max(visual_energy, proprioceptive_energy);
+  }
   const float evidence = nb_saturate(max(
-    vestibular_energy,
-    max(visual_energy, proprioceptive_energy)
+    translation_evidence, vestibular_energy
   ));
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
@@ -1585,6 +1592,26 @@ kernel void advance_spatial_coordinate_transforms(
     0.001f,
     1.0f
   );
+  const float retention = nb_time_scaled_retention(
+    belief_parameters[7], elapsed_seconds
+  );
+  if ((transform.flags & 1u) == 0u) {
+    transform.translation[3] = 1.0f;
+    transform.rotation[0] = 0.0f;
+    transform.rotation[1] = 0.0f;
+    transform.rotation[2] = 0.0f;
+    transform.rotation[3] = 1.0f;
+    transform.confidence = 0.0f;
+    transform.uncertainty = 1.0f;
+  }
+  float previous_translation[4];
+  float predicted_translation[4];
+  for (uint component = 0u; component < 4u; ++component) {
+    previous_translation[component] = transform.translation[component];
+    transform.linear_velocity[component] *= retention;
+    predicted_translation[component] = transform.translation[component]
+      + transform.linear_velocity[component] * elapsed_seconds;
+  }
   float observed_translation[4] = {};
   for (uint component = 0u; component < 3u; ++component) {
     const float visual = nb_observation_feature(
@@ -1610,29 +1637,28 @@ kernel void advance_spatial_coordinate_transforms(
     else if (gid == 2u) {
       observed_translation[component] = proprioception + vestibular;
     } else if (gid == 3u) {
-      observed_translation[component] = transform.translation[component]
-        + transform.linear_velocity[component] * elapsed_seconds
+      observed_translation[component] = predicted_translation[component]
         + belief_parameters[6] * visual;
     } else {
       observed_translation[component] = visual + proprioception;
     }
   }
   observed_translation[3] = 1.0f;
-  float mismatch = 0.0f;
+  float translation_mismatch = 0.0f;
   for (uint component = 0u; component < 4u; ++component) {
     const float difference = observed_translation[component]
-      - transform.translation[component];
-    mismatch += abs(difference) * 0.25f;
+      - predicted_translation[component];
+    translation_mismatch += abs(difference) * 0.25f;
     transform.linear_velocity[component] = mix(
-      clamp(belief_parameters[7], 0.0f, 1.0f)
-        * transform.linear_velocity[component],
-      difference / elapsed_seconds,
-      correction_gain * max(evidence, 0.05f)
+      transform.linear_velocity[component],
+      (observed_translation[component] - previous_translation[component])
+        / elapsed_seconds,
+      correction_gain * translation_evidence
     );
     transform.translation[component] = mix(
-      transform.translation[component],
+      predicted_translation[component],
       observed_translation[component],
-      correction_gain * max(evidence, 0.05f)
+      correction_gain * translation_evidence
     );
   }
   float observed_rotation[4];
@@ -1657,19 +1683,35 @@ kernel void advance_spatial_coordinate_transforms(
       observed_rotation[component] *= inverse_norm;
     }
   }
+  float predicted_rotation[4];
+  float predicted_rotation_norm = 0.0f;
+  for (uint component = 0u; component < 4u; ++component) {
+    transform.angular_velocity[component] *= retention;
+    predicted_rotation[component] = transform.rotation[component]
+      + transform.angular_velocity[component] * elapsed_seconds;
+    predicted_rotation_norm += predicted_rotation[component]
+      * predicted_rotation[component];
+  }
+  const float inverse_predicted_rotation_norm = rsqrt(max(
+    predicted_rotation_norm, 1.0e-8f
+  ));
+  for (uint component = 0u; component < 4u; ++component) {
+    predicted_rotation[component] *= inverse_predicted_rotation_norm;
+  }
+  float rotation_mismatch = 0.0f;
   for (uint component = 0u; component < 4u; ++component) {
     const float difference = observed_rotation[component]
-      - transform.rotation[component];
+      - predicted_rotation[component];
+    rotation_mismatch += abs(difference) * 0.25f;
     transform.angular_velocity[component] = mix(
-      clamp(belief_parameters[7], 0.0f, 1.0f)
-        * transform.angular_velocity[component],
+      transform.angular_velocity[component],
       difference / elapsed_seconds,
-      correction_gain * max(vestibular_energy, 0.05f)
+      correction_gain * vestibular_energy
     );
     transform.rotation[component] = mix(
-      transform.rotation[component],
+      predicted_rotation[component],
       observed_rotation[component],
-      correction_gain * max(vestibular_energy, 0.05f)
+      correction_gain * vestibular_energy
     );
   }
   const float updated_rotation_norm = sqrt(max(
@@ -1682,18 +1724,28 @@ kernel void advance_spatial_coordinate_transforms(
   for (uint component = 0u; component < 4u; ++component) {
     transform.rotation[component] /= updated_rotation_norm;
   }
+  const float evidence_sum = translation_evidence + vestibular_energy;
+  const float fused_mismatch = evidence_sum > 1.0e-6f
+    ? (translation_evidence * translation_mismatch
+        + vestibular_energy * rotation_mismatch) / evidence_sum
+    : 0.0f;
   transform.confidence = nb_saturate(mix(
-    transform.confidence * clamp(belief_parameters[7], 0.0f, 1.0f),
-    1.0f - nb_saturate(mismatch),
-    correction_gain * max(evidence, 0.05f)
+    transform.confidence * retention,
+    1.0f - nb_saturate(fused_mismatch),
+    correction_gain * evidence
   ));
   transform.uncertainty = nb_saturate(
-    1.0f - transform.confidence + belief_parameters[4] * (1.0f - evidence)
+    1.0f - transform.confidence
+      + belief_parameters[4] * (1.0f - evidence) * elapsed_seconds
   );
   transform.flags = 1u;
   if (gid == 3u) transform.flags |= 2u | 4u;
-  transform.last_evidence_timestamp_microseconds =
-    uniforms.target_timestamp_microseconds;
+  if (evidence > 0.05f) {
+    transform.last_evidence_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+  } else {
+    transform.flags |= 8u;
+  }
   transforms[gid] = transform;
 }
 
