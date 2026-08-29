@@ -62,7 +62,7 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 public final class MetalLearningBatch: @unchecked Sendable {
   public static let formatVersion: UInt32 = 10
   public static let transitionRecordVersion: UInt32 = 6
-  public static let episodicRecordVersion: UInt32 = 1
+  public static let episodicRecordVersion: UInt32 = 2
   public static let proceduralRecordVersion =
     MetalAgentMemoryLayout.proceduralSkillRecordVersion
   public static let replayRecordVersion: UInt32 = 1

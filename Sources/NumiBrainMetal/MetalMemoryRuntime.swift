@@ -15,6 +15,9 @@ private struct MemoryUniforms {
   var workspaceContentOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var acceptedActiveSensingOffset: UInt64 = 0
+  var activeSensingEfficacyOffset: UInt64 = 0
+  var objectSlotOffset: UInt64 = 0
   var prospectiveLifecycleOffset: UInt64 = 0
   var activeEpisodeAccumulatorOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
@@ -39,7 +42,8 @@ private struct MemoryUniforms {
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
   var bodyBeliefCount: UInt32 = 0
-  var reservedBodyBelief: UInt32 = 0
+  var activeSensingCount: UInt32 = 0
+  var objectSlotCount: UInt32 = 0
   var boundaryThreshold: Float = 0
   var eventSalienceWeight: Float = 0
 }
@@ -348,7 +352,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 232,
+    guard MemoryLayout<MemoryUniforms>.stride == 264,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1224,6 +1228,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
     let bodyBelief = arena.layout.section(.bodyBelief)
+    let acceptedActiveSensing = arena.layout.section(.acceptedActiveSensingOutput)
+    let activeSensingEfficacy = arena.layout.section(.activeSensingEfficacy)
+    let objectSlots = arena.layout.section(.objectSlots)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
     guard transaction.layoutFingerprint == arena.layout.fingerprint,
       regionalProgram.scalarCount <= Int(UInt32.max),
@@ -1238,6 +1245,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       replayQueue.elementStride <= Int(UInt32.max),
       bodyBelief.elementCount > 0,
       bodyBelief.elementCount <= Int(UInt32.max),
+      acceptedActiveSensing.elementCount <= Int(UInt32.max),
+      objectSlots.elementCount <= Int(UInt32.max),
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max)
     else {
       throw TissueError.transaction("episodic segmentation exceeds memory capacity")
@@ -1254,6 +1263,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       workspaceContentOffset: UInt64(workspace.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
+      acceptedActiveSensingOffset: UInt64(acceptedActiveSensing.byteOffset),
+      activeSensingEfficacyOffset: UInt64(activeSensingEfficacy.byteOffset),
+      objectSlotOffset: UInt64(objectSlots.byteOffset),
       prospectiveLifecycleOffset: UInt64(
         arena.layout.section(.prospectiveLifecycle).byteOffset
       ),
@@ -1288,6 +1300,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
       bodyBeliefCount: UInt32(bodyBelief.elementCount),
+      activeSensingCount: UInt32(activeSensingCount),
+      objectSlotCount: UInt32(objectSlots.elementCount),
       boundaryThreshold: segmentation.boundaryThreshold,
       eventSalienceWeight: segmentation.eventSalienceWeight
     )

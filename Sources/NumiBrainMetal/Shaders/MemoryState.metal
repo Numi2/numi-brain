@@ -3,7 +3,7 @@ using namespace metal;
 
 #define NB_MEMORY_ARCHIVE_SHORTLIST_COUNT 32u
 
-constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 1u;
+constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 2u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE = 2u;
 constant uint NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE = 9u;
@@ -55,6 +55,9 @@ struct NBMemoryUniforms {
   ulong workspace_content_offset;
   ulong control_header_offset;
   ulong body_belief_offset;
+  ulong accepted_active_sensing_offset;
+  ulong active_sensing_efficacy_offset;
+  ulong object_slot_offset;
   ulong prospective_lifecycle_offset;
   ulong active_episode_accumulator_offset;
   ulong active_episode_memory_offset;
@@ -79,7 +82,8 @@ struct NBMemoryUniforms {
   uint journal_entry_capacity;
   uint surprise_sample_count;
   uint body_belief_count;
-  uint reserved_body_belief;
+  uint active_sensing_count;
+  uint object_slot_count;
   float boundary_threshold;
   float event_salience_weight;
 };
@@ -976,7 +980,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 232);
+static_assert(sizeof(NBMemoryUniforms) == 264);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -4567,6 +4571,18 @@ kernel void segment_and_journal_episode(
   );
   device const NBReceptorEventRecord *events =
     reinterpret_cast<device const NBReceptorEventRecord *>(event_header + 1);
+  device const NBActiveSensingCommandRecord *sensing_commands =
+    reinterpret_cast<device const NBActiveSensingCommandRecord *>(
+      hot_state + uniforms.accepted_active_sensing_offset
+    );
+  device const NBActiveSensingEfficacyRecord *sensing_efficacy =
+    reinterpret_cast<device const NBActiveSensingEfficacyRecord *>(
+      hot_state + uniforms.active_sensing_efficacy_offset
+    );
+  device const NBObjectSlotRecord *object_slots =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
 
   const uint sample_count = min(
     min(uniforms.surprise_sample_count, uniforms.recurrent_scalar_count),
@@ -4631,6 +4647,28 @@ kernel void segment_and_journal_episode(
     strongest_source = embodied_source;
     strongest_flags = 0u;
   }
+  float information_salience = 0.0f;
+  float information_prior_uncertainty = 0.0f;
+  ulong information_entity_identifier = 0ul;
+  for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
+    const NBActiveSensingCommandRecord command = sensing_commands[channel];
+    const NBActiveSensingEfficacyRecord efficacy = sensing_efficacy[channel];
+    const uint target_slot = command.attention_allocation_mask >> 16u;
+    if ((command.kind_and_flags & (1u << 16u)) == 0u
+        || (command.kind_and_flags & 0xffu) != 1u
+        || target_slot == 0u || target_slot > uniforms.object_slot_count
+        || (efficacy.flags & 1u) == 0u || efficacy.allocation <= 0.0f) continue;
+    const NBObjectSlotRecord object = object_slots[target_slot - 1u];
+    if (object.identifier == 0ul || object.existence_probability <= 0.0f) continue;
+    const float realized = clamp(efficacy.realized_information_gain, 0.0f, 1.0f);
+    if (realized > information_salience) {
+      information_salience = realized;
+      information_prior_uncertainty = clamp(
+        efficacy.prior_uncertainty, 0.0f, 1.0f
+      );
+      information_entity_identifier = object.identifier;
+    }
+  }
   const float control_interrupt_salience = control_interrupt_onset ? 1.0f : 0.0f;
   if (control_interrupt_salience > max(event_salience, embodied_salience)) {
     strongest_event_kind = 9u;
@@ -4640,10 +4678,20 @@ kernel void segment_and_journal_episode(
     );
     strongest_flags = 0u;
   }
+  if (information_salience > max(
+      max(event_salience, embodied_salience), control_interrupt_salience
+    )) {
+    strongest_event_kind = 11u;
+    strongest_source = uint(
+      information_entity_identifier ^ (information_entity_identifier >> 32u)
+    );
+    strongest_flags = 1u << 8u;
+  }
   const float boundary_score = max(memory_parameters[0], 0.0f) * surprise
     + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
       * max(max(event_salience, embodied_salience), control_interrupt_salience)
-    + 0.25f * embodied_uncertainty;
+    + 0.25f * embodied_uncertainty
+    + 0.25f * information_salience;
   device NBActiveEpisodeAccumulator *accumulator =
     reinterpret_cast<device NBActiveEpisodeAccumulator *>(
       hot_state + uniforms.active_episode_accumulator_offset
@@ -4699,29 +4747,46 @@ kernel void segment_and_journal_episode(
   accumulator->maximum_salience = max(
     accumulator->maximum_salience, boundary_score
   );
-  accumulator->epistemic_sum += max(surprise, embodied_uncertainty);
+  accumulator->epistemic_sum += max(
+    max(surprise, embodied_uncertainty), information_prior_uncertainty
+  );
   accumulator->maximum_damage = max(accumulator->maximum_damage, damage);
-  accumulator->reinforcement_sum -= damage;
+  accumulator->reinforcement_sum += information_salience - damage;
   accumulator->latest_surprise = surprise;
   accumulator->latest_boundary_score = boundary_score;
   const float accepted_salience = max(
-    max(event_salience, embodied_salience), control_interrupt_salience
+    max(max(event_salience, embodied_salience), control_interrupt_salience),
+    information_salience
   );
   if (accepted_salience >= accumulator->latest_event_salience) {
     accumulator->event_kind = strongest_event_kind;
     accumulator->source_identifier = strongest_source;
     accumulator->flags |= strongest_flags;
     accumulator->latest_event_salience = accepted_salience;
+    if ((strongest_flags & (1u << 8u)) != 0u) {
+      accumulator->reserved_identity = information_entity_identifier;
+    }
   }
   for (uint index = 0u; index < 30u; ++index) {
-    accumulator->retrieval_key_sum[index] += recurrent[
-      index % uniforms.recurrent_scalar_count
-    ];
+    if (index == 8u && accumulator->reserved_identity != 0ul) {
+      accumulator->retrieval_key_sum[index] += float(
+        uint(accumulator->reserved_identity)
+      ) / 4294967295.0f;
+    } else if (index == 9u && accumulator->reserved_identity != 0ul) {
+      accumulator->retrieval_key_sum[index] += float(
+        uint(accumulator->reserved_identity >> 32u)
+      ) / 4294967295.0f;
+    } else {
+      accumulator->retrieval_key_sum[index] += recurrent[
+        index % uniforms.recurrent_scalar_count
+      ];
+    }
   }
 
   const bool salient_boundary = boundary_score >= uniforms.boundary_threshold
     || event_count > 0u
     || embodied_salience >= uniforms.boundary_threshold
+    || information_salience >= uniforms.boundary_threshold
     || control_interrupt_onset
     || uniforms.target_timestamp_microseconds
       - accumulator->start_timestamp_microseconds >= 2000000ul;
