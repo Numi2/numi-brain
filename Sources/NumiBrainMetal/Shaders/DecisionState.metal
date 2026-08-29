@@ -30,6 +30,7 @@ struct NBDecisionUniforms {
   ulong spinal_offset;
   ulong autonomic_offset;
   ulong somatic_output_offset;
+  ulong active_sensing_offset;
   ulong developmental_state_offset;
   ulong cerebellar_expert_memory_offset;
   ulong parameter_version_fingerprint;
@@ -47,6 +48,10 @@ struct NBDecisionUniforms {
   uint synergy_count;
   uint active_cerebellar_expert_count;
   uint autonomic_dimension;
+  uint active_sensing_dimension;
+  uint communication_synergy_descriptor_offset;
+  uint active_sensing_descriptor_offset;
+  uint communication_descriptor_count;
   uint maximum_planning_horizon;
   float risk_weight;
   float damage_risk_budget;
@@ -184,6 +189,20 @@ struct NBAutonomicCommandRecord {
   uint flags;
 };
 
+struct NBCommunicationChannelDescriptor {
+  uint effector_kind;
+  uint local_channel_index;
+  float gain;
+  uint flags;
+};
+
+struct NBActiveSensingCommandRecord {
+  float command;
+  float confidence;
+  uint attention_allocation_mask;
+  uint kind_and_flags;
+};
+
 struct NBDevelopmentalHeader {
   uint format_version;
   uint stage;
@@ -205,7 +224,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 248);
+static_assert(sizeof(NBDecisionUniforms) == 272);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -216,6 +235,8 @@ static_assert(sizeof(NBMotorCommandRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
+static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
+static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline uint nb_active_candidate_limit(
@@ -872,6 +893,8 @@ kernel void generate_motor_spinal_autonomic_state(
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *policy_parameters [[buffer(3)]],
   device const float *motor_parameters [[buffer(4)]],
+  device const NBCommunicationChannelDescriptor *communication_descriptors
+    [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
@@ -892,6 +915,9 @@ kernel void generate_motor_spinal_autonomic_state(
     uint(header->reserved0), max(uniforms.candidate_capacity, 1u) - 1u
   );
   const NBOptionCandidateRecord candidate = candidates[selected];
+  const uint parameter_count = max(candidate.parameter_count, 1u);
+  const bool communication_selected = development->stage >= 10u
+    && candidate.source_module == 51u;
   const bool rest_selected = header->active_option_identifier
     == NB_REST_OPTION_IDENTIFIER;
   const float safety = uniforms.drive_count > 11u ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
@@ -913,14 +939,30 @@ kernel void generate_motor_spinal_autonomic_state(
     device float *somatic_output = reinterpret_cast<device float *>(
       hot_state + uniforms.somatic_output_offset
     );
-    const float descending = rest_selected
+    const NBCommunicationChannelDescriptor communication_descriptor =
+      communication_descriptors[gid];
+    const bool communication_actuator =
+      (communication_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+    const float ordinary_descending = rest_selected
       ? 0.0f
       : 1.0f / (
           1.0f + exp(
-            -candidate.parameters[gid % candidate.parameter_count]
+            -candidate.parameters[gid % parameter_count]
               * uniforms.motor_gain * motor_parameters[0]
           )
         );
+    float descending = ordinary_descending;
+    if (communication_selected) {
+      descending = communication_actuator
+        ? clamp(
+            (0.5f + 0.5f * tanh(candidate.parameters[
+              communication_descriptor.local_channel_index % parameter_count
+            ])) * communication_descriptor.gain,
+            0.0f,
+            1.0f
+          )
+        : ordinary_descending * clamp(motor_parameters[8], 0.0f, 1.0f);
+    }
     const float inhibition = (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
       ? 1.0f
       : safety;
@@ -949,7 +991,8 @@ kernel void generate_motor_spinal_autonomic_state(
     );
     command.risk_inhibition = inhibition;
     command.synergy_identifier = gid % max(uniforms.synergy_count, 1u);
-    command.flags = NB_CONTROL_FLAG_VALID;
+    command.flags = NB_CONTROL_FLAG_VALID
+      | (communication_selected && communication_actuator ? (1u << 4u) : 0u);
     motor[gid] = command;
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
@@ -967,8 +1010,22 @@ kernel void generate_motor_spinal_autonomic_state(
     device float *synergies = reinterpret_cast<device float *>(
       hot_state + uniforms.synergy_offset
     );
-    synergies[gid] = candidate.parameters[gid % candidate.parameter_count]
-      * policy_parameters[7];
+    const uint descriptor_index =
+      uniforms.communication_synergy_descriptor_offset + gid;
+    const NBCommunicationChannelDescriptor communication_descriptor =
+      communication_descriptors[descriptor_index];
+    const bool communication_synergy = descriptor_index
+      < uniforms.communication_descriptor_count
+      && (communication_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+    const uint parameter_index = communication_selected && communication_synergy
+      ? communication_descriptor.local_channel_index % parameter_count
+      : gid % parameter_count;
+    const float gain = communication_selected
+      ? (communication_synergy
+        ? communication_descriptor.gain
+        : clamp(motor_parameters[8], 0.0f, 1.0f))
+      : policy_parameters[7];
+    synergies[gid] = candidate.parameters[parameter_index] * gain;
   }
   if (gid < uniforms.autonomic_dimension) {
     device NBAutonomicCommandRecord *autonomic =
@@ -981,5 +1038,39 @@ kernel void generate_motor_spinal_autonomic_state(
     command.confidence = header->confidence;
     command.flags = NB_CONTROL_FLAG_VALID;
     autonomic[gid] = command;
+  }
+  if (gid < uniforms.active_sensing_dimension) {
+    device NBActiveSensingCommandRecord *active_sensing =
+      reinterpret_cast<device NBActiveSensingCommandRecord *>(
+        hot_state + uniforms.active_sensing_offset
+      );
+    const uint descriptor_index = uniforms.active_sensing_descriptor_offset + gid;
+    const NBCommunicationChannelDescriptor communication_descriptor =
+      communication_descriptors[descriptor_index];
+    const bool communication_sensing = descriptor_index
+      < uniforms.communication_descriptor_count
+      && (communication_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+    const uint parameter_index = communication_selected && communication_sensing
+      ? communication_descriptor.local_channel_index % parameter_count
+      : (gid + 8u) % parameter_count;
+    NBActiveSensingCommandRecord command;
+    command.command = communication_selected && communication_sensing
+      ? clamp(
+          candidate.parameters[parameter_index] * communication_descriptor.gain,
+          -1.0f,
+          1.0f
+        )
+      : clamp(
+          candidate.parameters[parameter_index] * policy_parameters[9],
+          -1.0f,
+          1.0f
+        );
+    command.confidence = header->confidence;
+    command.attention_allocation_mask = 1u << min(gid, 31u);
+    command.kind_and_flags =
+      (communication_sensing ? communication_descriptor.effector_kind : 0u)
+      | (NB_CONTROL_FLAG_VALID << 16u)
+      | (communication_selected && communication_sensing ? (1u << 17u) : 0u);
+    active_sensing[gid] = command;
   }
 }

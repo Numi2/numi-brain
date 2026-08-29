@@ -22,6 +22,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let somaticOutputCount: Int
     public let autonomicCommandGPUAddress: UInt64
     public let autonomicCommandCount: Int
+    public let activeSensingCommandGPUAddress: UInt64
+    public let activeSensingCommandCount: Int
     public let workspaceContentGPUAddress: UInt64
     public let workspaceContentByteCount: Int
     public let sensoryObservationGPUAddress: UInt64
@@ -69,6 +71,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
     let buffer: any MTLBuffer
     let sourceOffset: Int
+    let autonomicSourceOffset: Int
+    let activeSensingSourceOffset: Int
     let maturationSourceOffset: Int
     let plasticModulationSourceOffset: Int
 
@@ -77,6 +81,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: UInt64,
       buffer: any MTLBuffer,
       sourceOffset: Int,
+      autonomicSourceOffset: Int,
+      activeSensingSourceOffset: Int,
       maturationSourceOffset: Int,
       plasticModulationSourceOffset: Int
     ) {
@@ -84,6 +90,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
       self.buffer = buffer
       self.sourceOffset = sourceOffset
+      self.autonomicSourceOffset = autonomicSourceOffset
+      self.activeSensingSourceOffset = activeSensingSourceOffset
       self.maturationSourceOffset = maturationSourceOffset
       self.plasticModulationSourceOffset = plasticModulationSourceOffset
     }
@@ -91,6 +99,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public var metalBufferObject: UnsafeMutableRawPointer {
       Unmanaged.passUnretained(buffer as AnyObject).toOpaque()
     }
+
+    public var somaticByteOffset: Int { sourceOffset }
+    public var autonomicByteOffset: Int { autonomicSourceOffset }
+    public var activeSensingByteOffset: Int { activeSensingSourceOffset }
+    public static let structuredCommandStride = 16
   }
 
   public let deviceName: String
@@ -108,6 +121,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let memoryRuntime: MetalMemoryRuntime
 
   private let device: any MTLDevice
+  private let species: SpeciesTemplate
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
@@ -206,7 +220,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       + cognitiveRuntime.residencyAllocations.count
       + memoryRuntime.residencyAllocations.count
       + sharedParameterBank.residencyAllocations.count
-      + developmentalRuntime.residencyAllocations.count + 2
+      + developmentalRuntime.residencyAllocations.count
+      + decisionRuntime.residencyAllocations.count + 1
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -225,7 +240,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for allocation in cognitiveRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
-    residencySet.addAllocation(decisionRuntime.residencyAllocation)
+    for allocation in decisionRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
     for allocation in developmentalRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
@@ -249,6 +266,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.acceptedConsequenceRuntime = acceptedConsequenceRuntime
     self.memoryRuntime = memoryRuntime
     self.device = device
+    self.species = species
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
@@ -456,6 +474,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         somaticOutputCount: decision.somaticOutputCount,
         autonomicCommandGPUAddress: decision.autonomicCommandGPUAddress,
         autonomicCommandCount: decision.autonomicCommandCount,
+        activeSensingCommandGPUAddress:
+          decision.activeSensingCommandGPUAddress,
+        activeSensingCommandCount: decision.activeSensingCommandCount,
         workspaceContentGPUAddress: hot.outputGPUAddress + UInt64(workspace.byteOffset),
         workspaceContentByteCount: workspace.byteCount,
         sensoryObservationGPUAddress: sensory.observationGPUAddress,
@@ -659,6 +680,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       )
     }
     let section = agentStateRuntime.arena.layout.section(.somaticOutput)
+    let controlLayout = try MetalActiveControlLayout(
+      arenaLayout: agentStateRuntime.arena.layout,
+      species: species
+    )
+    let autonomic = controlLayout.section(.autonomicCommands)
+    let activeSensing = controlLayout.section(.activeSensingCommands)
     let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
     let plasticModulation = agentStateRuntime.arena.layout.section(
       .regionalPlasticModulation
@@ -671,6 +698,17 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.somaticOutputByteCount <= buffer.length - section.byteOffset,
       decision.somaticOutputGPUAddress
         == buffer.gpuAddress + UInt64(section.byteOffset),
+      decision.autonomicCommandCount == autonomic.elementCount,
+      autonomic.byteOffset <= buffer.length,
+      autonomic.byteCount <= buffer.length - autonomic.byteOffset,
+      decision.autonomicCommandGPUAddress
+        == buffer.gpuAddress + UInt64(autonomic.byteOffset),
+      decision.activeSensingCommandCount
+        == Int(species.motor.activeSensingActionDimension),
+      activeSensing.byteOffset <= buffer.length,
+      activeSensing.byteCount <= buffer.length - activeSensing.byteOffset,
+      decision.activeSensingCommandGPUAddress
+        == buffer.gpuAddress + UInt64(activeSensing.byteOffset),
       decision.regionalMaturationCount == maturation.elementCount,
       decision.regionalMaturationByteCount
         == maturation.elementCount * maturation.elementStride,
@@ -697,6 +735,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       buffer: buffer,
       sourceOffset: section.byteOffset,
+      autonomicSourceOffset: autonomic.byteOffset,
+      activeSensingSourceOffset: activeSensing.byteOffset,
       maturationSourceOffset: maturation.byteOffset,
       plasticModulationSourceOffset: plasticModulation.byteOffset
     )

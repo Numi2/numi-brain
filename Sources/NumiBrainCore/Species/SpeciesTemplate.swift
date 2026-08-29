@@ -106,6 +106,58 @@ public enum ActuatorCommandKind: UInt16, Codable, CaseIterable, Sendable {
 }
 
 @frozen
+public enum CommunicationEffectorKind: UInt16, Codable, CaseIterable, Sendable {
+  case vocalization = 1
+  case gesture = 2
+  case facialExpression = 3
+  case sign = 4
+  case writtenSymbol = 5
+  case robotChannel = 6
+}
+
+/// Species-owned embodiment map for communication. The compiler never
+/// invents actuator anatomy: a template must name every vocal, gestural,
+/// facial, signing, writing, or robot output channel it makes available.
+@frozen
+public struct CommunicationEffectorTemplate: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt16
+  public let kind: CommunicationEffectorKind
+  public let actuatorIdentifiers: [UInt32]
+  public let synergyIdentifiers: [UInt16]
+  public let activeSensingChannelIdentifiers: [UInt16]
+  public let gain: Float
+
+  public init(
+    identifier: UInt16,
+    kind: CommunicationEffectorKind,
+    actuatorIdentifiers: [UInt32],
+    synergyIdentifiers: [UInt16],
+    activeSensingChannelIdentifiers: [UInt16],
+    gain: Float
+  ) throws {
+    guard identifier > 0,
+      !actuatorIdentifiers.isEmpty || !synergyIdentifiers.isEmpty
+        || !activeSensingChannelIdentifiers.isEmpty,
+      Set(actuatorIdentifiers).count == actuatorIdentifiers.count,
+      Set(synergyIdentifiers).count == synergyIdentifiers.count,
+      Set(activeSensingChannelIdentifiers).count
+        == activeSensingChannelIdentifiers.count,
+      gain.isFinite, gain >= 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "communication effector template is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.kind = kind
+    self.actuatorIdentifiers = actuatorIdentifiers.sorted()
+    self.synergyIdentifiers = synergyIdentifiers.sorted()
+    self.activeSensingChannelIdentifiers = activeSensingChannelIdentifiers.sorted()
+    self.gain = gain
+  }
+}
+
+@frozen
 public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
   public let actuatorCommandKind: ActuatorCommandKind
   public let actuatorCount: UInt32
@@ -115,6 +167,7 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
   public let activeSensingActionDimension: UInt16
   public let outputMinimum: Float
   public let outputMaximum: Float
+  public let communicationEffectors: [CommunicationEffectorTemplate]
 
   public init(
     actuatorCommandKind: ActuatorCommandKind,
@@ -124,11 +177,31 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
     autonomicActionDimension: UInt16,
     activeSensingActionDimension: UInt16,
     outputMinimum: Float,
-    outputMaximum: Float
+    outputMaximum: Float,
+    communicationEffectors: [CommunicationEffectorTemplate] = []
   ) throws {
+    let communicationEffectors = communicationEffectors.sorted {
+      $0.identifier < $1.identifier
+    }
+    let communicationActuators = communicationEffectors.flatMap(\.actuatorIdentifiers)
+    let communicationSynergies = communicationEffectors.flatMap(\.synergyIdentifiers)
+    let communicationSensingChannels = communicationEffectors.flatMap(
+      \.activeSensingChannelIdentifiers
+    )
     guard actuatorCount > 0, synergyCount > 0, motorNucleusCount > 0,
       outputMinimum.isFinite, outputMaximum.isFinite,
-      outputMinimum < outputMaximum
+      outputMinimum < outputMaximum,
+      Set(communicationEffectors.map(\.identifier)).count
+        == communicationEffectors.count,
+      Set(communicationActuators).count == communicationActuators.count,
+      Set(communicationSynergies).count == communicationSynergies.count,
+      Set(communicationSensingChannels).count
+        == communicationSensingChannels.count,
+      communicationActuators.allSatisfy({ $0 < actuatorCount }),
+      communicationSynergies.allSatisfy({ $0 < synergyCount }),
+      communicationSensingChannels.allSatisfy({
+        $0 < activeSensingActionDimension
+      })
     else {
       throw BrainRuntimeError.invalidDescriptor("motor topology is invalid")
     }
@@ -140,6 +213,7 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
     self.activeSensingActionDimension = activeSensingActionDimension
     self.outputMinimum = outputMinimum
     self.outputMaximum = outputMaximum
+    self.communicationEffectors = communicationEffectors
   }
 }
 
@@ -475,6 +549,26 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     Self.mix(UInt32(motor.actuatorCommandKind.rawValue), into: &hash)
     Self.mix(motor.actuatorCount, into: &hash)
     Self.mix(UInt32(motor.synergyCount), into: &hash)
+    Self.mix(UInt32(motor.activeSensingActionDimension), into: &hash)
+    for effector in motor.communicationEffectors {
+      Self.mix(UInt32(effector.identifier), into: &hash)
+      Self.mix(UInt32(effector.kind.rawValue), into: &hash)
+      Self.mix(effector.gain.bitPattern, into: &hash)
+      Self.mix(UInt32(effector.actuatorIdentifiers.count), into: &hash)
+      for identifier in effector.actuatorIdentifiers {
+        Self.mix(identifier, into: &hash)
+      }
+      Self.mix(UInt32(effector.synergyIdentifiers.count), into: &hash)
+      for identifier in effector.synergyIdentifiers {
+        Self.mix(UInt32(identifier), into: &hash)
+      }
+      Self.mix(
+        UInt32(effector.activeSensingChannelIdentifiers.count), into: &hash
+      )
+      for identifier in effector.activeSensingChannelIdentifiers {
+        Self.mix(UInt32(identifier), into: &hash)
+      }
+    }
     for stage in development {
       Self.mix(UInt32(stage.stage.rawValue), into: &hash)
       Self.mix(UInt32(stage.planningHorizonSteps), into: &hash)

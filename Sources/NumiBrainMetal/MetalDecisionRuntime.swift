@@ -19,6 +19,7 @@ private struct DecisionUniforms {
   var spinalOffset: UInt64 = 0
   var autonomicOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
+  var activeSensingOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
@@ -36,6 +37,10 @@ private struct DecisionUniforms {
   var synergyCount: UInt32 = 0
   var activeCerebellarExpertCount: UInt32 = 0
   var autonomicDimension: UInt32 = 0
+  var activeSensingDimension: UInt32 = 0
+  var communicationSynergyDescriptorOffset: UInt32 = 0
+  var activeSensingDescriptorOffset: UInt32 = 0
+  var communicationDescriptorCount: UInt32 = 0
   var maximumPlanningHorizon: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
@@ -45,6 +50,13 @@ private struct DecisionUniforms {
   var motorGain: Float = 0
   var stiffnessGain: Float = 0
   var dampingGain: Float = 0
+}
+
+private struct CommunicationChannelDescriptor {
+  var effectorKind: UInt32 = 0
+  var localChannelIndex: UInt32 = 0
+  var gain: Float = 0
+  var flags: UInt32 = 0
 }
 
 @available(macOS 26.0, *)
@@ -59,6 +71,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     public let somaticOutputCount: Int
     public let autonomicCommandGPUAddress: UInt64
     public let autonomicCommandCount: Int
+    public let activeSensingCommandGPUAddress: UInt64
+    public let activeSensingCommandCount: Int
   }
 
   private let arena: MetalAgentStateArena
@@ -75,6 +89,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
+  private let communicationDescriptorBuffer: any MTLBuffer
+  private let communicationSynergyDescriptorOffset: UInt32
+  private let activeSensingDescriptorOffset: UInt32
+  private let communicationDescriptorCount: UInt32
   private let valueParameterGPUAddress: UInt64
   private let policyParameterGPUAddress: UInt64
   private let motorParameterGPUAddress: UInt64
@@ -89,7 +107,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 248,
+    guard MemoryLayout<DecisionUniforms>.stride == 272,
+      MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -140,17 +159,72 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 6
+    descriptor.maxBufferBindCount = 7
     descriptor.initializeBindings = true
+    let actuatorDescriptorCount = Int(species.motor.actuatorCount)
+    let synergyDescriptorOffset = actuatorDescriptorCount
+    let activeSensingDescriptorOffset = synergyDescriptorOffset
+      + Int(species.motor.synergyCount)
+    let communicationDescriptorCount = activeSensingDescriptorOffset
+      + max(Int(species.motor.activeSensingActionDimension), 1)
+    guard communicationDescriptorCount <= Int(UInt32.max) else {
+      throw TissueError.metal("communication descriptor count exceeds UInt32")
+    }
+    var communicationDescriptors = [CommunicationChannelDescriptor](
+      repeating: CommunicationChannelDescriptor(),
+      count: communicationDescriptorCount
+    )
+    for effector in species.motor.communicationEffectors {
+      for (localIndex, identifier) in effector.actuatorIdentifiers.enumerated() {
+        communicationDescriptors[Int(identifier)] = CommunicationChannelDescriptor(
+          effectorKind: UInt32(effector.kind.rawValue),
+          localChannelIndex: UInt32(localIndex),
+          gain: effector.gain,
+          flags: 1
+        )
+      }
+      for (localIndex, identifier) in effector.synergyIdentifiers.enumerated() {
+        communicationDescriptors[synergyDescriptorOffset + Int(identifier)] =
+          CommunicationChannelDescriptor(
+            effectorKind: UInt32(effector.kind.rawValue),
+            localChannelIndex: UInt32(localIndex),
+            gain: effector.gain,
+            flags: 1
+          )
+      }
+      for (localIndex, identifier) in
+          effector.activeSensingChannelIdentifiers.enumerated() {
+        communicationDescriptors[activeSensingDescriptorOffset + Int(identifier)] =
+          CommunicationChannelDescriptor(
+            effectorKind: UInt32(effector.kind.rawValue),
+            localChannelIndex: UInt32(localIndex),
+            gain: effector.gain,
+            flags: 1
+          )
+      }
+    }
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<DecisionUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let communicationDescriptorBuffer = device.makeBuffer(
+        length: communicationDescriptors.count
+          * MemoryLayout<CommunicationChannelDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
     }
     uniformBuffer.label = "NumiBrain decision-state uniforms"
+    communicationDescriptorBuffer.label =
+      "NumiBrain immutable embodied communication map"
+    communicationDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      communicationDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
     self.arena = arena
     self.species = species
     self.regionalProgram = regionalProgram
@@ -165,6 +239,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.motorPipeline = pipelines[5]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
+    self.communicationDescriptorBuffer = communicationDescriptorBuffer
+    self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
+    self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
+    self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
     self.valueParameterGPUAddress = try sharedParameters.gpuAddress(
       .value, minimumScalarCount: 8
     )
@@ -179,7 +257,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
   }
 
-  public var residencyAllocation: any MTLAllocation { uniformBuffer }
+  public var residencyAllocations: [any MTLAllocation] {
+    [uniformBuffer, communicationDescriptorBuffer]
+  }
 
   public func encode(
     encoder: any MTL4ComputeCommandEncoder,
@@ -198,6 +278,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(policyParameterGPUAddress, index: 3)
     argumentTable.setAddress(motorParameterGPUAddress, index: 4)
     argumentTable.setAddress(cerebellarParameterGPUAddress, index: 5)
+    argumentTable.setAddress(communicationDescriptorBuffer.gpuAddress, index: 6)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(
@@ -219,6 +300,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       pipeline: cerebellarPipeline,
       count: 1
     )
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: motorPipeline,
@@ -226,7 +308,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         Int(species.motor.actuatorCount),
         max(
           Int(species.motor.synergyCount),
-          Int(species.physiology.autonomicActionDimension)
+          max(
+            Int(species.physiology.autonomicActionDimension),
+            Int(species.motor.activeSensingActionDimension)
+          )
         )
       )
     )
@@ -235,6 +320,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let spinal = controlLayout.section(.spinalState)
     let somatic = arena.layout.section(.somaticOutput)
     let autonomic = controlLayout.section(.autonomicCommands)
+    let activeSensing = controlLayout.section(.activeSensingCommands)
     return OutputView(
       headerGPUAddress: hot.outputGPUAddress + UInt64(header.byteOffset),
       motorCommandGPUAddress: hot.outputGPUAddress + UInt64(motor.byteOffset),
@@ -243,7 +329,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       somaticOutputGPUAddress: hot.outputGPUAddress + UInt64(somatic.byteOffset),
       somaticOutputCount: somatic.elementCount,
       autonomicCommandGPUAddress: hot.outputGPUAddress + UInt64(autonomic.byteOffset),
-      autonomicCommandCount: autonomic.elementCount
+      autonomicCommandCount: autonomic.elementCount,
+      activeSensingCommandGPUAddress:
+        hot.outputGPUAddress + UInt64(activeSensing.byteOffset),
+      activeSensingCommandCount: Int(species.motor.activeSensingActionDimension)
     )
   }
 
@@ -263,6 +352,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let spinal = controlLayout.section(.spinalState)
     let somatic = arena.layout.section(.somaticOutput)
     let autonomic = controlLayout.section(.autonomicCommands)
+    let activeSensing = controlLayout.section(.activeSensingCommands)
     let maximumPlanningHorizon = max(
       species.development.map({ Int($0.planningHorizonSteps) }).max() ?? 0,
       1
@@ -293,6 +383,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       spinalOffset: UInt64(spinal.byteOffset),
       autonomicOffset: UInt64(autonomic.byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
+      activeSensingOffset: UInt64(activeSensing.byteOffset),
       developmentalStateOffset: UInt64(
         arena.layout.section(.developmentalState).byteOffset
       ),
@@ -300,7 +391,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         arena.layout.section(.cerebellarExpertMemory).byteOffset
       ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
-      reservedIdentity: 0,
+      reservedIdentity: species.fingerprint,
       recurrentScalarCount: UInt32(recurrent.elementCount),
       workspaceScalarCount: UInt32(workspace.elementCount),
       workspaceCapacity: UInt32(workspaceMetadata.elementCount),
@@ -318,6 +409,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         species.capacities.activeCerebellarExpertCapacity
       ),
       autonomicDimension: UInt32(species.physiology.autonomicActionDimension),
+      activeSensingDimension: UInt32(species.motor.activeSensingActionDimension),
+      communicationSynergyDescriptorOffset:
+        communicationSynergyDescriptorOffset,
+      activeSensingDescriptorOffset: activeSensingDescriptorOffset,
+      communicationDescriptorCount: communicationDescriptorCount,
       maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,

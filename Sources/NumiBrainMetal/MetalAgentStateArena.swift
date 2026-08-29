@@ -67,6 +67,7 @@ public enum MetalActiveControlSection: UInt16, Codable, CaseIterable, Sendable {
   case cerebellarExperts = 6
   case spinalState = 7
   case autonomicCommands = 8
+  case activeSensingCommands = 9
 }
 
 @frozen
@@ -225,10 +226,31 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     let cerebellarControlScalars = try Self.checkedMultiply(
       Int(species.capacities.activeCerebellarExpertCapacity), 64
     )
-    let controlScalarCount = try Self.checkedAdd(
-      Int(species.motor.actuatorCount) * 12,
-      Int(species.motor.synergyCount) * 2
-        + candidateControlScalars + cerebellarControlScalars + 64
+    var controlScalarCount = 64
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount,
+      try Self.checkedMultiply(Int(species.motor.actuatorCount), 12)
+    )
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount, Int(species.motor.synergyCount)
+    )
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount,
+      try Self.checkedMultiply(
+        Int(species.physiology.autonomicActionDimension), 4
+      )
+    )
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount,
+      try Self.checkedMultiply(
+        max(Int(species.motor.activeSensingActionDimension), 1), 4
+      )
+    )
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount, candidateControlScalars
+    )
+    controlScalarCount = try Self.checkedAdd(
+      controlScalarCount, cerebellarControlScalars
     )
     try builder.append(
       .activeControl,
@@ -509,6 +531,11 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
     try builder.append(
       .autonomicCommands,
       count: Int(species.physiology.autonomicActionDimension),
+      stride: 16
+    )
+    try builder.append(
+      .activeSensingCommands,
+      count: max(Int(species.motor.activeSensingActionDimension), 1),
       stride: 16
     )
     guard builder.totalByteCount <= parent.byteCount else {
