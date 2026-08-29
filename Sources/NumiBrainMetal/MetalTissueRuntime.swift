@@ -3437,6 +3437,365 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
   }
 
+  private struct TissueCheckpointBinding {
+    let kind: MetalTissueCheckpointBufferKind
+    let buffer: any MTLBuffer
+    let size: Int
+  }
+
+  /// Captures every mutable fast-system allocation at a committed root. This
+  /// is an explicit orchestration readback and never participates in the hot
+  /// physics-brain loop.
+  public func saveCheckpoint() throws -> MetalTissueCheckpoint {
+    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
+      interactiveJointRoot == nil
+    else {
+      throw TissueError.transaction("commit or abort before saving fast tissue")
+    }
+    let records = try readCheckpointBindings(committedCheckpointBindings())
+    return try MetalTissueCheckpoint(
+      width: width,
+      height: height,
+      environmentIdentifier: schedulerEnvironmentIdentifier,
+      randomContext: randomContext,
+      committedStep: committedStep,
+      committedSchedulerTime: committedSchedulerTime,
+      committedSchedulerGeneration: committedSchedulerGeneration,
+      committedHistoryOwnerMask: committedHistoryOwnerMask,
+      committedRelayHistoryTimestamps: committedRelayHistoryTimestamps,
+      parameterVersionFingerprint: parameterVersion.fingerprint,
+      scheduleFingerprint: brainSchedule.fingerprint,
+      regionalProgramFingerprint: regionalTokenProgram.fingerprint,
+      sharedArtifactFingerprint: sharedParameterBank.artifactFingerprint,
+      protectiveMotorProfileFingerprint: protectiveMotorProfile.fingerprint,
+      attachmentCatalogFingerprint: numanXMuscleAttachmentCatalog?.fingerprint ?? 0,
+      structureHash: structureHash,
+      delayFieldHash: delayFieldHash,
+      connectomeHash: connectomeHash,
+      eventScheduleHash: eventScheduleHash,
+      bodyLoadFieldDynamics: bodyLoadFieldDynamics,
+      bodySchemaDynamics: bodySchemaDynamics,
+      buffers: records
+    )
+  }
+
+  public func validateCheckpointCompatibility(
+    _ checkpoint: MetalTissueCheckpoint
+  ) throws {
+    try checkpoint.validate()
+    let validHistoryMask: UInt32 =
+      TissueDelayField.historyCapacity >= 32
+      ? UInt32.max
+      : (UInt32(1) << UInt32(TissueDelayField.historyCapacity)) - 1
+    let expectedSizes = Dictionary(
+      uniqueKeysWithValues: committedCheckpointBindings().map {
+        ($0.kind, $0.size)
+      }
+    )
+    guard checkpoint.width == width, checkpoint.height == height,
+      checkpoint.environmentIdentifier == schedulerEnvironmentIdentifier,
+      checkpoint.randomContext == randomContext,
+      checkpoint.parameterVersionFingerprint == parameterVersion.fingerprint,
+      checkpoint.scheduleFingerprint == brainSchedule.fingerprint,
+      checkpoint.regionalProgramFingerprint == regionalTokenProgram.fingerprint,
+      checkpoint.sharedArtifactFingerprint == sharedParameterBank.artifactFingerprint,
+      checkpoint.protectiveMotorProfileFingerprint == protectiveMotorProfile.fingerprint,
+      checkpoint.attachmentCatalogFingerprint
+        == (numanXMuscleAttachmentCatalog?.fingerprint ?? 0),
+      checkpoint.structureHash == structureHash,
+      checkpoint.delayFieldHash == delayFieldHash,
+      checkpoint.connectomeHash == connectomeHash,
+      checkpoint.eventScheduleHash == eventScheduleHash,
+      checkpoint.bodyLoadFieldDynamics == bodyLoadFieldDynamics,
+      checkpoint.bodySchemaDynamics == bodySchemaDynamics,
+      checkpoint.committedHistoryOwnerMask & ~validHistoryMask == 0,
+      checkpoint.committedRelayHistoryTimestamps.count
+        == TissueDelayField.historyCapacity,
+      checkpoint.buffers.allSatisfy({ record in
+        record.data.count == expectedSizes[record.kind]
+      }),
+      (checkpoint.committedSchedulerTime == nil)
+        == (checkpoint.committedSchedulerGeneration == 0)
+    else {
+      throw TissueError.transaction(
+        "fast-tissue checkpoint is incompatible with this runtime"
+      )
+    }
+  }
+
+  /// Restores into canonical generation zero. Shadow generations remain
+  /// disposable; immutable identities and the checkpoint fingerprint prove
+  /// that subsequent scheduling and random counters resume the same history.
+  public func loadCheckpoint(_ checkpoint: MetalTissueCheckpoint) throws {
+    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
+      interactiveJointRoot == nil
+    else {
+      throw TissueError.transaction("commit or abort before loading fast tissue")
+    }
+    try validateCheckpointCompatibility(checkpoint)
+    try writeCheckpointBindings(
+      restoredCheckpointBindings(),
+      checkpoint: checkpoint
+    )
+    committedIndex = 0
+    committedHistoryOwnerMask = checkpoint.committedHistoryOwnerMask
+    committedRelayHistoryTimestamps = checkpoint.committedRelayHistoryTimestamps
+    committedStep = checkpoint.committedStep
+    committedSchedulerClockIndex = 0
+    committedSchedulerTime = checkpoint.committedSchedulerTime
+    committedSchedulerGeneration = checkpoint.committedSchedulerGeneration
+    committedRegionalStateIndex = 0
+    committedBodyLoadFieldStateIndex = 0
+    pendingRootShadowIndex = nil
+    pendingRootShadowOwnerMask = nil
+    pendingRootShadowStep = nil
+    pendingRelayHistoryTimestamps = nil
+    pendingSchedulerClockIndex = nil
+    pendingSchedulerTargetTime = nil
+    pendingRegionalStateIndex = nil
+    pendingSchedulerInitialized = false
+    pendingJointTransaction = nil
+    interactiveJointRoot = nil
+    hasCommittedSchedulerResult = false
+    descendingSomaticTransactionFingerprint = nil
+    latestCommittedMuscleLoadObservations = []
+    latestCommittedBodyLoadFrame = nil
+    latestCommittedProtectiveMuscleSelection = nil
+    protectiveSourceInhibitionMaskBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: protectiveSourceInhibitionMaskByteCount
+    )
+    try copy(
+      source: zeroDescendingSomaticBuffer,
+      destination: descendingSomaticBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "NumiBrain reset restored descending somatic command"
+    )
+  }
+
+  private func committedCheckpointBindings() -> [TissueCheckpointBinding] {
+    checkpointBindings(
+      tissueIndex: committedIndex,
+      schedulerIndex: committedSchedulerClockIndex,
+      regionalIndex: committedRegionalStateIndex,
+      bodyLoadIndex: committedBodyLoadFieldStateIndex
+    )
+  }
+
+  private func restoredCheckpointBindings() -> [TissueCheckpointBinding] {
+    checkpointBindings(
+      tissueIndex: 0,
+      schedulerIndex: 0,
+      regionalIndex: 0,
+      bodyLoadIndex: 0
+    )
+  }
+
+  private func checkpointBindings(
+    tissueIndex: Int,
+    schedulerIndex: Int,
+    regionalIndex: Int,
+    bodyLoadIndex: Int
+  ) -> [TissueCheckpointBinding] {
+    [
+      TissueCheckpointBinding(
+        kind: .tissueState,
+        buffer: stateBuffers[tissueIndex],
+        size: stateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .relayHistory,
+        buffer: relayHistoryBuffer,
+        size: relayHistoryByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .relayHistoryTimestamps,
+        buffer: relayHistoryTimestampBuffer,
+        size: relayHistoryTimestampByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .schedulerClocks,
+        buffer: schedulerClockBuffers[schedulerIndex],
+        size: schedulerClockByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .regionalStates,
+        buffer: regionalStateBuffers[regionalIndex],
+        size: regionalStateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .regionalTokens,
+        buffer: regionalTokenStateBuffers[regionalIndex],
+        size: regionalTokenStateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .routeHistoryStates,
+        buffer: regionalRouteHistoryStateBuffers[regionalIndex],
+        size: regionalRouteHistoryStateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .routeHistoryTimestamps,
+        buffer: regionalRouteHistoryTimestampBuffers[regionalIndex],
+        size: regionalRouteHistoryTimestampByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .routeHistoryValues,
+        buffer: regionalRouteHistoryValueBuffers[regionalIndex],
+        size: regionalRouteHistoryValueByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .routeRuntimeStates,
+        buffer: regionalRouteRuntimeStateBuffers[regionalIndex],
+        size: regionalRouteRuntimeStateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .protectiveCommand,
+        buffer: protectiveCommandBuffers[regionalIndex],
+        size: ProtectiveMotorCommand.byteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .protectiveMotorHeader,
+        buffer: protectiveMotorOutputHeaderBuffers[regionalIndex],
+        size: ProtectiveMotorOutput.headerByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .protectiveMuscleExcitations,
+        buffer: protectiveMuscleExcitationBuffers[regionalIndex],
+        size: protectiveMuscleExcitationByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .bodyLoadField,
+        buffer: bodyLoadFieldStateBuffers[bodyLoadIndex],
+        size: bodyLoadFieldStateByteCount
+      ),
+      TissueCheckpointBinding(
+        kind: .bodySchema,
+        buffer: bodySchemaStateBuffers[regionalIndex],
+        size: bodySchemaStateByteCount
+      ),
+    ]
+  }
+
+  private func readCheckpointBindings(
+    _ bindings: [TissueCheckpointBinding]
+  ) throws -> [MetalTissueCheckpointBuffer] {
+    let (offsets, totalByteCount) = try checkpointOffsets(bindings)
+    guard
+      let transfer = device.makeBuffer(
+        length: max(totalByteCount, 1),
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate fast checkpoint readback")
+    }
+    transfer.label = "NumiBrain fast checkpoint readback"
+    let residency = try makeCheckpointResidency(transfer)
+    defer { residency.endResidency() }
+    _ = try submit(
+      label: "NumiBrain fast checkpoint capture",
+      additionalResidencySet: residency
+    ) { encoder in
+      for (binding, offset) in zip(bindings, offsets) where binding.size > 0 {
+        encoder.copy(
+          sourceBuffer: binding.buffer,
+          sourceOffset: 0,
+          destinationBuffer: transfer,
+          destinationOffset: offset,
+          size: binding.size
+        )
+      }
+    }
+    return zip(bindings, offsets).map { binding, offset in
+      MetalTissueCheckpointBuffer(
+        kind: binding.kind,
+        data: Data(
+          bytes: transfer.contents().advanced(by: offset),
+          count: binding.size
+        )
+      )
+    }
+  }
+
+  private func writeCheckpointBindings(
+    _ bindings: [TissueCheckpointBinding],
+    checkpoint: MetalTissueCheckpoint
+  ) throws {
+    let (offsets, totalByteCount) = try checkpointOffsets(bindings)
+    guard
+      let transfer = device.makeBuffer(
+        length: max(totalByteCount, 1),
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate fast checkpoint upload")
+    }
+    transfer.label = "NumiBrain fast checkpoint upload"
+    for (binding, offset) in zip(bindings, offsets) {
+      checkpoint.buffer(binding.kind).withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        transfer.contents().advanced(by: offset).copyMemory(
+          from: source,
+          byteCount: binding.size
+        )
+      }
+    }
+    let residency = try makeCheckpointResidency(transfer)
+    defer { residency.endResidency() }
+    _ = try submit(
+      label: "NumiBrain fast checkpoint restore",
+      additionalResidencySet: residency
+    ) { encoder in
+      for (binding, offset) in zip(bindings, offsets) where binding.size > 0 {
+        encoder.copy(
+          sourceBuffer: transfer,
+          sourceOffset: offset,
+          destinationBuffer: binding.buffer,
+          destinationOffset: 0,
+          size: binding.size
+        )
+      }
+    }
+  }
+
+  private func checkpointOffsets(
+    _ bindings: [TissueCheckpointBinding]
+  ) throws -> ([Int], Int) {
+    var offsets: [Int] = []
+    offsets.reserveCapacity(bindings.count)
+    var total = 0
+    for binding in bindings {
+      guard binding.size >= 0, binding.size <= binding.buffer.length else {
+        throw TissueError.metal("fast checkpoint buffer size is invalid")
+      }
+      offsets.append(total)
+      let (next, overflow) = total.addingReportingOverflow(binding.size)
+      guard !overflow else {
+        throw TissueError.metal("fast checkpoint byte count overflows Int")
+      }
+      total = next
+    }
+    return (offsets, total)
+  }
+
+  private func makeCheckpointResidency(
+    _ transfer: any MTLBuffer
+  ) throws -> any MTLResidencySet {
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "NumiBrain fast checkpoint transfer residency"
+    descriptor.initialCapacity = 1
+    let residency: any MTLResidencySet
+    do {
+      residency = try device.makeResidencySet(descriptor: descriptor)
+    } catch {
+      throw TissueError.metal("failed to create fast checkpoint residency: \(error)")
+    }
+    residency.addAllocation(transfer)
+    residency.commit()
+    residency.requestResidency()
+    return residency
+  }
+
   private func discardRootTransaction() throws {
     guard pendingRootShadowIndex != nil else {
       throw TissueError.transaction("there is no Metal root transaction to abort")
