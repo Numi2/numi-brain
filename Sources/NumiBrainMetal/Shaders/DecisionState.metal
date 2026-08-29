@@ -78,6 +78,7 @@ struct NBDecisionUniforms {
   ulong observation_offset;
   uint observation_count;
   uint cerebellar_expert_capacity;
+  ulong fast_cerebellar_state_offset;
 };
 
 struct NBDriveRecord {
@@ -249,6 +250,20 @@ struct NBCPGStateRecord {
   uint reserved;
 };
 
+struct NBFastCerebellarStateRecord {
+  ulong last_observation_timestamp_microseconds;
+  ulong state_timestamp_microseconds;
+  float learned_load_gain;
+  float predicted_load;
+  float observed_load;
+  float prediction_error;
+  float correction;
+  float desired_load;
+  uint update_count;
+  uint flags;
+  float reserved[4];
+};
+
 struct NBEventQueueHeader {
   atomic_uint count;
   uint capacity;
@@ -337,7 +352,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 360);
+static_assert(sizeof(NBDecisionUniforms) == 368);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -352,6 +367,7 @@ static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBCPGOscillatorDescriptor) == 32);
 static_assert(sizeof(NBCPGCouplingDescriptor) == 16);
 static_assert(sizeof(NBCPGStateRecord) == 64);
+static_assert(sizeof(NBFastCerebellarStateRecord) == 64);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -1594,6 +1610,10 @@ kernel void generate_motor_spinal_autonomic_state(
     reinterpret_cast<device const NBCPGStateRecord *>(
       hot_state + uniforms.cpg_state_offset
     );
+  device NBFastCerebellarStateRecord *fast_cerebellar =
+    reinterpret_cast<device NBFastCerebellarStateRecord *>(
+      hot_state + uniforms.fast_cerebellar_state_offset
+    );
   if (gid < uniforms.actuator_count) {
     device NBMotorCommandRecord *motor =
       reinterpret_cast<device NBMotorCommandRecord *>(hot_state + uniforms.motor_offset);
@@ -1633,6 +1653,14 @@ kernel void generate_motor_spinal_autonomic_state(
       (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
       deliberate_inhibition
     );
+    NBFastCerebellarStateRecord fast_state = fast_cerebellar[gid];
+    const bool fast_correction_active = !rest_selected && inhibition < 1.0f;
+    fast_state.flags = (fast_state.flags | NB_CONTROL_FLAG_VALID)
+      & ~(1u << 1u);
+    fast_state.flags |= fast_correction_active ? (1u << 1u) : 0u;
+    fast_cerebellar[gid] = fast_state;
+    const float fast_cerebellar_residual = fast_correction_active
+      ? clamp(fast_state.correction, -0.25f, 0.25f) : 0.0f;
     NBMotorCommandRecord command;
     command.excitation = clamp(
       descending * (1.0f - inhibition) * development->muscle_strength_multiplier,
@@ -1651,13 +1679,18 @@ kernel void generate_motor_spinal_autonomic_state(
       0.0f,
       1.0f
     );
-    command.cerebellar_residual = rest_selected
+    const float slow_cerebellar_residual = rest_selected
       ? 0.0f
       : clamp(
           learned_cerebellar_residual
             - header->unsupported_uncertainty * motor_parameters[10],
           -0.25f, 0.25f
         );
+    command.cerebellar_residual = clamp(
+      slow_cerebellar_residual + fast_cerebellar_residual,
+      -0.25f,
+      0.25f
+    );
     command.risk_inhibition = inhibition;
     command.synergy_identifier = gid % max(uniforms.synergy_count, 1u);
     command.flags = NB_CONTROL_FLAG_VALID
@@ -1680,14 +1713,15 @@ kernel void generate_motor_spinal_autonomic_state(
     spinal_state.motor_neuron_state = command.excitation
       + command.cerebellar_residual + spinal_state.cpg_output;
     const float baseline_excitation = clamp(
-      command.excitation + command.cerebellar_residual
+      command.excitation + slow_cerebellar_residual
         + spinal_state.reflex_output,
       0.0f,
       1.0f
     );
     descending_baseline[gid] = baseline_excitation;
     spinal_state.final_excitation = clamp(
-      baseline_excitation + spinal_state.cpg_output,
+      baseline_excitation + fast_cerebellar_residual
+        + spinal_state.cpg_output,
       0.0f,
       1.0f
     );

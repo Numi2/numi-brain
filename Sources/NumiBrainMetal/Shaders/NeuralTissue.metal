@@ -473,6 +473,31 @@ struct NBFastReflexStateABI {
     float pending_event_magnitude[4];
 };
 
+struct NBFastCerebellarStateABI {
+    ulong last_observation_timestamp_microseconds;
+    ulong state_timestamp_microseconds;
+    float learned_load_gain;
+    float predicted_load;
+    float observed_load;
+    float prediction_error;
+    float correction;
+    float desired_load;
+    uint update_count;
+    uint flags;
+    float reserved[4];
+};
+
+struct NBMotorCommandRecordABI {
+    float excitation;
+    float force_target;
+    float stiffness_target;
+    float damping_target;
+    float cerebellar_residual;
+    float risk_inhibition;
+    uint synergy_identifier;
+    uint flags;
+};
+
 struct NBProtectiveCommandABI {
     uint format_version;
     uint flags;
@@ -677,6 +702,8 @@ static_assert(sizeof(NBFastCPGUniformsABI) == 24, "fast CPG uniforms drift");
 static_assert(sizeof(NBFastCPGStateABI) == 64, "fast CPG state drift");
 static_assert(sizeof(NBFastReflexRuleABI) == 32, "fast reflex rule drift");
 static_assert(sizeof(NBFastReflexStateABI) == 128, "fast reflex state drift");
+static_assert(sizeof(NBFastCerebellarStateABI) == 64, "fast cerebellar state drift");
+static_assert(sizeof(NBMotorCommandRecordABI) == 32, "motor command record drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
@@ -2924,6 +2951,7 @@ kernel void map_protective_motor_output(
         [[buffer(14)]],
     device const NBFastReflexRuleABI *reflexRules [[buffer(15)]],
     device NBFastReflexStateABI *reflexStates [[buffer(16)]],
+    device const NBFastCerebellarStateABI *fastCerebellarStates [[buffer(17)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -3194,9 +3222,15 @@ kernel void map_protective_motor_output(
                 sampledReflexOutput += reflexStates[ruleIndex].output;
             }
         }
+        const NBFastCerebellarStateABI fastCerebellar =
+            fastCerebellarStates[index];
+        const float fastCerebellarCorrection =
+            (fastCerebellar.flags & 3u) == 3u
+            ? clamp(fastCerebellar.correction, -0.25f, 0.25f)
+            : 0.0f;
         const float descendingExcitation = clamp(
             descendingSomaticExcitations[index] + sampledCPGOutput
-                + sampledReflexOutput,
+                + sampledReflexOutput + fastCerebellarCorrection,
             0.0f,
             channel.maximum_excitation
         ) * (1.0f - clamp(command.motor_inhibition, 0.0f, 1.0f));
@@ -3355,6 +3389,84 @@ kernel void materialize_body_load_field(
         }
         output[bodyIndex] = selected;
     }
+}
+
+/// Replays the cumulative accepted load observations for one root from the
+/// committed per-actuator baseline. Duplicate endpoint records are rejected
+/// by their accepted timestamp, so every physical load sample adapts a local
+/// forward gain and inverse correction at most once. Rejected candidates
+/// never reach this kernel or its update list.
+kernel void adapt_fast_cerebellar_load_correction(
+    constant NBBodyLoadFieldUniformsABI *bodyLoadUniforms [[buffer(0)]],
+    device const NBBodyLoadFieldRecordABI *updates [[buffer(1)]],
+    device const NBMotorCommandRecordABI *motorCommands [[buffer(2)]],
+    device const NBMotorChannelDescriptorABI *channels [[buffer(3)]],
+    device const NBFastCerebellarStateABI *baselineStates [[buffer(4)]],
+    device NBFastCerebellarStateABI *outputStates [[buffer(5)]],
+    constant NBBodySchemaUniformsABI *bodySchemaUniforms [[buffer(6)]],
+    device const float *cerebellarParameters [[buffer(7)]],
+    uint actuatorIndex [[thread_position_in_grid]])
+{
+    const NBMotorChannelDescriptorABI channel = channels[actuatorIndex];
+    const NBMotorCommandRecordABI command = motorCommands[actuatorIndex];
+    NBFastCerebellarStateABI state = baselineStates[actuatorIndex];
+    ulong latestTimestamp = state.last_observation_timestamp_microseconds;
+    bool observed = false;
+    const float learningRate = clamp(cerebellarParameters[0], 0.0f, 1.0f);
+    const float inverseRate = clamp(abs(cerebellarParameters[5]), 0.0f, 0.25f);
+    const float forceScale = max(bodySchemaUniforms->force_scale_newtons, 1.0e-6f);
+    for (uint updateIndex = 0u;
+         updateIndex < bodyLoadUniforms->update_count;
+         ++updateIndex) {
+        const NBBodyLoadFieldRecordABI update = updates[updateIndex];
+        if (update.source_muscle_identifier != channel.muscle_id
+            || update.accepted_timestamp_microseconds <= latestTimestamp) {
+            continue;
+        }
+        const float excitation = clamp(command.excitation, 0.0f, 1.0f);
+        const float observedLoad = clamp(
+            update.maximum_absolute_muscle_force / forceScale,
+            0.0f,
+            1.0f
+        );
+        const float effectiveGain = clamp(
+            cerebellarParameters[4] + state.learned_load_gain,
+            0.0f,
+            2.0f
+        );
+        const float predictedLoad = clamp(
+            excitation * effectiveGain,
+            0.0f,
+            1.0f
+        );
+        const float predictionError = observedLoad - predictedLoad;
+        const float desiredLoad = clamp(command.force_target, 0.0f, 1.0f);
+        state.learned_load_gain = clamp(
+            state.learned_load_gain
+                + learningRate * predictionError * excitation,
+            -1.0f,
+            1.0f
+        );
+        state.correction = clamp(
+            state.correction + inverseRate * (desiredLoad - observedLoad),
+            -0.25f,
+            0.25f
+        );
+        state.predicted_load = predictedLoad;
+        state.observed_load = observedLoad;
+        state.prediction_error = predictionError;
+        state.desired_load = desiredLoad;
+        latestTimestamp = update.accepted_timestamp_microseconds;
+        state.update_count = state.update_count == 0xffffffffu
+            ? 0xffffffffu : state.update_count + 1u;
+        observed = true;
+    }
+    state.last_observation_timestamp_microseconds = latestTimestamp;
+    state.state_timestamp_microseconds =
+        bodyLoadUniforms->target_timestamp_microseconds;
+    state.flags = (state.flags | 1u) & ~(1u << 2u);
+    state.flags |= observed ? (1u << 2u) : 0u;
+    outputStates[actuatorIndex] = state;
 }
 
 /// Advances the dense brain-owned body posterior from causal load evidence.

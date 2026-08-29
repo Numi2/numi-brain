@@ -65,6 +65,7 @@ private struct DecisionUniforms {
   var observationOffset: UInt64 = 0
   var observationCount: UInt32 = 0
   var cerebellarExpertCapacity: UInt32 = 0
+  var fastCerebellarStateOffset: UInt64 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -146,7 +147,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 360,
+    guard MemoryLayout<DecisionUniforms>.stride == 368,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -589,6 +590,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       observationCount: UInt32(observations.elementCount),
       cerebellarExpertCapacity: UInt32(
         species.capacities.cerebellarExpertCapacity
+      ),
+      fastCerebellarStateOffset: UInt64(
+        arena.layout.section(.fastCerebellarState).byteOffset
       )
     )
   }

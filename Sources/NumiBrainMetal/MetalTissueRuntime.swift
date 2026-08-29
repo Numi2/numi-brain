@@ -186,6 +186,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   static let maximumFastReflexRuleCount = 4_096
   static let fastReflexRuleStride = 32
   static let fastReflexStateStride = 128
+  static let fastCerebellarStateStride = 64
+  static let motorCommandStride = 32
 
   final class AcceptedFastMotorStateLease: @unchecked Sendable {
     let transactionFingerprint: UInt64
@@ -196,6 +198,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let reflexRuleCount: Int
     let reflexStateByteCount: Int
     let reflexStateBuffer: any MTLBuffer
+    let fastCerebellarStateCount: Int
+    let fastCerebellarStateByteCount: Int
+    let fastCerebellarStateBuffer: any MTLBuffer
 
     fileprivate init(
       transactionFingerprint: UInt64,
@@ -205,7 +210,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       cpgBuffer: any MTLBuffer,
       reflexRuleCount: Int,
       reflexStateByteCount: Int,
-      reflexStateBuffer: any MTLBuffer
+      reflexStateBuffer: any MTLBuffer,
+      fastCerebellarStateCount: Int,
+      fastCerebellarStateByteCount: Int,
+      fastCerebellarStateBuffer: any MTLBuffer
     ) {
       self.transactionFingerprint = transactionFingerprint
       self.acceptedTimestamp = acceptedTimestamp
@@ -215,6 +223,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.reflexRuleCount = reflexRuleCount
       self.reflexStateByteCount = reflexStateByteCount
       self.reflexStateBuffer = reflexStateBuffer
+      self.fastCerebellarStateCount = fastCerebellarStateCount
+      self.fastCerebellarStateByteCount = fastCerebellarStateByteCount
+      self.fastCerebellarStateBuffer = fastCerebellarStateBuffer
     }
   }
   /// Retains the exact Metal allocations lent to one immediate NumanX
@@ -367,6 +378,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveMotorPipeline: any MTLComputePipelineState
   private let bodyLoadFieldPipeline: any MTLComputePipelineState
   private let bodySchemaPipeline: any MTLComputePipelineState
+  private let fastCerebellarPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let eventArgumentTable: any MTL4ArgumentTable
   private let receptorInterruptArgumentTable: any MTL4ArgumentTable
@@ -376,6 +388,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveMotorArgumentTable: any MTL4ArgumentTable
   private let bodyLoadFieldArgumentTable: any MTL4ArgumentTable
   private let bodySchemaArgumentTable: any MTL4ArgumentTable
+  private let fastCerebellarArgumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let structureBuffer: any MTLBuffer
@@ -422,6 +435,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedFastCPGStateBuffer: any MTLBuffer
   private let fastReflexRuleBuffer: any MTLBuffer
   private let stagedFastReflexStateBuffer: any MTLBuffer
+  private let baselineFastCerebellarStateBuffer: any MTLBuffer
+  private let stagedFastCerebellarStateBuffer: any MTLBuffer
+  private let stagedMotorCommandBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
@@ -475,6 +491,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let fastCPGStateCapacityByteCount: Int
   public let fastReflexRuleCapacityByteCount: Int
   public let fastReflexStateCapacityByteCount: Int
+  public let fastCerebellarStateByteCount: Int
+  public let stagedMotorCommandByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -797,6 +815,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let bodySchemaFunction = library.makeFunction(name: "advance_body_schema") else {
       throw TissueError.metal("advance_body_schema is missing from the Metal library")
     }
+    guard let fastCerebellarFunction = library.makeFunction(
+      name: "adapt_fast_cerebellar_load_correction"
+    ) else {
+      throw TissueError.metal(
+        "adapt_fast_cerebellar_load_correction is missing from the Metal library"
+      )
+    }
     let tissuePipeline: any MTLComputePipelineState
     let eventCompactionPipeline: any MTLComputePipelineState
     let receptorInterruptTransductionPipeline: any MTLComputePipelineState
@@ -806,6 +831,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectiveMotorPipeline: any MTLComputePipelineState
     let bodyLoadFieldPipeline: any MTLComputePipelineState
     let bodySchemaPipeline: any MTLComputePipelineState
+    let fastCerebellarPipeline: any MTLComputePipelineState
     do {
       tissuePipeline = try device.makeComputePipelineState(function: tissueFunction)
       eventCompactionPipeline = try device.makeComputePipelineState(
@@ -825,6 +851,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
       bodySchemaPipeline = try device.makeComputePipelineState(
         function: bodySchemaFunction
+      )
+      fastCerebellarPipeline = try device.makeComputePipelineState(
+        function: fastCerebellarFunction
       )
     } catch {
       throw TissueError.metal(
@@ -900,7 +929,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 17
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 18
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -931,6 +960,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("failed to create the body-schema argument table")
     }
+    let fastCerebellarArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    fastCerebellarArgumentDescriptor.label = "NumiBrain fast-cerebellar arguments"
+    fastCerebellarArgumentDescriptor.maxBufferBindCount = 8
+    fastCerebellarArgumentDescriptor.initializeBindings = true
+    guard
+      let fastCerebellarArgumentTable = try? device.makeArgumentTable(
+        descriptor: fastCerebellarArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the fast-cerebellar argument table")
+    }
+    fastCerebellarArgumentTable.setAddress(
+      try sharedParameterBank.gpuAddress(.cerebellar, minimumScalarCount: 8),
+      index: 7
+    )
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
     let stateBuffers: [any MTLBuffer] = try (0..<3).map { index in
@@ -1127,8 +1171,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       * Self.fastReflexRuleStride
     let fastReflexStateCapacityByteCount = Self.maximumFastReflexRuleCount
       * Self.fastReflexStateStride
+    let (fastCerebellarStateByteCount, fastCerebellarStateByteOverflow) =
+      protectiveMotorProfile.channels.count.multipliedReportingOverflow(
+        by: Self.fastCerebellarStateStride
+      )
+    let (stagedMotorCommandByteCount, stagedMotorCommandByteOverflow) =
+      protectiveMotorProfile.channels.count.multipliedReportingOverflow(
+        by: Self.motorCommandStride
+      )
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
+      !fastCerebellarStateByteOverflow, !stagedMotorCommandByteOverflow,
       MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
       MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32,
       MemoryLayout<FastCPGUniforms>.stride == 24,
@@ -1352,6 +1405,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: fastReflexStateCapacityByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let baselineFastCerebellarStateBuffer = device.makeBuffer(
+        length: fastCerebellarStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedFastCerebellarStateBuffer = device.makeBuffer(
+        length: fastCerebellarStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedMotorCommandBuffer = device.makeBuffer(
+        length: stagedMotorCommandByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let defaultRegionalMaturationBuffer = device.makeBuffer(
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1516,6 +1581,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     stagedFastCPGStateBuffer.label = "NumiBrain transaction fast CPG state"
     fastReflexRuleBuffer.label = "NumiBrain immutable species reflex program"
     stagedFastReflexStateBuffer.label = "NumiBrain transaction fast reflex state"
+    baselineFastCerebellarStateBuffer.label =
+      "NumiBrain root-baseline fast cerebellar state"
+    stagedFastCerebellarStateBuffer.label =
+      "NumiBrain transaction fast cerebellar state"
+    stagedMotorCommandBuffer.label = "NumiBrain transaction motor command records"
     defaultRegionalMaturationBuffer.label =
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
@@ -1588,7 +1658,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                         fastCPGStateCapacityByteCount,
                         max(
                           fastReflexRuleCapacityByteCount,
-                          fastReflexStateCapacityByteCount
+                          max(
+                            fastReflexStateCapacityByteCount,
+                            max(
+                              fastCerebellarStateByteCount,
+                              stagedMotorCommandByteCount
+                            )
+                          )
                         )
                       )
                     ),
@@ -1688,6 +1764,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(stagedFastCPGStateBuffer)
     residencySet.addAllocation(fastReflexRuleBuffer)
     residencySet.addAllocation(stagedFastReflexStateBuffer)
+    residencySet.addAllocation(baselineFastCerebellarStateBuffer)
+    residencySet.addAllocation(stagedFastCerebellarStateBuffer)
+    residencySet.addAllocation(stagedMotorCommandBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
@@ -1751,6 +1830,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMotorPipeline = protectiveMotorPipeline
     self.bodyLoadFieldPipeline = bodyLoadFieldPipeline
     self.bodySchemaPipeline = bodySchemaPipeline
+    self.fastCerebellarPipeline = fastCerebellarPipeline
     self.argumentTable = argumentTable
     self.eventArgumentTable = eventArgumentTable
     self.receptorInterruptArgumentTable = receptorInterruptArgumentTable
@@ -1760,6 +1840,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMotorArgumentTable = protectiveMotorArgumentTable
     self.bodyLoadFieldArgumentTable = bodyLoadFieldArgumentTable
     self.bodySchemaArgumentTable = bodySchemaArgumentTable
+    self.fastCerebellarArgumentTable = fastCerebellarArgumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.structureBuffer = structureBuffer
@@ -1806,6 +1887,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedFastCPGStateBuffer = stagedFastCPGStateBuffer
     self.fastReflexRuleBuffer = fastReflexRuleBuffer
     self.stagedFastReflexStateBuffer = stagedFastReflexStateBuffer
+    self.baselineFastCerebellarStateBuffer = baselineFastCerebellarStateBuffer
+    self.stagedFastCerebellarStateBuffer = stagedFastCerebellarStateBuffer
+    self.stagedMotorCommandBuffer = stagedMotorCommandBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
     self.defaultRegionalPlasticModulationBuffer =
@@ -1855,6 +1939,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.fastCPGStateCapacityByteCount = fastCPGStateCapacityByteCount
     self.fastReflexRuleCapacityByteCount = fastReflexRuleCapacityByteCount
     self.fastReflexStateCapacityByteCount = fastReflexStateCapacityByteCount
+    self.fastCerebellarStateByteCount = fastCerebellarStateByteCount
+    self.stagedMotorCommandByteCount = stagedMotorCommandByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2209,7 +2295,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     stagingBuffer.contents().initializeMemory(
       as: UInt8.self,
       repeating: 0,
-      count: fastReflexRuleCapacityByteCount
+      count: max(
+        fastReflexRuleCapacityByteCount,
+        max(
+          fastReflexStateCapacityByteCount,
+          max(fastCerebellarStateByteCount, stagedMotorCommandByteCount)
+        )
+      )
     )
     try copy(
       source: stagingBuffer,
@@ -2222,6 +2314,24 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: stagedFastReflexStateBuffer,
       size: fastReflexStateCapacityByteCount,
       label: "NumiBrain initial fast reflex state upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: baselineFastCerebellarStateBuffer,
+      size: fastCerebellarStateByteCount,
+      label: "NumiBrain initial fast cerebellar baseline upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedFastCerebellarStateBuffer,
+      size: fastCerebellarStateByteCount,
+      label: "NumiBrain initial fast cerebellar state upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedMotorCommandBuffer,
+      size: stagedMotorCommandByteCount,
+      label: "NumiBrain initial staged motor-command upload"
     )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
@@ -2646,6 +2756,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.reflexStateByteCount
         == lease.decision.reflexStateCount * Self.fastReflexStateStride,
       lease.decision.reflexStateByteCount <= fastReflexStateCapacityByteCount,
+      lease.decision.fastCerebellarStateCount
+        == protectiveMotorProfile.channels.count,
+      lease.decision.fastCerebellarStateByteCount
+        == fastCerebellarStateByteCount,
+      lease.decision.motorCommandCount == protectiveMotorProfile.channels.count,
       lease.descendingBaselineSourceOffset <= lease.buffer.length,
       protectiveMuscleExcitationByteCount
         <= lease.buffer.length - lease.descendingBaselineSourceOffset,
@@ -2660,7 +2775,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         <= lease.buffer.length - lease.cpgStateSourceOffset,
       lease.reflexStateSourceOffset <= lease.buffer.length,
       lease.decision.reflexStateByteCount
-        <= lease.buffer.length - lease.reflexStateSourceOffset
+        <= lease.buffer.length - lease.reflexStateSourceOffset,
+      lease.fastCerebellarStateSourceOffset <= lease.buffer.length,
+      fastCerebellarStateByteCount
+        <= lease.buffer.length - lease.fastCerebellarStateSourceOffset,
+      lease.motorCommandSourceOffset <= lease.buffer.length,
+      stagedMotorCommandByteCount
+        <= lease.buffer.length - lease.motorCommandSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -2732,6 +2853,27 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         )
       }
       encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.fastCerebellarStateSourceOffset,
+        destinationBuffer: baselineFastCerebellarStateBuffer,
+        destinationOffset: 0,
+        size: fastCerebellarStateByteCount
+      )
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.fastCerebellarStateSourceOffset,
+        destinationBuffer: stagedFastCerebellarStateBuffer,
+        destinationOffset: 0,
+        size: fastCerebellarStateByteCount
+      )
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.motorCommandSourceOffset,
+        destinationBuffer: stagedMotorCommandBuffer,
+        destinationOffset: 0,
+        size: stagedMotorCommandByteCount
+      )
+      encoder.copy(
         sourceBuffer: protectiveCommandBuffers[committedSchedulerClockIndex],
         sourceOffset: 0,
         destinationBuffer: protectiveCommandBuffers[initialMotorStateIndex],
@@ -2795,6 +2937,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveMotorArgumentTable.setAddress(
         stagedFastReflexStateBuffer.gpuAddress,
         index: 16
+      )
+      protectiveMotorArgumentTable.setAddress(
+        stagedFastCerebellarStateBuffer.gpuAddress,
+        index: 17
       )
       encoder.setComputePipelineState(protectiveMotorPipeline)
       encoder.setArgumentTable(protectiveMotorArgumentTable)
@@ -3218,10 +3364,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     interactiveJointRoot = nil
   }
 
-  /// Lends accepted-only CPG phase and reflex history after fast-root
-  /// finalization and before joint publication. The cognitive transaction
-  /// copies both into its own shadow generation, so neither runtime can
-  /// publish a different fast motor history.
+  /// Lends accepted-only CPG phase, reflex history, and per-actuator
+  /// cerebellar load correction after fast-root finalization and before joint
+  /// publication. The cognitive transaction copies all three into its own
+  /// shadow generation, so neither runtime can publish a different fast motor
+  /// history.
   func borrowPreparedAcceptedFastMotorState(
     for transaction: BrainJointTransactionToken
   ) throws -> AcceptedFastMotorStateLease {
@@ -3243,7 +3390,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       cpgBuffer: stagedFastCPGStateBuffer,
       reflexRuleCount: boundFastReflexRuleCount,
       reflexStateByteCount: boundFastReflexRuleCount * Self.fastReflexStateStride,
-      reflexStateBuffer: stagedFastReflexStateBuffer
+      reflexStateBuffer: stagedFastReflexStateBuffer,
+      fastCerebellarStateCount: protectiveMotorProfile.channels.count,
+      fastCerebellarStateByteCount: fastCerebellarStateByteCount,
+      fastCerebellarStateBuffer: stagedFastCerebellarStateBuffer
     )
   }
 
@@ -5119,6 +5269,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+    fastCerebellarArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
+    fastCerebellarArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
+    fastCerebellarArgumentTable.setAddress(stagedMotorCommandBuffer.gpuAddress, index: 2)
+    fastCerebellarArgumentTable.setAddress(protectiveMotorProfileBuffer.gpuAddress, index: 3)
+    fastCerebellarArgumentTable.setAddress(
+      baselineFastCerebellarStateBuffer.gpuAddress,
+      index: 4
+    )
+    fastCerebellarArgumentTable.setAddress(
+      stagedFastCerebellarStateBuffer.gpuAddress,
+      index: 5
+    )
+    fastCerebellarArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 6)
+    encoder.setComputePipelineState(fastCerebellarPipeline)
+    encoder.setArgumentTable(fastCerebellarArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(
+        width: protectiveMotorProfile.channels.count,
+        height: 1,
+        depth: 1
+      ),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
     bodySchemaArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 0)
     bodySchemaArgumentTable.setAddress(
       bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
@@ -5193,6 +5371,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     protectiveMotorArgumentTable.setAddress(fastReflexRuleBuffer.gpuAddress, index: 15)
     protectiveMotorArgumentTable.setAddress(stagedFastReflexStateBuffer.gpuAddress, index: 16)
+    protectiveMotorArgumentTable.setAddress(
+      stagedFastCerebellarStateBuffer.gpuAddress,
+      index: 17
+    )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)
     encoder.dispatchThreads(

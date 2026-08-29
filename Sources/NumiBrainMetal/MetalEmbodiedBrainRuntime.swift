@@ -47,6 +47,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let reflexStateGPUAddress: UInt64
     public let reflexStateByteCount: Int
     public let reflexStateCount: Int
+    public let fastCerebellarStateGPUAddress: UInt64
+    public let fastCerebellarStateByteCount: Int
+    public let fastCerebellarStateCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -90,6 +93,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let plasticModulationSourceOffset: Int
     let cpgStateSourceOffset: Int
     let reflexStateSourceOffset: Int
+    let motorCommandSourceOffset: Int
+    let fastCerebellarStateSourceOffset: Int
 
     fileprivate init(
       decision: DecisionBufferView,
@@ -103,7 +108,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       maturationSourceOffset: Int,
       plasticModulationSourceOffset: Int,
       cpgStateSourceOffset: Int,
-      reflexStateSourceOffset: Int
+      reflexStateSourceOffset: Int,
+      motorCommandSourceOffset: Int,
+      fastCerebellarStateSourceOffset: Int
     ) {
       self.decision = decision
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
@@ -117,6 +124,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.plasticModulationSourceOffset = plasticModulationSourceOffset
       self.cpgStateSourceOffset = cpgStateSourceOffset
       self.reflexStateSourceOffset = reflexStateSourceOffset
+      self.motorCommandSourceOffset = motorCommandSourceOffset
+      self.fastCerebellarStateSourceOffset = fastCerebellarStateSourceOffset
     }
 
     public var metalBufferObject: UnsafeMutableRawPointer {
@@ -132,6 +141,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public var internalActionByteOffset: Int { internalActionSourceOffset }
     public var cpgStateByteOffset: Int { cpgStateSourceOffset }
     public var reflexStateByteOffset: Int { reflexStateSourceOffset }
+    public var motorCommandByteOffset: Int { motorCommandSourceOffset }
+    public var fastCerebellarStateByteOffset: Int {
+      fastCerebellarStateSourceOffset
+    }
     public static let structuredCommandStride = 16
   }
 
@@ -547,6 +560,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         .descendingSomaticBaseline
       )
       let reflexState = agentStateRuntime.arena.layout.section(.reflexState)
+      let fastCerebellarState = agentStateRuntime.arena.layout.section(
+        .fastCerebellarState
+      )
       let reflexStateCount = species.reflexes.reduce(0) {
         $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
       }
@@ -599,6 +615,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
           hot.outputGPUAddress + UInt64(reflexState.byteOffset),
         reflexStateByteCount: reflexStateCount * reflexState.elementStride,
         reflexStateCount: reflexStateCount,
+        fastCerebellarStateGPUAddress:
+          hot.outputGPUAddress + UInt64(fastCerebellarState.byteOffset),
+        fastCerebellarStateByteCount: fastCerebellarState.byteCount,
+        fastCerebellarStateCount: fastCerebellarState.elementCount,
         gpuStartSeconds: feedback.gpuStartTime,
         gpuEndSeconds: feedback.gpuEndTime
       )
@@ -806,10 +826,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
-  /// Imports accepted fast-substep oscillator and reflex state into the same
-  /// shadow generation that will receive accepted sensory consequences and
-  /// memory journals. A later abort discards this copy with the rest of the
-  /// mind.
+  /// Imports accepted fast-substep oscillator, reflex, and per-actuator
+  /// cerebellar state into the same shadow generation that will receive
+  /// accepted sensory consequences and memory journals. A later abort
+  /// discards this copy with the rest of the mind.
   func importAcceptedFastMotorState(
     _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
     transaction: MetalJointAgentStateTransaction
@@ -818,6 +838,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     defer { lock.unlock() }
     let section = agentStateRuntime.arena.layout.section(.cpgState)
     let reflexSection = agentStateRuntime.arena.layout.section(.reflexState)
+    let fastCerebellarSection = agentStateRuntime.arena.layout.section(
+      .fastCerebellarState
+    )
     let expectedReflexRuleCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
     }
@@ -830,16 +853,20 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       lease.reflexRuleCount == expectedReflexRuleCount,
       lease.reflexStateByteCount
         == lease.reflexRuleCount * reflexSection.elementStride,
-      lease.reflexStateByteCount <= reflexSection.byteCount
+      lease.reflexStateByteCount <= reflexSection.byteCount,
+      lease.fastCerebellarStateCount == Int(species.motor.actuatorCount),
+      lease.fastCerebellarStateByteCount == fastCerebellarSection.byteCount
     else {
       throw TissueError.transaction(
         "accepted fast motor state does not match the cognitive shadow"
       )
     }
-    guard lease.byteCount > 0 || lease.reflexStateByteCount > 0 else { return }
+    guard lease.byteCount > 0 || lease.reflexStateByteCount > 0
+      || lease.fastCerebellarStateByteCount > 0
+    else { return }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
-    descriptor.initialCapacity = 2
+    descriptor.initialCapacity = 3
     let borrowedResidency: any MTLResidencySet
     do {
       borrowedResidency = try device.makeResidencySet(descriptor: descriptor)
@@ -848,6 +875,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     borrowedResidency.addAllocation(lease.cpgBuffer)
     borrowedResidency.addAllocation(lease.reflexStateBuffer)
+    borrowedResidency.addAllocation(lease.fastCerebellarStateBuffer)
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
@@ -881,6 +909,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         size: lease.reflexStateByteCount
       )
     }
+    if lease.fastCerebellarStateByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.fastCerebellarStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: fastCerebellarSection.byteOffset,
+        size: lease.fastCerebellarStateByteCount
+      )
+    }
     encoder.endEncoding()
     commandBuffer.endCommandBuffer()
     _ = try commitCommandBuffer(label: "NumiBrain accepted fast motor import")
@@ -907,6 +944,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       species: species
     )
     let autonomic = controlLayout.section(.autonomicCommands)
+    let motorCommands = controlLayout.section(.motorCommands)
     let activeSensing = controlLayout.section(.activeSensingCommands)
     let internalActions = controlLayout.section(.internalActions)
     let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
@@ -918,6 +956,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       .descendingSomaticBaseline
     )
     let reflexState = agentStateRuntime.arena.layout.section(.reflexState)
+    let fastCerebellarState = agentStateRuntime.arena.layout.section(
+      .fastCerebellarState
+    )
     let reflexStateCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
     }
@@ -982,7 +1023,19 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       reflexState.byteOffset <= buffer.length,
       decision.reflexStateByteCount <= buffer.length - reflexState.byteOffset,
       decision.reflexStateGPUAddress
-        == buffer.gpuAddress + UInt64(reflexState.byteOffset)
+        == buffer.gpuAddress + UInt64(reflexState.byteOffset),
+      decision.motorCommandCount == motorCommands.elementCount,
+      motorCommands.byteOffset <= buffer.length,
+      motorCommands.byteCount <= buffer.length - motorCommands.byteOffset,
+      decision.motorCommandGPUAddress
+        == buffer.gpuAddress + UInt64(motorCommands.byteOffset),
+      decision.fastCerebellarStateCount == fastCerebellarState.elementCount,
+      decision.fastCerebellarStateByteCount == fastCerebellarState.byteCount,
+      fastCerebellarState.byteOffset <= buffer.length,
+      fastCerebellarState.byteCount
+        <= buffer.length - fastCerebellarState.byteOffset,
+      decision.fastCerebellarStateGPUAddress
+        == buffer.gpuAddress + UInt64(fastCerebellarState.byteOffset)
     else {
       throw TissueError.transaction(
         "embodied somatic command does not identify its resident shadow buffer"
@@ -1000,7 +1053,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       maturationSourceOffset: maturation.byteOffset,
       plasticModulationSourceOffset: plasticModulation.byteOffset,
       cpgStateSourceOffset: cpgState.byteOffset,
-      reflexStateSourceOffset: reflexState.byteOffset
+      reflexStateSourceOffset: reflexState.byteOffset,
+      motorCommandSourceOffset: motorCommands.byteOffset,
+      fastCerebellarStateSourceOffset: fastCerebellarState.byteOffset
     )
   }
 
