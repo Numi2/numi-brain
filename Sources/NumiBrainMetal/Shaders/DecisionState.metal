@@ -1392,11 +1392,13 @@ kernel void generate_motor_spinal_autonomic_state(
       0.0f,
       1.0f
     );
-    command.cerebellar_residual = clamp(
-      learned_cerebellar_residual
-        - header->unsupported_uncertainty * motor_parameters[10],
-      -0.25f, 0.25f
-    );
+    command.cerebellar_residual = rest_selected
+      ? 0.0f
+      : clamp(
+          learned_cerebellar_residual
+            - header->unsupported_uncertainty * motor_parameters[10],
+          -0.25f, 0.25f
+        );
     command.risk_inhibition = inhibition;
     command.synergy_identifier = gid % max(uniforms.synergy_count, 1u);
     command.flags = NB_CONTROL_FLAG_VALID
@@ -1433,8 +1435,10 @@ kernel void generate_motor_spinal_autonomic_state(
         ? communication_descriptor.gain
         : clamp(motor_parameters[8], 0.0f, 1.0f))
       : policy_parameters[7];
-    synergies[gid] = candidate.parameters[parameter_index] * gain
-      * (1.0f - deliberate_inhibition);
+    synergies[gid] = rest_selected
+      ? 0.0f
+      : candidate.parameters[parameter_index] * gain
+        * (1.0f - deliberate_inhibition);
   }
   if (gid < uniforms.autonomic_dimension) {
     device NBAutonomicCommandRecord *autonomic =
@@ -1463,19 +1467,22 @@ kernel void generate_motor_spinal_autonomic_state(
       ? communication_descriptor.local_channel_index % parameter_count
       : (gid + 8u) % parameter_count;
     NBActiveSensingCommandRecord command;
-    command.command = communication_selected && communication_sensing
-      ? clamp(
-          candidate.parameters[parameter_index] * communication_descriptor.gain,
-          -1.0f,
-          1.0f
-        )
-      : clamp(
-          candidate.parameters[parameter_index] * policy_parameters[9],
-          -1.0f,
-          1.0f
-        );
-    command.confidence = header->confidence;
-    command.attention_allocation_mask = 1u << min(gid, 31u);
+    command.command = rest_selected
+      ? 0.0f
+      : (communication_selected && communication_sensing
+        ? clamp(
+            candidate.parameters[parameter_index] * communication_descriptor.gain,
+            -1.0f,
+            1.0f
+          )
+        : clamp(
+            candidate.parameters[parameter_index] * policy_parameters[9],
+            -1.0f,
+            1.0f
+          ));
+    command.confidence = rest_selected ? 1.0f : header->confidence;
+    command.attention_allocation_mask = rest_selected
+      ? 0u : (1u << min(gid, 31u));
     command.kind_and_flags =
       (communication_sensing ? communication_descriptor.effector_kind : 0u)
       | (NB_CONTROL_FLAG_VALID << 16u)
