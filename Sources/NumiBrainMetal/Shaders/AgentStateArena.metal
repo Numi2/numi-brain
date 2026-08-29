@@ -18,6 +18,12 @@ struct NBAgentArenaUniforms {
   uint apply_mutations;
 };
 
+struct NBCheckpointCopyUniforms {
+  ulong hot_byte_count;
+  ulong memory_byte_count;
+  ulong journal_byte_count;
+};
+
 struct NBAgentMemoryJournalHeader {
   uint format_version;
   atomic_uint entry_count;
@@ -45,8 +51,52 @@ struct NBAgentMemoryMutation {
 };
 
 static_assert(sizeof(NBAgentArenaUniforms) == 48);
+static_assert(sizeof(NBCheckpointCopyUniforms) == 24);
 static_assert(sizeof(NBAgentMemoryJournalHeader) == 48);
 static_assert(sizeof(NBAgentMemoryMutation) == 64);
+
+kernel void snapshot_agent_checkpoint(
+  device const uint *committed_hot_state [[buffer(0)]],
+  device const uint *persistent_memory [[buffer(1)]],
+  device uint *hot_snapshot [[buffer(2)]],
+  device uint *memory_snapshot [[buffer(3)]],
+  constant NBCheckpointCopyUniforms &uniforms [[buffer(4)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const ulong byte_offset = ulong(gid) * sizeof(uint);
+  if (byte_offset < uniforms.hot_byte_count) {
+    hot_snapshot[gid] = committed_hot_state[gid];
+  }
+  if (byte_offset < uniforms.memory_byte_count) {
+    memory_snapshot[gid] = persistent_memory[gid];
+  }
+}
+
+kernel void restore_agent_checkpoint(
+  device const uint *hot_snapshot [[buffer(0)]],
+  device const uint *memory_snapshot [[buffer(1)]],
+  device uint *first_hot_state [[buffer(2)]],
+  device uint *second_hot_state [[buffer(3)]],
+  device uint *persistent_memory [[buffer(4)]],
+  device uint *first_journal [[buffer(5)]],
+  device uint *second_journal [[buffer(6)]],
+  constant NBCheckpointCopyUniforms &uniforms [[buffer(7)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const ulong byte_offset = ulong(gid) * sizeof(uint);
+  if (byte_offset < uniforms.hot_byte_count) {
+    const uint value = hot_snapshot[gid];
+    first_hot_state[gid] = value;
+    second_hot_state[gid] = value;
+  }
+  if (byte_offset < uniforms.memory_byte_count) {
+    persistent_memory[gid] = memory_snapshot[gid];
+  }
+  if (byte_offset < uniforms.journal_byte_count) {
+    first_journal[gid] = 0u;
+    second_journal[gid] = 0u;
+  }
+}
 
 kernel void initialize_agent_state_arena(
   device uint *hot_state [[buffer(0)]],

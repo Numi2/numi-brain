@@ -366,6 +366,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public let sections: [MetalArenaSectionLayout<MetalAgentPersistentSection>]
   public let totalByteCount: Int
   public let journalByteCount: Int
+  public let fingerprint: UInt64
 
   public init(species: SpeciesTemplate) throws {
     let capacities = species.capacities
@@ -423,6 +424,15 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
     sections = builder.sections
     totalByteCount = builder.totalByteCount
     journalByteCount = Self.aligned(rawJournalBytes)
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for section in builder.sections {
+      MetalAgentStateLayout.mix(UInt64(section.section.rawValue), into: &hash)
+      MetalAgentStateLayout.mix(UInt64(section.byteOffset), into: &hash)
+      MetalAgentStateLayout.mix(UInt64(section.byteCount), into: &hash)
+      MetalAgentStateLayout.mix(UInt64(section.elementStride), into: &hash)
+    }
+    MetalAgentStateLayout.mix(UInt64(journalByteCount), into: &hash)
+    fingerprint = hash
   }
 
   public func section(
@@ -595,6 +605,25 @@ public final class MetalAgentStateArena: @unchecked Sendable {
     public let journalGPUAddress: UInt64
     public let journalByteCount: Int
     public let generation: UInt64
+  }
+
+  struct CheckpointSourceView: Equatable, Sendable {
+    let hotGPUAddress: UInt64
+    let hotByteCount: Int
+    let memoryGPUAddress: UInt64
+    let memoryByteCount: Int
+    let generation: UInt64
+  }
+
+  struct CheckpointRestoreView: Equatable, Sendable {
+    let firstHotGPUAddress: UInt64
+    let secondHotGPUAddress: UInt64
+    let hotByteCount: Int
+    let memoryGPUAddress: UInt64
+    let memoryByteCount: Int
+    let firstJournalGPUAddress: UInt64
+    let secondJournalGPUAddress: UInt64
+    let journalByteCount: Int
   }
 
   public let layout: MetalAgentStateLayout
@@ -797,6 +826,49 @@ public final class MetalAgentStateArena: @unchecked Sendable {
 
   public func persistentSectionAddress(_ section: MetalAgentPersistentSection) -> UInt64 {
     persistentMemoryBuffer.gpuAddress + UInt64(memoryLayout.section(section).byteOffset)
+  }
+
+  func checkpointSourceView() throws -> CheckpointSourceView {
+    guard initialized, pendingToken == nil, !committedJournalNeedsConsolidation else {
+      throw TissueError.transaction(
+        "checkpoint requires a fully consolidated committed agent state"
+      )
+    }
+    return CheckpointSourceView(
+      hotGPUAddress: hotBuffers[committedIndex].gpuAddress,
+      hotByteCount: layout.totalByteCount,
+      memoryGPUAddress: persistentMemoryBuffer.gpuAddress,
+      memoryByteCount: memoryLayout.totalByteCount,
+      generation: committedGeneration
+    )
+  }
+
+  func checkpointRestoreView() throws -> CheckpointRestoreView {
+    guard initialized, pendingToken == nil else {
+      throw TissueError.transaction("checkpoint restore requires no open transaction")
+    }
+    return CheckpointRestoreView(
+      firstHotGPUAddress: hotBuffers[0].gpuAddress,
+      secondHotGPUAddress: hotBuffers[1].gpuAddress,
+      hotByteCount: layout.totalByteCount,
+      memoryGPUAddress: persistentMemoryBuffer.gpuAddress,
+      memoryByteCount: memoryLayout.totalByteCount,
+      firstJournalGPUAddress: journalBuffers[0].gpuAddress,
+      secondJournalGPUAddress: journalBuffers[1].gpuAddress,
+      journalByteCount: memoryLayout.journalByteCount
+    )
+  }
+
+  func markCheckpointRestored(generation: UInt64) throws {
+    guard initialized, pendingToken == nil else {
+      throw TissueError.transaction("cannot publish checkpoint during a transaction")
+    }
+    committedIndex = 0
+    committedJournalIndex = 0
+    committedGeneration = generation
+    committedJournalNeedsConsolidation = false
+    pendingHotStateDefined = false
+    pendingJournalFinalized = false
   }
 
   /// Retains the private shadow allocation while another GPU runtime consumes

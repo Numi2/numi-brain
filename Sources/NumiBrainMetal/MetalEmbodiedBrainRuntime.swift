@@ -97,6 +97,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let speciesTemplateFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
+  public let scheduleFingerprint: UInt64
   public let agentStateRuntime: MetalAgentStateRuntime
   public let sensoryRuntime: MetalSensoryTransductionRuntime
   public let cognitiveRuntime: MetalCognitiveStateRuntime
@@ -222,6 +223,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.speciesTemplateFingerprint = species.fingerprint
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.regionalProgramFingerprint = regionalProgram.fingerprint
+    self.scheduleFingerprint = regionalProgram.scheduleFingerprint
     self.agentStateRuntime = agentStateRuntime
     self.sensoryRuntime = sensoryRuntime
     self.cognitiveRuntime = cognitiveRuntime
@@ -237,6 +239,66 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   }
 
   deinit { residencySet.endResidency() }
+
+  public func saveCheckpoint(
+    environmentIdentifier: UInt32,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    committedTimestamp: BrainTimestamp,
+    physicalCheckpointFingerprint: UInt64
+  ) throws -> MetalBrainCheckpoint {
+    lock.lock()
+    defer { lock.unlock() }
+    let payload = try agentStateRuntime.snapshotCommittedState()
+    return try MetalBrainCheckpoint(
+      committedGeneration: payload.generation,
+      committedTimestamp: committedTimestamp,
+      environmentIdentifier: environmentIdentifier,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      speciesTemplateFingerprint: speciesTemplateFingerprint,
+      regionalProgramFingerprint: regionalProgramFingerprint,
+      scheduleFingerprint: scheduleFingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint,
+      hotLayoutFingerprint: agentStateRuntime.arena.layout.fingerprint,
+      memoryLayoutFingerprint: agentStateRuntime.arena.memoryLayout.fingerprint,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint,
+      hotState: payload.hotState,
+      persistentMemory: payload.persistentMemory
+    )
+  }
+
+  public func loadCheckpoint(
+    _ checkpoint: MetalBrainCheckpoint,
+    physicalCheckpointFingerprint: UInt64
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try checkpoint.validate()
+    guard checkpoint.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      checkpoint.regionalProgramFingerprint == regionalProgramFingerprint,
+      checkpoint.scheduleFingerprint == scheduleFingerprint,
+      checkpoint.parameterVersionFingerprint == parameterVersionFingerprint,
+      checkpoint.hotLayoutFingerprint == agentStateRuntime.arena.layout.fingerprint,
+      checkpoint.memoryLayoutFingerprint
+        == agentStateRuntime.arena.memoryLayout.fingerprint,
+      checkpoint.physicalCheckpointFingerprint == physicalCheckpointFingerprint,
+      checkpoint.hotState.count == agentStateRuntime.arena.layout.totalByteCount,
+      checkpoint.persistentMemory.count
+        == agentStateRuntime.arena.memoryLayout.totalByteCount
+    else {
+      throw TissueError.transaction(
+        "brain checkpoint is incompatible with runtime or physical checkpoint"
+      )
+    }
+    try agentStateRuntime.restoreCommittedState(
+      from: .init(
+        generation: checkpoint.committedGeneration,
+        hotState: checkpoint.hotState,
+        persistentMemory: checkpoint.persistentMemory
+      )
+    )
+  }
 
   public func beginControl(
     jointToken: BrainJointTransactionToken,

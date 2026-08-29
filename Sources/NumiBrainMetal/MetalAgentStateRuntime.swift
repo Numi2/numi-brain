@@ -12,23 +12,41 @@ private struct AgentArenaUniforms {
   var applyMutations: UInt32 = 0
 }
 
+private struct CheckpointCopyUniforms {
+  var hotByteCount: UInt64 = 0
+  var memoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+}
+
 /// Executes generation seeding and persistent-memory journal application for
 /// `MetalAgentStateArena`. All state movement stays device-side; CPU only
 /// publishes or discards generation pointers after command completion.
 @available(macOS 26.0, *)
 public final class MetalAgentStateRuntime: @unchecked Sendable {
+  struct CheckpointPayload: Equatable, Sendable {
+    let generation: UInt64
+    let hotState: Data
+    let persistentMemory: Data
+  }
+
   public let arena: MetalAgentStateArena
 
+  private let device: any MTLDevice
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
   private let initializePipeline: any MTLComputePipelineState
   private let beginPipeline: any MTLComputePipelineState
   private let applyJournalPipeline: any MTLComputePipelineState
+  private let checkpointSnapshotPipeline: any MTLComputePipelineState
+  private let checkpointRestorePipeline: any MTLComputePipelineState
   private let initializeArguments: any MTL4ArgumentTable
   private let beginArguments: any MTL4ArgumentTable
   private let applyJournalArguments: any MTL4ArgumentTable
+  private let checkpointSnapshotArguments: any MTL4ArgumentTable
+  private let checkpointRestoreArguments: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
+  private let checkpointCopyUniformBuffer: any MTLBuffer
   private let residencySet: any MTLResidencySet
   private let lock = NSLock()
 
@@ -38,7 +56,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     initialGeneration: UInt64 = 0
   ) throws {
-    guard MemoryLayout<AgentArenaUniforms>.stride == 48 else {
+    guard MemoryLayout<AgentArenaUniforms>.stride == 48,
+      MemoryLayout<CheckpointCopyUniforms>.stride == 24
+    else {
       throw TissueError.metal("agent-state arena uniform ABI drift")
     }
     let arena = try MetalAgentStateArena(
@@ -53,11 +73,16 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<AgentArenaUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let checkpointCopyUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<CheckpointCopyUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to create agent-state Metal 4 execution objects")
     }
     uniformBuffer.label = "NumiBrain complete agent-state arena uniforms"
+    checkpointCopyUniformBuffer.label = "NumiBrain checkpoint copy uniforms"
 
     let sourceURL =
       Bundle.module.url(
@@ -84,17 +109,31 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
         name: "initialize_agent_state_arena"
       ),
       let beginFunction = library.makeFunction(name: "begin_agent_state_shadow"),
-      let applyFunction = library.makeFunction(name: "apply_agent_memory_journal")
+      let applyFunction = library.makeFunction(name: "apply_agent_memory_journal"),
+      let checkpointSnapshotFunction = library.makeFunction(
+        name: "snapshot_agent_checkpoint"
+      ),
+      let checkpointRestoreFunction = library.makeFunction(
+        name: "restore_agent_checkpoint"
+      )
     else {
       throw TissueError.metal("agent-state arena kernels are incomplete")
     }
     let initializePipeline: any MTLComputePipelineState
     let beginPipeline: any MTLComputePipelineState
     let applyJournalPipeline: any MTLComputePipelineState
+    let checkpointSnapshotPipeline: any MTLComputePipelineState
+    let checkpointRestorePipeline: any MTLComputePipelineState
     do {
       initializePipeline = try device.makeComputePipelineState(function: initializeFunction)
       beginPipeline = try device.makeComputePipelineState(function: beginFunction)
       applyJournalPipeline = try device.makeComputePipelineState(function: applyFunction)
+      checkpointSnapshotPipeline = try device.makeComputePipelineState(
+        function: checkpointSnapshotFunction
+      )
+      checkpointRestorePipeline = try device.makeComputePipelineState(
+        function: checkpointRestoreFunction
+      )
     } catch {
       throw TissueError.metal("agent-state arena pipeline creation failed: \(error)")
     }
@@ -114,9 +153,19 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       label: "NumiBrain agent-memory journal arguments",
       count: 3
     )
+    let checkpointSnapshotArguments = try Self.makeArgumentTable(
+      device: device,
+      label: "NumiBrain checkpoint snapshot arguments",
+      count: 5
+    )
+    let checkpointRestoreArguments = try Self.makeArgumentTable(
+      device: device,
+      label: "NumiBrain checkpoint restore arguments",
+      count: 8
+    )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain complete agent-state residency"
-    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 1
+    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 4
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -127,20 +176,27 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       residencySet.addAllocation(allocation)
     }
     residencySet.addAllocation(uniformBuffer)
+    residencySet.addAllocation(checkpointCopyUniformBuffer)
     residencySet.commit()
     residencySet.requestResidency()
 
     self.arena = arena
+    self.device = device
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
     self.initializePipeline = initializePipeline
     self.beginPipeline = beginPipeline
     self.applyJournalPipeline = applyJournalPipeline
+    self.checkpointSnapshotPipeline = checkpointSnapshotPipeline
+    self.checkpointRestorePipeline = checkpointRestorePipeline
     self.initializeArguments = initializeArguments
     self.beginArguments = beginArguments
     self.applyJournalArguments = applyJournalArguments
+    self.checkpointSnapshotArguments = checkpointSnapshotArguments
+    self.checkpointRestoreArguments = checkpointRestoreArguments
     self.uniformBuffer = uniformBuffer
+    self.checkpointCopyUniformBuffer = checkpointCopyUniformBuffer
     self.residencySet = residencySet
 
     try writeUniforms(
@@ -260,6 +316,105 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     try arena.abort(transaction: transaction)
   }
 
+  func snapshotCommittedState() throws -> CheckpointPayload {
+    lock.lock()
+    defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    let source = try arena.checkpointSourceView()
+    guard let hotSnapshot = device.makeBuffer(
+      length: source.hotByteCount,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ), let memorySnapshot = device.makeBuffer(
+      length: source.memoryByteCount,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ) else {
+      throw TissueError.metal("failed to allocate checkpoint snapshot buffers")
+    }
+    hotSnapshot.label = "NumiBrain committed hot-state checkpoint snapshot"
+    memorySnapshot.label = "NumiBrain persistent-memory checkpoint snapshot"
+    addTemporaryResidency([hotSnapshot, memorySnapshot])
+    defer { removeTemporaryResidency([hotSnapshot, memorySnapshot]) }
+    try writeCheckpointCopyUniforms()
+    try submit(label: "NumiBrain snapshot committed brain checkpoint") { encoder in
+      checkpointSnapshotArguments.setAddress(source.hotGPUAddress, index: 0)
+      checkpointSnapshotArguments.setAddress(source.memoryGPUAddress, index: 1)
+      checkpointSnapshotArguments.setAddress(hotSnapshot.gpuAddress, index: 2)
+      checkpointSnapshotArguments.setAddress(memorySnapshot.gpuAddress, index: 3)
+      checkpointSnapshotArguments.setAddress(checkpointCopyUniformBuffer.gpuAddress, index: 4)
+      encoder.setComputePipelineState(checkpointSnapshotPipeline)
+      encoder.setArgumentTable(checkpointSnapshotArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: self.checkpointThreadCount, height: 1, depth: 1),
+        threadsPerThreadgroup: self.threadgroupSize(for: checkpointSnapshotPipeline)
+      )
+    }
+    return CheckpointPayload(
+      generation: source.generation,
+      hotState: Data(bytes: hotSnapshot.contents(), count: source.hotByteCount),
+      persistentMemory: Data(
+        bytes: memorySnapshot.contents(), count: source.memoryByteCount
+      )
+    )
+  }
+
+  func restoreCommittedState(from payload: CheckpointPayload) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    let destination = try arena.checkpointRestoreView()
+    guard payload.hotState.count == destination.hotByteCount,
+      payload.persistentMemory.count == destination.memoryByteCount,
+      let hotSnapshot = device.makeBuffer(
+        length: destination.hotByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ), let memorySnapshot = device.makeBuffer(
+        length: destination.memoryByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.transaction("checkpoint payload does not fit this brain arena")
+    }
+    payload.hotState.withUnsafeBytes { bytes in
+      if let source = bytes.baseAddress {
+        hotSnapshot.contents().copyMemory(
+          from: source, byteCount: destination.hotByteCount
+        )
+      }
+    }
+    payload.persistentMemory.withUnsafeBytes { bytes in
+      if let source = bytes.baseAddress {
+        memorySnapshot.contents().copyMemory(
+          from: source, byteCount: destination.memoryByteCount
+        )
+      }
+    }
+    hotSnapshot.label = "NumiBrain checkpoint hot-state restore source"
+    memorySnapshot.label = "NumiBrain checkpoint memory restore source"
+    addTemporaryResidency([hotSnapshot, memorySnapshot])
+    defer { removeTemporaryResidency([hotSnapshot, memorySnapshot]) }
+    try writeCheckpointCopyUniforms()
+    try submit(label: "NumiBrain restore committed brain checkpoint") { encoder in
+      checkpointRestoreArguments.setAddress(hotSnapshot.gpuAddress, index: 0)
+      checkpointRestoreArguments.setAddress(memorySnapshot.gpuAddress, index: 1)
+      checkpointRestoreArguments.setAddress(destination.firstHotGPUAddress, index: 2)
+      checkpointRestoreArguments.setAddress(destination.secondHotGPUAddress, index: 3)
+      checkpointRestoreArguments.setAddress(destination.memoryGPUAddress, index: 4)
+      checkpointRestoreArguments.setAddress(destination.firstJournalGPUAddress, index: 5)
+      checkpointRestoreArguments.setAddress(destination.secondJournalGPUAddress, index: 6)
+      checkpointRestoreArguments.setAddress(
+        checkpointCopyUniformBuffer.gpuAddress, index: 7
+      )
+      encoder.setComputePipelineState(checkpointRestorePipeline)
+      encoder.setArgumentTable(checkpointRestoreArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: self.checkpointThreadCount, height: 1, depth: 1),
+        threadsPerThreadgroup: self.threadgroupSize(for: checkpointRestorePipeline)
+      )
+    }
+    try arena.markCheckpointRestored(generation: payload.generation)
+  }
+
   private var journalEntryCapacity: Int {
     max((arena.memoryLayout.journalByteCount - 48) / 64, 1)
   }
@@ -274,6 +429,13 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   private var shadowThreadCount: Int {
     max(arena.layout.totalByteCount, arena.memoryLayout.journalByteCount)
       / MemoryLayout<UInt32>.stride
+  }
+
+  private var checkpointThreadCount: Int {
+    max(
+      max(arena.layout.totalByteCount, arena.memoryLayout.totalByteCount),
+      arena.memoryLayout.journalByteCount
+    ) / MemoryLayout<UInt32>.stride
   }
 
   private func writeUniforms(
@@ -298,6 +460,37 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       guard let source = bytes.baseAddress else { return }
       uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
     }
+  }
+
+  private func writeCheckpointCopyUniforms() throws {
+    guard arena.layout.totalByteCount % MemoryLayout<UInt32>.stride == 0,
+      arena.memoryLayout.totalByteCount % MemoryLayout<UInt32>.stride == 0,
+      arena.memoryLayout.journalByteCount % MemoryLayout<UInt32>.stride == 0
+    else {
+      throw TissueError.metal("checkpoint arena alignment is invalid")
+    }
+    var uniforms = CheckpointCopyUniforms(
+      hotByteCount: UInt64(arena.layout.totalByteCount),
+      memoryByteCount: UInt64(arena.memoryLayout.totalByteCount),
+      journalByteCount: UInt64(arena.memoryLayout.journalByteCount)
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      checkpointCopyUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+  }
+
+  private func addTemporaryResidency(_ buffers: [any MTLBuffer]) {
+    for buffer in buffers { residencySet.addAllocation(buffer) }
+    residencySet.commit()
+    residencySet.requestResidency()
+  }
+
+  private func removeTemporaryResidency(_ buffers: [any MTLBuffer]) {
+    for buffer in buffers { residencySet.removeAllocation(buffer) }
+    residencySet.commit()
   }
 
   private func consolidateCommittedMemoryJournalLocked() throws {
