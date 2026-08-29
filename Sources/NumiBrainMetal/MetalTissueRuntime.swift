@@ -252,6 +252,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public let deviceName: String
+  public let deviceRegistryID: UInt64
   public let width: Int
   public let height: Int
   public let parameters: TissueParameters
@@ -1586,6 +1587,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     self.device = device
     self.deviceName = device.name
+    self.deviceRegistryID = device.registryID
     self.width = initialState.width
     self.height = initialState.height
     self.parameters = parameters

@@ -113,6 +113,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   }
 
   public let deviceName: String
+  public let deviceRegistryID: UInt64
   public let speciesTemplateFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
@@ -259,6 +260,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     residencySet.commit()
     residencySet.requestResidency()
     self.deviceName = device.name
+    self.deviceRegistryID = device.registryID
     self.speciesTemplateFingerprint = species.fingerprint
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.regionalProgramFingerprint = regionalProgram.fingerprint
