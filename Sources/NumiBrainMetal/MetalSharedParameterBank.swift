@@ -13,6 +13,17 @@ public final class MetalSharedParameterBank: @unchecked Sendable {
   private let buffers: [BrainParameterComponentKind: any MTLBuffer]
   private let scalarCounts: [BrainParameterComponentKind: Int]
 
+  public convenience init(
+    device: any MTLDevice,
+    publication: BrainParameterPublication
+  ) throws {
+    try self.init(
+      device: device,
+      parameterVersion: publication.version,
+      artifact: publication.sharedArtifact
+    )
+  }
+
   public init(
     device: any MTLDevice,
     parameterVersion: BrainParameterVersion,

@@ -84,6 +84,19 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     return activeTransaction != nil
   }
 
+  /// Establishes that this complete brain consumes the exact immutable bytes
+  /// and registry lease of a rollout cohort before the first control begins.
+  public func validate(parameterCohort: MetalParameterCohort) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "cannot bind parameter cohort during an active control"
+      )
+    }
+    try parameterCohort.validate(runtime: self)
+  }
+
   /// Captures one causally complete brain checkpoint. The caller supplies the
   /// fingerprint returned by the simultaneously saved NumanX body checkpoint;
   /// the envelope refuses to exist if cognitive and fast generations diverge.

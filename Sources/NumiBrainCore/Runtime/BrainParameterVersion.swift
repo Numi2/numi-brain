@@ -280,14 +280,68 @@ public struct BrainRolloutCohortLease: Equatable, Hashable, Sendable {
 public struct BrainParameterPublication: Equatable, Sendable {
   public let version: BrainParameterVersion
   public let sharedArtifact: BrainSharedParameterArtifact
+  public let learnerUpdateFingerprint: UInt64
+  public let sourceBatchFingerprint: UInt64
+  public let sourceGeneration: UInt64
 
   public init(
     version: BrainParameterVersion,
-    sharedArtifact: BrainSharedParameterArtifact
+    sharedArtifact: BrainSharedParameterArtifact,
+    learnerUpdateFingerprint: UInt64 = 0,
+    sourceBatchFingerprint: UInt64 = 0,
+    sourceGeneration: UInt64 = 0
   ) throws {
     try sharedArtifact.validate(parameterVersion: version)
+    let hasLearnerProvenance = learnerUpdateFingerprint > 0
+      || sourceBatchFingerprint > 0 || sourceGeneration > 0
+    guard !hasLearnerProvenance
+      || (learnerUpdateFingerprint > 0 && sourceBatchFingerprint > 0 && sourceGeneration > 0)
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "learner publication provenance must be complete"
+      )
+    }
     self.version = version
     self.sharedArtifact = sharedArtifact
+    self.learnerUpdateFingerprint = learnerUpdateFingerprint
+    self.sourceBatchFingerprint = sourceBatchFingerprint
+    self.sourceGeneration = sourceGeneration
+  }
+
+  public init(
+    parentVersion: BrainParameterVersion,
+    learnerUpdate: BrainLearnerUpdate
+  ) throws {
+    try learnerUpdate.validate(parentVersion: parentVersion)
+    try self.init(
+      version: learnerUpdate.candidateVersion,
+      sharedArtifact: learnerUpdate.sharedArtifact,
+      learnerUpdateFingerprint: learnerUpdate.updateFingerprint,
+      sourceBatchFingerprint: learnerUpdate.sourceBatchFingerprint,
+      sourceGeneration: learnerUpdate.sourceGeneration
+    )
+  }
+}
+
+/// One immutable parameter publication and the exact registry lease that owns
+/// it. Keeping these values together prevents a runtime from accidentally
+/// pairing current parameter bytes with a lease issued for an older version.
+@frozen
+public struct BrainRolloutCohortBinding: Equatable, Sendable {
+  public let publication: BrainParameterPublication
+  public let lease: BrainRolloutCohortLease
+
+  fileprivate init(
+    publication: BrainParameterPublication,
+    lease: BrainRolloutCohortLease
+  ) throws {
+    guard publication.version.fingerprint == lease.parameterFingerprint else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "cohort lease does not identify its immutable publication"
+      )
+    }
+    self.publication = publication
+    self.lease = lease
   }
 }
 
@@ -299,6 +353,9 @@ public final class BrainParameterRegistry: @unchecked Sendable {
   private var activeCohorts: [UUID: UInt64] = [:]
   private var storedVersion: BrainParameterVersion
   private var storedArtifact: BrainSharedParameterArtifact?
+  private var storedLearnerUpdateFingerprint: UInt64 = 0
+  private var storedSourceBatchFingerprint: UInt64 = 0
+  private var storedSourceGeneration: UInt64 = 0
 
   public init(initialVersion: BrainParameterVersion) {
     storedVersion = initialVersion
@@ -310,6 +367,9 @@ public final class BrainParameterRegistry: @unchecked Sendable {
   public init(initialPublication: BrainParameterPublication) {
     storedVersion = initialPublication.version
     storedArtifact = initialPublication.sharedArtifact
+    storedLearnerUpdateFingerprint = initialPublication.learnerUpdateFingerprint
+    storedSourceBatchFingerprint = initialPublication.sourceBatchFingerprint
+    storedSourceGeneration = initialPublication.sourceGeneration
   }
 
   public var currentVersion: BrainParameterVersion {
@@ -329,7 +389,30 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       }
       return try BrainParameterPublication(
         version: storedVersion,
-        sharedArtifact: storedArtifact
+        sharedArtifact: storedArtifact,
+        learnerUpdateFingerprint: storedLearnerUpdateFingerprint,
+        sourceBatchFingerprint: storedSourceBatchFingerprint,
+        sourceGeneration: storedSourceGeneration
+      )
+    }
+  }
+
+  /// Acquires the exact current publication and its rollout lease while holding
+  /// one registry lock. A caller can therefore never observe a publication and
+  /// lease from different generations.
+  public func beginPublishedCohort(
+    identifier: UUID = UUID(),
+    expectedVersionFingerprint: UInt64? = nil
+  ) throws -> BrainRolloutCohortBinding {
+    try lock.withLock {
+      let publication = try storedPublicationLocked()
+      let lease = try beginCohortLocked(
+        identifier: identifier,
+        expectedVersionFingerprint: expectedVersionFingerprint
+      )
+      return try BrainRolloutCohortBinding(
+        publication: publication,
+        lease: lease
       )
     }
   }
@@ -339,18 +422,9 @@ public final class BrainParameterRegistry: @unchecked Sendable {
     expectedVersionFingerprint: UInt64? = nil
   ) throws -> BrainRolloutCohortLease {
     try lock.withLock {
-      guard activeCohorts[identifier] == nil else {
-        throw BrainRuntimeError.invalidParameterVersion("cohort identifier is already active")
-      }
-      if let expectedVersionFingerprint,
-        expectedVersionFingerprint != storedVersion.fingerprint
-      {
-        throw BrainRuntimeError.invalidParameterVersion("requested parameter version is stale")
-      }
-      activeCohorts[identifier] = storedVersion.fingerprint
-      return BrainRolloutCohortLease(
+      try beginCohortLocked(
         identifier: identifier,
-        parameterFingerprint: storedVersion.fingerprint
+        expectedVersionFingerprint: expectedVersionFingerprint
       )
     }
   }
@@ -389,6 +463,9 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       }
       storedVersion = candidate
       storedArtifact = nil
+      storedLearnerUpdateFingerprint = 0
+      storedSourceBatchFingerprint = 0
+      storedSourceGeneration = 0
     }
   }
 
@@ -414,6 +491,93 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       }
       storedVersion = candidate
       storedArtifact = update.sharedArtifact
+      storedLearnerUpdateFingerprint = update.updateFingerprint
+      storedSourceBatchFingerprint = update.sourceBatchFingerprint
+      storedSourceGeneration = update.sourceGeneration
     }
+  }
+
+  /// Atomically closes the sole active cohort, publishes its learner update,
+  /// and issues the direct-successor lease. There is no unlocked interval in
+  /// which another cohort can acquire either the parent or successor version.
+  /// The old lease becomes stale even though ownership retains its UUID.
+  public func rotateCohort(
+    _ lease: BrainRolloutCohortLease,
+    publishing update: BrainLearnerUpdate
+  ) throws -> BrainRolloutCohortBinding {
+    try lock.withLock {
+      guard activeCohorts.count == 1,
+        activeCohorts[lease.identifier] == lease.parameterFingerprint,
+        lease.parameterFingerprint == storedVersion.fingerprint
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "parameter rotation requires the sole current cohort lease"
+        )
+      }
+      try update.validate(parentVersion: storedVersion)
+      let publication = try BrainParameterPublication(
+        parentVersion: storedVersion,
+        learnerUpdate: update
+      )
+      guard publication.version.scheduleFingerprint == storedVersion.scheduleFingerprint,
+        publication.version.regionalShapeFingerprint
+          == storedVersion.regionalShapeFingerprint
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "learner rotation changes rollout ABI shape or schedule"
+        )
+      }
+
+      activeCohorts.removeValue(forKey: lease.identifier)
+      storedVersion = publication.version
+      storedArtifact = publication.sharedArtifact
+      storedLearnerUpdateFingerprint = publication.learnerUpdateFingerprint
+      storedSourceBatchFingerprint = publication.sourceBatchFingerprint
+      storedSourceGeneration = publication.sourceGeneration
+
+      let successorLease = BrainRolloutCohortLease(
+        identifier: lease.identifier,
+        parameterFingerprint: publication.version.fingerprint
+      )
+      activeCohorts[successorLease.identifier] = successorLease.parameterFingerprint
+      return try BrainRolloutCohortBinding(
+        publication: publication,
+        lease: successorLease
+      )
+    }
+  }
+
+  private func storedPublicationLocked() throws -> BrainParameterPublication {
+    guard let storedArtifact else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "current parameter version has no exact shared artifact"
+      )
+    }
+    return try BrainParameterPublication(
+      version: storedVersion,
+      sharedArtifact: storedArtifact,
+      learnerUpdateFingerprint: storedLearnerUpdateFingerprint,
+      sourceBatchFingerprint: storedSourceBatchFingerprint,
+      sourceGeneration: storedSourceGeneration
+    )
+  }
+
+  private func beginCohortLocked(
+    identifier: UUID,
+    expectedVersionFingerprint: UInt64?
+  ) throws -> BrainRolloutCohortLease {
+    guard activeCohorts[identifier] == nil else {
+      throw BrainRuntimeError.invalidParameterVersion("cohort identifier is already active")
+    }
+    if let expectedVersionFingerprint,
+      expectedVersionFingerprint != storedVersion.fingerprint
+    {
+      throw BrainRuntimeError.invalidParameterVersion("requested parameter version is stale")
+    }
+    activeCohorts[identifier] = storedVersion.fingerprint
+    return BrainRolloutCohortLease(
+      identifier: identifier,
+      parameterFingerprint: storedVersion.fingerprint
+    )
   }
 }
