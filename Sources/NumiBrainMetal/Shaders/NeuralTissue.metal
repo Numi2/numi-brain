@@ -446,7 +446,7 @@ struct NBFastCPGStateABI {
     uint output_synergy_identifier;
     uint oscillator_identifier;
     uint flags;
-    uint reserved;
+    uint output_kind;
 };
 
 struct NBFastReflexRuleABI {
@@ -495,7 +495,7 @@ struct NBFastAutonomicUniformsABI {
     float vital_gain;
     uint response_time_microseconds;
     uint critical_decay_microseconds;
-    uint reserved;
+    uint oscillator_count;
 };
 
 struct NBFastAutonomicStateABI {
@@ -793,6 +793,8 @@ constant ulong NBInterruptPhysiologicalCritical = 1ul << 4;
 constant ulong NBInterruptJointLimit = 1ul << 5;
 constant ulong NBInterruptMuscleOverload = 1ul << 6;
 constant ulong NBInterruptRescue = 1ul << 9;
+constant uint NBCPGOutputSomaticSynergy = 1u;
+constant uint NBCPGOutputAutonomicChannel = 2u;
 
 inline void protective_mix_byte(thread ulong &hash, uchar byte) {
     hash ^= ulong(byte);
@@ -3249,6 +3251,7 @@ kernel void map_protective_motor_output(
         for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
             const NBFastCPGStateABI state = cpgStates[oscillator];
             if ((state.flags & 1u) != 0u &&
+                state.output_kind == NBCPGOutputSomaticSynergy &&
                 state.output_synergy_identifier == actuatorSynergy) {
                 sampledCPGOutput += state.output;
             }
@@ -3552,6 +3555,7 @@ kernel void advance_fast_autonomic_output(
     device const NBFastAutonomicStateABI *baselineStates [[buffer(4)]],
     device NBFastAutonomicStateABI *outputStates [[buffer(5)]],
     device NBAutonomicCommandRecordABI *outputCommands [[buffer(6)]],
+    device const NBFastCPGStateABI *cpgStates [[buffer(7)]],
     uint channelIndex [[thread_position_in_grid]])
 {
     if (channelIndex >= uniforms->channel_count) {
@@ -3562,9 +3566,24 @@ kernel void advance_fast_autonomic_output(
     const float highLevelCommand = isfinite(baselineCommand.command)
         ? clamp(baselineCommand.command, 0.0f, 1.0f)
         : 0.0f;
-    const float highLevelTarget = isfinite(baselineCommand.target)
+    const float cognitiveTarget = isfinite(baselineCommand.target)
         ? clamp(baselineCommand.target, 0.0f, 1.0f)
         : highLevelCommand;
+    float vitalRhythmicDrive = 0.0f;
+    for (uint oscillator = 0u; oscillator < uniforms->oscillator_count;
+         ++oscillator) {
+        const NBFastCPGStateABI oscillatorState = cpgStates[oscillator];
+        if ((oscillatorState.flags & 1u) != 0u
+            && (oscillatorState.flags & (1u << 1u)) != 0u
+            && oscillatorState.output_kind == NBCPGOutputAutonomicChannel
+            && oscillatorState.output_synergy_identifier == channelIndex) {
+            vitalRhythmicDrive += oscillatorState.output;
+        }
+    }
+    const float highLevelTarget = max(
+        cognitiveTarget,
+        clamp(vitalRhythmicDrive * uniforms->vital_gain, 0.0f, 1.0f)
+    );
     NBFastAutonomicStateABI state = baselineStates[channelIndex];
     const bool valid = (state.flags & 1u) != 0u;
     bool hasSeenEvent = valid && (state.flags & (1u << 2u)) != 0u;

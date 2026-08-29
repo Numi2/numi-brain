@@ -81,7 +81,7 @@ private struct CPGOscillatorDescriptor {
   var naturalFrequencyHertz: Float = 0
   var dutyFactor: Float = 0
   var sensoryResetMask: UInt64 = 0
-  var reserved: UInt64 = 0
+  var outputKind: UInt64 = 0
 }
 
 private struct CPGCouplingDescriptor {
@@ -260,7 +260,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         outputSynergyIdentifier: UInt32($0.outputSynergyIdentifier),
         naturalFrequencyHertz: $0.naturalFrequencyHertz,
         dutyFactor: $0.dutyFactor,
-        sensoryResetMask: $0.sensoryResetMask.rawValue
+        sensoryResetMask: $0.sensoryResetMask.rawValue,
+        outputKind: UInt64($0.outputKind.rawValue)
       )
     }
     if cpgOscillatorDescriptors.isEmpty {

@@ -275,11 +275,20 @@ public struct ReflexCircuitTemplate: Codable, Equatable, Hashable, Sendable {
 }
 
 @frozen
+public enum CPGOutputKind: UInt16, Codable, CaseIterable, Hashable, Sendable {
+  case somaticSynergy = 1
+  case autonomicChannel = 2
+}
+
+@frozen
 public struct CPGOscillatorTemplate: Codable, Equatable, Hashable, Sendable {
   public let identifier: UInt16
   public let naturalFrequencyHertz: Float
   public let dutyFactor: Float
+  /// Target index in the domain selected by `outputKind`. The legacy name is
+  /// retained so existing somatic species-template source remains compatible.
   public let outputSynergyIdentifier: UInt16
+  public let outputKind: CPGOutputKind
   public let sensoryResetMask: BrainInterruptMask
 
   public init(
@@ -287,6 +296,7 @@ public struct CPGOscillatorTemplate: Codable, Equatable, Hashable, Sendable {
     naturalFrequencyHertz: Float,
     dutyFactor: Float,
     outputSynergyIdentifier: UInt16,
+    outputKind: CPGOutputKind = .somaticSynergy,
     sensoryResetMask: BrainInterruptMask
   ) throws {
     guard identifier > 0,
@@ -299,6 +309,7 @@ public struct CPGOscillatorTemplate: Codable, Equatable, Hashable, Sendable {
     self.naturalFrequencyHertz = naturalFrequencyHertz
     self.dutyFactor = dutyFactor
     self.outputSynergyIdentifier = outputSynergyIdentifier
+    self.outputKind = outputKind
     self.sensoryResetMask = sensoryResetMask
   }
 }
@@ -491,9 +502,8 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  /// Version 2 makes the identity content-address every runtime-affecting
-  /// species field, including protective circuits and developmental capacity.
-  public static let formatVersion: UInt32 = 2
+  /// Version 3 distinguishes somatic and vital-autonomic CPG output targets.
+  public static let formatVersion: UInt32 = 3
 
   public let family: SpeciesFamily
   public let name: String
@@ -544,6 +554,12 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       reflexRuleCountOverflow = reflexRuleCountOverflow || product.overflow
         || total.overflow
     }
+    let hasVitalAutonomicCPG = cpg.oscillators.contains {
+      $0.outputKind == .autonomicChannel
+    }
+    let hasVitalAutonomicScaffold = innateBehaviors.contains {
+      $0.kind == .vitalAutonomic && $0.gain > 0
+    }
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !enabled.isEmpty, Set(enabled).count == enabled.count,
       regionGraph.referenceGraphFingerprint == referenceGraph.fingerprint,
@@ -558,9 +574,15 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       reflexes.allSatisfy({ reflex in
         reflex.actuatorIdentifiers.allSatisfy({ $0 < motor.actuatorCount })
       }),
-      cpg.oscillators.allSatisfy({
-        $0.outputSynergyIdentifier < motor.synergyCount
+      cpg.oscillators.allSatisfy({ oscillator in
+        switch oscillator.outputKind {
+        case .somaticSynergy:
+          oscillator.outputSynergyIdentifier < motor.synergyCount
+        case .autonomicChannel:
+          oscillator.outputSynergyIdentifier < physiology.autonomicActionDimension
+        }
       }),
+      !hasVitalAutonomicCPG || hasVitalAutonomicScaffold,
       innateBehaviors.allSatisfy({ enabled.contains($0.controllerModuleIdentifier) }),
       development.map(\.stage) == DevelopmentalStage.allCases,
       development.dropFirst().allSatisfy({ !$0.capabilityGateCodes.isEmpty }),
@@ -648,6 +670,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       Self.mix(UInt32(oscillator.identifier), into: &hash)
       Self.mix(oscillator.naturalFrequencyHertz.bitPattern, into: &hash)
       Self.mix(oscillator.dutyFactor.bitPattern, into: &hash)
+      Self.mix(UInt32(oscillator.outputKind.rawValue), into: &hash)
       Self.mix(UInt32(oscillator.outputSynergyIdentifier), into: &hash)
       Self.mix(oscillator.sensoryResetMask.rawValue, into: &hash)
     }

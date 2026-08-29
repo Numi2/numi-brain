@@ -39,7 +39,7 @@ private struct FastAutonomicUniforms {
   var vitalGain: Float = 0
   var responseTimeMicroseconds: UInt32 = 50_000
   var criticalDecayMicroseconds: UInt32 = 500_000
-  var reserved: UInt32 = 0
+  var oscillatorCount: UInt32 = 0
 }
 
 private struct BodyLoadFieldUniforms {
@@ -1059,7 +1059,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     let fastAutonomicArgumentDescriptor = MTL4ArgumentTableDescriptor()
     fastAutonomicArgumentDescriptor.label = "NumiBrain fast-autonomic arguments"
-    fastAutonomicArgumentDescriptor.maxBufferBindCount = 7
+    fastAutonomicArgumentDescriptor.maxBufferBindCount = 8
     fastAutonomicArgumentDescriptor.initializeBindings = true
     guard
       let fastAutonomicArgumentTable = try? device.makeArgumentTable(
@@ -3037,6 +3037,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     writeFastAutonomicUniforms(
       timestamp: lease.decision.decisionTimestamp,
       baselineTimestamp: lease.decision.decisionTimestamp,
+      oscillatorCount: lease.decision.cpgStateCount,
       consumeInterruptEvents: false
     )
     writeProtectiveCommandUniforms(
@@ -3176,6 +3177,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       fastAutonomicArgumentTable.setAddress(
         stagedFastAutonomicOutputBuffer.gpuAddress,
         index: 6
+      )
+      fastAutonomicArgumentTable.setAddress(
+        stagedFastCPGStateBuffer.gpuAddress,
+        index: 7
       )
       encoder.setComputePipelineState(fastAutonomicPipeline)
       encoder.setArgumentTable(fastAutonomicArgumentTable)
@@ -4231,6 +4236,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private func writeFastAutonomicUniforms(
     timestamp: BrainTimestamp,
     baselineTimestamp: BrainTimestamp,
+    oscillatorCount: Int? = nil,
     consumeInterruptEvents: Bool = false
   ) {
     var uniforms = FastAutonomicUniforms(
@@ -4241,7 +4247,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       vitalGain: boundFastAutonomicVitalGain,
       responseTimeMicroseconds: 50_000,
       criticalDecayMicroseconds: 500_000,
-      reserved: 0
+      oscillatorCount: UInt32(oscillatorCount ?? stagedFastCPGOscillatorCount)
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -5480,44 +5486,6 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
-    fastAutonomicArgumentTable.setAddress(
-      fastAutonomicUniformBuffer.gpuAddress,
-      index: 0
-    )
-    fastAutonomicArgumentTable.setAddress(
-      baselineFastAutonomicCommandBuffer.gpuAddress,
-      index: 1
-    )
-    fastAutonomicArgumentTable.setAddress(
-      transducedSchedulerEventBuffer.gpuAddress,
-      index: 2
-    )
-    fastAutonomicArgumentTable.setAddress(
-      receptorEventTransductionResultBuffer.gpuAddress,
-      index: 3
-    )
-    fastAutonomicArgumentTable.setAddress(
-      baselineFastAutonomicStateBuffer.gpuAddress,
-      index: 4
-    )
-    fastAutonomicArgumentTable.setAddress(
-      stagedFastAutonomicStateBuffer.gpuAddress,
-      index: 5
-    )
-    fastAutonomicArgumentTable.setAddress(
-      stagedFastAutonomicOutputBuffer.gpuAddress,
-      index: 6
-    )
-    encoder.setComputePipelineState(fastAutonomicPipeline)
-    encoder.setArgumentTable(fastAutonomicArgumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(
-        width: boundFastAutonomicChannelCount,
-        height: 1,
-        depth: 1
-      ),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
     schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
     schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
     schedulerArgumentTable.setAddress(
@@ -5794,6 +5762,53 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     encoder.setArgumentTable(protectiveMotorArgumentTable)
     encoder.dispatchThreads(
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    fastAutonomicArgumentTable.setAddress(
+      fastAutonomicUniformBuffer.gpuAddress,
+      index: 0
+    )
+    fastAutonomicArgumentTable.setAddress(
+      baselineFastAutonomicCommandBuffer.gpuAddress,
+      index: 1
+    )
+    fastAutonomicArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress,
+      index: 2
+    )
+    fastAutonomicArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress,
+      index: 3
+    )
+    fastAutonomicArgumentTable.setAddress(
+      baselineFastAutonomicStateBuffer.gpuAddress,
+      index: 4
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastAutonomicStateBuffer.gpuAddress,
+      index: 5
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastAutonomicOutputBuffer.gpuAddress,
+      index: 6
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastCPGStateBuffer.gpuAddress,
+      index: 7
+    )
+    encoder.setComputePipelineState(fastAutonomicPipeline)
+    encoder.setArgumentTable(fastAutonomicArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(
+        width: boundFastAutonomicChannelCount,
+        height: 1,
+        depth: 1
+      ),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
   }

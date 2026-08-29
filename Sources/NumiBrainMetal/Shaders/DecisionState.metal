@@ -9,6 +9,8 @@ constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant uint NB_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
+constant uint NB_CPG_OUTPUT_SOMATIC_SYNERGY = 1u;
+constant uint NB_CPG_OUTPUT_AUTONOMIC_CHANNEL = 2u;
 constant uint NB_OPTION_PROPOSAL_REST_RECOVERY = 3u;
 constant ulong NB_REST_OPTION_IDENTIFIER = NB_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
@@ -223,7 +225,7 @@ struct NBCPGOscillatorDescriptor {
   float natural_frequency_hertz;
   float duty_factor;
   ulong sensory_reset_mask;
-  ulong reserved;
+  ulong output_kind;
 };
 
 struct NBCPGCouplingDescriptor {
@@ -247,7 +249,7 @@ struct NBCPGStateRecord {
   uint output_synergy_identifier;
   uint oscillator_identifier;
   uint flags;
-  uint reserved;
+  uint output_kind;
 };
 
 struct NBFastCerebellarStateRecord {
@@ -1444,7 +1446,7 @@ kernel void advance_cpg_state(
     (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
     deliberate_inhibition
   );
-  const bool active = candidate.source_module == 72u
+  const bool locomotor_active = candidate.source_module == 72u
     && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
     && (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) == 0u;
 
@@ -1484,6 +1486,9 @@ kernel void advance_cpg_state(
       ++oscillator) {
     const NBCPGOscillatorDescriptor descriptor = oscillator_descriptors[oscillator];
     NBCPGStateRecord state = states[oscillator];
+    const bool vital = descriptor.output_kind
+      == ulong(NB_CPG_OUTPUT_AUTONOMIC_CHANNEL);
+    const bool active = vital || locomotor_active;
     const ulong prior_timestamp = state.timestamp_microseconds;
     const float elapsed_seconds = prior_timestamp > 0ul
         && uniforms.target_timestamp_microseconds > prior_timestamp
@@ -1517,7 +1522,9 @@ kernel void advance_cpg_state(
         }
       }
     }
-    const float vigor_scale = clamp(0.5f + header->vigor, 0.25f, 1.5f);
+    const float vigor_scale = vital
+      ? 1.0f
+      : clamp(0.5f + header->vigor, 0.25f, 1.5f);
     const float effective_frequency = active
       ? max(descriptor.natural_frequency_hertz * vigor_scale
           + coupling_frequency, 0.0f)
@@ -1531,9 +1538,11 @@ kernel void advance_cpg_state(
     const float raw_output = active && phase < descriptor.duty_factor
       ? 0.5f - 0.5f * cos(two_pi * normalized_active_phase)
       : 0.0f;
-    const float output_gain = active
-      ? (1.0f - motor_inhibition) * development->muscle_strength_multiplier
-      : 0.0f;
+    const float output_gain = vital
+      ? 1.0f
+      : (active
+        ? (1.0f - motor_inhibition) * development->muscle_strength_multiplier
+        : 0.0f);
     state.phase = phase;
     state.output = clamp(raw_output * output_gain, 0.0f, 1.0f);
     state.effective_frequency_hertz = effective_frequency;
@@ -1549,7 +1558,7 @@ kernel void advance_cpg_state(
     state.flags = NB_CONTROL_FLAG_VALID
       | (active ? (1u << 1u) : 0u)
       | (reset ? (1u << 2u) : 0u);
-    state.reserved = 0u;
+    state.output_kind = uint(descriptor.output_kind);
     states[oscillator] = state;
   }
 }
@@ -1702,6 +1711,7 @@ kernel void generate_motor_spinal_autonomic_state(
         ++oscillator) {
       const NBCPGStateRecord oscillator_state = cpg_states[oscillator];
       if ((oscillator_state.flags & NB_CONTROL_FLAG_VALID) != 0u
+          && oscillator_state.output_kind == NB_CPG_OUTPUT_SOMATIC_SYNERGY
           && oscillator_state.output_synergy_identifier == actuator_synergy) {
         cpg_output += oscillator_state.output;
       }
