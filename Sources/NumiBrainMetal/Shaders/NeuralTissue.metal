@@ -2131,31 +2131,21 @@ kernel void advance_due_regional_tokens(
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint scalarIndex = lane;
-             scalarIndex < header->token_scalar_count;
-             scalarIndex += laneCount) {
-            uint moduleIndex = 0u;
-            for (; moduleIndex < header->module_count; ++moduleIndex) {
-                const NBRegionalTokenLayoutABI candidateLayout = layouts[moduleIndex];
-                if (scalarIndex >= candidateLayout.scalar_offset
-                    && scalarIndex < candidateLayout.scalar_offset + candidateLayout.scalar_count) {
-                    break;
-                }
-            }
-            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-            NBDueInvocationABI invocation;
-            const bool due = regional_invocation_for_module(
-                invocations,
-                cursor,
-                groupEnd,
-                layout.module_id,
-                invocation
+        // Canonical invocations are unique by module and timestamp. Iterate the
+        // compact due set so inactive regional scalars consume no operator work.
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const NBDueInvocationABI invocation = invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocation.module_id
             );
-            if (!due) {
-                candidateTokens[scalarIndex] = outputTokens[scalarIndex];
+            if (moduleIndex == ~0u) {
                 continue;
             }
-
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
             const NBModuleDescriptorABI module = modules[moduleIndex];
             const NBRegionalMaturationRecordABI maturationRecord =
                 maturation[moduleIndex];
@@ -2189,99 +2179,100 @@ kernel void advance_due_regional_tokens(
                 1.0f
             );
             const float drive = periodicDrive + interruptDrive;
-            const uint localScalar = scalarIndex - layout.scalar_offset;
             const uint dimension = uint(layout.token_dimension);
-            const uint tokenStart = layout.scalar_offset + (localScalar / dimension) * dimension;
-            const uint feature = localScalar % dimension;
-            float localProjection = 0.0f;
-            for (uint localFeature = 0u; localFeature < dimension; ++localFeature) {
-                localProjection += denseParameters[
-                    layout.dense_weight_offset + feature * dimension + localFeature
-                ] * outputTokens[tokenStart + localFeature];
-            }
-            localProjection /= sqrt(float(dimension));
-            float routedInput = 0.0f;
             const uint selectedCount = selectedRouteCounts[moduleIndex];
-            for (uint selectedIndex = 0u;
-                 selectedIndex < selectedCount;
-                 ++selectedIndex) {
-                const uint routeIndex = selectedRouteIndices[
-                    layout.incoming_route_offset + selectedIndex
-                ];
-                const NBRegionalRouteABI route = routes[routeIndex];
-                routedInput += routeParameters[3] * route.gain
-                    * (validMaturation ? maturationRecord.route_gain_multiplier : 1.0f)
-                    * outputRouteRuntimeStates[routeIndex].strength
-                    * regional_route_message_value(
-                        routeIndex,
-                        timestamp,
-                        feature,
-                        header,
-                        layouts,
-                        routes,
-                        outputTokens,
-                        outputRouteHistoryValues,
-                        resolvedRouteHistorySlots
-                    );
+            for (uint localScalar = lane;
+                 localScalar < layout.scalar_count;
+                 localScalar += laneCount) {
+                const uint scalarIndex = layout.scalar_offset + localScalar;
+                const uint tokenStart = layout.scalar_offset
+                    + (localScalar / dimension) * dimension;
+                const uint feature = localScalar % dimension;
+                float localProjection = 0.0f;
+                for (uint localFeature = 0u;
+                     localFeature < dimension;
+                     ++localFeature) {
+                    localProjection += denseParameters[
+                        layout.dense_weight_offset + feature * dimension + localFeature
+                    ] * outputTokens[tokenStart + localFeature];
+                }
+                localProjection /= sqrt(float(dimension));
+                float routedInput = 0.0f;
+                for (uint selectedIndex = 0u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    const uint routeIndex = selectedRouteIndices[
+                        layout.incoming_route_offset + selectedIndex
+                    ];
+                    const NBRegionalRouteABI route = routes[routeIndex];
+                    routedInput += routeParameters[3] * route.gain
+                        * (validMaturation
+                            ? maturationRecord.route_gain_multiplier
+                            : 1.0f)
+                        * outputRouteRuntimeStates[routeIndex].strength
+                        * regional_route_message_value(
+                            routeIndex,
+                            timestamp,
+                            feature,
+                            header,
+                            layouts,
+                            routes,
+                            outputTokens,
+                            outputRouteHistoryValues,
+                            resolvedRouteHistorySlots
+                        );
+                }
+                const NBRegionalTokenParametersABI parameter =
+                    parameters[layout.parameter_offset + localScalar];
+                const float current = outputTokens[scalarIndex];
+                const float candidate = tanh(
+                    (parameter.recurrent_gain
+                        + (validPlastic ? plastic.recurrent_delta : 0.0f)) * current
+                    + (parameter.local_gain
+                        + (validPlastic ? plastic.local_delta : 0.0f)) * localProjection
+                    + (parameter.route_gain
+                        + (validPlastic ? plastic.route_delta : 0.0f)) * routedInput
+                    + (parameter.drive_gain
+                        + (validPlastic ? plastic.drive_delta : 0.0f)) * drive
+                    + parameter.bias
+                );
+                const float gateInput = parameter.gate_bias
+                    + (validPlastic ? plastic.gate_delta : 0.0f)
+                    + parameter.gate_recurrent_gain * current
+                    + parameter.gate_input_gain * (routedInput + drive);
+                const float gate = 1.0f / (1.0f + exp(-gateInput));
+                candidateTokens[scalarIndex] = current
+                    + alpha * gate * (candidate - current);
             }
-            const NBRegionalTokenParametersABI parameter =
-                parameters[layout.parameter_offset + localScalar];
-            const float current = outputTokens[scalarIndex];
-            const float candidate = tanh(
-                (parameter.recurrent_gain
-                    + (validPlastic ? plastic.recurrent_delta : 0.0f)) * current
-                + (parameter.local_gain
-                    + (validPlastic ? plastic.local_delta : 0.0f)) * localProjection
-                + (parameter.route_gain
-                    + (validPlastic ? plastic.route_delta : 0.0f)) * routedInput
-                + (parameter.drive_gain
-                    + (validPlastic ? plastic.drive_delta : 0.0f)) * drive
-                + parameter.bias
-            );
-            const float gateInput = parameter.gate_bias
-                + (validPlastic ? plastic.gate_delta : 0.0f)
-                + parameter.gate_recurrent_gain * current
-                + parameter.gate_input_gain * (routedInput + drive);
-            const float gate = 1.0f / (1.0f + exp(-gateInput));
-            candidateTokens[scalarIndex] = current
-                + alpha * gate * (candidate - current);
         }
+        // Every same-timestamp candidate must finish reading the common prior
+        // generation before any due module publishes its successor state.
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint scalarIndex = lane;
-             scalarIndex < header->token_scalar_count;
-             scalarIndex += laneCount) {
-            uint moduleIndex = 0u;
-            for (; moduleIndex < header->module_count; ++moduleIndex) {
-                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-                if (scalarIndex >= layout.scalar_offset
-                    && scalarIndex < layout.scalar_offset + layout.scalar_count) {
-                    break;
-                }
-            }
-            NBDueInvocationABI invocation;
-            if (regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    layouts[moduleIndex].module_id,
-                    invocation)) {
-                outputTokens[scalarIndex] = candidateTokens[scalarIndex];
-            }
-        }
-        for (uint moduleIndex = lane;
-             moduleIndex < header->module_count;
-             moduleIndex += laneCount) {
-            const NBModuleDescriptorABI module = modules[moduleIndex];
-            NBDueInvocationABI invocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    module.module_id,
-                    invocation)) {
+        // Publish only the compact due set after the shared read barrier.
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const NBDueInvocationABI invocation = invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocation.module_id
+            );
+            if (moduleIndex == ~0u) {
                 continue;
             }
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+            for (uint localScalar = lane;
+                 localScalar < layout.scalar_count;
+                 localScalar += laneCount) {
+                const uint scalarIndex = layout.scalar_offset + localScalar;
+                outputTokens[scalarIndex] = candidateTokens[scalarIndex];
+            }
+            if (lane != 0u) {
+                continue;
+            }
+            const NBModuleDescriptorABI module = modules[moduleIndex];
             NBRegionalModuleStateABI state = outputDiagnostics[moduleIndex];
             const ulong elapsedMicroseconds = state.last_update_microseconds == neverUpdated
                 ? ulong(module.period_microseconds)
@@ -2833,33 +2824,21 @@ kernel void advance_cohort_regional_tokens_routed(
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint scalarIndex = lane;
-             scalarIndex < header->token_scalar_count;
-             scalarIndex += laneCount) {
-            uint moduleIndex = 0u;
-            for (; moduleIndex < header->module_count; ++moduleIndex) {
-                const NBRegionalTokenLayoutABI candidateLayout = layouts[moduleIndex];
-                if (scalarIndex >= candidateLayout.scalar_offset
-                    && scalarIndex < candidateLayout.scalar_offset
-                        + candidateLayout.scalar_count) {
-                    break;
-                }
-            }
-            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-            NBDueInvocationABI invocation;
-            const bool due = regional_invocation_for_module(
-                invocations,
-                cursor,
-                groupEnd,
-                layout.module_id,
-                invocation
+        // Compacted cohort invocations preserve the canonical module/timestamp
+        // uniqueness established by the scheduler and dispatch-plan builder.
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const NBDueInvocationABI invocation = invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocation.module_id
             );
-            const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
-            if (!due) {
-                candidateTokens[absoluteScalar] = outputTokens[absoluteScalar];
+            if (moduleIndex == ~0u) {
                 continue;
             }
-
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
             const NBModuleDescriptorABI module = modules[moduleIndex];
             const ulong lastUpdate = tokenLastUpdates[diagnosticBase + moduleIndex];
             const ulong elapsedMicroseconds = lastUpdate == neverUpdated
@@ -2878,100 +2857,95 @@ kernel void advance_cohort_regional_tokens_routed(
                 1.0f
             );
             const float drive = periodicDrive + interruptDrive;
-            const uint localScalar = scalarIndex - layout.scalar_offset;
             const uint dimension = uint(layout.token_dimension);
-            const uint tokenStart = layout.scalar_offset
-                + (localScalar / dimension) * dimension;
-            const uint feature = localScalar % dimension;
-            float localProjection = 0.0f;
-            for (uint localFeature = 0u;
-                 localFeature < dimension;
-                 ++localFeature) {
-                localProjection += denseParameters[
-                    layout.dense_weight_offset + feature * dimension + localFeature
-                ] * outputTokens[
-                    tokenBase + ulong(tokenStart + localFeature)
-                ];
-            }
-            localProjection /= sqrt(float(dimension));
-            float routedInput = 0.0f;
             const uint selectedCount =
                 selectedRouteCounts[diagnosticBase + moduleIndex];
-            for (uint selectedIndex = 0u;
-                 selectedIndex < selectedCount;
-                 ++selectedIndex) {
-                const uint routeIndex = selectedRouteIndices[
-                    routeBase + layout.incoming_route_offset + selectedIndex
-                ];
-                const NBRegionalRouteABI route = routes[routeIndex];
-                routedInput += routeParameters[3] * route.gain
-                    * outputRouteRuntimeStates[routeBase + routeIndex].strength
-                    * cohort_regional_route_message_value(
-                        routeIndex,
-                        timestamp,
-                        feature,
-                        header,
-                        layouts,
-                        routes,
-                        outputTokens,
-                        tokenBase,
-                        outputRouteHistoryValues,
-                        historyValueBase,
-                        resolvedRouteHistorySlots,
-                        routeBase
-                    );
+            for (uint localScalar = lane;
+                 localScalar < layout.scalar_count;
+                 localScalar += laneCount) {
+                const uint scalarIndex = layout.scalar_offset + localScalar;
+                const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
+                const uint tokenStart = layout.scalar_offset
+                    + (localScalar / dimension) * dimension;
+                const uint feature = localScalar % dimension;
+                float localProjection = 0.0f;
+                for (uint localFeature = 0u;
+                     localFeature < dimension;
+                     ++localFeature) {
+                    localProjection += denseParameters[
+                        layout.dense_weight_offset + feature * dimension + localFeature
+                    ] * outputTokens[
+                        tokenBase + ulong(tokenStart + localFeature)
+                    ];
+                }
+                localProjection /= sqrt(float(dimension));
+                float routedInput = 0.0f;
+                for (uint selectedIndex = 0u;
+                     selectedIndex < selectedCount;
+                     ++selectedIndex) {
+                    const uint routeIndex = selectedRouteIndices[
+                        routeBase + layout.incoming_route_offset + selectedIndex
+                    ];
+                    const NBRegionalRouteABI route = routes[routeIndex];
+                    routedInput += routeParameters[3] * route.gain
+                        * outputRouteRuntimeStates[routeBase + routeIndex].strength
+                        * cohort_regional_route_message_value(
+                            routeIndex,
+                            timestamp,
+                            feature,
+                            header,
+                            layouts,
+                            routes,
+                            outputTokens,
+                            tokenBase,
+                            outputRouteHistoryValues,
+                            historyValueBase,
+                            resolvedRouteHistorySlots,
+                            routeBase
+                        );
+                }
+                const NBRegionalTokenParametersABI parameter =
+                    parameters[layout.parameter_offset + localScalar];
+                const float current = outputTokens[absoluteScalar];
+                const float candidate = tanh(
+                    parameter.recurrent_gain * current
+                    + parameter.local_gain * localProjection
+                    + parameter.route_gain * routedInput
+                    + parameter.drive_gain * drive
+                    + parameter.bias
+                );
+                const float gateInput = parameter.gate_bias
+                    + parameter.gate_recurrent_gain * current
+                    + parameter.gate_input_gain * (routedInput + drive);
+                const float gate = 1.0f / (1.0f + exp(-gateInput));
+                candidateTokens[absoluteScalar] = current
+                    + alpha * gate * (candidate - current);
             }
-            const NBRegionalTokenParametersABI parameter =
-                parameters[layout.parameter_offset + localScalar];
-            const float current = outputTokens[absoluteScalar];
-            const float candidate = tanh(
-                parameter.recurrent_gain * current
-                + parameter.local_gain * localProjection
-                + parameter.route_gain * routedInput
-                + parameter.drive_gain * drive
-                + parameter.bias
-            );
-            const float gateInput = parameter.gate_bias
-                + parameter.gate_recurrent_gain * current
-                + parameter.gate_input_gain * (routedInput + drive);
-            const float gate = 1.0f / (1.0f + exp(-gateInput));
-            candidateTokens[absoluteScalar] = current
-                + alpha * gate * (candidate - current);
         }
+        // Preserve simultaneous regional semantics across this timestamp.
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint scalarIndex = lane;
-             scalarIndex < header->token_scalar_count;
-             scalarIndex += laneCount) {
-            uint moduleIndex = 0u;
-            for (; moduleIndex < header->module_count; ++moduleIndex) {
-                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-                if (scalarIndex >= layout.scalar_offset
-                    && scalarIndex < layout.scalar_offset + layout.scalar_count) {
-                    break;
-                }
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const NBDueInvocationABI invocation = invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocation.module_id
+            );
+            if (moduleIndex == ~0u) {
+                continue;
             }
-            NBDueInvocationABI invocation;
-            if (regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    layouts[moduleIndex].module_id,
-                    invocation)) {
-                const ulong absoluteScalar = tokenBase + ulong(scalarIndex);
+            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+            for (uint localScalar = lane;
+                 localScalar < layout.scalar_count;
+                 localScalar += laneCount) {
+                const ulong absoluteScalar = tokenBase
+                    + ulong(layout.scalar_offset + localScalar);
                 outputTokens[absoluteScalar] = candidateTokens[absoluteScalar];
             }
-        }
-        for (uint moduleIndex = lane;
-             moduleIndex < header->module_count;
-             moduleIndex += laneCount) {
-            NBDueInvocationABI invocation;
-            if (regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    layouts[moduleIndex].module_id,
-                    invocation)) {
+            if (lane == 0u) {
                 tokenLastUpdates[diagnosticBase + moduleIndex] = timestamp;
             }
         }
