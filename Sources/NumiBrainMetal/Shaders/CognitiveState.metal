@@ -1,6 +1,8 @@
 #include <metal_stdlib>
 using namespace metal;
 
+constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
+
 struct NBCognitiveUniforms {
   ulong target_timestamp_microseconds;
   ulong delta_microseconds;
@@ -1074,6 +1076,11 @@ kernel void advance_entity_and_social_slots(
   device const float *belief_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const NBEventQueueStateHeader *event_header =
+    reinterpret_cast<device const NBEventQueueStateHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  if ((event_header->flags & NB_SENSORY_FRAME_REUSED) != 0u) return;
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -1084,10 +1091,6 @@ kernel void advance_entity_and_social_slots(
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
-  device NBEventQueueStateHeader *event_header =
-    reinterpret_cast<device NBEventQueueStateHeader *>(
-      hot_state + uniforms.event_queue_offset
-    );
   const uint event_count = min(
     min(atomic_load_explicit(&event_header->count, memory_order_relaxed),
       event_header->capacity),
@@ -1653,6 +1656,11 @@ kernel void advance_spatial_coordinate_transforms(
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.spatial_transform_count) return;
+  device const NBEventQueueStateHeader *event_header =
+    reinterpret_cast<device const NBEventQueueStateHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  if ((event_header->flags & NB_SENSORY_FRAME_REUSED) != 0u) return;
   device NBSpatialTransformRecord *transforms =
     reinterpret_cast<device NBSpatialTransformRecord *>(
       hot_state + uniforms.spatial_transform_offset
@@ -2142,6 +2150,12 @@ kernel void broadcast_social_context(
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
+  device const NBEventQueueStateHeader *event_header =
+    reinterpret_cast<device const NBEventQueueStateHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  const bool frame_reused =
+    (event_header->flags & NB_SENSORY_FRAME_REUSED) != 0u;
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -2275,7 +2289,7 @@ kernel void broadcast_social_context(
     context[feature] = value;
   }
 
-  if (uniforms.drive_count > 9u) {
+  if (!frame_reused && uniforms.drive_count > 9u) {
     NBDriveStateRecord social_drive = drives[9];
     if (social_drive.kind == 0u) social_drive.kind = 10u;
     if (social_drive.priority_weight <= 0.0f) social_drive.priority_weight = 1.0f;
@@ -2297,7 +2311,7 @@ kernel void broadcast_social_context(
       * social_drive.deficit * social_drive.deficit;
     drives[9] = social_drive;
   }
-  if (uniforms.neuromodulator_count > 8u) {
+  if (!frame_reused && uniforms.neuromodulator_count > 8u) {
     NBNeuromodulatorStateRecord social_modulator = neuromodulators[8];
     if (social_modulator.kind == 0u) social_modulator.kind = 9u;
     if (social_modulator.decay_time_constant_seconds <= 0.0f) {

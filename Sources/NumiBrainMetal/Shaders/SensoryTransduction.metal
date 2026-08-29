@@ -2,6 +2,8 @@
 using namespace metal;
 
 constant uint NB_SENSORY_FRAME_VALID = 1u;
+constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
+constant uint NB_SENSORY_REUSE_MATCHING_FRAME = 1u;
 constant uint NB_RECEPTOR_EVENT_DERIVED = 1u;
 
 struct NBSensoryUniforms {
@@ -21,7 +23,7 @@ struct NBSensoryUniforms {
   uint event_capacity;
   uint event_rule_count;
   uint delta_microseconds;
-  uint reserved1;
+  uint flags;
 };
 
 struct NBSensoryDescriptor {
@@ -205,12 +207,24 @@ kernel void begin_sensory_frame(
       hot_state + uniforms.frame_metadata_offset
     );
   if (gid == 0u) {
-    atomic_store_explicit(&header->count, 0u, memory_order_relaxed);
-    header->capacity = uniforms.event_capacity;
-    atomic_store_explicit(&header->overflow_count, 0u, memory_order_relaxed);
-    header->flags = NB_SENSORY_FRAME_VALID;
-    header->target_timestamp_microseconds = uniforms.target_timestamp_microseconds;
-    header->generation = uniforms.random_counter_generation;
+    const bool reuse_matching_frame =
+      (uniforms.flags & NB_SENSORY_REUSE_MATCHING_FRAME) != 0u
+      && (header->flags & NB_SENSORY_FRAME_VALID) != 0u
+      && header->target_timestamp_microseconds
+        == uniforms.target_timestamp_microseconds;
+    if (reuse_matching_frame) {
+      // The accepted O(t) frame is already part of the transaction shadow.
+      // Preserve its receptor adaptation, observation samples, event queue,
+      // and original random generation until physical time advances.
+      header->flags |= NB_SENSORY_FRAME_REUSED;
+    } else {
+      atomic_store_explicit(&header->count, 0u, memory_order_relaxed);
+      header->capacity = uniforms.event_capacity;
+      atomic_store_explicit(&header->overflow_count, 0u, memory_order_relaxed);
+      header->flags = NB_SENSORY_FRAME_VALID;
+      header->target_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+      header->generation = uniforms.random_counter_generation;
+    }
   }
   if (gid < uniforms.descriptor_count) {
     const NBSensoryDescriptor descriptor = descriptors[gid];
@@ -243,6 +257,11 @@ kernel void update_receptor_adaptation(
   device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const NBEventQueueHeader *header =
+    reinterpret_cast<device const NBEventQueueHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  if ((header->flags & NB_SENSORY_FRAME_REUSED) != 0u) return;
   if (gid >= uniforms.total_receptors) return;
   const uint descriptor_index = nb_descriptor_for_receptor(
     descriptors,
@@ -284,6 +303,11 @@ kernel void transduce_receptor_observations(
   device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const NBEventQueueHeader *header =
+    reinterpret_cast<device const NBEventQueueHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  if ((header->flags & NB_SENSORY_FRAME_REUSED) != 0u) return;
   if (gid >= uniforms.total_observation_scalars) return;
   const uint descriptor_index = nb_descriptor_for_scalar(
     descriptors,
@@ -330,6 +354,10 @@ kernel void extract_receptor_events(
   device const float *sensory_parameters [[buffer(11)]],
   uint gid [[thread_position_in_grid]])
 {
+  device NBEventQueueHeader *header = reinterpret_cast<device NBEventQueueHeader *>(
+    hot_state + uniforms.event_queue_offset
+  );
+  if ((header->flags & NB_SENSORY_FRAME_REUSED) != 0u) return;
   if (gid >= uniforms.event_rule_count) return;
   const NBReceptorEventRule rule = rules[gid];
   uint descriptor_index = uniforms.descriptor_count;
@@ -376,9 +404,6 @@ kernel void extract_receptor_events(
   }
   if (strongest <= 0.0f) return;
 
-  device NBEventQueueHeader *header = reinterpret_cast<device NBEventQueueHeader *>(
-    hot_state + uniforms.event_queue_offset
-  );
   const uint slot = atomic_fetch_add_explicit(
     &header->count,
     1u,

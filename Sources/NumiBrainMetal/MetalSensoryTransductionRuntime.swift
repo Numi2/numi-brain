@@ -19,7 +19,7 @@ private struct SensoryUniforms {
   var eventCapacity: UInt32 = 0
   var eventRuleCount: UInt32 = 0
   var deltaMicroseconds: UInt32 = 0
-  var reserved1: UInt32 = 0
+  var flags: UInt32 = 0
 }
 
 private struct SensoryDescriptorRecord {
@@ -392,7 +392,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       eventCapacity: UInt32(eventCapacity),
       eventRuleCount: UInt32(profile.eventRules.count),
       deltaMicroseconds: deltaMicroseconds,
-      reserved1: 0
+      flags: 1
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
