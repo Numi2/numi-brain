@@ -16,6 +16,8 @@ private struct AcceptedConsequenceUniforms {
   var workspaceContentOffset: UInt64 = 0
   var workspaceMetadataOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
+  var optionCandidateOffset: UInt64 = 0
+  var proceduralTraceOffset: UInt64 = 0
   var motorCommandOffset: UInt64 = 0
   var cerebellarOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
@@ -33,6 +35,10 @@ private struct AcceptedConsequenceUniforms {
   var activeCerebellarCount: UInt32 = 0
   var actuatorCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
+  var optionCandidateCapacity: UInt32 = 0
+  var proceduralTraceRecordCapacity: UInt32 = 0
+  var proceduralTracePhaseCapacity: UInt32 = 0
+  var reserved: UInt32 = 0
   var visionOffset: UInt32 = 0
   var visionCount: UInt32 = 0
   var auditionOffset: UInt32 = 0
@@ -81,7 +87,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 272,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 304,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
@@ -130,6 +136,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "broadcast_accepted_prediction_error",
       "adapt_cerebellar_experts_from_accepted_error",
       "update_fast_plasticity_from_accepted_error",
+      "update_accepted_procedural_trace",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -239,6 +246,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       pipeline: pipelines[4],
       count: Int(species.capacities.fastPlasticityCapacity)
     )
+    dispatch(encoder, pipeline: pipelines[5], count: 1)
   }
 
   private func makeUniforms(
@@ -261,6 +269,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let gustation = range(.gustation)
     let interoception = range(.interoception)
     let controlHeader = controlLayout.section(.header)
+    let optionCandidates = controlLayout.section(.optionCandidates)
     let motor = controlLayout.section(.motorCommands)
     let cerebellar = controlLayout.section(.cerebellarExperts)
     let integerCounts = [
@@ -285,6 +294,10 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       workspaceContentOffset: UInt64(hot(.workspaceContent).byteOffset),
       workspaceMetadataOffset: UInt64(hot(.workspaceMetadata).byteOffset),
       controlHeaderOffset: UInt64(controlHeader.byteOffset),
+      optionCandidateOffset: UInt64(optionCandidates.byteOffset),
+      proceduralTraceOffset: UInt64(
+        hot(.proceduralExecutionTrace).byteOffset
+      ),
       motorCommandOffset: UInt64(motor.byteOffset),
       cerebellarOffset: UInt64(cerebellar.byteOffset),
       cerebellarExpertMemoryOffset: UInt64(
@@ -306,6 +319,12 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       actuatorCount: species.motor.actuatorCount,
       eventCapacity: eventCapacity,
+      optionCandidateCapacity: UInt32(optionCandidates.elementCount),
+      proceduralTraceRecordCapacity: UInt32(
+        hot(.proceduralExecutionTrace).elementCount
+      ),
+      proceduralTracePhaseCapacity: 8,
+      reserved: 0,
       visionOffset: vision.offset,
       visionCount: vision.count,
       auditionOffset: audition.offset,

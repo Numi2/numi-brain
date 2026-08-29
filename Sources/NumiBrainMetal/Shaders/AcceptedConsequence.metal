@@ -2,6 +2,12 @@
 using namespace metal;
 
 constant uint NB_ACCEPTED_STATE_VALID = 1u;
+constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
+constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
+constant uint NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP = 1u << 1;
+constant ulong NB_ACCEPTED_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
+constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
+  NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
 
@@ -19,6 +25,8 @@ struct NBAcceptedConsequenceUniforms {
   ulong workspace_content_offset;
   ulong workspace_metadata_offset;
   ulong control_header_offset;
+  ulong option_candidate_offset;
+  ulong procedural_trace_offset;
   ulong motor_command_offset;
   ulong cerebellar_offset;
   ulong cerebellar_expert_memory_offset;
@@ -36,6 +44,10 @@ struct NBAcceptedConsequenceUniforms {
   uint active_cerebellar_count;
   uint actuator_count;
   uint event_capacity;
+  uint option_candidate_capacity;
+  uint procedural_trace_record_capacity;
+  uint procedural_trace_phase_capacity;
+  uint reserved;
   uint vision_offset;
   uint vision_count;
   uint audition_offset;
@@ -135,6 +147,56 @@ struct NBControlHeader {
   ulong reserved3;
 };
 
+struct NBOptionCandidateRecord {
+  ulong option_identifier;
+  ulong goal_identifier;
+  float task_value;
+  float homeostatic_value;
+  float social_value;
+  float information_gain;
+  float damage_cvar;
+  float effort_cost;
+  float switching_cost;
+  float competence;
+  uint proposal_kind;
+  uint source_module;
+  uint flags;
+  uint parameter_count;
+  float parameters[16];
+};
+
+struct NBProceduralTracePhase {
+  ulong option_identifier;
+  ulong start_timestamp_microseconds;
+  ulong last_timestamp_microseconds;
+  float duration_seconds;
+  float mean_value;
+  float maximum_damage;
+  float mean_uncertainty;
+  uint sample_count;
+  uint parameter_count;
+  float parameters[16];
+};
+
+struct NBProceduralExecutionTrace {
+  ulong identifier;
+  ulong goal_identifier;
+  ulong plan_identifier;
+  ulong start_timestamp_microseconds;
+  ulong last_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  uint phase_count;
+  uint sample_count;
+  float cumulative_value;
+  float maximum_damage;
+  float cumulative_effort;
+  float mean_uncertainty;
+  float final_progress;
+  float reserved[13];
+  NBProceduralTracePhase phases[8];
+};
+
 struct NBMotorCommandRecord {
   float excitation;
   float force_target;
@@ -154,13 +216,16 @@ struct NBCerebellarExpertRecord {
   float state[60];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 272);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 304);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBOptionCandidateRecord) == 128);
+static_assert(sizeof(NBProceduralTracePhase) == 112);
+static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBMotorCommandRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 
@@ -588,4 +653,162 @@ kernel void update_fast_plasticity_from_accepted_error(
   );
   site.flags |= NB_ACCEPTED_STATE_VALID;
   sites[gid] = site;
+}
+
+inline ulong nb_trace_hash(ulong value) {
+  value ^= value >> 30;
+  value *= 0xbf58476d1ce4e5b9ul;
+  value ^= value >> 27;
+  value *= 0x94d049bb133111ebul;
+  return value ^ (value >> 31);
+}
+
+/// Records only the option phases whose physical consequences were accepted.
+/// Completed traces remain in the transactional hot arena until rest-time
+/// procedural consolidation consumes them.
+kernel void update_accepted_procedural_trace(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.procedural_trace_record_capacity == 0u
+      || uniforms.procedural_trace_phase_capacity == 0u) return;
+  device const NBControlHeader *control =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  device NBProceduralExecutionTrace *traces =
+    reinterpret_cast<device NBProceduralExecutionTrace *>(
+      hot_state + uniforms.procedural_trace_offset
+    );
+  if (control->active_option_identifier == NB_ACCEPTED_REST_OPTION_IDENTIFIER) {
+    for (uint index = 0u; index < uniforms.procedural_trace_record_capacity;
+        ++index) {
+      if ((traces[index].flags & NB_ACCEPTED_STATE_VALID) != 0u
+          && (traces[index].flags & NB_ACCEPTED_TRACE_COMPLETE) == 0u
+          && traces[index].phase_count > 0u) {
+        traces[index].flags |= NB_ACCEPTED_TRACE_COMPLETE;
+        traces[index].last_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+      }
+    }
+    return;
+  }
+  if (uniforms.option_candidate_capacity == 0u) return;
+  const uint selected_index = min(
+    uint(control->reserved0), uniforms.option_candidate_capacity - 1u
+  );
+  device const NBOptionCandidateRecord *candidates =
+    reinterpret_cast<device const NBOptionCandidateRecord *>(
+      hot_state + uniforms.option_candidate_offset
+    );
+  const NBOptionCandidateRecord candidate = candidates[selected_index];
+  if ((candidate.flags & NB_ACCEPTED_STATE_VALID) == 0u
+      || candidate.option_identifier != control->active_option_identifier) return;
+
+  uint trace_index = uniforms.procedural_trace_record_capacity;
+  uint reusable_index = uniforms.procedural_trace_record_capacity;
+  ulong reusable_timestamp = ~0ul;
+  for (uint index = 0u; index < uniforms.procedural_trace_record_capacity;
+      ++index) {
+    const NBProceduralExecutionTrace trace = traces[index];
+    const bool valid = trace.format_version == 1u
+      && (trace.flags & NB_ACCEPTED_STATE_VALID) != 0u;
+    if (valid && (trace.flags & NB_ACCEPTED_TRACE_COMPLETE) == 0u
+        && trace.goal_identifier == control->active_goal_identifier) {
+      trace_index = index;
+      break;
+    }
+    if (!valid) {
+      if (reusable_index == uniforms.procedural_trace_record_capacity) {
+        reusable_index = index;
+      }
+    } else if ((trace.flags & NB_ACCEPTED_TRACE_COMPLETE) != 0u
+        && trace.last_timestamp_microseconds < reusable_timestamp) {
+      reusable_index = index;
+      reusable_timestamp = trace.last_timestamp_microseconds;
+    }
+  }
+  if (trace_index == uniforms.procedural_trace_record_capacity) {
+    if (reusable_index == uniforms.procedural_trace_record_capacity) return;
+    trace_index = reusable_index;
+    NBProceduralExecutionTrace initial = {};
+    initial.identifier = nb_trace_hash(
+      control->active_goal_identifier
+        ^ control->active_option_identifier
+        ^ uniforms.target_timestamp_microseconds
+    ) | 1ul;
+    initial.goal_identifier = control->active_goal_identifier;
+    initial.plan_identifier = control->active_plan_identifier;
+    initial.start_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds - uniforms.delta_microseconds;
+    initial.last_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    initial.format_version = 1u;
+    initial.flags = NB_ACCEPTED_STATE_VALID;
+    traces[trace_index] = initial;
+  }
+
+  device NBProceduralExecutionTrace *trace = &traces[trace_index];
+  if ((control->flags & NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP) != 0u) {
+    trace->flags |= NB_ACCEPTED_TRACE_COMPLETE | NB_ACCEPTED_TRACE_FAILED;
+  }
+  uint phase_index = trace->phase_count;
+  if (trace->phase_count > 0u
+      && trace->phases[trace->phase_count - 1u].option_identifier
+        == candidate.option_identifier) {
+    phase_index = trace->phase_count - 1u;
+  } else {
+    if (trace->phase_count >= min(
+        uniforms.procedural_trace_phase_capacity, 8u
+      )) {
+      trace->flags |= NB_ACCEPTED_TRACE_COMPLETE;
+      return;
+    }
+    phase_index = trace->phase_count;
+    NBProceduralTracePhase phase = {};
+    phase.option_identifier = candidate.option_identifier;
+    phase.start_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds - uniforms.delta_microseconds;
+    phase.parameter_count = min(candidate.parameter_count, 16u);
+    trace->phases[phase_index] = phase;
+    trace->phase_count += 1u;
+  }
+  device NBProceduralTracePhase *phase = &trace->phases[phase_index];
+  const uint next_phase_samples = phase->sample_count == ~0u
+    ? phase->sample_count : phase->sample_count + 1u;
+  const float phase_rate = 1.0f / float(max(next_phase_samples, 1u));
+  phase->last_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  phase->duration_seconds += float(uniforms.delta_microseconds) * 1.0e-6f;
+  phase->mean_value = mix(
+    phase->mean_value, control->selected_score, phase_rate
+  );
+  phase->maximum_damage = max(
+    phase->maximum_damage, control->selected_damage_cvar
+  );
+  phase->mean_uncertainty = mix(
+    phase->mean_uncertainty, control->unsupported_uncertainty, phase_rate
+  );
+  phase->sample_count = next_phase_samples;
+  for (uint component = 0u; component < 16u; ++component) {
+    phase->parameters[component] = mix(
+      phase->parameters[component], candidate.parameters[component], phase_rate
+    );
+  }
+  const uint next_samples = trace->sample_count == ~0u
+    ? trace->sample_count : trace->sample_count + 1u;
+  const float trace_rate = 1.0f / float(max(next_samples, 1u));
+  trace->sample_count = next_samples;
+  trace->last_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  trace->plan_identifier = control->active_plan_identifier != 0ul
+    ? control->active_plan_identifier : trace->plan_identifier;
+  trace->cumulative_value += control->selected_score;
+  trace->maximum_damage = max(
+    trace->maximum_damage, control->selected_damage_cvar
+  );
+  trace->cumulative_effort += max(control->predicted_effort, 0.0f);
+  trace->mean_uncertainty = mix(
+    trace->mean_uncertainty, control->unsupported_uncertainty, trace_rate
+  );
+  trace->final_progress = control->progress;
+  if (control->progress >= 0.99f) trace->flags |= NB_ACCEPTED_TRACE_COMPLETE;
 }

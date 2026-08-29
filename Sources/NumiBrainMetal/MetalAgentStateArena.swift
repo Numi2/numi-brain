@@ -46,6 +46,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case archivePageResidency = 33
   /// Deadline-bounded GPU requests for archive pages absent this control.
   case archivePageRequests = 34
+  /// Accepted option phases retained until procedural consolidation consumes them.
+  case proceduralExecutionTrace = 35
 }
 
 @frozen
@@ -368,6 +370,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: 1,
       stride: archiveRequestByteCount
     )
+    try builder.append(.proceduralExecutionTrace, count: 4, stride: 1_024)
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
@@ -414,7 +417,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 2
+  public static let recordLayoutVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
   public static let compressedEpisodeMetadataStride = 128

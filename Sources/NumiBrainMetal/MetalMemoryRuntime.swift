@@ -100,6 +100,7 @@ private struct MemoryConsolidationUniforms {
   var semanticRelationMemoryOffset: UInt64 = 0
   var proceduralMemoryOffset: UInt64 = 0
   var replayMemoryOffset: UInt64 = 0
+  var proceduralTraceOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var activeEpisodeCapacity: UInt32 = 0
@@ -112,6 +113,8 @@ private struct MemoryConsolidationUniforms {
   var proceduralStride: UInt32 = 0
   var replayCapacity: UInt32 = 0
   var replayStride: UInt32 = 0
+  var proceduralTraceCapacity: UInt32 = 0
+  var proceduralTraceStride: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var minimumProceduralEpisodes: UInt32 = 0
   var flags: UInt32 = 0
@@ -273,7 +276,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     guard MemoryLayout<MemoryUniforms>.stride == 192,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 256,
-      MemoryLayout<MemoryConsolidationUniforms>.stride == 216,
+      MemoryLayout<MemoryConsolidationUniforms>.stride == 232,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -726,6 +729,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
       proceduralMemoryOffset: UInt64(procedural.byteOffset),
       replayMemoryOffset: UInt64(replayQueue.byteOffset),
+      proceduralTraceOffset: UInt64(
+        layout.section(.proceduralExecutionTrace).byteOffset
+      ),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
       activeEpisodeCapacity: UInt32(active.elementCount),
@@ -738,6 +744,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       proceduralStride: UInt32(procedural.elementStride),
       replayCapacity: UInt32(replayQueue.elementCount),
       replayStride: UInt32(replayQueue.elementStride),
+      proceduralTraceCapacity: UInt32(
+        layout.section(.proceduralExecutionTrace).elementCount
+      ),
+      proceduralTraceStride: UInt32(
+        layout.section(.proceduralExecutionTrace).elementStride
+      ),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       minimumProceduralEpisodes: 3,
       flags: 0,

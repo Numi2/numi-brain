@@ -15,12 +15,13 @@ constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMMITTED_TRANSITION = 8u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 2u;
+constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
 constant uint NB_PROCEDURAL_SKILL_TRAINABLE = 1u;
 constant uint NB_PROCEDURAL_SKILL_FROZEN = 2u;
 constant uint NB_PROCEDURAL_SKILL_RETIRED = 4u;
 constant uint NB_PROCEDURAL_SKILL_RECONSOLIDATED = 8u;
 constant uint NB_PROCEDURAL_SKILL_MERGED = 16u;
+constant uint NB_PROCEDURAL_SKILL_COMPOSED = 32u;
 constant uint NB_PROCEDURAL_SKILL_LIFECYCLE_MASK = 7u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
@@ -244,6 +245,7 @@ struct NBMemoryConsolidationUniforms {
   ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
   ulong replay_memory_offset;
+  ulong procedural_trace_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
   uint active_episode_capacity;
@@ -256,6 +258,8 @@ struct NBMemoryConsolidationUniforms {
   uint procedural_stride;
   uint replay_capacity;
   uint replay_stride;
+  uint procedural_trace_capacity;
+  uint procedural_trace_stride;
   uint journal_entry_capacity;
   uint minimum_procedural_episodes;
   uint flags;
@@ -549,6 +553,41 @@ struct NBProceduralSkillSummaryRecord {
   float termination_model[8];
   float outcome_model[16];
   float adaptation_state[4];
+  ulong phase_option_identifiers[8];
+  float phase_durations[8];
+  float phase_parameters[8][16];
+};
+
+struct NBProceduralTracePhase {
+  ulong option_identifier;
+  ulong start_timestamp_microseconds;
+  ulong last_timestamp_microseconds;
+  float duration_seconds;
+  float mean_value;
+  float maximum_damage;
+  float mean_uncertainty;
+  uint sample_count;
+  uint parameter_count;
+  float parameters[16];
+};
+
+struct NBProceduralExecutionTrace {
+  ulong identifier;
+  ulong goal_identifier;
+  ulong plan_identifier;
+  ulong start_timestamp_microseconds;
+  ulong last_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  uint phase_count;
+  uint sample_count;
+  float cumulative_value;
+  float maximum_damage;
+  float cumulative_effort;
+  float mean_uncertainty;
+  float final_progress;
+  float reserved[13];
+  NBProceduralTracePhase phases[8];
 };
 
 struct NBProspectiveIntentionSummaryRecord {
@@ -635,7 +674,7 @@ static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
-static_assert(sizeof(NBMemoryConsolidationUniforms) == 216);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 232);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 256);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
@@ -650,7 +689,9 @@ static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
 static_assert(sizeof(NBArchivePageRequestRecord) == 32);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
-static_assert(sizeof(NBProceduralSkillSummaryRecord) == 384);
+static_assert(sizeof(NBProceduralSkillSummaryRecord) == 992);
+static_assert(sizeof(NBProceduralTracePhase) == 112);
+static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveLifecycleState) == 256);
 static_assert(sizeof(NBCommittedTransitionRecord) == 640);
@@ -1486,6 +1527,10 @@ kernel void publish_memory_retrieval_winner(
   device const float *query = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
+  device const NBControlHeader *control =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
   uint local_index = candidate_index;
   if (local_index < uniforms.active_episode_capacity) {
     device const NBEpisodicSummaryRecord *record =
@@ -1574,7 +1619,7 @@ kernel void publish_memory_retrieval_winner(
         identifier = record->identifier;
         score = record->competence;
         procedural_value = record;
-        value_count = 76u;
+        value_count = 80u;
         } else {
           local_index -= uniforms.procedural_capacity;
           device const NBProspectiveIntentionSummaryRecord *record =
@@ -1599,6 +1644,29 @@ kernel void publish_memory_retrieval_winner(
     hot_state + uniforms.workspace_content_offset
   );
   const uint base = slot * uniforms.workspace_dimension;
+  uint procedural_phase = 0u;
+  float procedural_total_duration = 0.0f;
+  bool procedural_complete = false;
+  if (procedural_value != nullptr && procedural_value->phase_count > 0u) {
+    const uint phase_count = min(procedural_value->phase_count, 8u);
+    const bool continuing = control->active_option_identifier
+      == procedural_value->identifier;
+    const float elapsed = continuing
+        && uniforms.target_timestamp_microseconds
+          >= control->selected_timestamp_microseconds
+      ? float(uniforms.target_timestamp_microseconds
+          - control->selected_timestamp_microseconds) * 1.0e-6f
+      : 0.0f;
+    float boundary = 0.0f;
+    for (uint phase = 0u; phase < phase_count; ++phase) {
+      boundary += max(procedural_value->phase_durations[phase], 0.0f);
+      if (elapsed >= boundary && phase + 1u < phase_count) {
+        procedural_phase = phase + 1u;
+      }
+    }
+    procedural_total_duration = boundary;
+    procedural_complete = continuing && elapsed >= boundary && boundary > 0.0f;
+  }
   for (uint index = 0u; index < uniforms.workspace_dimension; ++index) {
     if (kind == 7u && archived_value != nullptr) {
       workspace[base + index] = index < value_count
@@ -1608,7 +1676,9 @@ kernel void publish_memory_retrieval_winner(
     } else if (kind == 3u && procedural_value != nullptr) {
       float procedural_component = 0.0f;
       if (index < 16u) {
-        procedural_component = procedural_value->policy_code[index];
+        procedural_component = procedural_value->phase_count > 0u
+          ? procedural_value->phase_parameters[procedural_phase][index]
+          : procedural_value->policy_code[index];
       } else if (index < 32u) {
         procedural_component = procedural_value->initiation_model[index - 16u];
       } else if (index < 40u) {
@@ -1635,6 +1705,14 @@ kernel void publish_memory_retrieval_winner(
         procedural_component = procedural_value->expected_factored_value[index - 64u];
       } else if (index < 76u) {
         procedural_component = procedural_value->adaptation_state[index - 72u];
+      } else if (index == 76u) {
+        procedural_component = float(procedural_phase);
+      } else if (index == 77u) {
+        procedural_component = float(procedural_value->phase_count);
+      } else if (index == 78u) {
+        procedural_component = procedural_complete ? 1.0f : 0.0f;
+      } else if (index == 79u) {
+        procedural_component = procedural_total_duration;
       }
       workspace[base + index] = procedural_component;
     } else {
@@ -2328,7 +2406,7 @@ kernel void advance_prospective_memory(
 /// intentionally single-lane: slot choice, evidence aggregation, and journal
 /// ordering must remain deterministic for replay and rollback.
 kernel void consolidate_lived_memory_during_rest(
-  device const uchar *hot_state [[buffer(0)]],
+  device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryConsolidationUniforms &uniforms [[buffer(3)]],
@@ -2720,6 +2798,7 @@ kernel void consolidate_lived_memory_during_rest(
       }
       if (!valid
           || (candidate->flags & NB_PROCEDURAL_SKILL_RETIRED) != 0u
+          || candidate->phase_count != 1u
           || candidate->parent_skill_identifier
             != latest->active_option_identifier) continue;
       const float similarity = procedural_similarity(
@@ -2858,6 +2937,16 @@ kernel void consolidate_lived_memory_during_rest(
               skill_learning_rate)
           : learned_code;
       }
+      skill.phase_option_identifiers[0] =
+        latest->active_option_identifier;
+      skill.phase_durations[0] = max(
+        float(latest->end_timestamp_microseconds
+          - latest->start_timestamp_microseconds) * 1.0e-6f,
+        0.02f
+      );
+      for (uint component = 0u; component < 16u; ++component) {
+        skill.phase_parameters[0][component] = skill.policy_code[component];
+      }
       for (uint component = 0u; component < 8u; ++component) {
         const float termination_code = component == 0u
           ? latest->salience
@@ -2932,6 +3021,228 @@ kernel void consolidate_lived_memory_during_rest(
       }
     }
   }
+  }
+
+  device NBProceduralExecutionTrace *selected_trace = nullptr;
+  float selected_trace_score = -INFINITY;
+  for (uint index = 0u; index < uniforms.procedural_trace_capacity; ++index) {
+    device NBProceduralExecutionTrace *trace =
+      reinterpret_cast<device NBProceduralExecutionTrace *>(
+        hot_state + uniforms.procedural_trace_offset
+          + ulong(index) * ulong(uniforms.procedural_trace_stride)
+      );
+    const bool complete = trace->format_version == 1u
+      && (trace->flags & 3u) == 3u;
+    if (!complete) continue;
+    const bool admissible = (trace->flags & 4u) == 0u
+      && trace->phase_count >= 2u && trace->phase_count <= 8u
+      && trace->sample_count > 0u
+      && trace->maximum_damage <= uniforms.maximum_damage
+      && trace->final_progress >= 0.5f;
+    if (!admissible) {
+      NBProceduralExecutionTrace cleared = {};
+      *trace = cleared;
+      continue;
+    }
+    const float mean_value = trace->cumulative_value
+      / float(trace->sample_count);
+    const float score = mean_value + trace->final_progress
+      - trace->maximum_damage - 0.25f * trace->mean_uncertainty;
+    if (selected_trace == nullptr || score > selected_trace_score
+        || (score == selected_trace_score
+          && trace->identifier < selected_trace->identifier)) {
+      selected_trace = trace;
+      selected_trace_score = score;
+    }
+  }
+
+  if (selected_trace != nullptr) {
+    ulong composed_identity = consolidation_hash(
+      selected_trace->goal_identifier ^ 0x434f4d504f534544ul
+    );
+    const uint phase_count = min(selected_trace->phase_count, 8u);
+    for (uint phase = 0u; phase < phase_count; ++phase) {
+      composed_identity = consolidation_hash(
+        composed_identity
+          ^ selected_trace->phases[phase].option_identifier
+          ^ (ulong(phase + 1u) << 56)
+      );
+    }
+    const ulong composed_identifier = max(
+      composed_identity & 0x3ffffffffffffffful, 1ul
+    );
+    uint composed_slot = uniforms.procedural_capacity;
+    uint reusable_slot = uniforms.procedural_capacity;
+    for (uint index = 0u; index < uniforms.procedural_capacity; ++index) {
+      device const NBProceduralSkillSummaryRecord *candidate =
+        reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+          persistent_memory + uniforms.procedural_memory_offset
+            + ulong(index) * ulong(uniforms.procedural_stride)
+        );
+      const bool valid = candidate->format_version
+          == NB_PROCEDURAL_SKILL_RECORD_VERSION
+        && candidate->identifier != 0ul;
+      if (valid && candidate->identifier == composed_identifier) {
+        composed_slot = index;
+        break;
+      }
+      if ((!valid
+          || (candidate->flags & NB_PROCEDURAL_SKILL_RETIRED) != 0u)
+          && reusable_slot == uniforms.procedural_capacity) {
+        reusable_slot = index;
+      }
+    }
+    if (composed_slot == uniforms.procedural_capacity) {
+      composed_slot = reusable_slot;
+    }
+    if (composed_slot < uniforms.procedural_capacity) {
+      const ulong destination = uniforms.procedural_memory_offset
+        + ulong(composed_slot) * ulong(uniforms.procedural_stride);
+      device const NBProceduralSkillSummaryRecord *existing =
+        reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+          persistent_memory + destination
+        );
+      const bool existing_skill = existing->format_version
+          == NB_PROCEDURAL_SKILL_RECORD_VERSION
+        && existing->identifier == composed_identifier;
+      const float trace_mean_value = selected_trace->cumulative_value
+        / float(selected_trace->sample_count);
+      const float trace_mean_effort = selected_trace->cumulative_effort
+        / float(selected_trace->sample_count);
+      const float trace_success = clamp(
+        selected_trace->final_progress
+          * (1.0f - selected_trace->maximum_damage),
+        0.0f,
+        1.0f
+      );
+      const float update_rate = existing_skill
+        ? procedural_learning_rate : 1.0f;
+      NBProceduralSkillSummaryRecord skill = {};
+      skill.identifier = composed_identifier;
+      skill.last_execution_timestamp_microseconds =
+        selected_trace->last_timestamp_microseconds;
+      skill.execution_count = existing_skill
+        ? (existing->execution_count == ~0ul
+          ? existing->execution_count : existing->execution_count + 1ul)
+        : 1ul;
+      skill.parent_skill_identifier =
+        selected_trace->phases[0].option_identifier;
+      skill.created_timestamp_microseconds = existing_skill
+        ? existing->created_timestamp_microseconds
+        : selected_trace->start_timestamp_microseconds;
+      skill.last_training_timestamp_microseconds =
+        uniforms.target_timestamp_microseconds;
+      skill.initiation_goal_identifier = selected_trace->goal_identifier;
+      skill.outcome_event_identifier = selected_trace->plan_identifier;
+      skill.format_version = NB_PROCEDURAL_SKILL_RECORD_VERSION;
+      skill.goal_parameter_dimension = 16u;
+      skill.phase_count = phase_count;
+      const float initial_competence = 0.25f * trace_success;
+      skill.competence = existing_skill
+        ? mix(existing->competence, trace_success, update_rate)
+        : initial_competence;
+      skill.damage_cvar = existing_skill
+        ? mix(existing->damage_cvar, selected_trace->maximum_damage,
+            update_rate)
+        : selected_trace->maximum_damage;
+      skill.expected_effort = existing_skill
+        ? mix(existing->expected_effort, trace_mean_effort, update_rate)
+        : trace_mean_effort;
+      skill.expected_value = existing_skill
+        ? mix(existing->expected_value, trace_mean_value, update_rate)
+        : trace_mean_value;
+      skill.initiation_confidence = clamp(
+        1.0f - exp(-0.25f * float(skill.execution_count)), 0.0f, 1.0f
+      );
+      skill.termination_confidence = clamp(
+        skill.initiation_confidence
+          * (1.0f - selected_trace->mean_uncertainty),
+        0.0f,
+        1.0f
+      );
+      skill.outcome_uncertainty = existing_skill
+        ? mix(existing->outcome_uncertainty,
+            selected_trace->mean_uncertainty, update_rate)
+        : selected_trace->mean_uncertainty;
+      skill.adaptation_rate = procedural_learning_rate;
+      skill.expected_factored_value[1] = skill.expected_value;
+      skill.expected_factored_value[4] = -skill.damage_cvar;
+      skill.expected_factored_value[5] = -skill.expected_effort;
+      skill.expected_factored_value[6] = -skill.damage_cvar;
+      for (uint component = 0u; component < 16u; ++component) {
+        const float initiation = selected_trace->phases[0].parameters[component];
+        const float outcome =
+          selected_trace->phases[phase_count - 1u].parameters[component];
+        skill.initiation_model[component] = existing_skill
+          ? mix(existing->initiation_model[component], initiation, update_rate)
+          : initiation;
+        skill.policy_code[component] = skill.initiation_model[component];
+        skill.outcome_model[component] = existing_skill
+          ? mix(existing->outcome_model[component], outcome, update_rate)
+          : outcome;
+      }
+      for (uint component = 0u; component < 8u; ++component) {
+        const float termination =
+          selected_trace->phases[phase_count - 1u].parameters[component];
+        skill.termination_model[component] = existing_skill
+          ? mix(existing->termination_model[component], termination, update_rate)
+          : termination;
+      }
+      for (uint phase = 0u; phase < phase_count; ++phase) {
+        skill.phase_option_identifiers[phase] =
+          selected_trace->phases[phase].option_identifier;
+        skill.phase_durations[phase] = max(
+          selected_trace->phases[phase].duration_seconds, 0.02f
+        );
+        for (uint component = 0u; component < 16u; ++component) {
+          skill.phase_parameters[phase][component] =
+            selected_trace->phases[phase].parameters[component];
+        }
+      }
+      skill.adaptation_state[0] = skill.competence;
+      skill.adaptation_state[1] = skill.damage_cvar;
+      skill.adaptation_state[2] = skill.outcome_uncertainty;
+      skill.adaptation_state[3] = float(phase_count) / 8.0f;
+      const bool mastered = skill.execution_count >= 4ul
+        && skill.competence >= uniforms.freeze_competence
+        && skill.damage_cvar <= uniforms.freeze_maximum_damage
+        && skill.outcome_uncertainty <= uniforms.freeze_maximum_uncertainty;
+      skill.flags = NB_PROCEDURAL_SKILL_COMPOSED
+        | (mastered
+          ? NB_PROCEDURAL_SKILL_FROZEN
+          : NB_PROCEDURAL_SKILL_TRAINABLE);
+      if (append_memory_record(
+          journal, uniforms, skill, destination,
+          NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, skill.identifier
+        )) {
+        NBReplayQueueSummaryRecord replay = {};
+        replay.queue_kind = 2u;
+        replay.record_kind = 2u;
+        replay.record_identifier = skill.identifier;
+        replay.priority = clamp(
+          development->replay_allocation_multiplier
+            * (1.0f - skill.competence + skill.outcome_uncertainty),
+          0.0f,
+          2.0f
+        );
+        replay.enqueued_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+        const uint replay_slot = uint(
+          skill.identifier % ulong(uniforms.replay_capacity)
+        );
+        append_memory_record(
+          journal,
+          uniforms,
+          replay,
+          uniforms.replay_memory_offset
+            + ulong(replay_slot) * ulong(uniforms.replay_stride),
+          NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE,
+          skill.identifier
+        );
+        NBProceduralExecutionTrace cleared = {};
+        *selected_trace = cleared;
+      }
+    }
   }
 
   if (selected_replay != nullptr) {

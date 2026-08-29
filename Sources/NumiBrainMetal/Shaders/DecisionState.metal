@@ -575,7 +575,7 @@ kernel void propose_dynamic_options(
       ? memory_token.goal_identifier
       : control->active_goal_identifier;
     const uint workspace_base = workspace_slot * uniforms.workspace_dimension;
-    const bool structured_skill = uniforms.workspace_dimension >= 76u;
+    const bool structured_skill = uniforms.workspace_dimension >= 80u;
     float initiation_dot = 0.0f;
     float initiation_norm = 1.0e-6f;
     float recurrent_norm = 1.0e-6f;
@@ -598,7 +598,11 @@ kernel void propose_dynamic_options(
         * recurrent[component % uniforms.recurrent_scalar_count];
     }
     const float termination_probability = structured_skill
-      ? 1.0f / (1.0f + exp(-termination_logit / 8.0f)) : 0.0f;
+      ? max(
+          1.0f / (1.0f + exp(-termination_logit / 8.0f)),
+          workspace[workspace_base + 78u]
+        )
+      : 0.0f;
     learned.task_value = structured_skill
       ? workspace[workspace_base + 59u] + workspace[workspace_base + 65u]
         - max(workspace[workspace_base + 62u], 0.0f)
