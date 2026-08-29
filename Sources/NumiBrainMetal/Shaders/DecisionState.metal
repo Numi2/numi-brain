@@ -113,6 +113,18 @@ struct NBNeuromodulatorRecord {
   uint flags;
 };
 
+struct NBExternalGoalDirectiveRecord {
+  ulong identifier;
+  ulong deadline_timestamp_microseconds;
+  ulong created_timestamp_microseconds;
+  ulong flags;
+  float priority;
+  float damage_risk_budget;
+  float persistence;
+  float reserved;
+  float target[16];
+};
+
 struct NBWorkspaceMetadataRecord {
   ulong identifier;
   ulong source_timestamp_microseconds;
@@ -206,6 +218,13 @@ struct NBSemanticGoalOutcome {
   float support;
   float damage;
   float reinforcement;
+};
+
+struct NBExternalGoalContext {
+  float valid;
+  float damage_risk_budget;
+  float persistence;
+  float target[16];
 };
 
 struct NBMotorCommandRecord {
@@ -437,6 +456,7 @@ static_assert(sizeof(NBFastCerebellarStateRecord) == 64);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
+static_assert(sizeof(NBExternalGoalDirectiveRecord) == 112);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
@@ -783,10 +803,57 @@ inline NBSemanticGoalOutcome nb_retrieved_semantic_goal_outcome(
   return outcome;
 }
 
+inline NBExternalGoalContext nb_external_goal_context(
+  device const float *workspace,
+  device const NBWorkspaceMetadataRecord *workspace_metadata,
+  constant NBDecisionUniforms &uniforms,
+  const ulong goal_identifier)
+{
+  NBExternalGoalContext context = {};
+  context.damage_risk_budget = uniforms.damage_risk_budget;
+  if (uint(goal_identifier >> 56u) != 2u
+      || (goal_identifier & (1ul << 55u)) == 0ul
+      || uniforms.workspace_dimension < 22u) return context;
+  for (uint slot = 7u; slot < min(uniforms.workspace_capacity, 11u); ++slot) {
+    const NBWorkspaceMetadataRecord token = workspace_metadata[slot];
+    if (token.goal_identifier != goal_identifier
+        || token.provenance_record_identifier == 0ul) continue;
+    const uint base = slot * uniforms.workspace_dimension;
+    context.valid = 1.0f;
+    context.damage_risk_budget = clamp(
+      workspace[base + 20u], 0.0f, 1.0f
+    );
+    context.persistence = clamp(workspace[base + 21u], 0.0f, 1.0f);
+    for (uint component = 0u; component < 16u; ++component) {
+      context.target[component] = workspace[base + 4u + component];
+    }
+    break;
+  }
+  return context;
+}
+
+inline float nb_external_goal_alignment(
+  const NBExternalGoalContext context,
+  const NBOptionCandidateRecord candidate)
+{
+  if (context.valid <= 0.0f) return 0.0f;
+  float dot_product = 0.0f;
+  float target_norm = 1.0e-6f;
+  float candidate_norm = 1.0e-6f;
+  for (uint component = 0u; component < 16u; ++component) {
+    dot_product += context.target[component] * candidate.parameters[component];
+    target_norm += context.target[component] * context.target[component];
+    candidate_norm += candidate.parameters[component]
+      * candidate.parameters[component];
+  }
+  return dot_product * rsqrt(target_norm * candidate_norm);
+}
+
 kernel void generate_active_goal_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *value_parameters [[buffer(2)]],
+  device const NBExternalGoalDirectiveRecord *external_goal [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -815,6 +882,15 @@ kernel void generate_active_goal_state(
   uint goal_origins[4] = {};
   uint goal_sources[4] = {};
   float goal_priorities[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
+  ulong external_goal_identifier = 0ul;
+  ulong external_goal_source_identifier = 0ul;
+  ulong external_goal_created_timestamp = 0ul;
+  ulong external_goal_deadline = 0ul;
+  float external_goal_base_priority = 0.0f;
+  float external_goal_priority = 0.0f;
+  float external_goal_risk_budget = uniforms.damage_risk_budget;
+  float external_goal_persistence = 0.0f;
+  float external_goal_target[16] = {};
   for (uint drive_index = 0u; drive_index < uniforms.drive_count; ++drive_index) {
     uint origin = 1u;
     if (drive_index == 8u) origin = 5u;
@@ -846,10 +922,114 @@ kernel void generate_active_goal_state(
       }
     }
   }
+  const bool external_goal_valid = (external_goal->flags & 1ul) != 0ul
+    && external_goal->identifier != 0ul
+    && external_goal->created_timestamp_microseconds
+      <= uniforms.target_timestamp_microseconds
+    && (external_goal->deadline_timestamp_microseconds == 0ul
+      || uniforms.target_timestamp_microseconds
+        <= external_goal->deadline_timestamp_microseconds)
+    && isfinite(external_goal->priority)
+    && external_goal->priority > 0.0f;
+  if (external_goal_valid) {
+    external_goal_identifier = (2ul << 56u) | (1ul << 55u)
+      | (external_goal->identifier & 0x007ffffffffffffful);
+    external_goal_source_identifier = external_goal->identifier;
+    external_goal_created_timestamp =
+      external_goal->created_timestamp_microseconds;
+    external_goal_deadline = external_goal->deadline_timestamp_microseconds;
+    external_goal_risk_budget = clamp(
+      external_goal->damage_risk_budget, 0.0f, 1.0f
+    );
+    external_goal_persistence = clamp(external_goal->persistence, 0.0f, 1.0f);
+    for (uint component = 0u; component < 16u; ++component) {
+      external_goal_target[component] = external_goal->target[component];
+    }
+    external_goal_base_priority = external_goal->priority
+      * max(value_parameters[1], 0.0f);
+    external_goal_priority = external_goal_base_priority;
+    if (external_goal_identifier == previous_goal_identifier) {
+      external_goal_priority += external_goal_persistence;
+    }
+    const bool completed_same_directive = external_goal_identifier
+        == previous_goal_identifier
+      && header->progress >= 0.95f
+      && external_goal_created_timestamp <= header->selected_timestamp_microseconds;
+    for (uint rank = 0u; rank < 4u && !completed_same_directive
+        && isfinite(external_goal_priority)
+        && external_goal_priority > 0.0f; ++rank) {
+      if (external_goal_priority > goal_priorities[rank]
+          || (external_goal_priority == goal_priorities[rank]
+            && external_goal_identifier < goal_identifiers[rank])) {
+        for (uint shift = 3u; shift > rank; --shift) {
+          goal_identifiers[shift] = goal_identifiers[shift - 1u];
+          goal_origins[shift] = goal_origins[shift - 1u];
+          goal_sources[shift] = goal_sources[shift - 1u];
+          goal_priorities[shift] = goal_priorities[shift - 1u];
+        }
+        goal_identifiers[rank] = external_goal_identifier;
+        goal_origins[rank] = 2u;
+        goal_sources[rank] = 0xffffffffu;
+        goal_priorities[rank] = external_goal_priority;
+        break;
+      }
+    }
+  }
   for (uint slot = 0u; slot < active_workspace_capacity; ++slot) {
     const NBWorkspaceMetadataRecord token = metadata[slot];
     const uint source_module = token.kind_and_source >> 16;
     const uint token_kind = token.kind_and_source & 0xffffu;
+    const bool retained_external = external_goal_identifier == 0ul
+      && source_module == 48u && token_kind == 2u
+      && uint(token.goal_identifier >> 56u) == 2u
+      && (token.goal_identifier & (1ul << 55u)) != 0ul
+      && token.provenance_record_identifier != 0ul
+      && !(token.goal_identifier == previous_goal_identifier
+        && header->progress >= 0.95f)
+      && (token.bound_token_identifier == 0ul
+        || uniforms.target_timestamp_microseconds
+          <= token.bound_token_identifier);
+    if (retained_external) {
+      const uint external_base = slot * uniforms.workspace_dimension;
+      external_goal_identifier = token.goal_identifier;
+      external_goal_source_identifier = token.provenance_record_identifier;
+      external_goal_created_timestamp = token.source_timestamp_microseconds;
+      external_goal_deadline = token.bound_token_identifier;
+      external_goal_persistence = uniforms.workspace_dimension > 21u
+        ? clamp(workspace[external_base + 21u], 0.0f, 1.0f) : 0.0f;
+      external_goal_base_priority = uniforms.workspace_dimension > 22u
+        ? max(workspace[external_base + 22u], 0.0f)
+        : max(workspace[external_base] - external_goal_persistence, 0.0f);
+      external_goal_risk_budget = uniforms.workspace_dimension > 20u
+        ? clamp(workspace[external_base + 20u], 0.0f, 1.0f)
+        : uniforms.damage_risk_budget;
+      for (uint component = 0u; component < 16u; ++component) {
+        external_goal_target[component] = uniforms.workspace_dimension
+            > 4u + component
+          ? workspace[external_base + 4u + component] : 0.0f;
+      }
+      external_goal_priority = external_goal_base_priority
+        + (external_goal_identifier == previous_goal_identifier
+          ? external_goal_persistence : 0.0f);
+      for (uint rank = 0u; rank < 4u; ++rank) {
+        if (external_goal_priority > goal_priorities[rank]
+            || (external_goal_priority == goal_priorities[rank]
+              && external_goal_identifier < goal_identifiers[rank])) {
+          for (uint shift = 3u; shift > rank; --shift) {
+            goal_identifiers[shift] = goal_identifiers[shift - 1u];
+            goal_origins[shift] = goal_origins[shift - 1u];
+            goal_sources[shift] = goal_sources[shift - 1u];
+            goal_priorities[shift] = goal_priorities[shift - 1u];
+          }
+          goal_identifiers[rank] = external_goal_identifier;
+          goal_origins[rank] = 2u;
+          goal_sources[rank] = slot;
+          goal_priorities[rank] = external_goal_priority;
+          break;
+        }
+      }
+      continue;
+    }
     const bool prospective = source_module == 61u;
     const bool social = source_module == 44u;
     const bool communication = source_module == 51u;
@@ -961,17 +1141,37 @@ kernel void generate_active_goal_state(
       float value = 0.0f;
       if (feature == 0u) value = max(goal_priorities[rank], 0.0f);
       if (feature == 1u) value = float(goal_origins[rank]) / 9.0f;
-      if (feature == 2u) value = float(goal_sources[rank]) / 64.0f;
+      if (feature == 2u) value = goal_identifiers[rank]
+          == external_goal_identifier
+        ? 0.0f : float(goal_sources[rank]) / 64.0f;
       if (feature == 3u) value = rank == 0u ? 1.0f : 0.0f;
+      if (goal_identifiers[rank] == external_goal_identifier) {
+        if (feature >= 4u && feature < 20u) {
+          value = external_goal_target[feature - 4u];
+        } else if (feature == 20u) {
+          value = external_goal_risk_budget;
+        } else if (feature == 21u) {
+          value = external_goal_persistence;
+        } else if (feature == 22u) {
+          value = external_goal_base_priority;
+        }
+      }
       workspace[base + feature] = value;
     }
     NBWorkspaceMetadataRecord token = {};
     token.identifier = (uniforms.target_timestamp_microseconds << 8)
       | ulong(slot + 1u);
-    token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    token.source_timestamp_microseconds =
+      goal_identifiers[rank] == external_goal_identifier
+        ? external_goal_created_timestamp
+        : uniforms.target_timestamp_microseconds;
     token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.entity_identifier = goal_identifiers[rank];
     token.goal_identifier = goal_identifiers[rank];
+    if (goal_identifiers[rank] == external_goal_identifier) {
+      token.bound_token_identifier = external_goal_deadline;
+      token.provenance_record_identifier = external_goal_source_identifier;
+    }
     token.kind_and_source = 2u | (48u << 16);
     token.confidence = clamp(goal_priorities[rank], 0.0f, 1.0f);
     metadata[slot] = token;
@@ -1103,9 +1303,9 @@ kernel void propose_dynamic_options(
     }
     NBOptionCandidateRecord learned;
     learned.option_identifier = memory_token.entity_identifier;
-    learned.goal_identifier = memory_token.goal_identifier != 0ul
-      ? memory_token.goal_identifier
-      : control->active_goal_identifier;
+    learned.goal_identifier = control->active_goal_identifier != 0ul
+      ? control->active_goal_identifier
+      : memory_token.goal_identifier;
     const uint workspace_base = workspace_slot * uniforms.workspace_dimension;
     const bool structured_skill = uniforms.workspace_dimension >= 80u;
     float initiation_dot = 0.0f;
@@ -1448,6 +1648,13 @@ kernel void simulate_candidate_option_outcomes(
             workspace, workspace_metadata, uniforms,
             followup.goal_identifier
           );
+        const NBExternalGoalContext followup_external =
+          nb_external_goal_context(
+            workspace, workspace_metadata, uniforms,
+            followup.goal_identifier
+          );
+        const float followup_goal_alignment =
+          nb_external_goal_alignment(followup_external, followup);
         const float followup_risk = clamp(
           max(
             max(
@@ -1469,11 +1676,12 @@ kernel void simulate_candidate_option_outcomes(
             * followup_memory.reinforcement
           + value_parameters[0] * followup_semantic.support
             * followup_semantic.reinforcement
+          + value_parameters[0] * followup_goal_alignment
           + compatibility - value_parameters[4] * uniforms.risk_weight
             * followup_risk
           - value_parameters[5] * followup.effort_cost
           - value_parameters[6] * followup.switching_cost;
-        if (followup_risk <= uniforms.damage_risk_budget
+        if (followup_risk <= followup_external.damage_risk_budget
             && (followup_score > best_followup_score
               || (followup_score == best_followup_score
                 && candidate_index < best_followup))) {
@@ -1491,6 +1699,11 @@ kernel void simulate_candidate_option_outcomes(
       nb_retrieved_semantic_goal_outcome(
         workspace, workspace_metadata, uniforms, candidate.goal_identifier
       );
+    const NBExternalGoalContext external = nb_external_goal_context(
+      workspace, workspace_metadata, uniforms, candidate.goal_identifier
+    );
+    const float external_goal_alignment =
+      nb_external_goal_alignment(external, candidate);
     const NBCounterfactualWorldOutcome world_outcome =
       nb_counterfactual_world_outcome(
         world, world_parameters, uniforms, candidate, rollout_state,
@@ -1528,6 +1741,7 @@ kernel void simulate_candidate_option_outcomes(
         + value_parameters[3] * uniforms.curiosity_weight * step_information
         + value_parameters[0] * episodic.support * episodic.reinforcement
         + value_parameters[0] * semantic.support * semantic.reinforcement
+        + value_parameters[0] * external_goal_alignment
         - value_parameters[4] * uniforms.risk_weight * step_damage
         - value_parameters[5] * step_effort
         - value_parameters[6]
@@ -1543,7 +1757,7 @@ kernel void simulate_candidate_option_outcomes(
     plan.predicted_information_gain = accumulated_information;
     plan.duration_seconds = 0.1f + 0.05f * float(selected_option % 8u);
     plan.predicted_drive_change = accumulated_drive_change;
-    plan.admissibility = accumulated_damage <= uniforms.damage_risk_budget
+    plan.admissibility = accumulated_damage <= external.damage_risk_budget
       ? 1.0f : 0.0f;
     plan.sequence = step;
     plan.flags = NB_CONTROL_FLAG_VALID;

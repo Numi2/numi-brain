@@ -120,6 +120,33 @@ private struct DecisionActiveSensingChannelDescriptor {
   var flags: UInt32 = 0
 }
 
+private struct ExternalGoalDirectiveRecord {
+  var identifier: UInt64 = 0
+  var deadlineTimestampMicroseconds: UInt64 = 0
+  var createdTimestampMicroseconds: UInt64 = 0
+  var flags: UInt64 = 0
+  var priority: Float = 0
+  var damageRiskBudget: Float = 0
+  var persistence: Float = 0
+  var reserved: Float = 0
+  var target0: Float = 0
+  var target1: Float = 0
+  var target2: Float = 0
+  var target3: Float = 0
+  var target4: Float = 0
+  var target5: Float = 0
+  var target6: Float = 0
+  var target7: Float = 0
+  var target8: Float = 0
+  var target9: Float = 0
+  var target10: Float = 0
+  var target11: Float = 0
+  var target12: Float = 0
+  var target13: Float = 0
+  var target14: Float = 0
+  var target15: Float = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalDecisionRuntime: @unchecked Sendable {
   @frozen
@@ -161,6 +188,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let cpgCouplingDescriptorBuffer: any MTLBuffer
   private let autonomicChannelDescriptorBuffer: any MTLBuffer
   private let activeSensingChannelDescriptorBuffer: any MTLBuffer
+  private let externalGoalDirectiveBuffer: any MTLBuffer
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
@@ -185,6 +213,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
       MemoryLayout<DecisionAutonomicChannelDescriptor>.stride == 48,
       MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride == 16,
+      MemoryLayout<ExternalGoalDirectiveRecord>.stride == 112,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -239,7 +268,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 12
+    descriptor.maxBufferBindCount = 13
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -376,6 +405,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         length: activeSensingChannelDescriptors.count
           * MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let externalGoalDirectiveBuffer = device.makeBuffer(
+        length: MemoryLayout<ExternalGoalDirectiveRecord>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -391,6 +424,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "NumiBrain immutable decision autonomic channels"
     activeSensingChannelDescriptorBuffer.label =
       "NumiBrain immutable species active sensing channels"
+    externalGoalDirectiveBuffer.label =
+      "NumiBrain transactional external goal directive"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
@@ -445,6 +480,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.autonomicChannelDescriptorBuffer = autonomicChannelDescriptorBuffer
     self.activeSensingChannelDescriptorBuffer =
       activeSensingChannelDescriptorBuffer
+    self.externalGoalDirectiveBuffer = externalGoalDirectiveBuffer
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -470,19 +506,58 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       uniformBuffer, communicationDescriptorBuffer,
       cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
       autonomicChannelDescriptorBuffer, activeSensingChannelDescriptorBuffer,
+      externalGoalDirectiveBuffer,
     ]
   }
 
   public func encode(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    externalGoal: ActiveGoal? = nil
   ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
     var uniforms = try makeUniforms(timestamp: timestamp)
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
       uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+    }
+    var externalDirective = ExternalGoalDirectiveRecord()
+    if let externalGoal {
+      guard externalGoal.origin == .externalTask,
+        externalGoal.identifier <= 0x007f_ffff_ffff_ffff,
+        externalGoal.createdTimestamp <= timestamp,
+        externalGoal.deadline == nil || externalGoal.deadline! >= timestamp,
+        externalGoal.targetState.values.count <= 16
+      else {
+        throw TissueError.transaction(
+          "external goal directive is invalid at this control boundary"
+        )
+      }
+      var target = externalGoal.targetState.values
+      target.append(contentsOf: repeatElement(0, count: 16 - target.count))
+      externalDirective = ExternalGoalDirectiveRecord(
+        identifier: externalGoal.identifier,
+        deadlineTimestampMicroseconds: externalGoal.deadline?.rawValue ?? 0,
+        createdTimestampMicroseconds: externalGoal.createdTimestamp.rawValue,
+        flags: 1,
+        priority: externalGoal.priority,
+        damageRiskBudget: externalGoal.damageRiskBudget,
+        persistence: externalGoal.persistence,
+        reserved: 0,
+        target0: target[0], target1: target[1], target2: target[2],
+        target3: target[3], target4: target[4], target5: target[5],
+        target6: target[6], target7: target[7], target8: target[8],
+        target9: target[9], target10: target[10], target11: target[11],
+        target12: target[12], target13: target[13], target14: target[14],
+        target15: target[15]
+      )
+    }
+    withUnsafeBytes(of: &externalDirective) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      externalGoalDirectiveBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
@@ -498,6 +573,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       activeSensingChannelDescriptorBuffer.gpuAddress, index: 10
     )
     argumentTable.setAddress(worldParameterGPUAddress, index: 11)
+    argumentTable.setAddress(externalGoalDirectiveBuffer.gpuAddress, index: 12)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)

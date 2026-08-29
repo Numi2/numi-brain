@@ -486,7 +486,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public func inferAndDecide(
     transaction: MetalJointAgentStateTransaction,
     rawSensors: [MetalRawSensorBufferLease],
-    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    externalGoal: ActiveGoal? = nil
   ) throws -> DecisionBufferView {
     lock.lock()
     defer { lock.unlock() }
@@ -564,7 +565,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       let decision = try decisionRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,
-        timestamp: transaction.jointToken.committedTimestamp
+        timestamp: transaction.jointToken.committedTimestamp,
+        externalGoal: externalGoal
       )
       encoder.endEncoding()
       commandBuffer.endCommandBuffer()

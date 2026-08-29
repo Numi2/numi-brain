@@ -356,7 +356,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   @discardableResult
   public func inferAndDecide(
     _ transaction: ControlTransaction,
-    rawSensors: [MetalRawSensorBufferLease]
+    rawSensors: [MetalRawSensorBufferLease],
+    externalGoal: ActiveGoal? = nil
   ) throws -> MetalEmbodiedBrainRuntime.DecisionBufferView {
     lock.lock()
     defer { lock.unlock() }
@@ -366,7 +367,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       let decision = try cognitive.inferAndDecide(
         transaction: transaction.cognitiveTransaction,
         rawSensors: rawSensors,
-        regionalRecurrentInput: recurrence
+        regionalRecurrentInput: recurrence,
+        externalGoal: externalGoal
       )
       let lease = try cognitive.borrowNumanXSomaticBuffer(
         for: decision,
