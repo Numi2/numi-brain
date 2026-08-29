@@ -29,6 +29,7 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 public final class MetalLearningBatch: @unchecked Sendable {
   public static let formatVersion: UInt32 = 1
   public static let transitionRecordVersion: UInt32 = 1
+  public static let transitionStride = MetalAgentMemoryLayout.committedTransitionStride
 
   public let formatVersion: UInt32
   public let transitionRecordVersion: UInt32
@@ -55,7 +56,8 @@ public final class MetalLearningBatch: @unchecked Sendable {
   ) throws {
     let byteCount = snapshot.elementCount * snapshot.elementStride
     guard snapshot.generation > 0, snapshot.elementCount > 0,
-      snapshot.elementStride >= 640, byteCount == snapshot.buffer.length,
+      snapshot.elementStride == Self.transitionStride,
+      byteCount == snapshot.buffer.length,
       speciesTemplateFingerprint > 0, regionalProgramFingerprint > 0,
       scheduleFingerprint > 0, parameterVersionFingerprint > 0
     else {

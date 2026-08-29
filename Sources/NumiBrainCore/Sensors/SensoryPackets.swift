@@ -99,6 +99,9 @@ public struct BrainTeacherPacket: Codable, Equatable, Sendable {
   public let forceLabels: [Float]
   public let damageLabels: [Float]
   public let taskLabels: [UInt32]
+  /// Optional actor-space target from an observed or teacher-controlled action.
+  /// It remains training-only and never enters the normal observation graph.
+  public let demonstratedAction: [Float]
 
   public init(
     timestamp: BrainTimestamp,
@@ -107,11 +110,14 @@ public struct BrainTeacherPacket: Codable, Equatable, Sendable {
     contactLabels: [UInt32],
     forceLabels: [Float],
     damageLabels: [Float],
-    taskLabels: [UInt32]
+    taskLabels: [UInt32],
+    demonstratedAction: [Float] = []
   ) throws {
     guard authoritativeBodyState.allSatisfy(\.isFinite),
       authoritativeEntityState.allSatisfy(\.isFinite),
-      forceLabels.allSatisfy(\.isFinite), damageLabels.allSatisfy(\.isFinite)
+      forceLabels.allSatisfy(\.isFinite), damageLabels.allSatisfy(\.isFinite),
+      demonstratedAction.allSatisfy(\.isFinite),
+      demonstratedAction.isEmpty || demonstratedAction.count == 16
     else {
       throw BrainRuntimeError.invalidEvent("teacher packet is invalid")
     }
@@ -122,6 +128,38 @@ public struct BrainTeacherPacket: Codable, Equatable, Sendable {
     self.forceLabels = forceLabels
     self.damageLabels = damageLabels
     self.taskLabels = taskLabels
+    self.demonstratedAction = demonstratedAction
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case timestamp
+    case authoritativeBodyState
+    case authoritativeEntityState
+    case contactLabels
+    case forceLabels
+    case damageLabels
+    case taskLabels
+    case demonstratedAction
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      timestamp: values.decode(BrainTimestamp.self, forKey: .timestamp),
+      authoritativeBodyState: values.decode(
+        [Float].self, forKey: .authoritativeBodyState
+      ),
+      authoritativeEntityState: values.decode(
+        [Float].self, forKey: .authoritativeEntityState
+      ),
+      contactLabels: values.decode([UInt32].self, forKey: .contactLabels),
+      forceLabels: values.decode([Float].self, forKey: .forceLabels),
+      damageLabels: values.decode([Float].self, forKey: .damageLabels),
+      taskLabels: values.decode([UInt32].self, forKey: .taskLabels),
+      demonstratedAction: values.decodeIfPresent(
+        [Float].self, forKey: .demonstratedAction
+      ) ?? []
+    )
   }
 }
 

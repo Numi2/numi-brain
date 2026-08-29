@@ -3,11 +3,12 @@ import MLX
 import NumiBrainCore
 import NumiBrainMetal
 
-/// Zero-copy MLX view of the fixed 640-byte committed-transition records.
+/// Zero-copy MLX view of the fixed 768-byte committed-transition slots. The
+/// live record occupies the first 640 bytes and the aligned tail is reserved.
 /// Empty ring slots remain in the array but are excluded by `validMask`.
 @available(macOS 26.0, *)
 public struct MLXCommittedTransitionBatch: @unchecked Sendable {
-  public static let transitionStride = 640
+  public static let transitionStride = MetalLearningBatch.transitionStride
 
   public let source: MetalLearningBatch
   public let rawBytes: MLXArray
@@ -20,6 +21,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let outcomeMetrics: MLXArray
   public let teacherState: MLXArray
   public let teacherMask: MLXArray
+  public let imitationMask: MLXArray
 
   public init(_ source: MetalLearningBatch) throws {
     guard source.transitionRecordVersion == MetalLearningBatch.transitionRecordVersion,
@@ -45,6 +47,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     let validMask = (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
       .asType(.float32)
     let teacherCount = field(520, count: 1, dtype: .uint32)
+    let teacherFlags = field(524, count: 1, dtype: .uint32)
     self.source = source
     self.rawBytes = raw
     self.validMask = validMask
@@ -56,6 +59,12 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.outcomeMetrics = field(96, count: 8, dtype: .float32)
     self.teacherState = field(528, count: 24, dtype: .float32)
     self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32) * validMask
+    let hasDemonstratedAction = (
+      teacherFlags & MetalTeacherStateFlags.demonstratedAction.rawValue
+    ) .!= UInt32(0)
+    self.imitationMask = hasDemonstratedAction.asType(.float32)
+      * (teacherCount .> UInt32(15)).asType(.float32)
+      * validMask
   }
 
   public func maskedMean(_ values: MLXArray, mask: MLXArray? = nil) -> MLXArray {

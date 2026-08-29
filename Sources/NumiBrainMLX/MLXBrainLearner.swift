@@ -115,9 +115,17 @@ public final class MLXBrainLearner: @unchecked Sendable {
       MLXArray(Float(1)),
       configuration.gradientNormLimit / gradientNorm
     )
+    // A one-step gradient evaluated exactly at the immutable parent has zero
+    // derivative for ||theta-parent||^2. Apply the equivalent proximal pull to
+    // the update delta so stability genuinely constrains every publication.
+    let stabilityWeight = configuration.lossWeights[.stability] ?? 0
+    let proximalRetention = Float(1) / (
+      Float(1) + Float(2) * configuration.learningRate * stabilityWeight
+    )
     let updatedParameters = zip(parentParameters, gradients).map { parameter, gradient in
       clip(
-        parameter - configuration.learningRate * gradientScale * gradient,
+        parameter - proximalRetention * configuration.learningRate
+          * gradientScale * gradient,
         min: -configuration.parameterMagnitudeLimit,
         max: configuration.parameterMagnitudeLimit
       ).asType(.float32).contiguous()
@@ -179,6 +187,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let metrics = batch.outcomeMetrics
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
+    let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
     let observationLoss = batch.maskedMeanSquaredError(
       sensory[0] * posterior + sensory[1], observation
     )
@@ -189,7 +198,13 @@ public final class MLXBrainLearner: @unchecked Sendable {
       tanh(world[0] * prior + world[1] * observation + world[5]), posterior
     )
     let bodyLoss = batch.maskedMeanSquaredError(
-      posterior[0..., 0..<8], observation[0..., 0..<8]
+      tanh(
+        belief[7] * prior[0..., 0..<8]
+          + belief[0] * observation[0..., 0..<8]
+          + belief[6] * action[0..., 0..<8]
+          + belief[4]
+      ),
+      posterior[0..., 0..<8]
     )
     let agencyLoss = batch.maskedMeanSquaredError(
       actionState * motor[0], action
@@ -212,7 +227,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
       metrics[0..., 1..<2]
     )
     let policyLoss = batch.maskedMeanSquaredError(
-      tanh(actionState * policy[0] + policy[8]), action
+      predictedPolicyAction, action
     )
     let optionLoss = batch.maskedMeanSquaredError(
       sigmoid(predictedValue * policy[1]), metrics[0..., 2..<3]
@@ -231,9 +246,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
       actionState * memory[2], action
     )
     let imitationLoss = batch.maskedMeanSquaredError(
-      action,
+      predictedPolicyAction,
       batch.teacherState[0..., 0..<16],
-      mask: batch.teacherMask
+      mask: batch.imitationMask
     )
     let routeLoss = batch.maskedMean(
       square(metrics[0..., 3..<4] * route[0]
