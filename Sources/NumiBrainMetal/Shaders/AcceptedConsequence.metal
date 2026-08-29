@@ -524,6 +524,28 @@ inline float nb_modality_aleatoric_uncertainty(
   return sqrt(total / float(max(end - begin, 1u)));
 }
 
+inline float nb_body_schema_epistemic_uncertainty(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms)
+{
+  float uncertainty = 0.0f;
+  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
+    const float standard_deviation = sqrt(max(body[9], 0.0f));
+    uncertainty = max(
+      uncertainty,
+      standard_deviation / (1.0f + standard_deviation)
+    );
+  }
+  return uncertainty;
+}
+
 kernel void assimilate_accepted_body_and_physiology(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
@@ -788,9 +810,15 @@ kernel void update_active_sensing_efficacy(
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
-  const float accepted_uncertainty = nb_modality_epistemic_uncertainty(
+  float accepted_uncertainty = nb_modality_epistemic_uncertainty(
     world, uniforms.world_model_count, modality
   );
+  if (modality == 3u || modality == 4u) {
+    accepted_uncertainty = max(
+      accepted_uncertainty,
+      nb_body_schema_epistemic_uncertainty(hot_state, uniforms)
+    );
+  }
   const float aleatoric_uncertainty = clamp(
     nb_modality_aleatoric_uncertainty(
       world, uniforms.world_model_count, modality

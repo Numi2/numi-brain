@@ -2178,6 +2178,7 @@ kernel void generate_motor_spinal_autonomic_state(
     } else if (sensing_descriptor.modality == 3u
         || sensing_descriptor.modality == 4u) {
       float agency_uncertainty = 0.0f;
+      float body_model_uncertainty = 0.0f;
       for (uint effector_index = 0u;
           effector_index < uniforms.somatic_effector_belief_count;
           ++effector_index) {
@@ -2189,7 +2190,26 @@ kernel void generate_motor_spinal_autonomic_state(
           agency_uncertainty, 1.0f - clamp(effector[8], 0.0f, 1.0f)
         );
       }
-      modality_uncertainty = max(modality_uncertainty, agency_uncertainty);
+      device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+      for (uint body_index = 0u;
+          body_index < uniforms.body_belief_count; ++body_index) {
+        device const float *body = reinterpret_cast<device const float *>(
+          body_belief + ulong(body_index) * 256ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          body + 16
+        );
+        if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
+        const float standard_deviation = sqrt(max(body[9], 0.0f));
+        body_model_uncertainty = max(
+          body_model_uncertainty,
+          standard_deviation / (1.0f + standard_deviation)
+        );
+      }
+      modality_uncertainty = max(
+        modality_uncertainty,
+        max(agency_uncertainty, body_model_uncertainty)
+      );
     } else if (sensing_descriptor.modality == 5u) {
       float support_uncertainty = 0.0f;
       device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
@@ -2255,7 +2275,7 @@ kernel void generate_motor_spinal_autonomic_state(
       | ((communication_sensing ? communication_descriptor.effector_kind : 0u)
         << 24u);
     active_sensing[gid] = command;
-    efficacy_state.prior_uncertainty = prior_modality_uncertainty;
+    efficacy_state.prior_uncertainty = modality_uncertainty;
     efficacy_state.allocation = allocation;
     efficacy_state.flags = NB_CONTROL_FLAG_VALID
       | (allocation > 0.0f ? (1u << 1u) : 0u);
