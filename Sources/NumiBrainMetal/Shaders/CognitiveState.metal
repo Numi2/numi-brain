@@ -300,6 +300,9 @@ struct NBPlasticityRegionRangeRecord {
   uint scalar_offset;
   uint scalar_count;
   uint flags;
+  ushort token_count;
+  ushort token_dimension;
+  uint reserved;
 };
 
 static_assert(sizeof(NBCognitiveUniforms) == 392);
@@ -321,7 +324,7 @@ static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
-static_assert(sizeof(NBPlasticityRegionRangeRecord) == 16);
+static_assert(sizeof(NBPlasticityRegionRangeRecord) == 24);
 
 inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
@@ -2014,25 +2017,64 @@ kernel void advance_fast_plasticity_foundation(
     }
   }
   const NBPlasticityRegionRangeRecord region = region_ranges[region_index];
+  constexpr uint hyperparameter_count = 8u;
+  constexpr uint basis_operator_channel_count = 5u;
+  constexpr uint basis_maximum_feature_count = 256u;
+  constexpr uint basis_stride = 517u;
+  constexpr uint receptor_effect_count = 14u;
+  const uint receptor_scalar_count = uniforms.module_count
+    * uniforms.neuromodulator_count * receptor_effect_count;
+  const uint basis_scalar_count = uniforms.plasticity_parameter_count
+      > hyperparameter_count + receptor_scalar_count
+    ? uniforms.plasticity_parameter_count - hyperparameter_count
+        - receptor_scalar_count
+    : 0u;
+  const uint basis_capacity = uniforms.module_count > 0u
+    ? basis_scalar_count / (uniforms.module_count * basis_stride)
+    : 0u;
+  const uint token_count = uint(region.token_count);
+  const uint token_dimension = uint(region.token_dimension);
   const bool valid_region = region.module_identifier
         == uint(site.region_identifier)
-    && region.scalar_count > 0u
+    && token_count > 0u
+    && token_dimension > 0u
+    && token_dimension <= basis_maximum_feature_count
+    && region.scalar_count == token_count * token_dimension
     && region.scalar_offset < uniforms.recurrent_scalar_count
     && region.scalar_count
       <= uniforms.recurrent_scalar_count - region.scalar_offset
+    && basis_capacity > 0u
+    && region.reserved == 0u
     && (region.flags & 1u) != 0u;
-  const uint basis_identifier = uint(site.basis_identifier);
-  const uint pre_index = valid_region
-    ? region.scalar_offset
-      + (basis_identifier * 17u + 3u) % region.scalar_count
-    : 0u;
-  const uint post_index = valid_region
-    ? region.scalar_offset
-      + (basis_identifier * 31u + 7u) % region.scalar_count
-    : 0u;
-  const float activity_product = valid_region
-    ? recurrent[pre_index] * recurrent[post_index]
-    : 0.0f;
+  float activity_product = 0.0f;
+  if (valid_region) {
+    const uint basis_identifier = uint(site.basis_identifier) % basis_capacity;
+    const uint basis_offset = hyperparameter_count
+      + (region_index * basis_capacity + basis_identifier) * basis_stride;
+    const uint left_offset = basis_offset + basis_operator_channel_count;
+    const uint right_offset = left_offset + basis_maximum_feature_count;
+    const float inverse_dimension_scale = rsqrt(float(token_dimension));
+    // Rotate deterministically across a region's tokens in physical time. One
+    // complete rank-one projection per site keeps the update basis-aligned
+    // without multiplying work by every token in large regional populations.
+    const uint token = (
+      basis_identifier
+        + uint((uniforms.target_timestamp_microseconds / 20000ul)
+          % ulong(token_count))
+    ) % token_count;
+    const uint token_offset = region.scalar_offset + token * token_dimension;
+    float left_projection = 0.0f;
+    float right_projection = 0.0f;
+    for (uint feature = 0u; feature < token_dimension; ++feature) {
+      const float activity = recurrent[token_offset + feature];
+      left_projection += plasticity_parameters[left_offset + feature]
+        * activity;
+      right_projection += plasticity_parameters[right_offset + feature]
+        * activity;
+    }
+    activity_product = left_projection * right_projection
+      * inverse_dimension_scale * inverse_dimension_scale;
+  }
   const float interval_scale = nb_plasticity_interval_scale(
     uniforms.delta_microseconds
   );

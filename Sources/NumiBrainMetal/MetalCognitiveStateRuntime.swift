@@ -92,6 +92,9 @@ private struct PlasticityRegionRangeRecord {
   var scalarOffset: UInt32 = 0
   var scalarCount: UInt32 = 0
   var flags: UInt32 = 0
+  var tokenCount: UInt16 = 0
+  var tokenDimension: UInt16 = 0
+  var reserved: UInt32 = 0
 }
 
 @frozen
@@ -174,7 +177,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<CognitiveUniforms>.stride == 392,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
-      MemoryLayout<PlasticityRegionRangeRecord>.stride == 16,
+      MemoryLayout<PlasticityRegionRangeRecord>.stride == 24,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       sharedParameters.parameterVersionFingerprint > 0
@@ -268,7 +271,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
         moduleIdentifier: UInt32(layout.moduleIdentifier),
         scalarOffset: layout.scalarOffset,
         scalarCount: layout.scalarCount,
-        flags: 1
+        flags: 1,
+        tokenCount: layout.tokenCount,
+        tokenDimension: layout.tokenDimension,
+        reserved: 0
       )
     }
     let plasticityRegionRangeByteCount = plasticityRegionRanges.count
