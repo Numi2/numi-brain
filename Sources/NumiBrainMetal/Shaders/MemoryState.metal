@@ -34,6 +34,8 @@ constant uint NB_PROCEDURAL_SKILL_COMPOSED = 32u;
 constant uint NB_PROCEDURAL_SKILL_LIFECYCLE_MASK = 7u;
 constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
 constant uint NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_MEMORY_LIFECYCLE_STOP_ACTIVE = 1u;
+constant uint NB_MEMORY_LIFECYCLE_STOP_ONSET = 1u << 1;
 constant ulong NB_MEMORY_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
@@ -52,6 +54,7 @@ struct NBMemoryUniforms {
   ulong workspace_content_offset;
   ulong control_header_offset;
   ulong body_belief_offset;
+  ulong prospective_lifecycle_offset;
   ulong active_episode_accumulator_offset;
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
@@ -907,7 +910,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 224);
+static_assert(sizeof(NBMemoryUniforms) == 232);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -2639,6 +2642,11 @@ kernel void advance_prospective_memory(
   );
   const bool lifecycle_valid = lifecycle->format_version
     == NB_MEMORY_RECORD_VERSION;
+  const bool current_stop =
+    (control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u;
+  const bool previous_stop = lifecycle_valid
+    && (lifecycle->flags & NB_MEMORY_LIFECYCLE_STOP_ACTIVE) != 0u;
+  const bool stop_onset = current_stop && !previous_stop;
   const ulong previous_goal = lifecycle_valid
     ? lifecycle->previous_goal_identifier : 0ul;
   const bool goal_changed = lifecycle_valid
@@ -2757,6 +2765,8 @@ kernel void advance_prospective_memory(
     uniforms.target_timestamp_microseconds;
   lifecycle->format_version = NB_MEMORY_RECORD_VERSION;
   lifecycle->previous_control_mode = control->mode;
+  lifecycle->flags = (current_stop ? NB_MEMORY_LIFECYCLE_STOP_ACTIVE : 0u)
+    | (stop_onset ? NB_MEMORY_LIFECYCLE_STOP_ONSET : 0u);
   lifecycle->previous_progress = control->progress;
   for (uint component = 0u; component < 51u; ++component) {
     lifecycle->context[component] = recurrent[
@@ -4374,6 +4384,13 @@ kernel void segment_and_journal_episode(
   device const NBControlHeader *control = reinterpret_cast<device const NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
+  device const NBProspectiveLifecycleState *lifecycle =
+    reinterpret_cast<device const NBProspectiveLifecycleState *>(
+      hot_state + uniforms.prospective_lifecycle_offset
+    );
+  const bool control_interrupt_onset = lifecycle->format_version
+      == NB_MEMORY_RECORD_VERSION
+    && (lifecycle->flags & NB_MEMORY_LIFECYCLE_STOP_ONSET) != 0u;
   device NBEventQueueHeader *event_header =
     reinterpret_cast<device NBEventQueueHeader *>(
       hot_state + uniforms.event_queue_offset
@@ -4448,9 +4465,18 @@ kernel void segment_and_journal_episode(
     strongest_source = embodied_source;
     strongest_flags = 0u;
   }
+  const float control_interrupt_salience = control_interrupt_onset ? 1.0f : 0.0f;
+  if (control_interrupt_salience > max(event_salience, embodied_salience)) {
+    strongest_event_kind = 9u;
+    strongest_source = uint(
+      control->active_option_identifier
+        ^ (control->active_option_identifier >> 32u)
+    );
+    strongest_flags = 0u;
+  }
   const float boundary_score = max(memory_parameters[0], 0.0f) * surprise
     + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
-      * max(event_salience, embodied_salience)
+      * max(max(event_salience, embodied_salience), control_interrupt_salience)
     + 0.25f * embodied_uncertainty;
   device NBActiveEpisodeAccumulator *accumulator =
     reinterpret_cast<device NBActiveEpisodeAccumulator *>(
@@ -4512,7 +4538,9 @@ kernel void segment_and_journal_episode(
   accumulator->reinforcement_sum -= damage;
   accumulator->latest_surprise = surprise;
   accumulator->latest_boundary_score = boundary_score;
-  const float accepted_salience = max(event_salience, embodied_salience);
+  const float accepted_salience = max(
+    max(event_salience, embodied_salience), control_interrupt_salience
+  );
   if (accepted_salience >= accumulator->latest_event_salience) {
     accumulator->event_kind = strongest_event_kind;
     accumulator->source_identifier = strongest_source;
@@ -4528,6 +4556,7 @@ kernel void segment_and_journal_episode(
   const bool salient_boundary = boundary_score >= uniforms.boundary_threshold
     || event_count > 0u
     || embodied_salience >= uniforms.boundary_threshold
+    || control_interrupt_onset
     || uniforms.target_timestamp_microseconds
       - accumulator->start_timestamp_microseconds >= 2000000ul;
   if (salient_boundary && !completed_episode_this_root) {

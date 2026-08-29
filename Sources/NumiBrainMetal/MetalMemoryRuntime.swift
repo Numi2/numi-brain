@@ -15,6 +15,7 @@ private struct MemoryUniforms {
   var workspaceContentOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var prospectiveLifecycleOffset: UInt64 = 0
   var activeEpisodeAccumulatorOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
@@ -340,7 +341,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 224,
+    guard MemoryLayout<MemoryUniforms>.stride == 232,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1232,6 +1233,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       workspaceContentOffset: UInt64(workspace.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
+      prospectiveLifecycleOffset: UInt64(
+        arena.layout.section(.prospectiveLifecycle).byteOffset
+      ),
       activeEpisodeAccumulatorOffset: UInt64(
         arena.layout.section(.activeEpisodeAccumulator).byteOffset
       ),
