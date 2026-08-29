@@ -68,6 +68,7 @@ public enum MetalActiveControlSection: UInt16, Codable, CaseIterable, Sendable {
   case spinalState = 7
   case autonomicCommands = 8
   case activeSensingCommands = 9
+  case internalActions = 10
 }
 
 @frozen
@@ -249,6 +250,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
         max(Int(species.motor.activeSensingActionDimension), 1), 4
       )
     )
+    controlScalarCount = try Self.checkedAdd(controlScalarCount, 8 * 16)
     controlScalarCount = try Self.checkedAdd(
       controlScalarCount, candidateControlScalars
     )
@@ -541,6 +543,7 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
       count: max(Int(species.motor.activeSensingActionDimension), 1),
       stride: 16
     )
+    try builder.append(.internalActions, count: 8, stride: 64)
     guard builder.totalByteCount <= parent.byteCount else {
       throw BrainRuntimeError.capacity(
         "structured active-control state exceeds its hot arena section"

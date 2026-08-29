@@ -12,6 +12,7 @@ struct NBCognitiveUniforms {
   ulong neuromodulation_offset;
   ulong fast_plasticity_offset;
   ulong active_control_offset;
+  ulong internal_action_offset;
   ulong event_queue_offset;
   ulong developmental_state_offset;
   ulong regional_maturation_offset;
@@ -126,6 +127,18 @@ struct NBWorkspaceMetadataRecord {
   float confidence;
 };
 
+struct NBInternalActionRecord {
+  ulong target_identifier;
+  ulong timestamp_microseconds;
+  uint kind;
+  uint flags;
+  uint parameter_count;
+  uint reserved;
+  float priority;
+  float confidence;
+  float parameters[6];
+};
+
 struct NBObjectSlotRecord {
   ulong identifier;
   ulong last_seen_timestamp_microseconds;
@@ -227,7 +240,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 280);
+static_assert(sizeof(NBCognitiveUniforms) == 288);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -235,6 +248,7 @@ static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
 static_assert(sizeof(NBRelationSlotRecord) == 64);
@@ -1256,6 +1270,40 @@ kernel void reduce_fast_plasticity_by_region(
   regional[gid] = record;
 }
 
+/// Applies the prior committed clear request before this tick publishes new
+/// workspace state. One lane owns both metadata and content so matching and
+/// clearing are deterministic and race-free.
+kernel void clear_requested_workspace_token(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.workspace_capacity <= 2u) return;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord request = internal_actions[2];
+  if (request.kind != 3u || (request.flags & 1u) == 0u
+      || request.target_identifier == 0ul) return;
+  device float *content = reinterpret_cast<device float *>(
+    hot_state + uniforms.workspace_content_offset
+  );
+  device NBWorkspaceMetadataRecord *metadata =
+    reinterpret_cast<device NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  for (uint slot = 2u; slot < uniforms.workspace_capacity; ++slot) {
+    if (metadata[slot].identifier != request.target_identifier) continue;
+    const uint base = slot * uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      content[base + feature] = 0.0f;
+    }
+    metadata[slot] = {};
+    return;
+  }
+}
+
 kernel void broadcast_foundation_workspace(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
@@ -1589,41 +1637,5 @@ kernel void broadcast_social_context(
       : (4u | (44u << 16u));
     token.confidence = nb_saturate(selected_score);
     metadata[target_slot] = token;
-  }
-}
-
-kernel void advance_foundation_motor_control(
-  device uchar *hot_state [[buffer(0)]],
-  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
-  device const float *motor_parameters [[buffer(2)]],
-  uint gid [[thread_position_in_grid]])
-{
-  if (gid >= uniforms.active_control_scalar_count
-      || uniforms.recurrent_scalar_count == 0u) {
-    return;
-  }
-  device float *control = reinterpret_cast<device float *>(
-    hot_state + uniforms.active_control_offset
-  );
-  device const float *recurrent = reinterpret_cast<device const float *>(
-    hot_state + uniforms.recurrent_offset
-  );
-  device const NBDriveStateRecord *drives =
-    reinterpret_cast<device const NBDriveStateRecord *>(hot_state + uniforms.drive_offset);
-  const float safety = uniforms.drive_count > 11u ? nb_saturate(drives[11].level) : 0.0f;
-  if (gid < uniforms.actuator_count) {
-    const uint source = (uniforms.recurrent_scalar_count - 1u -
-      (gid % uniforms.recurrent_scalar_count));
-    const float descending = 1.0f / (
-      1.0f + exp(-motor_parameters[0] * recurrent[source])
-    );
-    control[gid] = nb_saturate(
-      descending * (1.0f - motor_parameters[3] * safety)
-    );
-  } else if (gid < uniforms.actuator_count + uniforms.synergy_count) {
-    const uint source = gid % uniforms.recurrent_scalar_count;
-    control[gid] = tanh(motor_parameters[1] * recurrent[source]);
-  } else {
-    control[gid] *= clamp(motor_parameters[14], 0.0f, 1.0f);
   }
 }

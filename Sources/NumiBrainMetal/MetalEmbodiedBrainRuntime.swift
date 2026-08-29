@@ -24,6 +24,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let autonomicCommandCount: Int
     public let activeSensingCommandGPUAddress: UInt64
     public let activeSensingCommandCount: Int
+    public let internalActionGPUAddress: UInt64
+    public let internalActionCount: Int
     public let workspaceContentGPUAddress: UInt64
     public let workspaceContentByteCount: Int
     public let sensoryObservationGPUAddress: UInt64
@@ -73,6 +75,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let sourceOffset: Int
     let autonomicSourceOffset: Int
     let activeSensingSourceOffset: Int
+    let internalActionSourceOffset: Int
     let maturationSourceOffset: Int
     let plasticModulationSourceOffset: Int
 
@@ -83,6 +86,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       sourceOffset: Int,
       autonomicSourceOffset: Int,
       activeSensingSourceOffset: Int,
+      internalActionSourceOffset: Int,
       maturationSourceOffset: Int,
       plasticModulationSourceOffset: Int
     ) {
@@ -92,6 +96,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.sourceOffset = sourceOffset
       self.autonomicSourceOffset = autonomicSourceOffset
       self.activeSensingSourceOffset = activeSensingSourceOffset
+      self.internalActionSourceOffset = internalActionSourceOffset
       self.maturationSourceOffset = maturationSourceOffset
       self.plasticModulationSourceOffset = plasticModulationSourceOffset
     }
@@ -103,6 +108,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public var somaticByteOffset: Int { sourceOffset }
     public var autonomicByteOffset: Int { autonomicSourceOffset }
     public var activeSensingByteOffset: Int { activeSensingSourceOffset }
+    public var internalActionByteOffset: Int { internalActionSourceOffset }
     public static let structuredCommandStride = 16
   }
 
@@ -477,6 +483,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         activeSensingCommandGPUAddress:
           decision.activeSensingCommandGPUAddress,
         activeSensingCommandCount: decision.activeSensingCommandCount,
+        internalActionGPUAddress: decision.internalActionGPUAddress,
+        internalActionCount: decision.internalActionCount,
         workspaceContentGPUAddress: hot.outputGPUAddress + UInt64(workspace.byteOffset),
         workspaceContentByteCount: workspace.byteCount,
         sensoryObservationGPUAddress: sensory.observationGPUAddress,
@@ -686,6 +694,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     )
     let autonomic = controlLayout.section(.autonomicCommands)
     let activeSensing = controlLayout.section(.activeSensingCommands)
+    let internalActions = controlLayout.section(.internalActions)
     let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
     let plasticModulation = agentStateRuntime.arena.layout.section(
       .regionalPlasticModulation
@@ -709,6 +718,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       activeSensing.byteCount <= buffer.length - activeSensing.byteOffset,
       decision.activeSensingCommandGPUAddress
         == buffer.gpuAddress + UInt64(activeSensing.byteOffset),
+      decision.internalActionCount == internalActions.elementCount,
+      internalActions.byteOffset <= buffer.length,
+      internalActions.byteCount <= buffer.length - internalActions.byteOffset,
+      decision.internalActionGPUAddress
+        == buffer.gpuAddress + UInt64(internalActions.byteOffset),
       decision.regionalMaturationCount == maturation.elementCount,
       decision.regionalMaturationByteCount
         == maturation.elementCount * maturation.elementStride,
@@ -737,6 +751,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       sourceOffset: section.byteOffset,
       autonomicSourceOffset: autonomic.byteOffset,
       activeSensingSourceOffset: activeSensing.byteOffset,
+      internalActionSourceOffset: internalActions.byteOffset,
       maturationSourceOffset: maturation.byteOffset,
       plasticModulationSourceOffset: plasticModulation.byteOffset
     )

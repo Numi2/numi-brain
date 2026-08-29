@@ -32,6 +32,7 @@ struct NBDecisionUniforms {
   ulong somatic_output_offset;
   ulong active_sensing_offset;
   ulong spatial_transform_offset;
+  ulong internal_action_offset;
   ulong developmental_state_offset;
   ulong cerebellar_expert_memory_offset;
   ulong parameter_version_fingerprint;
@@ -54,6 +55,7 @@ struct NBDecisionUniforms {
   uint active_sensing_descriptor_offset;
   uint communication_descriptor_count;
   uint spatial_transform_count;
+  uint internal_action_capacity;
   uint maximum_planning_horizon;
   float risk_weight;
   float damage_risk_budget;
@@ -219,6 +221,18 @@ struct NBSpatialTransformRecord {
   ulong last_evidence_timestamp_microseconds;
 };
 
+struct NBInternalActionRecord {
+  ulong target_identifier;
+  ulong timestamp_microseconds;
+  uint kind;
+  uint flags;
+  uint parameter_count;
+  uint reserved;
+  float priority;
+  float confidence;
+  float parameters[6];
+};
+
 struct NBDevelopmentalHeader {
   uint format_version;
   uint stage;
@@ -240,7 +254,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 288);
+static_assert(sizeof(NBDecisionUniforms) == 296);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -254,6 +268,7 @@ static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
+static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline uint nb_active_candidate_limit(
@@ -862,6 +877,118 @@ kernel void select_option_and_control_mode(
   header->predicted_information_gain = plan.predicted_information_gain;
   header->unsupported_uncertainty = plan.epistemic_uncertainty;
   header->reserved0 = ulong(selected);
+}
+
+/// Emits compact transactional internal actions. These records describe
+/// deliberate memory, workspace, routing, planning, inhibition, and replay
+/// requests; they never advance time or mutate persistent memory directly.
+kernel void generate_internal_action_state(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.internal_action_capacity || gid >= 8u) return;
+  device const NBControlHeader *header =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  device const NBOptionCandidateRecord *candidates =
+    reinterpret_cast<device const NBOptionCandidateRecord *>(
+      hot_state + uniforms.candidate_offset
+    );
+  device const NBDriveRecord *drives =
+    reinterpret_cast<device const NBDriveRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  device const NBNeuromodulatorRecord *neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
+  device const NBWorkspaceMetadataRecord *workspace_metadata =
+    reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  device NBInternalActionRecord *actions =
+    reinterpret_cast<device NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const uint selected = min(
+    uint(header->reserved0), max(uniforms.candidate_capacity, 1u) - 1u
+  );
+  const NBOptionCandidateRecord candidate = candidates[selected];
+  const float model_error = uniforms.neuromodulator_count > 1u
+    ? clamp(neuromodulators[1].value, 0.0f, 1.0f) : 0.0f;
+  const float epistemic = uniforms.neuromodulator_count > 3u
+    ? clamp(neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
+  const float safety = uniforms.drive_count > 11u
+    ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
+  const float sleep_pressure = uniforms.drive_count > 7u
+    ? clamp(max(drives[7].level, drives[7].deficit), 0.0f, 1.0f) : 0.0f;
+  float maximum_token_age = 0.0f;
+  ulong stalest_token_identifier = 0ul;
+  for (uint slot = 2u; slot < uniforms.workspace_capacity; ++slot) {
+    const NBWorkspaceMetadataRecord token = workspace_metadata[slot];
+    if (token.identifier == 0ul) continue;
+    const ulong age_microseconds = uniforms.target_timestamp_microseconds
+      >= token.last_refresh_timestamp_microseconds
+      ? uniforms.target_timestamp_microseconds
+        - token.last_refresh_timestamp_microseconds
+      : 0ul;
+    const float age = clamp(float(age_microseconds) * 1.0e-6f, 0.0f, 1.0f);
+    if (age > maximum_token_age) {
+      maximum_token_age = age;
+      stalest_token_identifier = token.identifier;
+    }
+  }
+
+  NBInternalActionRecord action = {};
+  action.timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  action.kind = gid + 1u;
+  action.parameter_count = 6u;
+  action.confidence = header->confidence;
+  if (gid == 0u) {
+    action.priority = max(
+      header->unsupported_uncertainty,
+      max(epistemic, header->predicted_information_gain)
+    );
+    action.target_identifier = header->active_goal_identifier;
+  } else if (gid == 1u) {
+    action.priority = max(model_error, 1.0f - header->progress) * header->confidence;
+    action.target_identifier = header->active_goal_identifier;
+  } else if (gid == 2u) {
+    action.priority = maximum_token_age;
+    action.target_identifier = stalest_token_identifier;
+  } else if (gid == 3u) {
+    action.priority = max(epistemic, candidate.information_gain);
+    action.target_identifier = ulong(candidate.source_module);
+  } else if (gid == 4u) {
+    action.priority = header->mode == NB_CONTROL_MODE_PLANNING ? 1.0f : 0.0f;
+    action.target_identifier = header->active_option_identifier;
+  } else if (gid == 5u) {
+    action.priority = header->mode != NB_CONTROL_MODE_PLANNING
+      && header->confidence > 0.75f ? header->confidence : 0.0f;
+    action.target_identifier = header->active_option_identifier;
+  } else if (gid == 6u) {
+    action.priority = max(
+      safety,
+      (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : 0.0f
+    );
+    action.target_identifier = header->active_option_identifier;
+  } else {
+    const bool rest_selected = header->active_option_identifier
+      == NB_REST_OPTION_IDENTIFIER;
+    action.priority = max(sleep_pressure, rest_selected ? 1.0f : 0.0f);
+    action.target_identifier = header->active_goal_identifier;
+  }
+  action.priority = clamp(action.priority, 0.0f, 1.0f);
+  action.flags = action.priority > 0.05f ? NB_CONTROL_FLAG_VALID : 0u;
+  action.parameters[0] = header->confidence;
+  action.parameters[1] = header->unsupported_uncertainty;
+  action.parameters[2] = header->selected_damage_cvar;
+  action.parameters[3] = header->predicted_information_gain;
+  action.parameters[4] = header->progress;
+  action.parameters[5] = header->vigor;
+  actions[gid] = action;
 }
 
 kernel void select_cerebellar_context_experts(

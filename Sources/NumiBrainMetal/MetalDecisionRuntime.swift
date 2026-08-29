@@ -21,6 +21,7 @@ private struct DecisionUniforms {
   var somaticOutputOffset: UInt64 = 0
   var activeSensingOffset: UInt64 = 0
   var spatialTransformOffset: UInt64 = 0
+  var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
@@ -43,6 +44,7 @@ private struct DecisionUniforms {
   var activeSensingDescriptorOffset: UInt32 = 0
   var communicationDescriptorCount: UInt32 = 0
   var spatialTransformCount: UInt32 = 0
+  var internalActionCapacity: UInt32 = 0
   var maximumPlanningHorizon: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
@@ -75,6 +77,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     public let autonomicCommandCount: Int
     public let activeSensingCommandGPUAddress: UInt64
     public let activeSensingCommandCount: Int
+    public let internalActionGPUAddress: UInt64
+    public let internalActionCount: Int
   }
 
   private let arena: MetalAgentStateArena
@@ -87,6 +91,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let proposalPipeline: any MTLComputePipelineState
   private let planningPipeline: any MTLComputePipelineState
   private let selectionPipeline: any MTLComputePipelineState
+  private let internalActionPipeline: any MTLComputePipelineState
   private let cerebellarPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
@@ -109,7 +114,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 288,
+    guard MemoryLayout<DecisionUniforms>.stride == 296,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -144,7 +149,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let names = [
       "generate_active_goal_state", "propose_dynamic_options",
       "simulate_candidate_option_outcomes",
-      "select_option_and_control_mode", "select_cerebellar_context_experts",
+      "select_option_and_control_mode", "generate_internal_action_state",
+      "select_cerebellar_context_experts",
       "generate_motor_spinal_autonomic_state",
     ]
     let functions = try names.map { name -> any MTLFunction in
@@ -237,8 +243,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.proposalPipeline = pipelines[1]
     self.planningPipeline = pipelines[2]
     self.selectionPipeline = pipelines[3]
-    self.cerebellarPipeline = pipelines[4]
-    self.motorPipeline = pipelines[5]
+    self.internalActionPipeline = pipelines[4]
+    self.cerebellarPipeline = pipelines[5]
+    self.motorPipeline = pipelines[6]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
@@ -297,6 +304,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     barrier(encoder)
     dispatch(encoder, pipeline: selectionPipeline, count: 1)
     barrier(encoder)
+    dispatch(encoder, pipeline: internalActionPipeline, count: 8)
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: cerebellarPipeline,
@@ -323,6 +332,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let somatic = arena.layout.section(.somaticOutput)
     let autonomic = controlLayout.section(.autonomicCommands)
     let activeSensing = controlLayout.section(.activeSensingCommands)
+    let internalActions = controlLayout.section(.internalActions)
     return OutputView(
       headerGPUAddress: hot.outputGPUAddress + UInt64(header.byteOffset),
       motorCommandGPUAddress: hot.outputGPUAddress + UInt64(motor.byteOffset),
@@ -334,7 +344,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       autonomicCommandCount: autonomic.elementCount,
       activeSensingCommandGPUAddress:
         hot.outputGPUAddress + UInt64(activeSensing.byteOffset),
-      activeSensingCommandCount: Int(species.motor.activeSensingActionDimension)
+      activeSensingCommandCount: Int(species.motor.activeSensingActionDimension),
+      internalActionGPUAddress:
+        hot.outputGPUAddress + UInt64(internalActions.byteOffset),
+      internalActionCount: internalActions.elementCount
     )
   }
 
@@ -355,6 +368,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let somatic = arena.layout.section(.somaticOutput)
     let autonomic = controlLayout.section(.autonomicCommands)
     let activeSensing = controlLayout.section(.activeSensingCommands)
+    let internalActions = controlLayout.section(.internalActions)
     let maximumPlanningHorizon = max(
       species.development.map({ Int($0.planningHorizonSteps) }).max() ?? 0,
       1
@@ -389,6 +403,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       spatialTransformOffset: UInt64(
         arena.layout.section(.spatialTransforms).byteOffset
       ),
+      internalActionOffset: UInt64(internalActions.byteOffset),
       developmentalStateOffset: UInt64(
         arena.layout.section(.developmentalState).byteOffset
       ),
@@ -422,6 +437,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       spatialTransformCount: UInt32(
         arena.layout.section(.spatialTransforms).elementCount
       ),
+      internalActionCapacity: UInt32(internalActions.elementCount),
       maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,

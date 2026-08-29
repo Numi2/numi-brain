@@ -145,6 +145,7 @@ struct NBMemoryRetrievalUniforms {
   ulong procedural_memory_offset;
   ulong prospective_memory_offset;
   ulong control_header_offset;
+  ulong internal_action_offset;
   ulong developmental_state_offset;
   ulong parameter_version_fingerprint;
   uint recurrent_scalar_count;
@@ -175,6 +176,7 @@ struct NBMemoryConsolidationUniforms {
   ulong base_generation;
   ulong shadow_generation;
   ulong control_header_offset;
+  ulong internal_action_offset;
   ulong developmental_state_offset;
   ulong drive_offset;
   ulong active_episode_memory_offset;
@@ -294,6 +296,18 @@ struct NBControlHeader {
   ulong reserved1;
   ulong reserved2;
   ulong reserved3;
+};
+
+struct NBInternalActionRecord {
+  ulong target_identifier;
+  ulong timestamp_microseconds;
+  uint kind;
+  uint flags;
+  uint parameter_count;
+  uint reserved;
+  float priority;
+  float confidence;
+  float parameters[6];
 };
 
 struct NBDevelopmentalHeader {
@@ -470,12 +484,13 @@ static_assert(sizeof(NBMemoryJournalHeader) == 48);
 static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 192);
-static_assert(sizeof(NBMemoryConsolidationUniforms) == 176);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 200);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 184);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -675,6 +690,13 @@ kernel void score_memory_retrieval_candidates(
       hot_state + uniforms.developmental_state_offset
     );
   if (development->stage < 7u) return;
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord retrieval_request = internal_actions[0];
+  if (retrieval_request.kind != 1u
+      || (retrieval_request.flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u) return;
   device NBMemoryRetrievalScratch *scratch =
     reinterpret_cast<device NBMemoryRetrievalScratch *>(
       hot_state + uniforms.retrieval_scratch_offset
@@ -791,6 +813,8 @@ kernel void score_memory_retrieval_candidates(
       }
     }
   }
+  if (identifier == retrieval_request.target_identifier) score += 1.0f;
+  score += 0.25f * retrieval_request.priority;
   if (kind == 0u || !isfinite(score) || score < uniforms.minimum_score) return;
   const float normalized = clamp(
     (score - uniforms.minimum_score) / (16.0f + abs(uniforms.minimum_score)),
@@ -1115,6 +1139,11 @@ kernel void consolidate_lived_memory_during_rest(
     reinterpret_cast<device const NBControlHeader *>(
       hot_state + uniforms.control_header_offset
     );
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord replay_request = internal_actions[7];
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -1130,6 +1159,8 @@ kernel void consolidate_lived_memory_during_rest(
   const float immediate_risk = clamp(drives[11].level, 0.0f, 1.0f);
   if (development->stage < 7u || development->replay_allocation_multiplier <= 0.0f
       || (control->flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u
+      || replay_request.kind != 8u
+      || (replay_request.flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u
       || !rest_selected || max(max(pain, injury), immediate_risk) > 0.35f) return;
 
   device const NBEpisodicSummaryRecord *latest = nullptr;

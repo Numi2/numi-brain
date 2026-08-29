@@ -13,6 +13,7 @@ private struct CognitiveUniforms {
   var neuromodulationOffset: UInt64 = 0
   var fastPlasticityOffset: UInt64 = 0
   var activeControlOffset: UInt64 = 0
+  var internalActionOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var regionalMaturationOffset: UInt64 = 0
@@ -104,9 +105,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let spatialStatePipeline: any MTLComputePipelineState
   private let fastPlasticityPipeline: any MTLComputePipelineState
   private let regionalPlasticityPipeline: any MTLComputePipelineState
+  private let clearWorkspacePipeline: any MTLComputePipelineState
   private let workspacePipeline: any MTLComputePipelineState
   private let socialContextPipeline: any MTLComputePipelineState
-  private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let worldModelArgumentTables: [any MTL4ArgumentTable]
   private let uniformBuffer: any MTLBuffer
@@ -123,8 +124,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let beliefParameterGPUAddress: UInt64
   private let worldParameterGPUAddress: UInt64
   private let memoryParameterGPUAddress: UInt64
-  private let motorParameterGPUAddress: UInt64
   private let plasticityParameterGPUAddress: UInt64
+  private let internalActionOffset: UInt64
 
   public init(
     device: any MTLDevice,
@@ -133,7 +134,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 280,
+    guard MemoryLayout<CognitiveUniforms>.stride == 288,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -170,9 +171,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "advance_spatial_coordinate_transforms",
       "advance_fast_plasticity_foundation",
       "reduce_fast_plasticity_by_region",
+      "clear_requested_workspace_token",
       "broadcast_foundation_workspace",
       "broadcast_social_context",
-      "advance_foundation_motor_control",
     ]
     let functions = try functionNames.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -293,9 +294,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.spatialStatePipeline = pipelines[5]
     self.fastPlasticityPipeline = pipelines[6]
     self.regionalPlasticityPipeline = pipelines[7]
-    self.workspacePipeline = pipelines[8]
-    self.socialContextPipeline = pipelines[9]
-    self.motorPipeline = pipelines[10]
+    self.clearWorkspacePipeline = pipelines[8]
+    self.workspacePipeline = pipelines[9]
+    self.socialContextPipeline = pipelines[10]
     self.argumentTable = argumentTable
     self.worldModelArgumentTables = [
       firstWorldTable, secondWorldTable, thirdWorldTable,
@@ -312,6 +313,13 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.proprioceptionObservationCount = proprioceptionObservationCount
     self.vestibularObservationOffset = vestibularObservationOffset
     self.vestibularObservationCount = vestibularObservationCount
+    let controlLayout = try MetalActiveControlLayout(
+      arenaLayout: arena.layout,
+      species: species
+    )
+    self.internalActionOffset = UInt64(
+      controlLayout.section(.internalActions).byteOffset
+    )
     self.beliefParameterGPUAddress = try sharedParameters.gpuAddress(
       .belief, minimumScalarCount: 8
     )
@@ -320,9 +328,6 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     self.memoryParameterGPUAddress = try sharedParameters.gpuAddress(
       .memory, minimumScalarCount: 8
-    )
-    self.motorParameterGPUAddress = try sharedParameters.gpuAddress(
-      .motor, minimumScalarCount: 15
     )
     self.plasticityParameterGPUAddress = try sharedParameters.gpuAddress(
       .plasticity, minimumScalarCount: 8
@@ -435,6 +440,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     barrier(encoder)
     let workspaceContent = Int(species.capacities.workspaceTokenCapacity)
       * Int(species.capacities.workspaceTokenDimension)
+    try dispatch(
+      encoder: encoder,
+      pipeline: clearWorkspacePipeline,
+      threadCount: 1
+    )
+    barrier(encoder)
     argumentTable.setAddress(memoryParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
@@ -449,12 +460,6 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       threadCount: 1
     )
     barrier(encoder)
-    argumentTable.setAddress(motorParameterGPUAddress, index: 2)
-    try dispatch(
-      encoder: encoder,
-      pipeline: motorPipeline,
-      threadCount: arena.layout.section(.activeControl).elementCount
-    )
   }
 
   private func makeUniforms(
@@ -483,6 +488,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       neuromodulationOffset: offset(.neuromodulation),
       fastPlasticityOffset: offset(.fastPlasticity),
       activeControlOffset: offset(.activeControl),
+      internalActionOffset: internalActionOffset,
       eventQueueOffset: offset(.eventQueue),
       developmentalStateOffset: offset(.developmentalState),
       regionalMaturationOffset: offset(.regionalMaturation),

@@ -39,6 +39,7 @@ private struct MemoryRetrievalUniforms {
   var proceduralMemoryOffset: UInt64 = 0
   var prospectiveMemoryOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
+  var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -69,6 +70,7 @@ private struct MemoryConsolidationUniforms {
   var baseGeneration: UInt64 = 0
   var shadowGeneration: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
+  var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
@@ -185,8 +187,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 144,
-      MemoryLayout<MemoryRetrievalUniforms>.stride == 192,
-      MemoryLayout<MemoryConsolidationUniforms>.stride == 176,
+      MemoryLayout<MemoryRetrievalUniforms>.stride == 200,
+      MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -503,6 +505,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       baseGeneration: transaction.baseGeneration,
       shadowGeneration: transaction.shadowGeneration,
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      internalActionOffset: UInt64(
+        controlLayout.section(.internalActions).byteOffset
+      ),
       developmentalStateOffset: UInt64(
         layout.section(.developmentalState).byteOffset
       ),
@@ -601,6 +606,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         proceduralMemoryOffset: UInt64(procedural.byteOffset),
         prospectiveMemoryOffset: UInt64(prospective.byteOffset),
         controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+        internalActionOffset: UInt64(
+          controlLayout.section(.internalActions).byteOffset
+        ),
         developmentalStateOffset: UInt64(
           sections.section(.developmentalState).byteOffset
         ),
