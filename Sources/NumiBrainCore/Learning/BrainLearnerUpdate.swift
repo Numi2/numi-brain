@@ -45,11 +45,13 @@ public struct BrainSlowLossTerm: Codable, Equatable, Hashable, Sendable {
 /// parameter bytes that a successor Metal runtime will consume.
 @frozen
 public struct BrainLearnerUpdate: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let parentParameterFingerprint: UInt64
   public let sourceBatchFingerprint: UInt64
+  public let sourceMindCount: UInt32
+  public let minimumSourceGeneration: UInt64
   public let sourceGeneration: UInt64
   public let candidateVersion: BrainParameterVersion
   public let sharedArtifact: BrainSharedParameterArtifact
@@ -60,14 +62,19 @@ public struct BrainLearnerUpdate: Codable, Equatable, Sendable {
     parentVersion: BrainParameterVersion,
     sourceBatchFingerprint: UInt64,
     sourceGeneration: UInt64,
+    sourceMindCount: UInt32 = 1,
+    minimumSourceGeneration: UInt64? = nil,
     candidateVersion: BrainParameterVersion,
     sharedArtifact: BrainSharedParameterArtifact,
     losses: [BrainSlowLossTerm]
   ) throws {
     let canonicalLosses = losses.sorted { $0.kind.rawValue < $1.kind.rawValue }
+    let minimumSourceGeneration = minimumSourceGeneration ?? sourceGeneration
     let (expectedSequence, sequenceOverflow) =
       parentVersion.sequence.addingReportingOverflow(1)
-    guard sourceBatchFingerprint > 0, sourceGeneration > 0,
+    guard sourceBatchFingerprint > 0, sourceMindCount > 0,
+      minimumSourceGeneration > 0,
+      minimumSourceGeneration <= sourceGeneration,
       !sequenceOverflow,
       candidateVersion.parentFingerprint == parentVersion.fingerprint,
       candidateVersion.sequence == expectedSequence,
@@ -82,7 +89,8 @@ public struct BrainLearnerUpdate: Codable, Equatable, Sendable {
     var hash: UInt64 = 14_695_981_039_346_656_037
     for value in [
       UInt64(Self.formatVersion), parentVersion.fingerprint,
-      sourceBatchFingerprint, sourceGeneration, candidateVersion.fingerprint,
+      sourceBatchFingerprint, UInt64(sourceMindCount), minimumSourceGeneration,
+      sourceGeneration, candidateVersion.fingerprint,
       sharedArtifact.artifactFingerprint,
     ] {
       Self.mix(value, into: &hash)
@@ -95,6 +103,8 @@ public struct BrainLearnerUpdate: Codable, Equatable, Sendable {
     self.formatVersion = Self.formatVersion
     self.parentParameterFingerprint = parentVersion.fingerprint
     self.sourceBatchFingerprint = sourceBatchFingerprint
+    self.sourceMindCount = sourceMindCount
+    self.minimumSourceGeneration = minimumSourceGeneration
     self.sourceGeneration = sourceGeneration
     self.candidateVersion = candidateVersion
     self.sharedArtifact = sharedArtifact
@@ -112,6 +122,8 @@ public struct BrainLearnerUpdate: Codable, Equatable, Sendable {
       parentVersion: parentVersion,
       sourceBatchFingerprint: sourceBatchFingerprint,
       sourceGeneration: sourceGeneration,
+      sourceMindCount: sourceMindCount,
+      minimumSourceGeneration: minimumSourceGeneration,
       candidateVersion: candidateVersion,
       sharedArtifact: sharedArtifact,
       losses: losses

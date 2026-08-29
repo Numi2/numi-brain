@@ -282,6 +282,8 @@ public struct BrainParameterPublication: Equatable, Sendable {
   public let sharedArtifact: BrainSharedParameterArtifact
   public let learnerUpdateFingerprint: UInt64
   public let sourceBatchFingerprint: UInt64
+  public let sourceMindCount: UInt32
+  public let minimumSourceGeneration: UInt64
   public let sourceGeneration: UInt64
 
   public init(
@@ -289,13 +291,20 @@ public struct BrainParameterPublication: Equatable, Sendable {
     sharedArtifact: BrainSharedParameterArtifact,
     learnerUpdateFingerprint: UInt64 = 0,
     sourceBatchFingerprint: UInt64 = 0,
+    sourceMindCount: UInt32 = 0,
+    minimumSourceGeneration: UInt64 = 0,
     sourceGeneration: UInt64 = 0
   ) throws {
     try sharedArtifact.validate(parameterVersion: version)
-    let hasLearnerProvenance = learnerUpdateFingerprint > 0
-      || sourceBatchFingerprint > 0 || sourceGeneration > 0
-    guard !hasLearnerProvenance
-      || (learnerUpdateFingerprint > 0 && sourceBatchFingerprint > 0 && sourceGeneration > 0)
+    let hasLearnerProvenance =
+      learnerUpdateFingerprint > 0
+      || sourceBatchFingerprint > 0 || sourceMindCount > 0
+      || minimumSourceGeneration > 0 || sourceGeneration > 0
+    guard
+      !hasLearnerProvenance
+        || (learnerUpdateFingerprint > 0 && sourceBatchFingerprint > 0
+          && sourceMindCount > 0 && minimumSourceGeneration > 0
+          && minimumSourceGeneration <= sourceGeneration)
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "learner publication provenance must be complete"
@@ -305,6 +314,8 @@ public struct BrainParameterPublication: Equatable, Sendable {
     self.sharedArtifact = sharedArtifact
     self.learnerUpdateFingerprint = learnerUpdateFingerprint
     self.sourceBatchFingerprint = sourceBatchFingerprint
+    self.sourceMindCount = sourceMindCount
+    self.minimumSourceGeneration = minimumSourceGeneration
     self.sourceGeneration = sourceGeneration
   }
 
@@ -318,6 +329,8 @@ public struct BrainParameterPublication: Equatable, Sendable {
       sharedArtifact: learnerUpdate.sharedArtifact,
       learnerUpdateFingerprint: learnerUpdate.updateFingerprint,
       sourceBatchFingerprint: learnerUpdate.sourceBatchFingerprint,
+      sourceMindCount: learnerUpdate.sourceMindCount,
+      minimumSourceGeneration: learnerUpdate.minimumSourceGeneration,
       sourceGeneration: learnerUpdate.sourceGeneration
     )
   }
@@ -355,6 +368,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
   private var storedArtifact: BrainSharedParameterArtifact?
   private var storedLearnerUpdateFingerprint: UInt64 = 0
   private var storedSourceBatchFingerprint: UInt64 = 0
+  private var storedSourceMindCount: UInt32 = 0
+  private var storedMinimumSourceGeneration: UInt64 = 0
   private var storedSourceGeneration: UInt64 = 0
 
   public init(initialVersion: BrainParameterVersion) {
@@ -369,6 +384,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
     storedArtifact = initialPublication.sharedArtifact
     storedLearnerUpdateFingerprint = initialPublication.learnerUpdateFingerprint
     storedSourceBatchFingerprint = initialPublication.sourceBatchFingerprint
+    storedSourceMindCount = initialPublication.sourceMindCount
+    storedMinimumSourceGeneration = initialPublication.minimumSourceGeneration
     storedSourceGeneration = initialPublication.sourceGeneration
   }
 
@@ -392,6 +409,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
         sharedArtifact: storedArtifact,
         learnerUpdateFingerprint: storedLearnerUpdateFingerprint,
         sourceBatchFingerprint: storedSourceBatchFingerprint,
+        sourceMindCount: storedSourceMindCount,
+        minimumSourceGeneration: storedMinimumSourceGeneration,
         sourceGeneration: storedSourceGeneration
       )
     }
@@ -465,6 +484,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       storedArtifact = nil
       storedLearnerUpdateFingerprint = 0
       storedSourceBatchFingerprint = 0
+      storedSourceMindCount = 0
+      storedMinimumSourceGeneration = 0
       storedSourceGeneration = 0
     }
   }
@@ -493,6 +514,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       storedArtifact = update.sharedArtifact
       storedLearnerUpdateFingerprint = update.updateFingerprint
       storedSourceBatchFingerprint = update.sourceBatchFingerprint
+      storedSourceMindCount = update.sourceMindCount
+      storedMinimumSourceGeneration = update.minimumSourceGeneration
       storedSourceGeneration = update.sourceGeneration
     }
   }
@@ -533,6 +556,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       storedArtifact = publication.sharedArtifact
       storedLearnerUpdateFingerprint = publication.learnerUpdateFingerprint
       storedSourceBatchFingerprint = publication.sourceBatchFingerprint
+      storedSourceMindCount = publication.sourceMindCount
+      storedMinimumSourceGeneration = publication.minimumSourceGeneration
       storedSourceGeneration = publication.sourceGeneration
 
       let successorLease = BrainRolloutCohortLease(
@@ -558,6 +583,8 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       sharedArtifact: storedArtifact,
       learnerUpdateFingerprint: storedLearnerUpdateFingerprint,
       sourceBatchFingerprint: storedSourceBatchFingerprint,
+      sourceMindCount: storedSourceMindCount,
+      minimumSourceGeneration: storedMinimumSourceGeneration,
       sourceGeneration: storedSourceGeneration
     )
   }

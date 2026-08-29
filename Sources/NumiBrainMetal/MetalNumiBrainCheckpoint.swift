@@ -54,7 +54,8 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
   public func validate() throws {
     try cognitiveState.validate()
     try fastTissueState.validate()
-    let fastTimestamp = fastTissueState.committedSchedulerTime
+    let fastTimestamp =
+      fastTissueState.committedSchedulerTime
       ?? BrainTimestamp(microseconds: 0)
     guard formatVersion == Self.formatVersion,
       cognitiveState.environmentIdentifier == fastTissueState.environmentIdentifier,
@@ -69,10 +70,11 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
         == fastTissueState.regionalProgramFingerprint,
       cognitiveState.scheduleFingerprint == fastTissueState.scheduleFingerprint,
       cognitiveState.physicalCheckpointFingerprint > 0,
-      checkpointFingerprint == Self.contentFingerprint(
-        cognitiveState: cognitiveState,
-        fastTissueState: fastTissueState
-      )
+      checkpointFingerprint
+        == Self.contentFingerprint(
+          cognitiveState: cognitiveState,
+          fastTissueState: fastTissueState
+        )
     else {
       throw TissueError.transaction(
         "complete brain checkpoint generations or immutable identities diverge"
@@ -119,6 +121,10 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
       parentRegional == successorRegional,
       successorPublication.learnerUpdateFingerprint > 0,
       successorPublication.sourceBatchFingerprint > 0,
+      successorPublication.sourceMindCount > 0,
+      successorPublication.minimumSourceGeneration > 0,
+      successorPublication.minimumSourceGeneration
+        <= successorPublication.sourceGeneration,
       successorPublication.sourceGeneration > 0
     else {
       throw TissueError.transaction(

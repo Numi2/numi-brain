@@ -97,6 +97,31 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     try parameterCohort.validate(runtime: self)
   }
 
+  /// Freezes one complete mind's committed learner-visible memory only after
+  /// its joint brain-physics transaction has closed. The returned allocations
+  /// remain immutable while this runtime resumes rollout.
+  public func makeLearningBatch() throws -> MetalLearningBatch {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "learning snapshots require a closed complete-brain control root"
+      )
+    }
+    return try cognitive.makeLearningBatch()
+  }
+
+  /// Binds the immutable snapshot to the persistent identity owned by the
+  /// rollout orchestrator, ready for canonical multi-mind cohort assembly.
+  public func makeLearningCohortMember(
+    mindIdentifier: UInt64
+  ) throws -> MetalLearningCohortMember {
+    try MetalLearningCohortMember(
+      mindIdentifier: mindIdentifier,
+      batch: makeLearningBatch()
+    )
+  }
+
   /// Returns only page requests from the last committed brain generation.
   /// Archive orchestration is intentionally unavailable during a control root.
   public func snapshotArchivePageRequests() throws
@@ -181,7 +206,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
     let requested = Set(snapshot.requests.map(\.pageIdentifier))
     let loaded = Set(loadedPages.map(\.pageIdentifier))
-    guard snapshot.committedGeneration
+    guard
+      snapshot.committedGeneration
         == cognitive.agentStateRuntime.arena.committedGeneration,
       loaded.isSubset(of: requested)
     else {
@@ -238,7 +264,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       )
     }
     let fast = try fastTissue.saveCheckpoint()
-    let timestamp = fast.committedSchedulerTime
+    let timestamp =
+      fast.committedSchedulerTime
       ?? BrainTimestamp(microseconds: 0)
     let cognitiveState = try cognitive.saveCheckpoint(
       environmentIdentifier: fast.environmentIdentifier,
