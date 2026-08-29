@@ -498,6 +498,18 @@ struct NBFastAutonomicUniformsABI {
     uint oscillator_count;
 };
 
+struct NBFastAutonomicChannelDescriptorABI {
+    uint channel_identifier;
+    uint kind;
+    uint flags;
+    uint critical_receptor_count;
+    uint critical_receptors[4];
+    float emergency_target;
+    float emergency_gain;
+    float cpg_gain;
+    float reserved;
+};
+
 struct NBFastAutonomicStateABI {
     ulong last_event_timestamp_microseconds;
     ulong state_timestamp_microseconds;
@@ -735,6 +747,8 @@ static_assert(sizeof(NBFastReflexStateABI) == 128, "fast reflex state drift");
 static_assert(sizeof(NBFastCerebellarStateABI) == 64, "fast cerebellar state drift");
 static_assert(sizeof(NBFastAutonomicUniformsABI) == 40,
               "fast autonomic uniforms drift");
+static_assert(sizeof(NBFastAutonomicChannelDescriptorABI) == 48,
+              "fast autonomic channel descriptor drift");
 static_assert(sizeof(NBFastAutonomicStateABI) == 64,
               "fast autonomic state drift");
 static_assert(sizeof(NBAutonomicCommandRecordABI) == 16,
@@ -3525,8 +3539,10 @@ inline void fast_autonomic_advance_to(
         1u
     ));
     state.critical_drive *= exp(-elapsed / decayTime);
+    const float criticalStrength = clamp(state.critical_drive, 0.0f, 1.0f);
+    const float criticalTarget = clamp(state.reserved[0], 0.0f, 1.0f);
     const float effectiveTarget = clamp(
-        max(highLevelTarget, state.critical_drive),
+        mix(highLevelTarget, criticalTarget, criticalStrength),
         0.0f,
         1.0f
     );
@@ -3556,6 +3572,8 @@ kernel void advance_fast_autonomic_output(
     device NBFastAutonomicStateABI *outputStates [[buffer(5)]],
     device NBAutonomicCommandRecordABI *outputCommands [[buffer(6)]],
     device const NBFastCPGStateABI *cpgStates [[buffer(7)]],
+    device const NBFastAutonomicChannelDescriptorABI *channelDescriptors
+        [[buffer(8)]],
     uint channelIndex [[thread_position_in_grid]])
 {
     if (channelIndex >= uniforms->channel_count) {
@@ -3563,6 +3581,8 @@ kernel void advance_fast_autonomic_output(
     }
     const NBAutonomicCommandRecordABI baselineCommand =
         baselineCommands[channelIndex];
+    const NBFastAutonomicChannelDescriptorABI descriptor =
+        channelDescriptors[channelIndex];
     const float highLevelCommand = isfinite(baselineCommand.command)
         ? clamp(baselineCommand.command, 0.0f, 1.0f)
         : 0.0f;
@@ -3582,7 +3602,11 @@ kernel void advance_fast_autonomic_output(
     }
     const float highLevelTarget = max(
         cognitiveTarget,
-        clamp(vitalRhythmicDrive * uniforms->vital_gain, 0.0f, 1.0f)
+        clamp(
+            vitalRhythmicDrive * descriptor.cpg_gain * uniforms->vital_gain,
+            0.0f,
+            1.0f
+        )
     );
     NBFastAutonomicStateABI state = baselineStates[channelIndex];
     const bool valid = (state.flags & 1u) != 0u;
@@ -3600,6 +3624,7 @@ kernel void advance_fast_autonomic_output(
         for (uint index = 0u; index < 6u; ++index) {
             state.reserved[index] = 0.0f;
         }
+        state.reserved[0] = highLevelTarget;
     } else if (state.state_timestamp_microseconds
                < uniforms->baseline_timestamp_microseconds) {
         fast_autonomic_advance_to(
@@ -3614,7 +3639,18 @@ kernel void advance_fast_autonomic_output(
         : 0u;
     for (uint eventIndex = 0u; eventIndex < eventCount; ++eventIndex) {
         const NBInterruptEventABI event = interruptEvents[eventIndex];
-        if ((event.interrupt_mask & NBInterruptPhysiologicalCritical) == 0ul
+        bool receptorMatch = (descriptor.flags & (1u << 1u)) != 0u;
+        for (uint receptorIndex = 0u;
+             receptorIndex < min(descriptor.critical_receptor_count, 4u);
+             ++receptorIndex) {
+            receptorMatch = receptorMatch
+                || descriptor.critical_receptors[receptorIndex]
+                    == event.identifier;
+        }
+        if ((descriptor.flags & 1u) == 0u
+            || descriptor.channel_identifier != channelIndex
+            || !receptorMatch
+            || (event.interrupt_mask & NBInterruptPhysiologicalCritical) == 0ul
             || event.timestamp_microseconds
                 < uniforms->baseline_timestamp_microseconds
             || event.timestamp_microseconds
@@ -3631,12 +3667,22 @@ kernel void advance_fast_autonomic_output(
         );
         state.critical_drive = max(
             state.critical_drive,
-            clamp(max(event.magnitude, 0.0f) * uniforms->vital_gain, 0.0f, 1.0f)
+            clamp(
+                max(event.magnitude, 0.0f) * descriptor.emergency_gain
+                    * uniforms->vital_gain,
+                0.0f,
+                1.0f
+            )
         );
+        state.reserved[0] = clamp(descriptor.emergency_target, 0.0f, 1.0f);
         // A physiological emergency bypasses the normal response time on its
         // rising edge; subsequent recovery still follows the decay dynamics.
-        state.command = max(state.command, state.critical_drive);
-        state.target = max(highLevelTarget, state.critical_drive);
+        state.command = mix(
+            state.command,
+            state.reserved[0],
+            clamp(state.critical_drive, 0.0f, 1.0f)
+        );
+        state.target = state.command;
         state.last_event_timestamp_microseconds = event.timestamp_microseconds;
         state.update_count = state.update_count == 0xffffffffu
             ? 0xffffffffu

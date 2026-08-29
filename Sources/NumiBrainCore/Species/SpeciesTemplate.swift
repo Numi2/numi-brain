@@ -390,6 +390,57 @@ public enum PhysiologyModelClass: UInt16, Codable, CaseIterable, Sendable {
 }
 
 @frozen
+public enum AutonomicEffectorKind: UInt16, Codable, CaseIterable, Hashable, Sendable {
+  case ventilationAmplitude = 1
+  case ventilationFrequency = 2
+  case heartRateTarget = 3
+  case vascularTone = 4
+  case thermoregulation = 5
+  case pupil = 6
+  case digestiveAllocation = 7
+  case stressResponse = 8
+  case restSleep = 9
+  case generic = 10
+}
+
+@frozen
+public struct AutonomicChannelTemplate: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt16
+  public let kind: AutonomicEffectorKind
+  public let criticalReceptorIdentifiers: [UInt32]
+  public let respondsToAnyPhysiologicalCritical: Bool
+  public let emergencyTarget: Float
+  public let emergencyGain: Float
+  public let cpgGain: Float
+
+  public init(
+    identifier: UInt16,
+    kind: AutonomicEffectorKind,
+    criticalReceptorIdentifiers: [UInt32],
+    respondsToAnyPhysiologicalCritical: Bool,
+    emergencyTarget: Float,
+    emergencyGain: Float,
+    cpgGain: Float
+  ) throws {
+    guard criticalReceptorIdentifiers.count <= 4,
+      Set(criticalReceptorIdentifiers).count == criticalReceptorIdentifiers.count,
+      emergencyTarget.isFinite, (0...1).contains(emergencyTarget),
+      emergencyGain.isFinite, emergencyGain >= 0,
+      cpgGain.isFinite, cpgGain >= 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor("autonomic channel is invalid")
+    }
+    self.identifier = identifier
+    self.kind = kind
+    self.criticalReceptorIdentifiers = criticalReceptorIdentifiers.sorted()
+    self.respondsToAnyPhysiologicalCritical = respondsToAnyPhysiologicalCritical
+    self.emergencyTarget = emergencyTarget
+    self.emergencyGain = emergencyGain
+    self.cpgGain = cpgGain
+  }
+}
+
+@frozen
 public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
   public let modelClass: PhysiologyModelClass
   public let stateDimension: UInt16
@@ -398,6 +449,7 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
   public let viableMaximums: [Float]
   public let criticalMinimums: [Float]
   public let criticalMaximums: [Float]
+  public let autonomicChannels: [AutonomicChannelTemplate]
 
   public init(
     modelClass: PhysiologyModelClass,
@@ -406,9 +458,11 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
     viableMinimums: [Float],
     viableMaximums: [Float],
     criticalMinimums: [Float],
-    criticalMaximums: [Float]
+    criticalMaximums: [Float],
+    autonomicChannels: [AutonomicChannelTemplate]
   ) throws {
     let count = Int(stateDimension)
+    let autonomicChannels = autonomicChannels.sorted { $0.identifier < $1.identifier }
     guard stateDimension > 0, autonomicActionDimension > 0,
       [viableMinimums, viableMaximums, criticalMinimums, criticalMaximums]
         .allSatisfy({ $0.count == count && $0.allSatisfy(\.isFinite) }),
@@ -416,6 +470,10 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
         criticalMinimums[index] <= viableMinimums[index]
           && viableMinimums[index] <= viableMaximums[index]
           && viableMaximums[index] <= criticalMaximums[index]
+      }),
+      autonomicChannels.count == Int(autonomicActionDimension),
+      autonomicChannels.enumerated().allSatisfy({ index, channel in
+        channel.identifier == UInt16(index)
       })
     else {
       throw BrainRuntimeError.invalidDescriptor("physiology template is invalid")
@@ -427,6 +485,7 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
     self.viableMaximums = viableMaximums
     self.criticalMinimums = criticalMinimums
     self.criticalMaximums = criticalMaximums
+    self.autonomicChannels = autonomicChannels
   }
 }
 
@@ -509,8 +568,8 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  /// Version 3 distinguishes somatic and vital-autonomic CPG output targets.
-  public static let formatVersion: UInt32 = 3
+  /// Version 4 adds explicit species-owned autonomic channel routing.
+  public static let formatVersion: UInt32 = 4
 
   public let family: SpeciesFamily
   public let name: String
@@ -588,9 +647,11 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       cpg.oscillators.allSatisfy({ oscillator in
         switch oscillator.outputKind {
         case .somaticSynergy:
-          oscillator.outputSynergyIdentifier < motor.synergyCount
+          return oscillator.outputSynergyIdentifier < motor.synergyCount
         case .autonomicChannel:
-          oscillator.outputSynergyIdentifier < physiology.autonomicActionDimension
+          let identifier = Int(oscillator.outputSynergyIdentifier)
+          return identifier < physiology.autonomicChannels.count
+            && physiology.autonomicChannels[identifier].cpgGain > 0
         }
       }),
       !hasVitalAutonomicCPG || hasVitalAutonomicScaffold,
@@ -701,6 +762,19 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     ] {
       Self.mix(UInt32(values.count), into: &hash)
       for value in values { Self.mix(value.bitPattern, into: &hash) }
+    }
+    Self.mix(UInt32(physiology.autonomicChannels.count), into: &hash)
+    for channel in physiology.autonomicChannels {
+      Self.mix(UInt32(channel.identifier), into: &hash)
+      Self.mix(UInt32(channel.kind.rawValue), into: &hash)
+      Self.mix(UInt8(channel.respondsToAnyPhysiologicalCritical ? 1 : 0), into: &hash)
+      Self.mix(channel.emergencyTarget.bitPattern, into: &hash)
+      Self.mix(channel.emergencyGain.bitPattern, into: &hash)
+      Self.mix(channel.cpgGain.bitPattern, into: &hash)
+      Self.mix(UInt32(channel.criticalReceptorIdentifiers.count), into: &hash)
+      for identifier in channel.criticalReceptorIdentifiers {
+        Self.mix(identifier, into: &hash)
+      }
     }
     let canonicalInnateBehaviors = innateBehaviors.sorted { lhs, rhs in
       if lhs.kind != rhs.kind { return lhs.kind.rawValue < rhs.kind.rawValue }

@@ -42,6 +42,21 @@ private struct FastAutonomicUniforms {
   var oscillatorCount: UInt32 = 0
 }
 
+private struct FastAutonomicChannelDescriptor {
+  var channelIdentifier: UInt32 = 0
+  var kind: UInt32 = 0
+  var flags: UInt32 = 0
+  var criticalReceptorCount: UInt32 = 0
+  var criticalReceptor0: UInt32 = 0
+  var criticalReceptor1: UInt32 = 0
+  var criticalReceptor2: UInt32 = 0
+  var criticalReceptor3: UInt32 = 0
+  var emergencyTarget: Float = 0
+  var emergencyGain: Float = 0
+  var cpgGain: Float = 0
+  var reserved: Float = 0
+}
+
 private struct BodyLoadFieldUniforms {
   var attachmentCatalogFingerprint: UInt64 = 0
   var bodyCount: UInt32 = 0
@@ -202,6 +217,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   static let fastAutonomicStateStride = 64
   static let autonomicCommandStride = 16
   static let maximumFastAutonomicChannelCount = 64
+  static let fastAutonomicChannelDescriptorStride = 48
   static let activeSensingCommandStride = 16
   static let maximumActiveSensingChannelCount = 64
 
@@ -503,6 +519,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedFastAutonomicStateBuffer: any MTLBuffer
   private let baselineFastAutonomicCommandBuffer: any MTLBuffer
   private let stagedFastAutonomicOutputBuffer: any MTLBuffer
+  private let fastAutonomicChannelDescriptorBuffer: any MTLBuffer
   private let stagedActiveSensingCommandBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
@@ -561,6 +578,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let stagedMotorCommandByteCount: Int
   public let fastAutonomicStateByteCount: Int
   public let fastAutonomicCommandByteCount: Int
+  public let fastAutonomicChannelDescriptorByteCount: Int
   public let activeSensingCommandByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
@@ -1060,7 +1078,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     let fastAutonomicArgumentDescriptor = MTL4ArgumentTableDescriptor()
     fastAutonomicArgumentDescriptor.label = "NumiBrain fast-autonomic arguments"
-    fastAutonomicArgumentDescriptor.maxBufferBindCount = 8
+    fastAutonomicArgumentDescriptor.maxBufferBindCount = 9
     fastAutonomicArgumentDescriptor.initializeBindings = true
     guard
       let fastAutonomicArgumentTable = try? device.makeArgumentTable(
@@ -1277,6 +1295,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       * Self.fastAutonomicStateStride
     let fastAutonomicCommandByteCount = Self.maximumFastAutonomicChannelCount
       * Self.autonomicCommandStride
+    let fastAutonomicChannelDescriptorByteCount =
+      Self.maximumFastAutonomicChannelCount
+        * Self.fastAutonomicChannelDescriptorStride
     let activeSensingCommandByteCount = Self.maximumActiveSensingChannelCount
       * Self.activeSensingCommandStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
@@ -1286,6 +1307,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32,
       MemoryLayout<FastCPGUniforms>.stride == 24,
       MemoryLayout<FastAutonomicUniforms>.stride == 40,
+      MemoryLayout<FastAutonomicChannelDescriptor>.stride
+        == Self.fastAutonomicChannelDescriptorStride,
       MemoryLayout<FastReflexRule>.stride == Self.fastReflexRuleStride
     else {
       throw TissueError.metal("protective motor profile byte count overflows Int")
@@ -1538,6 +1561,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: fastAutonomicCommandByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let fastAutonomicChannelDescriptorBuffer = device.makeBuffer(
+        length: fastAutonomicChannelDescriptorByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let stagedActiveSensingCommandBuffer = device.makeBuffer(
         length: activeSensingCommandByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1720,6 +1747,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain transaction autonomic baseline"
     stagedFastAutonomicOutputBuffer.label =
       "NumiBrain transaction fast autonomic output"
+    fastAutonomicChannelDescriptorBuffer.label =
+      "NumiBrain immutable autonomic channel descriptors"
     stagedActiveSensingCommandBuffer.label =
       "NumiBrain transaction active sensing commands"
     defaultRegionalMaturationBuffer.label =
@@ -1804,7 +1833,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                                   fastAutonomicStateByteCount,
                                   max(
                                     fastAutonomicCommandByteCount,
-                                    activeSensingCommandByteCount
+                                    max(
+                                      activeSensingCommandByteCount,
+                                      fastAutonomicChannelDescriptorByteCount
+                                    )
                                   )
                                 )
                               )
@@ -1917,6 +1949,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(stagedFastAutonomicStateBuffer)
     residencySet.addAllocation(baselineFastAutonomicCommandBuffer)
     residencySet.addAllocation(stagedFastAutonomicOutputBuffer)
+    residencySet.addAllocation(fastAutonomicChannelDescriptorBuffer)
     residencySet.addAllocation(stagedActiveSensingCommandBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
@@ -2048,6 +2081,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedFastAutonomicStateBuffer = stagedFastAutonomicStateBuffer
     self.baselineFastAutonomicCommandBuffer = baselineFastAutonomicCommandBuffer
     self.stagedFastAutonomicOutputBuffer = stagedFastAutonomicOutputBuffer
+    self.fastAutonomicChannelDescriptorBuffer = fastAutonomicChannelDescriptorBuffer
     self.stagedActiveSensingCommandBuffer = stagedActiveSensingCommandBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
@@ -2102,6 +2136,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedMotorCommandByteCount = stagedMotorCommandByteCount
     self.fastAutonomicStateByteCount = fastAutonomicStateByteCount
     self.fastAutonomicCommandByteCount = fastAutonomicCommandByteCount
+    self.fastAutonomicChannelDescriptorByteCount =
+      fastAutonomicChannelDescriptorByteCount
     self.activeSensingCommandByteCount = activeSensingCommandByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
@@ -2467,7 +2503,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
               stagedMotorCommandByteCount,
               max(
                 fastAutonomicStateByteCount,
-                max(fastAutonomicCommandByteCount, activeSensingCommandByteCount)
+                max(
+                  fastAutonomicCommandByteCount,
+                  max(
+                    activeSensingCommandByteCount,
+                    fastAutonomicChannelDescriptorByteCount
+                  )
+                )
               )
             )
           )
@@ -2533,6 +2575,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: stagedActiveSensingCommandBuffer,
       size: activeSensingCommandByteCount,
       label: "NumiBrain initial active sensing command upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: fastAutonomicChannelDescriptorBuffer,
+      size: fastAutonomicChannelDescriptorByteCount,
+      label: "NumiBrain initial autonomic channel descriptor upload"
     )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
@@ -2849,6 +2897,41 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         label: "NumiBrain species reflex-program upload"
       )
     }
+    let autonomicDescriptors = species.physiology.autonomicChannels.map { channel in
+      let identifiers = channel.criticalReceptorIdentifiers
+        + Array(repeating: 0, count: 4 - channel.criticalReceptorIdentifiers.count)
+      return FastAutonomicChannelDescriptor(
+        channelIdentifier: UInt32(channel.identifier),
+        kind: UInt32(channel.kind.rawValue),
+        flags: 1 | (channel.respondsToAnyPhysiologicalCritical ? 1 << 1 : 0),
+        criticalReceptorCount: UInt32(channel.criticalReceptorIdentifiers.count),
+        criticalReceptor0: identifiers[0],
+        criticalReceptor1: identifiers[1],
+        criticalReceptor2: identifiers[2],
+        criticalReceptor3: identifiers[3],
+        emergencyTarget: channel.emergencyTarget,
+        emergencyGain: channel.emergencyGain,
+        cpgGain: channel.cpgGain,
+        reserved: 0
+      )
+    }
+    guard autonomicDescriptors.count == Int(species.physiology.autonomicActionDimension),
+      autonomicDescriptors.count * MemoryLayout<FastAutonomicChannelDescriptor>.stride
+        <= fastAutonomicChannelDescriptorByteCount
+    else {
+      throw TissueError.metal("species autonomic program exceeds fast GPU capacity")
+    }
+    autonomicDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: fastAutonomicChannelDescriptorBuffer,
+      size: autonomicDescriptors.count
+        * MemoryLayout<FastAutonomicChannelDescriptor>.stride,
+      label: "NumiBrain species autonomic-program upload"
+    )
     boundFastReflexSpeciesFingerprint = species.fingerprint
     boundFastReflexRuleCount = rules.count
     boundFastAutonomicChannelCount = Int(
@@ -3182,6 +3265,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       fastAutonomicArgumentTable.setAddress(
         stagedFastCPGStateBuffer.gpuAddress,
         index: 7
+      )
+      fastAutonomicArgumentTable.setAddress(
+        fastAutonomicChannelDescriptorBuffer.gpuAddress,
+        index: 8
       )
       encoder.setComputePipelineState(fastAutonomicPipeline)
       encoder.setArgumentTable(fastAutonomicArgumentTable)
@@ -5803,6 +5890,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     fastAutonomicArgumentTable.setAddress(
       stagedFastCPGStateBuffer.gpuAddress,
       index: 7
+    )
+    fastAutonomicArgumentTable.setAddress(
+      fastAutonomicChannelDescriptorBuffer.gpuAddress,
+      index: 8
     )
     encoder.setComputePipelineState(fastAutonomicPipeline)
     encoder.setArgumentTable(fastAutonomicArgumentTable)
