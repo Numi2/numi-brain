@@ -195,6 +195,13 @@ struct NBCounterfactualWorldOutcome {
   float aleatoric_variance;
 };
 
+struct NBRetrievedOptionOutcome {
+  float support;
+  float damage;
+  float uncertainty;
+  float reinforcement;
+};
+
 struct NBMotorCommandRecord {
   float excitation;
   float force_target;
@@ -664,6 +671,33 @@ inline NBCounterfactualWorldOutcome nb_counterfactual_world_outcome(
         + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
         + (step * 16u) % NB_WORLD_EVENT_OPTION_DIMENSION], 0.0f)
     : 0.0f;
+  return outcome;
+}
+
+inline NBRetrievedOptionOutcome nb_retrieved_option_outcome(
+  device const float *workspace,
+  device const NBWorkspaceMetadataRecord *workspace_metadata,
+  constant NBDecisionUniforms &uniforms,
+  const ulong option_identifier)
+{
+  NBRetrievedOptionOutcome outcome = {};
+  if (uniforms.workspace_dimension < 14u) return outcome;
+  for (uint memory_slot = 3u;
+      memory_slot < min(uniforms.workspace_capacity, 7u); ++memory_slot) {
+    const NBWorkspaceMetadataRecord memory_token =
+      workspace_metadata[memory_slot];
+    const uint memory_source = memory_token.kind_and_source >> 16u;
+    if (memory_source != 56u
+        || memory_token.bound_token_identifier != option_identifier
+        || memory_token.confidence <= outcome.support) continue;
+    const uint memory_base = memory_slot * uniforms.workspace_dimension;
+    outcome.support = clamp(memory_token.confidence, 0.0f, 1.0f);
+    outcome.uncertainty = clamp(workspace[memory_base + 11u], 0.0f, 1.0f);
+    outcome.damage = clamp(workspace[memory_base + 12u], 0.0f, 1.0f);
+    outcome.reinforcement = clamp(
+      workspace[memory_base + 13u], -1.0f, 1.0f
+    );
+  }
   return outcome;
 }
 
@@ -1256,8 +1290,16 @@ kernel void simulate_candidate_option_outcomes(
             world, world_parameters, uniforms, followup, rollout_state,
             step, structured_world_available
           );
+        const NBRetrievedOptionOutcome followup_memory =
+          nb_retrieved_option_outcome(
+            workspace, workspace_metadata, uniforms,
+            followup.option_identifier
+          );
         const float followup_risk = clamp(
-          max(followup.damage_cvar, followup_world.damage_cvar)
+          max(
+            max(followup.damage_cvar, followup_world.damage_cvar),
+            followup_memory.support * followup_memory.damage
+          )
             + 0.05f * sqrt(followup_world.aleatoric_variance)
             + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
           0.0f, 1.0f
@@ -1267,6 +1309,8 @@ kernel void simulate_candidate_option_outcomes(
           + value_parameters[2] * followup.social_value
           + value_parameters[3] * uniforms.curiosity_weight
             * followup.information_gain
+          + value_parameters[0] * followup_memory.support
+            * followup_memory.reinforcement
           + compatibility - value_parameters[4] * uniforms.risk_weight
             * followup_risk
           - value_parameters[5] * followup.effort_cost
@@ -1282,27 +1326,9 @@ kernel void simulate_candidate_option_outcomes(
       selected_option = best_followup;
     }
     const NBOptionCandidateRecord candidate = candidates[selected_option];
-    float episodic_support = 0.0f;
-    float episodic_damage = 0.0f;
-    float episodic_uncertainty = 0.0f;
-    float episodic_reinforcement = 0.0f;
-    for (uint memory_slot = 3u;
-        memory_slot < min(uniforms.workspace_capacity, 7u); ++memory_slot) {
-      const NBWorkspaceMetadataRecord memory_token =
-        workspace_metadata[memory_slot];
-      const uint memory_source = memory_token.kind_and_source >> 16u;
-      if (memory_source != 56u
-          || memory_token.bound_token_identifier != candidate.option_identifier
-          || memory_token.confidence <= episodic_support
-          || uniforms.workspace_dimension < 14u) continue;
-      const uint memory_base = memory_slot * uniforms.workspace_dimension;
-      episodic_support = clamp(memory_token.confidence, 0.0f, 1.0f);
-      episodic_uncertainty = clamp(workspace[memory_base + 11u], 0.0f, 1.0f);
-      episodic_damage = clamp(workspace[memory_base + 12u], 0.0f, 1.0f);
-      episodic_reinforcement = clamp(
-        workspace[memory_base + 13u], -1.0f, 1.0f
-      );
-    }
+    const NBRetrievedOptionOutcome episodic = nb_retrieved_option_outcome(
+      workspace, workspace_metadata, uniforms, candidate.option_identifier
+    );
     const NBCounterfactualWorldOutcome world_outcome =
       nb_counterfactual_world_outcome(
         world, world_parameters, uniforms, candidate, rollout_state,
@@ -1311,12 +1337,12 @@ kernel void simulate_candidate_option_outcomes(
     const float ensemble_mean = world_outcome.mean_prediction;
     const float epistemic = max(
       world_outcome.epistemic_uncertainty,
-      episodic_support * episodic_uncertainty
+      episodic.support * episodic.uncertainty
     );
     const float step_damage = clamp(
       max(
         max(candidate.damage_cvar, world_outcome.damage_cvar),
-        episodic_support * episodic_damage
+        episodic.support * episodic.damage
       )
         + 0.05f * sqrt(world_outcome.aleatoric_variance)
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
@@ -1335,7 +1361,7 @@ kernel void simulate_candidate_option_outcomes(
         + value_parameters[1] * candidate.homeostatic_value
         + value_parameters[2] * candidate.social_value
         + value_parameters[3] * uniforms.curiosity_weight * step_information
-        + value_parameters[0] * episodic_support * episodic_reinforcement
+        + value_parameters[0] * episodic.support * episodic.reinforcement
         - value_parameters[4] * uniforms.risk_weight * step_damage
         - value_parameters[5] * step_effort
         - value_parameters[6]
