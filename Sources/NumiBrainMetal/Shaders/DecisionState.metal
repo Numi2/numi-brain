@@ -19,6 +19,7 @@ constant ulong NB_REST_OPTION_IDENTIFIER = NB_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
 constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
+constant uint NB_WORLD_CVAR_TAIL_COUNT = 2u;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 
 struct NBDecisionUniforms {
@@ -1221,9 +1222,18 @@ kernel void simulate_candidate_option_outcomes(
       ensemble_mean += prediction / float(NB_WORLD_HEAD_COUNT);
     }
     float epistemic_variance = 0.0f;
+    float largest_head_damage = 0.0f;
+    float second_largest_head_damage = 0.0f;
     for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
       const float difference = head_values[head] - ensemble_mean;
       epistemic_variance += difference * difference / float(NB_WORLD_HEAD_COUNT);
+      const float head_damage = clamp(head_values[head], 0.0f, 1.0f);
+      if (head_damage >= largest_head_damage) {
+        second_largest_head_damage = largest_head_damage;
+        largest_head_damage = head_damage;
+      } else if (head_damage > second_largest_head_damage) {
+        second_largest_head_damage = head_damage;
+      }
     }
     const float epistemic = sqrt(max(epistemic_variance, 0.0f));
     const float aleatoric_variance = structured_world_available
@@ -1231,7 +1241,12 @@ kernel void simulate_candidate_option_outcomes(
           + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
           + (step * 16u) % NB_WORLD_EVENT_OPTION_DIMENSION], 0.0f)
       : 0.0f;
-    const float predicted_world_damage = clamp(ensemble_mean, 0.0f, 1.0f);
+    // Five heads make the exact upper 40 percent tail the two worst learned
+    // outcomes. This is the bounded deployment CVaR used for plan admission;
+    // aleatoric observation variance remains a separate risk increment.
+    const float predicted_world_damage =
+      (largest_head_damage + second_largest_head_damage)
+        / float(NB_WORLD_CVAR_TAIL_COUNT);
     const float step_damage = clamp(
       max(candidate.damage_cvar, predicted_world_damage)
         + 0.05f * sqrt(aleatoric_variance)
