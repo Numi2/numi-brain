@@ -42,6 +42,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong active_sensing_efficacy_offset;
   ulong accepted_somatic_output_offset;
   ulong reflex_state_offset;
+  ulong fast_autonomic_state_offset;
   ulong physics_state_fingerprint;
   uint observation_count;
   uint body_count;
@@ -58,6 +59,7 @@ struct NBAcceptedConsequenceUniforms {
   uint actuator_count;
   uint active_sensing_count;
   uint reflex_state_count;
+  uint fast_autonomic_state_count;
   uint event_capacity;
   uint option_candidate_capacity;
   uint procedural_trace_record_capacity;
@@ -228,6 +230,18 @@ struct NBFastReflexStateRecord {
   float pending_event_magnitude[4];
 };
 
+struct NBFastAutonomicStateRecord {
+  ulong last_event_timestamp_microseconds;
+  ulong state_timestamp_microseconds;
+  float command;
+  float target;
+  float critical_drive;
+  float integration;
+  uint update_count;
+  uint flags;
+  float reserved[6];
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -300,7 +314,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 360);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 376);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -312,6 +326,7 @@ static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
+static_assert(sizeof(NBFastAutonomicStateRecord) == 64);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
@@ -867,9 +882,30 @@ kernel void update_active_sensing_efficacy(
   states[gid] = state;
 }
 
-inline float3 nb_accepted_embodied_risk(
+inline float nb_accepted_fast_autonomic_critical(
   device const uchar *hot_state,
   constant NBAcceptedConsequenceUniforms &uniforms)
+{
+  device const NBFastAutonomicStateRecord *states =
+    reinterpret_cast<device const NBFastAutonomicStateRecord *>(
+      hot_state + uniforms.fast_autonomic_state_offset
+    );
+  float critical = 0.0f;
+  for (uint index = 0u; index < uniforms.fast_autonomic_state_count; ++index) {
+    const NBFastAutonomicStateRecord state = states[index];
+    if ((state.flags & NB_ACCEPTED_STATE_VALID) != 0u
+        && (state.flags & (1u << 1u)) != 0u
+        && isfinite(state.critical_drive)) {
+      critical = max(critical, clamp(state.critical_drive, 0.0f, 1.0f));
+    }
+  }
+  return critical;
+}
+
+inline float3 nb_accepted_embodied_risk(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  const float physiological_critical)
 {
   float pain = 0.0f;
   float threat = 0.0f;
@@ -898,7 +934,11 @@ inline float3 nb_accepted_embodied_risk(
       threat = max(threat, damage_risk);
     }
   }
-  return float3(pain, max(threat, pain), evidence);
+  return float3(
+    pain,
+    max(max(threat, pain), physiological_critical),
+    max(evidence, physiological_critical > 0.0f ? 1.0f : 0.0f)
+  );
 }
 
 inline void nb_raise_accepted_drive(
@@ -988,7 +1028,11 @@ kernel void broadcast_accepted_prediction_error(
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
-  if (nb_has_accepted_protective_reflex(hot_state, uniforms)) {
+  const float physiological_critical = nb_accepted_fast_autonomic_critical(
+    hot_state, uniforms
+  );
+  if (nb_has_accepted_protective_reflex(hot_state, uniforms)
+      || physiological_critical > 0.0f) {
     // Preserve the cached option identifier as causal provenance while
     // recording that accepted fast protection interrupted its execution.
     control->flags |= NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP;
@@ -998,7 +1042,7 @@ kernel void broadcast_accepted_prediction_error(
     control->vigor = 0.0f;
   }
   const float3 embodied_risk = nb_accepted_embodied_risk(
-    hot_state, uniforms
+    hot_state, uniforms, physiological_critical
   );
   device NBDriveStateRecord *drives =
     reinterpret_cast<device NBDriveStateRecord *>(
@@ -1335,8 +1379,11 @@ kernel void update_accepted_procedural_trace(
   const NBOptionCandidateRecord candidate = candidates[selected_index];
   if ((candidate.flags & NB_ACCEPTED_STATE_VALID) == 0u
       || candidate.option_identifier != control->active_option_identifier) return;
-  const float3 embodied_risk = nb_accepted_embodied_risk(
+  const float physiological_critical = nb_accepted_fast_autonomic_critical(
     hot_state, uniforms
+  );
+  const float3 embodied_risk = nb_accepted_embodied_risk(
+    hot_state, uniforms, physiological_critical
   );
   const float accepted_damage = max(
     clamp(control->selected_damage_cvar, 0.0f, 1.0f),

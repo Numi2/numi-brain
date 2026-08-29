@@ -27,6 +27,7 @@ private struct AcceptedConsequenceUniforms {
   var activeSensingEfficacyOffset: UInt64 = 0
   var acceptedSomaticOutputOffset: UInt64 = 0
   var reflexStateOffset: UInt64 = 0
+  var fastAutonomicStateOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
@@ -43,6 +44,7 @@ private struct AcceptedConsequenceUniforms {
   var actuatorCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
   var reflexStateCount: UInt32 = 0
+  var fastAutonomicStateCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
   var optionCandidateCapacity: UInt32 = 0
   var proceduralTraceRecordCapacity: UInt32 = 0
@@ -108,7 +110,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 360,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 376,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -443,6 +445,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         hot(.acceptedSomaticOutput).byteOffset
       ),
       reflexStateOffset: UInt64(hot(.reflexState).byteOffset),
+      fastAutonomicStateOffset: UInt64(hot(.fastAutonomicState).byteOffset),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
@@ -461,6 +464,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       actuatorCount: species.motor.actuatorCount,
       activeSensingCount: UInt32(species.motor.activeSensingActionDimension),
       reflexStateCount: UInt32(reflexStateCount),
+      fastAutonomicStateCount: UInt32(
+        hot(.fastAutonomicState).elementCount
+      ),
       eventCapacity: eventCapacity,
       optionCandidateCapacity: UInt32(optionCandidates.elementCount),
       proceduralTraceRecordCapacity: UInt32(
