@@ -256,6 +256,8 @@ public struct ReflexCircuitTemplate: Codable, Equatable, Hashable, Sendable {
   ) throws {
     guard identifier > 0, !receptorChannelCodes.isEmpty,
       !actuatorIdentifiers.isEmpty, latencyMicroseconds > 0,
+      Set(receptorChannelCodes).count == receptorChannelCodes.count,
+      Set(actuatorIdentifiers).count == actuatorIdentifiers.count,
       activationThreshold.isFinite, activationThreshold >= 0,
       gain.isFinite
     else {
@@ -263,8 +265,8 @@ public struct ReflexCircuitTemplate: Codable, Equatable, Hashable, Sendable {
     }
     self.identifier = identifier
     self.kind = kind
-    self.receptorChannelCodes = receptorChannelCodes
-    self.actuatorIdentifiers = actuatorIdentifiers
+    self.receptorChannelCodes = receptorChannelCodes.sorted()
+    self.actuatorIdentifiers = actuatorIdentifiers.sorted()
     self.latencyMicroseconds = latencyMicroseconds
     self.activationThreshold = activationThreshold
     self.gain = gain
@@ -287,8 +289,9 @@ public struct CPGOscillatorTemplate: Codable, Equatable, Hashable, Sendable {
     outputSynergyIdentifier: UInt16,
     sensoryResetMask: BrainInterruptMask
   ) throws {
-    guard naturalFrequencyHertz.isFinite, naturalFrequencyHertz > 0,
-      dutyFactor.isFinite, (0...1).contains(dutyFactor)
+    guard identifier > 0,
+      naturalFrequencyHertz.isFinite, naturalFrequencyHertz > 0,
+      dutyFactor.isFinite, dutyFactor > 0, dutyFactor <= 1
     else {
       throw BrainRuntimeError.invalidDescriptor("CPG oscillator is invalid")
     }
@@ -335,7 +338,12 @@ public struct CPGTopology: Codable, Equatable, Hashable, Sendable {
     couplings: [CPGCouplingTemplate]
   ) throws {
     let identifiers = Set(oscillators.map(\.identifier))
+    let couplingEdges = couplings.map {
+      (UInt32($0.sourceOscillatorIdentifier) << 16)
+        | UInt32($0.destinationOscillatorIdentifier)
+    }
     guard identifiers.count == oscillators.count,
+      Set(couplingEdges).count == couplingEdges.count,
       couplings.allSatisfy({
         identifiers.contains($0.sourceOscillatorIdentifier)
           && identifiers.contains($0.destinationOscillatorIdentifier)
@@ -344,7 +352,12 @@ public struct CPGTopology: Codable, Equatable, Hashable, Sendable {
       throw BrainRuntimeError.invalidDescriptor("CPG graph is invalid")
     }
     self.oscillators = oscillators.sorted { $0.identifier < $1.identifier }
-    self.couplings = couplings
+    self.couplings = couplings.sorted { lhs, rhs in
+      if lhs.sourceOscillatorIdentifier != rhs.sourceOscillatorIdentifier {
+        return lhs.sourceOscillatorIdentifier < rhs.sourceOscillatorIdentifier
+      }
+      return lhs.destinationOscillatorIdentifier < rhs.destinationOscillatorIdentifier
+    }
   }
 }
 
@@ -469,13 +482,15 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
     self.muscleStrengthMultiplier = muscleStrengthMultiplier
     self.planningHorizonSteps = planningHorizonSteps
     self.workspaceCapacity = workspaceCapacity
-    self.capabilityGateCodes = capabilityGateCodes
+    self.capabilityGateCodes = capabilityGateCodes.sorted()
   }
 }
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  /// Version 2 makes the identity content-address every runtime-affecting
+  /// species field, including protective circuits and developmental capacity.
+  public static let formatVersion: UInt32 = 2
 
   public let family: SpeciesFamily
   public let name: String
@@ -528,6 +543,9 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       reflexes.allSatisfy({ reflex in
         reflex.actuatorIdentifiers.allSatisfy({ $0 < motor.actuatorCount })
       }),
+      cpg.oscillators.allSatisfy({
+        $0.outputSynergyIdentifier < motor.synergyCount
+      }),
       innateBehaviors.allSatisfy({ enabled.contains($0.controllerModuleIdentifier) }),
       development.map(\.stage) == DevelopmentalStage.allCases,
       development.dropFirst().allSatisfy({ !$0.capabilityGateCodes.isEmpty }),
@@ -543,21 +561,40 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     Self.mix(UInt32(family.rawValue), into: &hash)
     Self.mix(referenceGraph.fingerprint, into: &hash)
     Self.mix(regionGraph.fingerprint, into: &hash)
+    Self.mix(body.bodyCount, into: &hash)
+    Self.mix(body.jointCount, into: &hash)
+    Self.mix(body.muscleCount, into: &hash)
     Self.mix(body.muscleAttachmentFingerprint, into: &hash)
+    Self.mix(body.skinSurfaceCount, into: &hash)
+    Self.mix(body.actuatorCount, into: &hash)
     Self.mix(body.morphologyCode, into: &hash)
+    Self.mix(UInt32(name.utf8.count), into: &hash)
     for byte in name.utf8 { Self.mix(byte, into: &hash) }
+    Self.mix(UInt32(enabled.count), into: &hash)
     for identifier in enabled { Self.mix(UInt32(identifier), into: &hash) }
-    for sense in senses.sorted(by: { $0.modality.rawValue < $1.modality.rawValue }) {
+    let canonicalSenses = senses.sorted {
+      $0.modality.rawValue < $1.modality.rawValue
+    }
+    Self.mix(UInt32(canonicalSenses.count), into: &hash)
+    for sense in canonicalSenses {
       Self.mix(UInt32(sense.modality.rawValue), into: &hash)
       Self.mix(sense.receptorCount, into: &hash)
       Self.mix(sense.observationDimension, into: &hash)
       Self.mix(sense.latencyMicroseconds, into: &hash)
+      Self.mix(sense.adaptationTimeConstantMicroseconds, into: &hash)
       Self.mix(sense.noiseStandardDeviation.bitPattern, into: &hash)
+      Self.mix(UInt32(sense.activeSensingActionDimension), into: &hash)
+      Self.mix(UInt8(sense.enabled ? 1 : 0), into: &hash)
     }
     Self.mix(UInt32(motor.actuatorCommandKind.rawValue), into: &hash)
     Self.mix(motor.actuatorCount, into: &hash)
     Self.mix(UInt32(motor.synergyCount), into: &hash)
+    Self.mix(UInt32(motor.motorNucleusCount), into: &hash)
+    Self.mix(UInt32(motor.autonomicActionDimension), into: &hash)
     Self.mix(UInt32(motor.activeSensingActionDimension), into: &hash)
+    Self.mix(motor.outputMinimum.bitPattern, into: &hash)
+    Self.mix(motor.outputMaximum.bitPattern, into: &hash)
+    Self.mix(UInt32(motor.communicationEffectors.count), into: &hash)
     for effector in motor.communicationEffectors {
       Self.mix(UInt32(effector.identifier), into: &hash)
       Self.mix(UInt32(effector.kind.rawValue), into: &hash)
@@ -577,23 +614,99 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
         Self.mix(UInt32(identifier), into: &hash)
       }
     }
+    let canonicalReflexes = reflexes.sorted { $0.identifier < $1.identifier }
+    Self.mix(UInt32(canonicalReflexes.count), into: &hash)
+    for reflex in canonicalReflexes {
+      Self.mix(UInt32(reflex.identifier), into: &hash)
+      Self.mix(UInt32(reflex.kind.rawValue), into: &hash)
+      Self.mix(UInt32(reflex.receptorChannelCodes.count), into: &hash)
+      for channel in reflex.receptorChannelCodes { Self.mix(channel, into: &hash) }
+      Self.mix(UInt32(reflex.actuatorIdentifiers.count), into: &hash)
+      for actuator in reflex.actuatorIdentifiers { Self.mix(actuator, into: &hash) }
+      Self.mix(reflex.latencyMicroseconds, into: &hash)
+      Self.mix(reflex.activationThreshold.bitPattern, into: &hash)
+      Self.mix(reflex.gain.bitPattern, into: &hash)
+      Self.mix(UInt8(reflex.innateEnabled ? 1 : 0), into: &hash)
+    }
+    Self.mix(UInt32(cpg.oscillators.count), into: &hash)
+    for oscillator in cpg.oscillators {
+      Self.mix(UInt32(oscillator.identifier), into: &hash)
+      Self.mix(oscillator.naturalFrequencyHertz.bitPattern, into: &hash)
+      Self.mix(oscillator.dutyFactor.bitPattern, into: &hash)
+      Self.mix(UInt32(oscillator.outputSynergyIdentifier), into: &hash)
+      Self.mix(oscillator.sensoryResetMask.rawValue, into: &hash)
+    }
+    Self.mix(UInt32(cpg.couplings.count), into: &hash)
+    for coupling in cpg.couplings {
+      Self.mix(UInt32(coupling.sourceOscillatorIdentifier), into: &hash)
+      Self.mix(UInt32(coupling.destinationOscillatorIdentifier), into: &hash)
+      Self.mix(coupling.phaseOffset.bitPattern, into: &hash)
+      Self.mix(coupling.gain.bitPattern, into: &hash)
+    }
+    Self.mix(UInt32(physiology.modelClass.rawValue), into: &hash)
+    Self.mix(UInt32(physiology.stateDimension), into: &hash)
+    Self.mix(UInt32(physiology.autonomicActionDimension), into: &hash)
+    for values in [
+      physiology.viableMinimums, physiology.viableMaximums,
+      physiology.criticalMinimums, physiology.criticalMaximums,
+    ] {
+      Self.mix(UInt32(values.count), into: &hash)
+      for value in values { Self.mix(value.bitPattern, into: &hash) }
+    }
+    let canonicalInnateBehaviors = innateBehaviors.sorted { lhs, rhs in
+      if lhs.kind != rhs.kind { return lhs.kind.rawValue < rhs.kind.rawValue }
+      return lhs.controllerModuleIdentifier < rhs.controllerModuleIdentifier
+    }
+    Self.mix(UInt32(canonicalInnateBehaviors.count), into: &hash)
+    for behavior in canonicalInnateBehaviors {
+      Self.mix(UInt32(behavior.kind.rawValue), into: &hash)
+      Self.mix(UInt32(behavior.controllerModuleIdentifier), into: &hash)
+      Self.mix(UInt32(behavior.enabledFromStage.rawValue), into: &hash)
+      Self.mix(behavior.gain.bitPattern, into: &hash)
+    }
+    Self.mix(UInt32(development.count), into: &hash)
     for stage in development {
       Self.mix(UInt32(stage.stage.rawValue), into: &hash)
+      Self.mix(UInt32(stage.unlockedModuleIdentifiers.count), into: &hash)
+      for identifier in stage.unlockedModuleIdentifiers {
+        Self.mix(UInt32(identifier), into: &hash)
+      }
+      Self.mix(stage.learningRateMultiplier.bitPattern, into: &hash)
+      Self.mix(stage.sensorPrecisionMultiplier.bitPattern, into: &hash)
+      Self.mix(stage.muscleStrengthMultiplier.bitPattern, into: &hash)
       Self.mix(UInt32(stage.planningHorizonSteps), into: &hash)
       Self.mix(UInt32(stage.workspaceCapacity), into: &hash)
+      Self.mix(UInt32(stage.capabilityGateCodes.count), into: &hash)
+      for code in stage.capabilityGateCodes { Self.mix(code, into: &hash) }
     }
+    Self.mix(capacities.activeRecurrentScalarCapacity, into: &hash)
+    Self.mix(UInt32(capacities.workspaceTokenCapacity), into: &hash)
+    Self.mix(UInt32(capacities.workspaceTokenDimension), into: &hash)
+    Self.mix(UInt32(capacities.objectSlotCapacity), into: &hash)
+    Self.mix(UInt32(capacities.otherAgentSlotCapacity), into: &hash)
+    Self.mix(capacities.activeEpisodicCapacity, into: &hash)
+    Self.mix(capacities.compressedEpisodicCapacity, into: &hash)
+    Self.mix(capacities.archiveEpisodicCapacity, into: &hash)
+    Self.mix(capacities.semanticConceptCapacity, into: &hash)
+    Self.mix(capacities.semanticRelationCapacity, into: &hash)
+    Self.mix(capacities.proceduralSkillCapacity, into: &hash)
+    Self.mix(UInt32(capacities.prospectiveIntentionCapacity), into: &hash)
+    Self.mix(UInt32(capacities.fastPlasticityCapacity), into: &hash)
+    Self.mix(UInt32(capacities.activeOptionCandidateCapacity), into: &hash)
+    Self.mix(UInt32(capacities.cerebellarExpertCapacity), into: &hash)
+    Self.mix(UInt32(capacities.activeCerebellarExpertCapacity), into: &hash)
     self.family = family
     self.name = name
     self.referenceGraphFingerprint = referenceGraph.fingerprint
     self.regionGraph = regionGraph
     self.enabledModuleIdentifiers = enabled
     self.body = body
-    self.senses = senses.sorted { $0.modality.rawValue < $1.modality.rawValue }
+    self.senses = canonicalSenses
     self.motor = motor
-    self.reflexes = reflexes.sorted { $0.identifier < $1.identifier }
+    self.reflexes = canonicalReflexes
     self.cpg = cpg
     self.physiology = physiology
-    self.innateBehaviors = innateBehaviors
+    self.innateBehaviors = canonicalInnateBehaviors
     self.development = development
     self.capacities = capacities
     self.fingerprint = hash
