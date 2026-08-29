@@ -302,9 +302,19 @@ kernel void generate_active_goal_state(
   for (uint slot = 0u; slot < active_workspace_capacity; ++slot) {
     const NBWorkspaceMetadataRecord token = metadata[slot];
     const uint source_module = token.kind_and_source >> 16;
-    if (source_module != 61u || token.entity_identifier == 0ul) continue;
-    const ulong identifier = nb_goal_identifier(3u, token.entity_identifier);
-    float priority = clamp(token.confidence, 0.0f, 1.0f) + 0.25f;
+    const bool prospective = source_module == 61u;
+    const bool social = source_module == 44u;
+    const bool communication = source_module == 51u;
+    if ((!prospective && !social && !communication)
+        || token.entity_identifier == 0ul) continue;
+    const uint origin = prospective ? 3u : (communication ? 8u : 4u);
+    const ulong identifier = nb_goal_identifier(origin, token.entity_identifier);
+    float priority = clamp(token.confidence, 0.0f, 1.0f)
+      * max(value_parameters[min(origin - 1u, 7u)], 0.0f);
+    if (prospective) priority += 0.25f;
+    if (social && uniforms.drive_count > 9u) {
+      priority += 0.25f * drives[9].deficit;
+    }
     if (identifier == header->active_goal_identifier) priority += 0.1f;
     for (uint rank = 0u; rank < 4u; ++rank) {
       if (priority > goal_priorities[rank]
@@ -317,7 +327,7 @@ kernel void generate_active_goal_state(
           goal_priorities[shift] = goal_priorities[shift - 1u];
         }
         goal_identifiers[rank] = identifier;
-        goal_origins[rank] = 3u;
+        goal_origins[rank] = origin;
         goal_sources[rank] = slot;
         goal_priorities[rank] = priority;
         break;
@@ -454,11 +464,36 @@ kernel void propose_dynamic_options(
   candidate.homeostatic_value = gid == NB_OPTION_PROPOSAL_REST_RECOVERY
     ? (fatigue_deficit + injury_deficit + sleep_deficit) * value_parameters[1]
     : -policy_parameters[8] * homeostatic * value_parameters[1];
+  float social_token_confidence = 0.0f;
+  uint social_token_source = 0u;
+  uint social_workspace_base = 0u;
+  if (uniforms.workspace_capacity > 11u) {
+    const NBWorkspaceMetadataRecord social_token = workspace_metadata[11];
+    social_token_source = social_token.kind_and_source >> 16;
+    const uint social_token_kind = social_token.kind_and_source & 0xffffu;
+    if ((social_token_source == 44u || social_token_source == 51u)
+        && (social_token_kind == 4u || social_token_kind == 10u)
+        && social_token.entity_identifier != 0ul) {
+      social_token_confidence = clamp(social_token.confidence, 0.0f, 1.0f);
+      social_workspace_base = 11u * uniforms.workspace_dimension;
+    }
+  }
   candidate.social_value = gid == 8u && uniforms.drive_count > 9u
-    ? drives[9].deficit * value_parameters[2]
+    ? (drives[9].deficit + social_token_confidence) * value_parameters[2]
     : 0.0f;
+  if (gid == 8u && social_token_source == 51u) {
+    candidate.task_value += social_token_confidence * value_parameters[0];
+  }
   candidate.information_gain = (gid == 4u || gid == 7u)
     ? epistemic * value_parameters[3] : 0.0f;
+  if (gid == 8u && social_token_confidence > 0.0f
+      && uniforms.workspace_dimension > 6u) {
+    candidate.information_gain = max(
+      candidate.information_gain,
+      clamp(workspace[social_workspace_base + 6u], 0.0f, 1.0f)
+        * value_parameters[3]
+    );
+  }
   candidate.damage_cvar = clamp(safety + pain * (gid > 4u ? 0.5f : 0.1f), 0.0f, 1.0f);
   candidate.effort_cost = gid == NB_OPTION_PROPOSAL_REST_RECOVERY
     ? 0.0f
@@ -474,9 +509,15 @@ kernel void propose_dynamic_options(
   candidate.flags = NB_CONTROL_FLAG_VALID;
   candidate.parameter_count = 16u;
   for (uint index = 0u; index < 16u; ++index) {
-    candidate.parameters[index] = recurrent[
-      (gid * 16u + index) % uniforms.recurrent_scalar_count
-    ];
+    candidate.parameters[index] = gid == 8u && social_token_confidence > 0.0f
+      ? workspace[
+          social_workspace_base + index % max(uniforms.workspace_dimension, 1u)
+        ]
+      : recurrent[(gid * 16u + index) % uniforms.recurrent_scalar_count];
+  }
+  if (gid == 8u && social_token_confidence > 0.0f) {
+    candidate.source_module = social_token_source;
+    candidate.competence = max(candidate.competence, social_token_confidence);
   }
   candidates[gid] = candidate;
 }

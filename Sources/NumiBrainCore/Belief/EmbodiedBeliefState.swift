@@ -211,6 +211,7 @@ public enum BeliefRelationKind: UInt16, Codable, CaseIterable, Sendable {
   case following = 8
   case threatening = 9
   case communicatingWith = 10
+  case attendingTo = 11
 }
 
 @frozen

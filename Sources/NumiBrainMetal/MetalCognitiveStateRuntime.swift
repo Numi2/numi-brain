@@ -18,6 +18,11 @@ private struct CognitiveUniforms {
   var regionalMaturationOffset: UInt64 = 0
   var regionalPlasticModulationOffset: UInt64 = 0
   var hotStateByteCount: UInt64 = 0
+  var observationOffset: UInt64 = 0
+  var objectSlotOffset: UInt64 = 0
+  var otherAgentSlotOffset: UInt64 = 0
+  var contextBeliefOffset: UInt64 = 0
+  var relationSlotOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -34,6 +39,16 @@ private struct CognitiveUniforms {
   var worldHeadCount: UInt32 = 0
   var reserved2: UInt32 = 0
   var reserved3: UInt32 = 0
+  var observationCount: UInt32 = 0
+  var visionObservationOffset: UInt32 = 0
+  var visionObservationCount: UInt32 = 0
+  var auditionObservationOffset: UInt32 = 0
+  var auditionObservationCount: UInt32 = 0
+  var objectSlotCount: UInt32 = 0
+  var otherAgentSlotCount: UInt32 = 0
+  var contextBeliefCount: UInt32 = 0
+  var relationSlotCount: UInt32 = 0
+  var reserved4: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -81,15 +96,23 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let ingestPipeline: any MTLComputePipelineState
   private let homeostasisPipeline: any MTLComputePipelineState
   private let worldModelPipeline: any MTLComputePipelineState
+  private let entityStatePipeline: any MTLComputePipelineState
+  private let relationStatePipeline: any MTLComputePipelineState
   private let fastPlasticityPipeline: any MTLComputePipelineState
   private let regionalPlasticityPipeline: any MTLComputePipelineState
   private let workspacePipeline: any MTLComputePipelineState
+  private let socialContextPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let worldModelArgumentTables: [any MTL4ArgumentTable]
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
+  private let visionObservationOffset: UInt32
+  private let visionObservationCount: UInt32
+  private let auditionObservationOffset: UInt32
+  private let auditionObservationCount: UInt32
+  private let beliefParameterGPUAddress: UInt64
   private let worldParameterGPUAddress: UInt64
   private let memoryParameterGPUAddress: UInt64
   private let motorParameterGPUAddress: UInt64
@@ -102,7 +125,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 184,
+    guard MemoryLayout<CognitiveUniforms>.stride == 264,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -134,9 +157,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       "ingest_regional_recurrent_state",
       "advance_homeostasis_and_neuromodulation",
       "advance_hierarchical_world_model",
+      "advance_entity_and_social_slots",
+      "advance_entity_relation_graph",
       "advance_fast_plasticity_foundation",
       "reduce_fast_plasticity_by_region",
       "broadcast_foundation_workspace",
+      "broadcast_social_context",
       "advance_foundation_motor_control",
     ]
     let functions = try functionNames.map { name -> any MTLFunction in
@@ -186,6 +212,31 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     let worldDescriptorByteCount = worldModelLevelRecords.count
       * MemoryLayout<WorldModelLevelRecord>.stride
+    var observationScalarOffset: UInt64 = 0
+    var visionObservationOffset: UInt32 = 0
+    var visionObservationCount: UInt32 = 0
+    var auditionObservationOffset: UInt32 = 0
+    var auditionObservationCount: UInt32 = 0
+    for topology in species.senses where topology.enabled {
+      let scalarCount = UInt64(topology.receptorCount)
+        * UInt64(topology.observationDimension)
+      guard observationScalarOffset + scalarCount <= UInt64(UInt32.max) else {
+        throw TissueError.metal("cognitive sensory range exceeds UInt32")
+      }
+      if topology.modality == .vision {
+        visionObservationOffset = UInt32(observationScalarOffset)
+        visionObservationCount = UInt32(scalarCount)
+      } else if topology.modality == .audition {
+        auditionObservationOffset = UInt32(observationScalarOffset)
+        auditionObservationCount = UInt32(scalarCount)
+      }
+      observationScalarOffset += scalarCount
+    }
+    guard observationScalarOffset
+      == UInt64(arena.layout.section(.sensoryObservations).elementCount)
+    else {
+      throw TissueError.metal("cognitive sensory ranges do not match the arena")
+    }
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let firstWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
       let secondWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
@@ -218,10 +269,13 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.ingestPipeline = pipelines[0]
     self.homeostasisPipeline = pipelines[1]
     self.worldModelPipeline = pipelines[2]
-    self.fastPlasticityPipeline = pipelines[3]
-    self.regionalPlasticityPipeline = pipelines[4]
-    self.workspacePipeline = pipelines[5]
-    self.motorPipeline = pipelines[6]
+    self.entityStatePipeline = pipelines[3]
+    self.relationStatePipeline = pipelines[4]
+    self.fastPlasticityPipeline = pipelines[5]
+    self.regionalPlasticityPipeline = pipelines[6]
+    self.workspacePipeline = pipelines[7]
+    self.socialContextPipeline = pipelines[8]
+    self.motorPipeline = pipelines[9]
     self.argumentTable = argumentTable
     self.worldModelArgumentTables = [
       firstWorldTable, secondWorldTable, thirdWorldTable,
@@ -230,6 +284,13 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
     self.worldModelLevelRecords = worldModelLevelRecords
+    self.visionObservationOffset = visionObservationOffset
+    self.visionObservationCount = visionObservationCount
+    self.auditionObservationOffset = auditionObservationOffset
+    self.auditionObservationCount = auditionObservationCount
+    self.beliefParameterGPUAddress = try sharedParameters.gpuAddress(
+      .belief, minimumScalarCount: 8
+    )
     self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
       .world, minimumScalarCount: 150
     )
@@ -313,6 +374,22 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    try dispatch(
+      encoder: encoder,
+      pipeline: entityStatePipeline,
+      threadCount: max(
+        arena.layout.section(.objectSlots).elementCount,
+        arena.layout.section(.otherAgentSlots).elementCount
+      )
+    )
+    barrier(encoder)
+    try dispatch(
+      encoder: encoder,
+      pipeline: relationStatePipeline,
+      threadCount: arena.layout.section(.relationSlots).elementCount
+    )
+    barrier(encoder)
     argumentTable.setAddress(plasticityParameterGPUAddress, index: 2)
     try dispatch(
       encoder: encoder,
@@ -333,6 +410,13 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       encoder: encoder,
       pipeline: workspacePipeline,
       threadCount: max(workspaceContent, Int(species.capacities.workspaceTokenCapacity))
+    )
+    barrier(encoder)
+    argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    try dispatch(
+      encoder: encoder,
+      pipeline: socialContextPipeline,
+      threadCount: 1
     )
     barrier(encoder)
     argumentTable.setAddress(motorParameterGPUAddress, index: 2)
@@ -374,6 +458,11 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       regionalMaturationOffset: offset(.regionalMaturation),
       regionalPlasticModulationOffset: offset(.regionalPlasticModulation),
       hotStateByteCount: UInt64(arena.layout.totalByteCount),
+      observationOffset: offset(.sensoryObservations),
+      objectSlotOffset: offset(.objectSlots),
+      otherAgentSlotOffset: offset(.otherAgentSlots),
+      contextBeliefOffset: offset(.contextBelief),
+      relationSlotOffset: offset(.relationSlots),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),
@@ -389,7 +478,17 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       worldLevelCount: UInt32(worldModelLevelRecords.count),
       worldHeadCount: 5,
       reserved2: 0,
-      reserved3: 0
+      reserved3: 0,
+      observationCount: count(.sensoryObservations),
+      visionObservationOffset: visionObservationOffset,
+      visionObservationCount: visionObservationCount,
+      auditionObservationOffset: auditionObservationOffset,
+      auditionObservationCount: auditionObservationCount,
+      objectSlotCount: UInt32(species.capacities.objectSlotCapacity),
+      otherAgentSlotCount: UInt32(species.capacities.otherAgentSlotCapacity),
+      contextBeliefCount: count(.contextBelief),
+      relationSlotCount: count(.relationSlots),
+      reserved4: 0
     )
   }
 

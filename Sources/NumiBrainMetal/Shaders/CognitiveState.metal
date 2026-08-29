@@ -17,6 +17,11 @@ struct NBCognitiveUniforms {
   ulong regional_maturation_offset;
   ulong regional_plastic_modulation_offset;
   ulong hot_state_byte_count;
+  ulong observation_offset;
+  ulong object_slot_offset;
+  ulong other_agent_slot_offset;
+  ulong context_belief_offset;
+  ulong relation_slot_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -33,6 +38,16 @@ struct NBCognitiveUniforms {
   uint world_head_count;
   uint reserved2;
   uint reserved3;
+  uint observation_count;
+  uint vision_observation_offset;
+  uint vision_observation_count;
+  uint audition_observation_offset;
+  uint audition_observation_count;
+  uint object_slot_count;
+  uint other_agent_slot_count;
+  uint context_belief_count;
+  uint relation_slot_count;
+  uint reserved4;
 };
 
 struct NBWorldModelLevelRecord {
@@ -108,6 +123,50 @@ struct NBWorkspaceMetadataRecord {
   float confidence;
 };
 
+struct NBObjectSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float visibility;
+  float uncertainty;
+  float pose[4];
+  float velocity[4];
+  float affordances[8];
+  float latent[102];
+};
+
+struct NBOtherAgentSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float gaze_confidence;
+  float goal_confidence;
+  float social_relation;
+  float predicted_action;
+  float uncertainty;
+  float communication_evidence;
+  float body_pose[8];
+  float gaze[4];
+  float latent[102];
+};
+
+struct NBRelationSlotRecord {
+  ulong subject_identifier;
+  ulong object_identifier;
+  ulong last_evidence_timestamp_microseconds;
+  uint relation_kind;
+  uint flags;
+  float probability;
+  float uncertainty;
+  float latent[6];
+};
+
 struct NBDevelopmentalHeader {
   uint format_version;
   uint stage;
@@ -151,7 +210,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 184);
+static_assert(sizeof(NBCognitiveUniforms) == 264);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -159,6 +218,9 @@ static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBObjectSlotRecord) == 512);
+static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
+static_assert(sizeof(NBRelationSlotRecord) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
@@ -179,6 +241,48 @@ inline float nb_event_signal(
     }
   }
   return signal;
+}
+
+inline float nb_observation_feature(
+  device const float *observations,
+  uint range_offset,
+  uint range_count,
+  uint index)
+{
+  return range_count == 0u
+    ? 0.0f
+    : observations[range_offset + index % range_count];
+}
+
+inline float nb_observation_energy(
+  device const float *observations,
+  uint range_offset,
+  uint range_count,
+  uint seed)
+{
+  if (range_count == 0u) return 0.0f;
+  float energy = 0.0f;
+  for (uint sample = 0u; sample < 8u; ++sample) {
+    energy += abs(nb_observation_feature(
+      observations, range_offset, range_count, seed * 17u + sample * 29u
+    )) * 0.125f;
+  }
+  return nb_saturate(energy);
+}
+
+inline ulong nb_latent_slot_identifier(
+  ulong name_space,
+  float primary_feature,
+  float secondary_feature,
+  uint slot_index)
+{
+  uint mixed = as_type<uint>(primary_feature)
+    ^ (as_type<uint>(secondary_feature) * 0x9e3779b9u)
+    ^ ((slot_index + 1u) * 0x85ebca6bu);
+  mixed ^= mixed >> 16u;
+  mixed *= 0x7feb352du;
+  mixed ^= mixed >> 15u;
+  return name_space | (ulong(mixed) << 16u) | ulong(slot_index + 1u);
 }
 
 kernel void ingest_regional_recurrent_state(
@@ -398,6 +502,437 @@ kernel void advance_hierarchical_world_model(
   }
 }
 
+/// Maintains causal latent object and other-agent factors. These records never
+/// consume privileged entity identifiers: their identity is a persistent,
+/// deterministic hypothesis formed only from transduced observations.
+kernel void advance_entity_and_social_slots(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const float *recurrent = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
+  device NBEventQueueStateHeader *event_header =
+    reinterpret_cast<device NBEventQueueStateHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  const uint event_count = min(
+    min(atomic_load_explicit(&event_header->count, memory_order_relaxed),
+      event_header->capacity),
+    uniforms.event_count
+  );
+  device const NBReceptorEventStateRecord *events =
+    reinterpret_cast<device const NBReceptorEventStateRecord *>(event_header + 1);
+  const float visual_transient = nb_event_signal(events, event_count, 11u);
+  const float sound_onset = nb_event_signal(events, event_count, 10u);
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float retention = clamp(belief_parameters[7], 0.0f, 1.0f);
+  const float correction_gain = clamp(
+    belief_parameters[0] + belief_parameters[2] * visual_transient,
+    0.001f,
+    1.0f
+  );
+
+  if (gid < uniforms.object_slot_count) {
+    device NBObjectSlotRecord *object_slots =
+      reinterpret_cast<device NBObjectSlotRecord *>(
+        hot_state + uniforms.object_slot_offset
+      );
+    if (development->stage < 6u || uniforms.vision_observation_count == 0u) {
+      NBObjectSlotRecord inactive = {};
+      object_slots[gid] = inactive;
+    } else {
+      NBObjectSlotRecord slot = object_slots[gid];
+      const uint seed = gid * 23u + 3u;
+      const float energy = nb_observation_energy(
+        observations,
+        uniforms.vision_observation_offset,
+        uniforms.vision_observation_count,
+        seed
+      );
+      const float observed_presence = nb_saturate(
+        (energy - max(belief_parameters[4], 0.0f))
+          * max(4.0f * belief_parameters[3], 0.25f)
+          + 0.5f * visual_transient
+      );
+      float observed_pose[4];
+      for (uint component = 0u; component < 4u; ++component) {
+        observed_pose[component] = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 11u + component * 31u
+        );
+      }
+      if (slot.format_version == 0u) {
+        slot.format_version = 1u;
+        slot.uncertainty = 1.0f;
+      }
+      if (slot.identifier == 0ul && observed_presence > 0.05f) {
+        slot.identifier = nb_latent_slot_identifier(
+          0x1000000000000000ul,
+          observed_pose[0],
+          observed_pose[1],
+          gid
+        );
+      }
+      float pose_difference = 0.0f;
+      for (uint component = 0u; component < 4u; ++component) {
+        const float difference = observed_pose[component] - slot.pose[component];
+        pose_difference += abs(difference) * 0.25f;
+        slot.velocity[component] = mix(
+          retention * slot.velocity[component],
+          difference / elapsed_seconds,
+          correction_gain * observed_presence
+        );
+        slot.pose[component] = mix(
+          slot.pose[component],
+          observed_pose[component],
+          correction_gain * observed_presence
+        );
+      }
+      slot.existence_probability = max(
+        observed_presence,
+        retention * slot.existence_probability
+      );
+      slot.visibility = observed_presence;
+      slot.identity_confidence = nb_saturate(mix(
+        retention * slot.identity_confidence,
+        1.0f - nb_saturate(pose_difference),
+        correction_gain * observed_presence
+      ));
+      slot.uncertainty = nb_saturate(mix(
+        min(1.0f, slot.uncertainty + (1.0f - retention)),
+        1.0f - slot.identity_confidence,
+        correction_gain * observed_presence
+      ));
+      if (observed_presence > 0.05f) {
+        slot.last_seen_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+      }
+      slot.flags = slot.existence_probability > 0.01f ? 1u : 0u;
+      if (observed_presence > 0.05f) slot.flags |= 2u;
+      if (slot.existence_probability > observed_presence + 0.05f) slot.flags |= 4u;
+      for (uint affordance = 0u; affordance < 8u; ++affordance) {
+        const float feature = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 37u + affordance * 19u
+        );
+        slot.affordances[affordance] = mix(
+          retention * slot.affordances[affordance],
+          tanh(feature + recurrent[
+            (gid * 8u + affordance) % uniforms.recurrent_scalar_count
+          ] * belief_parameters[1]),
+          correction_gain * observed_presence
+        );
+      }
+      for (uint component = 0u; component < 102u; ++component) {
+        const float sensed = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 53u + component * 7u
+        );
+        slot.latent[component] = mix(
+          retention * slot.latent[component],
+          tanh(sensed + belief_parameters[5] * recurrent[
+            (gid * 103u + component) % uniforms.recurrent_scalar_count
+          ]),
+          correction_gain * observed_presence
+        );
+      }
+      object_slots[gid] = slot;
+    }
+  }
+
+  if (gid < uniforms.other_agent_slot_count) {
+    device NBOtherAgentSlotRecord *agent_slots =
+      reinterpret_cast<device NBOtherAgentSlotRecord *>(
+        hot_state + uniforms.other_agent_slot_offset
+      );
+    if (development->stage < 9u
+        || (uniforms.vision_observation_count == 0u
+          && uniforms.audition_observation_count == 0u)) {
+      NBOtherAgentSlotRecord inactive = {};
+      agent_slots[gid] = inactive;
+    } else {
+      NBOtherAgentSlotRecord slot = agent_slots[gid];
+      const uint seed = gid * 41u + 5u;
+      const float visual_energy = nb_observation_energy(
+        observations,
+        uniforms.vision_observation_offset,
+        uniforms.vision_observation_count,
+        seed
+      );
+      const float auditory_energy = nb_observation_energy(
+        observations,
+        uniforms.audition_observation_offset,
+        uniforms.audition_observation_count,
+        seed + 17u
+      );
+      const float communication = nb_saturate(max(
+        sound_onset,
+        auditory_energy - max(belief_parameters[4], 0.0f)
+      ));
+      const float observed_presence = nb_saturate(max(
+        (visual_energy - max(belief_parameters[4], 0.0f))
+          * max(4.0f * belief_parameters[3], 0.25f)
+          + 0.25f * visual_transient,
+        0.5f * communication
+      ));
+      float observed_body[8];
+      for (uint component = 0u; component < 8u; ++component) {
+        observed_body[component] = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 13u + component * 23u
+        );
+      }
+      if (slot.format_version == 0u) {
+        slot.format_version = 1u;
+        slot.uncertainty = 1.0f;
+      }
+      if (slot.identifier == 0ul && observed_presence > 0.05f) {
+        slot.identifier = nb_latent_slot_identifier(
+          0x2000000000000000ul,
+          observed_body[0],
+          observed_body[1] + communication,
+          gid
+        );
+      }
+      float body_change = 0.0f;
+      for (uint component = 0u; component < 8u; ++component) {
+        body_change += abs(observed_body[component] - slot.body_pose[component])
+          * 0.125f;
+        slot.body_pose[component] = mix(
+          slot.body_pose[component],
+          observed_body[component],
+          correction_gain * observed_presence
+        );
+      }
+      for (uint component = 0u; component < 4u; ++component) {
+        const float gaze_feature = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 29u + component * 43u
+        );
+        slot.gaze[component] = mix(
+          retention * slot.gaze[component],
+          gaze_feature,
+          correction_gain * observed_presence
+        );
+      }
+      slot.existence_probability = max(
+        observed_presence,
+        retention * slot.existence_probability
+      );
+      slot.identity_confidence = nb_saturate(mix(
+        retention * slot.identity_confidence,
+        1.0f - nb_saturate(body_change),
+        correction_gain * observed_presence
+      ));
+      slot.gaze_confidence = nb_saturate(mix(
+        retention * slot.gaze_confidence,
+        0.5f * observed_presence + 0.5f * visual_transient,
+        correction_gain
+      ));
+      slot.goal_confidence = nb_saturate(mix(
+        retention * slot.goal_confidence,
+        1.0f - nb_saturate(body_change),
+        correction_gain * observed_presence
+      ));
+      slot.predicted_action = mix(
+        retention * slot.predicted_action,
+        tanh(body_change / elapsed_seconds),
+        correction_gain * observed_presence
+      );
+      slot.social_relation = mix(
+        retention * slot.social_relation,
+        tanh(communication + slot.gaze_confidence - slot.uncertainty),
+        correction_gain
+      );
+      slot.communication_evidence = mix(
+        retention * slot.communication_evidence,
+        communication,
+        correction_gain
+      );
+      slot.uncertainty = nb_saturate(mix(
+        min(1.0f, slot.uncertainty + (1.0f - retention)),
+        1.0f - 0.5f * (slot.identity_confidence + slot.goal_confidence),
+        correction_gain * observed_presence
+      ));
+      if (observed_presence > 0.05f) {
+        slot.last_seen_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+      }
+      slot.flags = slot.existence_probability > 0.01f ? 1u : 0u;
+      if (observed_presence > 0.05f) slot.flags |= 2u;
+      if (communication > 0.05f) slot.flags |= 8u;
+      for (uint component = 0u; component < 102u; ++component) {
+        const float visual = nb_observation_feature(
+          observations,
+          uniforms.vision_observation_offset,
+          uniforms.vision_observation_count,
+          seed * 61u + component * 11u
+        );
+        const float auditory = nb_observation_feature(
+          observations,
+          uniforms.audition_observation_offset,
+          uniforms.audition_observation_count,
+          seed * 31u + component * 17u
+        );
+        slot.latent[component] = mix(
+          retention * slot.latent[component],
+          tanh(visual + communication * auditory
+            + belief_parameters[5] * recurrent[
+              (gid * 107u + component) % uniforms.recurrent_scalar_count
+            ]),
+          correction_gain * observed_presence
+        );
+      }
+      agent_slots[gid] = slot;
+    }
+  }
+}
+
+/// Materializes the compatible relation factor from the current entity slots.
+/// Kind 6 is self-to-object reachability, kind 10 is communication with self,
+/// and kind 11 is an explicit attention edge used for joint attention.
+kernel void advance_entity_relation_graph(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.relation_slot_count) return;
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBObjectSlotRecord *object_slots =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
+  device const NBOtherAgentSlotRecord *agent_slots =
+    reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+      hot_state + uniforms.other_agent_slot_offset
+    );
+  device NBRelationSlotRecord *relations =
+    reinterpret_cast<device NBRelationSlotRecord *>(
+      hot_state + uniforms.relation_slot_offset
+    );
+  const uint attention_base = uniforms.object_slot_count;
+  const uint communication_base = attention_base
+    + uniforms.object_slot_count * uniforms.other_agent_slot_count;
+  const uint active_relation_count = communication_base
+    + uniforms.other_agent_slot_count;
+  if (development->stage < 6u || gid >= active_relation_count) {
+    NBRelationSlotRecord inactive = {};
+    relations[gid] = inactive;
+    return;
+  }
+
+  NBRelationSlotRecord relation = {};
+  const ulong self_identifier = 0x3000000000000001ul;
+  if (gid < uniforms.object_slot_count) {
+    const NBObjectSlotRecord object = object_slots[gid];
+    if (object.identifier != 0ul && object.existence_probability > 0.0f) {
+      relation.subject_identifier = self_identifier;
+      relation.object_identifier = object.identifier;
+      relation.last_evidence_timestamp_microseconds =
+        object.last_seen_timestamp_microseconds;
+      relation.relation_kind = 6u;
+      relation.flags = 1u;
+      relation.probability = nb_saturate(
+        object.existence_probability
+          * (0.5f + 0.5f * object.affordances[0])
+      );
+      relation.uncertainty = object.uncertainty;
+      for (uint component = 0u; component < 3u; ++component) {
+        relation.latent[component] = object.pose[component];
+        relation.latent[component + 3u] = object.velocity[component];
+      }
+    }
+  } else if (gid < communication_base && development->stage >= 9u
+      && uniforms.object_slot_count > 0u) {
+    const uint pair_index = gid - attention_base;
+    const uint agent_index = pair_index / uniforms.object_slot_count;
+    const uint object_index = pair_index % uniforms.object_slot_count;
+    const NBOtherAgentSlotRecord agent = agent_slots[agent_index];
+    const NBObjectSlotRecord object = object_slots[object_index];
+    if (agent.identifier != 0ul && object.identifier != 0ul
+        && agent.existence_probability > 0.0f
+        && object.existence_probability > 0.0f) {
+      relation.subject_identifier = agent.identifier;
+      relation.object_identifier = object.identifier;
+      relation.last_evidence_timestamp_microseconds =
+        agent.last_seen_timestamp_microseconds
+          > object.last_seen_timestamp_microseconds
+        ? agent.last_seen_timestamp_microseconds
+        : object.last_seen_timestamp_microseconds;
+      relation.relation_kind = 11u;
+      relation.flags = 1u | 2u;
+      const float gaze_alignment = nb_saturate(
+        1.0f - 0.25f * (
+          abs(agent.gaze[0] - object.pose[0])
+            + abs(agent.gaze[1] - object.pose[1])
+            + abs(agent.gaze[2] - object.pose[2])
+            + abs(agent.gaze[3] - object.pose[3])
+        )
+      );
+      relation.probability = nb_saturate(
+        agent.existence_probability * object.existence_probability
+          * agent.gaze_confidence * gaze_alignment
+      );
+      relation.uncertainty = nb_saturate(
+        0.5f * (agent.uncertainty + object.uncertainty)
+      );
+      for (uint component = 0u; component < 3u; ++component) {
+        relation.latent[component] = agent.gaze[component];
+        relation.latent[component + 3u] = object.pose[component];
+      }
+    }
+  } else if (gid < active_relation_count && development->stage >= 9u) {
+    const uint agent_index = gid - communication_base;
+    const NBOtherAgentSlotRecord agent = agent_slots[agent_index];
+    if (agent.identifier != 0ul
+        && agent.communication_evidence > max(belief_parameters[4], 0.01f)) {
+      relation.subject_identifier = agent.identifier;
+      relation.object_identifier = self_identifier;
+      relation.last_evidence_timestamp_microseconds =
+        agent.last_seen_timestamp_microseconds;
+      relation.relation_kind = 10u;
+      relation.flags = 1u;
+      relation.probability = nb_saturate(
+        agent.existence_probability * agent.communication_evidence
+      );
+      relation.uncertainty = agent.uncertainty;
+      relation.latent[0] = agent.communication_evidence;
+      relation.latent[1] = agent.social_relation;
+      relation.latent[2] = agent.predicted_action;
+      relation.latent[3] = agent.goal_confidence;
+      relation.latent[4] = agent.identity_confidence;
+      relation.latent[5] = agent.gaze_confidence;
+    }
+  }
+  relations[gid] = relation;
+}
+
 kernel void advance_fast_plasticity_foundation(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
@@ -562,6 +1097,286 @@ kernel void broadcast_foundation_workspace(
     token.kind_and_source = gid == 0u ? (8u | (70u << 16)) : (1u | (25u << 16));
     token.confidence = gid == 0u ? 1.0f : 0.5f;
     metadata[gid] = token;
+  }
+}
+
+/// Publishes the strongest inferred social hypotheses into the global
+/// workspace and binds joint attention to the strongest inferred object. A
+/// communication token is still a sensory latent association, not a
+/// privileged symbolic input.
+kernel void broadcast_social_context(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u) return;
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBOtherAgentSlotRecord *agent_slots =
+    reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+      hot_state + uniforms.other_agent_slot_offset
+    );
+  device const NBObjectSlotRecord *object_slots =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
+  device const NBRelationSlotRecord *relations =
+    reinterpret_cast<device const NBRelationSlotRecord *>(
+      hot_state + uniforms.relation_slot_offset
+    );
+  device float *context = reinterpret_cast<device float *>(
+    hot_state + uniforms.context_belief_offset
+  );
+  device float *workspace = reinterpret_cast<device float *>(
+    hot_state + uniforms.workspace_content_offset
+  );
+  device NBWorkspaceMetadataRecord *metadata =
+    reinterpret_cast<device NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  device NBDriveStateRecord *drives =
+    reinterpret_cast<device NBDriveStateRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  device NBNeuromodulatorStateRecord *neuromodulators =
+    reinterpret_cast<device NBNeuromodulatorStateRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
+  const uint active_workspace_capacity = min(
+    uniforms.workspace_capacity, development->workspace_capacity
+  );
+
+  for (uint slot = 11u; slot < uniforms.workspace_capacity; ++slot) {
+    const uint base = slot * uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      workspace[base + feature] = 0.0f;
+    }
+    NBWorkspaceMetadataRecord empty = {};
+    metadata[slot] = empty;
+  }
+
+  uint best_agent_index = 0xffffffffu;
+  float best_agent_score = 0.0f;
+  NBOtherAgentSlotRecord best_agent = {};
+  if (development->stage >= 9u) {
+    for (uint index = 0u; index < uniforms.other_agent_slot_count; ++index) {
+      const NBOtherAgentSlotRecord candidate = agent_slots[index];
+      const float score = candidate.existence_probability
+        * (1.0f - candidate.uncertainty)
+        * (0.5f + 0.5f * candidate.identity_confidence);
+      if (score > best_agent_score
+          || (score == best_agent_score && index < best_agent_index)) {
+        best_agent_index = index;
+        best_agent_score = score;
+        best_agent = candidate;
+      }
+    }
+  }
+
+  uint best_object_index = 0xffffffffu;
+  float best_object_score = 0.0f;
+  float best_attention_probability = 0.0f;
+  float best_attention_uncertainty = 1.0f;
+  ulong attended_object_identifier = 0ul;
+  NBObjectSlotRecord best_object = {};
+  if (best_agent_index != 0xffffffffu) {
+    for (uint index = 0u; index < uniforms.relation_slot_count; ++index) {
+      const NBRelationSlotRecord relation = relations[index];
+      if (relation.relation_kind != 11u
+          || relation.subject_identifier != best_agent.identifier) continue;
+      const float score = relation.probability * (1.0f - relation.uncertainty);
+      if (score > best_attention_probability) {
+        best_attention_probability = score;
+        best_attention_uncertainty = relation.uncertainty;
+        attended_object_identifier = relation.object_identifier;
+      }
+    }
+  }
+  if (development->stage >= 6u) {
+    for (uint index = 0u; index < uniforms.object_slot_count; ++index) {
+      const NBObjectSlotRecord candidate = object_slots[index];
+      if (attended_object_identifier != 0ul
+          && candidate.identifier != attended_object_identifier) continue;
+      const float score = candidate.existence_probability
+        * max(candidate.visibility, 0.25f)
+        * (1.0f - candidate.uncertainty)
+        * (attended_object_identifier == 0ul
+          ? 1.0f : max(best_attention_probability, 0.01f));
+      if (score > best_object_score
+          || (score == best_object_score && index < best_object_index)) {
+        best_object_index = index;
+        best_object_score = score;
+        best_object = candidate;
+      }
+    }
+  }
+
+  for (uint feature = 0u; feature < uniforms.context_belief_count; ++feature) {
+    float value = 0.0f;
+    if (best_agent_index != 0xffffffffu) {
+      if (feature == 0u) value = best_agent.existence_probability;
+      else if (feature == 1u) value = best_agent.identity_confidence;
+      else if (feature == 2u) value = best_agent.gaze_confidence;
+      else if (feature == 3u) value = best_agent.goal_confidence;
+      else if (feature == 4u) value = best_agent.social_relation;
+      else if (feature == 5u) value = best_agent.predicted_action;
+      else if (feature == 6u) value = best_agent.uncertainty;
+      else if (feature == 7u) value = best_agent.communication_evidence;
+      else if (feature < 16u) value = best_agent.body_pose[feature - 8u];
+      else if (feature < 20u) value = best_agent.gaze[feature - 16u];
+      else value = best_agent.latent[(feature - 20u) % 102u];
+    }
+    if (feature == 126u) value = best_attention_probability;
+    if (feature == 127u) value = best_attention_uncertainty;
+    if (best_object_index != 0xffffffffu && feature >= 128u && feature < 144u) {
+      const uint object_feature = feature - 128u;
+      if (object_feature == 0u) value = best_object.existence_probability;
+      else if (object_feature == 1u) value = best_object.identity_confidence;
+      else if (object_feature == 2u) value = best_object.visibility;
+      else if (object_feature == 3u) value = best_object.uncertainty;
+      else if (object_feature < 8u) value = best_object.pose[object_feature - 4u];
+      else if (object_feature < 12u) value = best_object.velocity[object_feature - 8u];
+      else value = best_object.affordances[object_feature - 12u];
+    }
+    context[feature] = value;
+  }
+
+  if (uniforms.drive_count > 9u) {
+    NBDriveStateRecord social_drive = drives[9];
+    if (social_drive.kind == 0u) social_drive.kind = 10u;
+    if (social_drive.priority_weight <= 0.0f) social_drive.priority_weight = 1.0f;
+    social_drive.viable_minimum = 0.0f;
+    social_drive.viable_maximum = 0.25f;
+    const float previous = social_drive.level;
+    social_drive.level = development->stage >= 9u
+      ? 1.0f - nb_saturate(best_agent_score)
+      : 0.0f;
+    const float elapsed_seconds = max(
+      float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+    );
+    social_drive.estimated_rate =
+      (social_drive.level - previous) / elapsed_seconds;
+    social_drive.deficit = social_drive.level > social_drive.viable_maximum
+      ? social_drive.level - social_drive.viable_maximum
+      : 0.0f;
+    social_drive.potential = social_drive.priority_weight
+      * social_drive.deficit * social_drive.deficit;
+    drives[9] = social_drive;
+  }
+  if (uniforms.neuromodulator_count > 8u) {
+    NBNeuromodulatorStateRecord social_modulator = neuromodulators[8];
+    if (social_modulator.kind == 0u) social_modulator.kind = 9u;
+    if (social_modulator.decay_time_constant_seconds <= 0.0f) {
+      social_modulator.decay_time_constant_seconds = 0.1f;
+    }
+    social_modulator.value = nb_saturate(
+      best_agent_score
+        * (0.5f + 0.5f * max(best_agent.social_relation, 0.0f))
+    );
+    neuromodulators[8] = social_modulator;
+  }
+
+  if (development->stage < 9u || best_agent_index == 0xffffffffu
+      || active_workspace_capacity <= 11u) {
+    return;
+  }
+
+  ulong object_token_identifier = 0ul;
+  if (best_object_index != 0xffffffffu && active_workspace_capacity > 12u) {
+    const uint slot = 12u;
+    const uint base = slot * uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      float value = 0.0f;
+      if (feature == 0u) value = best_object.existence_probability;
+      else if (feature == 1u) value = best_object.identity_confidence;
+      else if (feature == 2u) value = best_object.visibility;
+      else if (feature == 3u) value = best_object.uncertainty;
+      else if (feature < 8u) value = best_object.pose[feature - 4u];
+      else if (feature < 12u) value = best_object.velocity[feature - 8u];
+      else if (feature < 20u) value = best_object.affordances[feature - 12u];
+      else value = best_object.latent[(feature - 20u) % 102u];
+      workspace[base + feature] = value;
+    }
+    object_token_identifier = (uniforms.target_timestamp_microseconds << 8u)
+      | ulong(slot + 1u);
+    NBWorkspaceMetadataRecord object_token = {};
+    object_token.identifier = object_token_identifier;
+    object_token.source_timestamp_microseconds =
+      best_object.last_seen_timestamp_microseconds;
+    object_token.last_refresh_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    object_token.entity_identifier = best_object.identifier;
+    object_token.kind_and_source = 3u | (39u << 16u);
+    object_token.confidence = nb_saturate(best_object_score);
+    metadata[slot] = object_token;
+  }
+
+  uint selected_indices[4] = {
+    0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu
+  };
+  uint target_slots[4] = {11u, 13u, 14u, 15u};
+  for (uint rank = 0u; rank < 4u; ++rank) {
+    const uint target_slot = target_slots[rank];
+    if (target_slot >= active_workspace_capacity) continue;
+    uint selected_index = 0xffffffffu;
+    float selected_score = 0.0f;
+    NBOtherAgentSlotRecord selected_agent = {};
+    for (uint index = 0u; index < uniforms.other_agent_slot_count; ++index) {
+      bool already_selected = false;
+      for (uint prior = 0u; prior < rank; ++prior) {
+        already_selected = already_selected || selected_indices[prior] == index;
+      }
+      if (already_selected) continue;
+      const NBOtherAgentSlotRecord candidate = agent_slots[index];
+      const float score = candidate.existence_probability
+        * (1.0f - candidate.uncertainty)
+        * (0.5f + 0.5f * candidate.identity_confidence);
+      if (score > selected_score
+          || (score == selected_score && index < selected_index)) {
+        selected_index = index;
+        selected_score = score;
+        selected_agent = candidate;
+      }
+    }
+    if (selected_index == 0xffffffffu || selected_score <= 0.0f) continue;
+    selected_indices[rank] = selected_index;
+    const uint base = target_slot * uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      float value = 0.0f;
+      if (feature == 0u) value = selected_agent.existence_probability;
+      else if (feature == 1u) value = selected_agent.identity_confidence;
+      else if (feature == 2u) value = selected_agent.gaze_confidence;
+      else if (feature == 3u) value = selected_agent.goal_confidence;
+      else if (feature == 4u) value = selected_agent.social_relation;
+      else if (feature == 5u) value = selected_agent.predicted_action;
+      else if (feature == 6u) value = selected_agent.uncertainty;
+      else if (feature == 7u) value = selected_agent.communication_evidence;
+      else if (feature < 16u) value = selected_agent.body_pose[feature - 8u];
+      else if (feature < 20u) value = selected_agent.gaze[feature - 16u];
+      else value = selected_agent.latent[(feature - 20u) % 102u];
+      workspace[base + feature] = value;
+    }
+    const bool communication_token = development->stage >= 10u
+      && selected_agent.communication_evidence
+        > max(belief_parameters[4], 0.01f);
+    NBWorkspaceMetadataRecord token = {};
+    token.identifier = (uniforms.target_timestamp_microseconds << 8u)
+      | ulong(target_slot + 1u);
+    token.source_timestamp_microseconds =
+      selected_agent.last_seen_timestamp_microseconds;
+    token.last_refresh_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    token.entity_identifier = selected_agent.identifier;
+    token.bound_token_identifier = rank == 0u
+      ? object_token_identifier : 0ul;
+    token.kind_and_source = communication_token
+      ? (10u | (51u << 16u))
+      : (4u | (44u << 16u));
+    token.confidence = nb_saturate(selected_score);
+    metadata[target_slot] = token;
   }
 }
 
