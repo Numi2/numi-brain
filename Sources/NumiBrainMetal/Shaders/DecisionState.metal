@@ -743,6 +743,7 @@ kernel void generate_active_goal_state(
       * max(drives[drive_index].deficit, 0.0f);
     priority *= max(value_parameters[min(origin - 1u, 7u)], 0.0f);
     if (origin == 6u) priority += clamp(drives[drive_index].level, 0.0f, 1.0f);
+    if (!isfinite(priority) || priority <= 0.0f) continue;
     const ulong identifier = nb_goal_identifier(origin, ulong(drive_index));
     if (identifier == header->active_goal_identifier) priority += 0.1f;
     for (uint rank = 0u; rank < 4u; ++rank) {
@@ -782,6 +783,7 @@ kernel void generate_active_goal_state(
     if (social && uniforms.drive_count > 9u) {
       priority += 0.25f * drives[9].deficit;
     }
+    if (!isfinite(priority) || priority <= 0.0f) continue;
     if (identifier == header->active_goal_identifier) priority += 0.1f;
     for (uint rank = 0u; rank < 4u; ++rank) {
       if (priority > goal_priorities[rank]
@@ -809,6 +811,14 @@ kernel void generate_active_goal_state(
     const uint slot = 7u + rank;
     if (slot >= active_workspace_capacity) break;
     const uint base = slot * uniforms.workspace_dimension;
+    if (goal_identifiers[rank] == 0ul) {
+      for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+        workspace[base + feature] = 0.0f;
+      }
+      NBWorkspaceMetadataRecord empty = {};
+      metadata[slot] = empty;
+      continue;
+    }
     for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
       float value = 0.0f;
       if (feature == 0u) value = max(goal_priorities[rank], 0.0f);
