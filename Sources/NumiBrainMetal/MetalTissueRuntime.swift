@@ -260,6 +260,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let acceptedActiveSensingOutputCount: Int
     let acceptedActiveSensingOutputByteCount: Int
     let acceptedActiveSensingOutputBuffer: any MTLBuffer
+    let bodySchemaCount: Int
+    let bodySchemaByteCount: Int
+    let bodySchemaBuffer: any MTLBuffer
     let actuatorCommandKind: ActuatorCommandKind
 
     fileprivate init(
@@ -286,6 +289,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       acceptedActiveSensingOutputCount: Int,
       acceptedActiveSensingOutputByteCount: Int,
       acceptedActiveSensingOutputBuffer: any MTLBuffer,
+      bodySchemaCount: Int,
+      bodySchemaByteCount: Int,
+      bodySchemaBuffer: any MTLBuffer,
       actuatorCommandKind: ActuatorCommandKind
     ) {
       self.transactionFingerprint = transactionFingerprint
@@ -311,6 +317,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.acceptedActiveSensingOutputCount = acceptedActiveSensingOutputCount
       self.acceptedActiveSensingOutputByteCount = acceptedActiveSensingOutputByteCount
       self.acceptedActiveSensingOutputBuffer = acceptedActiveSensingOutputBuffer
+      self.bodySchemaCount = bodySchemaCount
+      self.bodySchemaByteCount = bodySchemaByteCount
+      self.bodySchemaBuffer = bodySchemaBuffer
       self.actuatorCommandKind = actuatorCommandKind
     }
   }
@@ -4134,14 +4143,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   /// Lends accepted-only CPG phase, reflex history, per-actuator cerebellar
-  /// load correction, and autonomic integration after fast-root finalization
-  /// and before joint publication. The cognitive transaction imports every
-  /// state into its own shadow generation, so neither runtime can publish a
-  /// different fast control history.
+  /// load correction, autonomic integration, and body-schema posterior after
+  /// fast-root finalization and before joint publication. The cognitive
+  /// transaction imports every state into its own shadow generation, so
+  /// neither runtime can publish a different fast control history.
   func borrowPreparedAcceptedFastMotorState(
     for transaction: BrainJointTransactionToken
   ) throws -> AcceptedFastMotorStateLease {
     guard let pendingJointTransaction,
+      let pendingRegionalStateIndex,
       pendingJointTransaction.token == transaction,
       pendingSchedulerTargetTime == transaction.targetTimestamp,
       stagedFastCPGTransactionFingerprint == transaction.fingerprint,
@@ -4179,6 +4189,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         max(boundActiveSensingChannelCount, 1) * Self.activeSensingCommandStride,
       acceptedActiveSensingOutputBuffer:
         stagedAcceptedActiveSensingOutputBuffer,
+      bodySchemaCount: Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0),
+      bodySchemaByteCount: Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0)
+        * MemoryLayout<BodySchemaRecord>.stride,
+      bodySchemaBuffer: bodySchemaStateBuffers[pendingRegionalStateIndex],
       actuatorCommandKind: boundActuatorCommandKind
     )
   }

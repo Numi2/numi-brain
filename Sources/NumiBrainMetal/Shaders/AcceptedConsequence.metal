@@ -182,6 +182,19 @@ struct NBAcceptedActuatorDescriptor {
   float emergency_command;
 };
 
+struct NBFastBodySchemaRecord {
+  uint body_identifier;
+  uint flags;
+  uint source_muscle_identifier;
+  uint endpoint_role;
+  float estimated_absolute_load;
+  float epistemic_variance;
+  float vulnerability;
+  float damage_risk;
+  ulong last_observation_timestamp_microseconds;
+  ulong state_timestamp_microseconds;
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -264,6 +277,7 @@ static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
+static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
@@ -634,6 +648,50 @@ kernel void assimilate_accepted_body_and_physiology(
     );
     physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
   }
+}
+
+/// Joins the accepted fast load posterior into the compatible cognitive body
+/// factor. The fast record remains the estimator of load and vulnerability;
+/// the cognitive factor retains receptor pose/contact evidence and publishes
+/// the maximum compatible risk used by planning and motor arbitration.
+kernel void assimilate_accepted_fast_body_schema(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const NBFastBodySchemaRecord *fast_body_schema [[buffer(7)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.body_count) return;
+  const NBFastBodySchemaRecord schema = fast_body_schema[gid];
+  if (schema.body_identifier != gid
+      || schema.state_timestamp_microseconds
+        != uniforms.target_timestamp_microseconds
+      || !isfinite(schema.estimated_absolute_load)
+      || !isfinite(schema.epistemic_variance)
+      || !isfinite(schema.vulnerability)
+      || !isfinite(schema.damage_risk)) {
+    return;
+  }
+  device float *body = reinterpret_cast<device float *>(
+    hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
+  );
+  body[8] = max(schema.estimated_absolute_load, 0.0f);
+  body[9] = max(schema.epistemic_variance, 0.0f);
+  body[10] = clamp(schema.vulnerability, 0.0f, 1.0f);
+  body[11] = clamp(schema.damage_risk, 0.0f, 1.0f);
+  if ((schema.flags & 1u) != 0u) {
+    body[5] = max(body[5], body[11]);
+    body[7] = max(body[7], max(body[10], body[11]));
+  }
+  device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+  identity[0] = ulong(schema.body_identifier);
+  identity[1] = uniforms.target_timestamp_microseconds;
+  identity[3] |= 1ul;
+  if ((schema.flags & 1u) != 0u) identity[3] |= 1ul << 4u;
+  identity[4] = schema.last_observation_timestamp_microseconds;
+  identity[5] = schema.state_timestamp_microseconds;
+  identity[6] = (ulong(schema.source_muscle_identifier) << 32u)
+    | ulong(schema.endpoint_role);
+  identity[7] = ulong(schema.flags);
 }
 
 kernel void reconcile_accepted_world_model(

@@ -184,6 +184,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "adapt_cerebellar_experts_from_accepted_error",
       "update_fast_plasticity_from_accepted_error",
       "update_accepted_procedural_trace",
+      "assimilate_accepted_fast_body_schema",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -199,7 +200,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 7
+    descriptor.maxBufferBindCount = 8
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -252,9 +253,38 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     deltaMicroseconds: UInt64,
     receptorEventCapacity: Int
   ) throws {
+    try encode(
+      encoder: encoder,
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: nil
+    )
+  }
+
+  func encode(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil
+  ) throws {
     guard acceptedPhysicsState.acceptedTimestamp.rawValue >= deltaMicroseconds,
       receptorEventCapacity >= 0,
-      receptorEventCapacity <= Int(UInt32.max)
+      receptorEventCapacity <= Int(UInt32.max),
+      (acceptedFastMotorState?.bodySchemaCount ?? 0) == 0
+        || (
+          acceptedFastMotorState?.transactionFingerprint
+            == acceptedPhysicsState.transactionFingerprint
+            && acceptedFastMotorState?.acceptedTimestamp
+              == acceptedPhysicsState.acceptedTimestamp
+            && acceptedFastMotorState?.bodySchemaCount
+              == Int(species.body.bodyCount)
+            && acceptedFastMotorState?.bodySchemaByteCount
+              == Int(species.body.bodyCount) * 48
+        )
     else {
       throw TissueError.transaction("accepted consequence timing or capacity is invalid")
     }
@@ -282,6 +312,20 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       )
     )
     barrier(encoder)
+    if let acceptedFastMotorState,
+      acceptedFastMotorState.bodySchemaByteCount > 0
+    {
+      argumentTable.setAddress(
+        acceptedFastMotorState.bodySchemaBuffer.gpuAddress,
+        index: 7
+      )
+      dispatch(
+        encoder,
+        pipeline: pipelines[7],
+        count: acceptedFastMotorState.bodySchemaCount
+      )
+      barrier(encoder)
+    }
     dispatch(
       encoder,
       pipeline: pipelines[1],

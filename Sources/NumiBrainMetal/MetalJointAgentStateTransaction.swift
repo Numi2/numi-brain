@@ -22,6 +22,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   private let runtime: MetalAgentStateRuntime
   private let lock = NSLock()
   private var preparedCommit: MetalAgentStateRuntime.PreparedCommit?
+  private var acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
 
   public init(
     jointToken: BrainJointTransactionToken,
@@ -62,6 +63,32 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     defer { lock.unlock() }
     try require(.open)
     return try runtime.persistentMemoryView(transaction: agentStateToken)
+  }
+
+  func bindAcceptedFastMotorState(
+    _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try require(.open)
+    guard lease.transactionFingerprint == jointToken.fingerprint,
+      lease.acceptedTimestamp == jointToken.targetTimestamp,
+      acceptedFastMotorState == nil
+    else {
+      throw TissueError.transaction(
+        "accepted fast state cannot be rebound to this cognitive root"
+      )
+    }
+    acceptedFastMotorState = lease
+  }
+
+  func borrowAcceptedFastMotorState()
+    throws -> MetalTissueRuntime.AcceptedFastMotorStateLease?
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    try require(.open)
+    return acceptedFastMotorState
   }
 
   /// Finishes all hot-state kernels and applies only accepted root memory
@@ -120,6 +147,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     }
     runtime.publishPreparedCommit(preparedCommit)
     self.preparedCommit = nil
+    acceptedFastMotorState = nil
     status = .committed
   }
 
@@ -134,6 +162,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     try runtime.abort(transaction: agentStateToken)
     acceptedPhysicsTokenFingerprint = nil
     preparedCommit = nil
+    acceptedFastMotorState = nil
     status = .aborted
   }
 

@@ -712,10 +712,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     guard duration > 0, duration <= UInt64(UInt32.max) else {
       throw TissueError.transaction("accepted control interval exceeds sensory ABI")
     }
+    let acceptedFastMotorState = try transaction.borrowAcceptedFastMotorState()
     let dynamicResidency = try makeDynamicAcceptedResidency(
       sensors: rawSensors,
       developmentalEvidence: developmentalEvidence,
-      teacherState: teacherState
+      teacherState: teacherState,
+      acceptedFastMotorState: acceptedFastMotorState
     )
     defer { dynamicResidency?.endResidency() }
     do {
@@ -761,7 +763,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         transaction: transaction.agentStateToken,
         acceptedPhysicsState: acceptedPhysicsState,
         deltaMicroseconds: duration,
-        receptorEventCapacity: sensory.eventCapacity
+        receptorEventCapacity: sensory.eventCapacity,
+        acceptedFastMotorState: acceptedFastMotorState
       )
       encoder.barrier(
         afterEncoderStages: .dispatch,
@@ -931,6 +934,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         == acceptedActiveSensingSection.byteCount,
       lease.acceptedActiveSensingOutputBuffer.length
         >= lease.acceptedActiveSensingOutputByteCount,
+      (lease.bodySchemaCount == 0 && lease.bodySchemaByteCount == 0)
+        || (
+          lease.bodySchemaCount == Int(species.body.bodyCount)
+            && lease.bodySchemaByteCount == lease.bodySchemaCount * 48
+            && lease.bodySchemaBuffer.length >= lease.bodySchemaByteCount
+        ),
       lease.actuatorCommandKind == species.motor.actuatorCommandKind
     else {
       throw TissueError.transaction(
@@ -943,6 +952,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       || lease.acceptedSomaticOutputByteCount > 0
       || lease.acceptedAutonomicOutputByteCount > 0
       || lease.acceptedActiveSensingOutputByteCount > 0
+      || lease.bodySchemaByteCount > 0
     else { return }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
@@ -1041,6 +1051,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     encoder.endEncoding()
     commandBuffer.endCommandBuffer()
     _ = try commitCommandBuffer(label: "NumiBrain accepted fast motor import")
+    try transaction.bindAcceptedFastMotorState(lease)
   }
 
   public func borrowNumanXSomaticBuffer(
@@ -1250,15 +1261,18 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   private func makeDynamicAcceptedResidency(
     sensors: [MetalRawSensorBufferLease],
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
-    teacherState: MetalTeacherStateBufferLease?
+    teacherState: MetalTeacherStateBufferLease?,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
   ) throws -> (any MTLResidencySet)? {
     guard !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
+      || (acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0
     else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
     descriptor.initialCapacity = sensors.count
       + (developmentalEvidence == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
+      + ((acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0 ? 1 : 0)
     let set: any MTLResidencySet
     do {
       set = try device.makeResidencySet(descriptor: descriptor)
@@ -1268,6 +1282,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for sensor in sensors { set.addAllocation(sensor.buffer) }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
     if let teacherState { set.addAllocation(teacherState.buffer) }
+    if let acceptedFastMotorState,
+      acceptedFastMotorState.bodySchemaByteCount > 0
+    {
+      set.addAllocation(acceptedFastMotorState.bodySchemaBuffer)
+    }
     set.commit()
     set.requestResidency()
     return set
