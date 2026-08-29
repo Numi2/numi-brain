@@ -1125,6 +1125,13 @@ kernel void simulate_candidate_option_outcomes(
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
+  device const float *workspace = reinterpret_cast<device const float *>(
+    hot_state + uniforms.workspace_offset
+  );
+  device const NBWorkspaceMetadataRecord *workspace_metadata =
+    reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
   device NBPlanStepRecord *plans = reinterpret_cast<device NBPlanStepRecord *>(
     hot_state + uniforms.plan_offset
   );
@@ -1194,6 +1201,27 @@ kernel void simulate_candidate_option_outcomes(
       selected_option = best_followup;
     }
     const NBOptionCandidateRecord candidate = candidates[selected_option];
+    float episodic_support = 0.0f;
+    float episodic_damage = 0.0f;
+    float episodic_uncertainty = 0.0f;
+    float episodic_reinforcement = 0.0f;
+    for (uint memory_slot = 3u;
+        memory_slot < min(uniforms.workspace_capacity, 7u); ++memory_slot) {
+      const NBWorkspaceMetadataRecord memory_token =
+        workspace_metadata[memory_slot];
+      const uint memory_source = memory_token.kind_and_source >> 16u;
+      if (memory_source != 56u
+          || memory_token.bound_token_identifier != candidate.option_identifier
+          || memory_token.confidence <= episodic_support
+          || uniforms.workspace_dimension < 14u) continue;
+      const uint memory_base = memory_slot * uniforms.workspace_dimension;
+      episodic_support = clamp(memory_token.confidence, 0.0f, 1.0f);
+      episodic_uncertainty = clamp(workspace[memory_base + 11u], 0.0f, 1.0f);
+      episodic_damage = clamp(workspace[memory_base + 12u], 0.0f, 1.0f);
+      episodic_reinforcement = clamp(
+        workspace[memory_base + 13u], -1.0f, 1.0f
+      );
+    }
     float ensemble_mean = 0.0f;
     float head_values[NB_WORLD_HEAD_COUNT];
     const uint planning_level = step == 0u ? 3u : 4u;
@@ -1235,7 +1263,10 @@ kernel void simulate_candidate_option_outcomes(
         second_largest_head_damage = head_damage;
       }
     }
-    const float epistemic = sqrt(max(epistemic_variance, 0.0f));
+    const float epistemic = max(
+      sqrt(max(epistemic_variance, 0.0f)),
+      episodic_support * episodic_uncertainty
+    );
     const float aleatoric_variance = structured_world_available
       ? max(world[NB_WORLD_EVENT_OPTION_BASE
           + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
@@ -1248,7 +1279,10 @@ kernel void simulate_candidate_option_outcomes(
       (largest_head_damage + second_largest_head_damage)
         / float(NB_WORLD_CVAR_TAIL_COUNT);
     const float step_damage = clamp(
-      max(candidate.damage_cvar, predicted_world_damage)
+      max(
+        max(candidate.damage_cvar, predicted_world_damage),
+        episodic_support * episodic_damage
+      )
         + 0.05f * sqrt(aleatoric_variance)
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
       0.0f, 1.0f
@@ -1266,6 +1300,7 @@ kernel void simulate_candidate_option_outcomes(
         + value_parameters[1] * candidate.homeostatic_value
         + value_parameters[2] * candidate.social_value
         + value_parameters[3] * uniforms.curiosity_weight * step_information
+        + value_parameters[0] * episodic_support * episodic_reinforcement
         - value_parameters[4] * uniforms.risk_weight * step_damage
         - value_parameters[5] * step_effort
         - value_parameters[6]

@@ -2039,6 +2039,7 @@ kernel void publish_memory_retrieval_winner(
   ulong identifier = 0ul;
   float score = 0.0f;
   device const float *value = nullptr;
+  device const NBEpisodicSummaryRecord *episodic_value = nullptr;
   device const NBArchivedEpisodicRecord *archived_value = nullptr;
   device const NBProceduralSkillSummaryRecord *procedural_value = nullptr;
   uint value_count = 0u;
@@ -2059,8 +2060,9 @@ kernel void publish_memory_retrieval_winner(
     kind = 1u;
     identifier = record->identifier;
     score = record->salience;
+    episodic_value = record;
     value = record->retrieval_key;
-    value_count = 10u;
+    value_count = 14u;
   } else {
     local_index -= uniforms.active_episode_capacity;
     if (local_index < uniforms.compressed_episode_capacity) {
@@ -2072,8 +2074,9 @@ kernel void publish_memory_retrieval_winner(
       kind = 6u;
       identifier = record->identifier;
       score = record->salience;
+      episodic_value = record;
       value = record->retrieval_key;
-      value_count = 10u;
+      value_count = 14u;
     } else {
       local_index -= uniforms.compressed_episode_capacity;
     if (local_index < uniforms.archive_search_candidate_count) {
@@ -2098,7 +2101,7 @@ kernel void publish_memory_retrieval_winner(
       kind = 7u;
       identifier = archived_value->identifier;
       score = archived_value->salience;
-      value_count = min(archived_value->quantized_component_count, 16u);
+      value_count = 14u;
     } else {
       local_index -= uniforms.archive_search_candidate_count;
     if (local_index < uniforms.semantic_capacity) {
@@ -2186,11 +2189,35 @@ kernel void publish_memory_retrieval_winner(
     procedural_complete = continuing && elapsed >= boundary && boundary > 0.0f;
   }
   for (uint index = 0u; index < uniforms.workspace_dimension; ++index) {
-    if (kind == 7u && archived_value != nullptr) {
-      workspace[base + index] = index < value_count
-        ? float(archived_value->quantized_retrieval_key[index])
-          * archived_value->retrieval_key_scale
-        : 0.0f;
+    if ((kind == 1u || kind == 6u) && episodic_value != nullptr) {
+      float episodic_component = 0.0f;
+      if (index < 10u) {
+        episodic_component = episodic_value->retrieval_key[index];
+      } else if (index == 10u) {
+        episodic_component = episodic_value->salience;
+      } else if (index == 11u) {
+        episodic_component = episodic_value->epistemic_uncertainty;
+      } else if (index == 12u) {
+        episodic_component = episodic_value->damage_severity;
+      } else if (index == 13u) {
+        episodic_component = episodic_value->factored_reinforcement;
+      }
+      workspace[base + index] = episodic_component;
+    } else if (kind == 7u && archived_value != nullptr) {
+      float archived_component = 0.0f;
+      if (index < min(archived_value->quantized_component_count, 10u)) {
+        archived_component = float(archived_value->quantized_retrieval_key[index])
+          * archived_value->retrieval_key_scale;
+      } else if (index == 10u) {
+        archived_component = archived_value->salience;
+      } else if (index == 11u) {
+        archived_component = archived_value->epistemic_uncertainty;
+      } else if (index == 12u) {
+        archived_component = archived_value->damage_severity;
+      } else if (index == 13u) {
+        archived_component = archived_value->factored_reinforcement;
+      }
+      workspace[base + index] = archived_component;
     } else if (kind == 3u && procedural_value != nullptr) {
       float procedural_component = 0.0f;
       if (index < 16u) {
@@ -2241,13 +2268,25 @@ kernel void publish_memory_retrieval_winner(
     reinterpret_cast<device NBWorkspaceMetadataRecord *>(
       hot_state + uniforms.workspace_metadata_offset
     );
-  NBWorkspaceMetadataRecord token = metadata[slot];
+  NBWorkspaceMetadataRecord token = {};
   token.identifier = (uniforms.target_timestamp_microseconds << 8) | ulong(slot + 1u);
-  token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  token.source_timestamp_microseconds = episodic_value != nullptr
+    ? episodic_value->end_timestamp_microseconds
+    : (archived_value != nullptr
+      ? archived_value->end_timestamp_microseconds
+      : uniforms.target_timestamp_microseconds);
   token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   token.entity_identifier = identifier;
-  token.goal_identifier = kind == 3u && procedural_value != nullptr
-    ? procedural_value->initiation_goal_identifier : token.goal_identifier;
+  token.goal_identifier = episodic_value != nullptr
+    ? episodic_value->active_goal_identifier
+    : (archived_value != nullptr
+      ? archived_value->active_goal_identifier
+      : (kind == 3u && procedural_value != nullptr
+        ? procedural_value->initiation_goal_identifier : 0ul));
+  token.bound_token_identifier = episodic_value != nullptr
+    ? episodic_value->active_option_identifier
+    : (archived_value != nullptr
+      ? archived_value->active_option_identifier : 0ul);
   token.provenance_record_identifier = identifier;
   const uint source_module = kind == 2u
     ? 58u
