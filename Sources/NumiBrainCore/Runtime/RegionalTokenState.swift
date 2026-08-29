@@ -170,6 +170,10 @@ public struct RegionalTokenProgram: Equatable, Sendable {
   public let scheduleFingerprint: UInt64
   public let layouts: [RegionalTokenLayout]
   public let routes: [RegionalTokenRoute]
+  /// CSR offsets into ``outgoingRouteIndices`` for each schedule module.
+  public let outgoingRouteOffsets: [UInt32]
+  /// Receiver-canonical route indices regrouped by sending module.
+  public let outgoingRouteIndices: [UInt32]
   public let routeHistoryValueOffsets: [UInt32]
   public let routeMessageDimensions: [UInt32]
   public let compiledRouteHistoryCapacity: Int
@@ -288,6 +292,28 @@ public struct RegionalTokenProgram: Equatable, Sendable {
         ($0.element.moduleIdentifier, $0.offset)
       }
     )
+    var outgoingRouteOffsets: [UInt32] = []
+    var outgoingRouteIndices: [UInt32] = []
+    outgoingRouteOffsets.reserveCapacity(schedule.modules.count + 1)
+    outgoingRouteIndices.reserveCapacity(canonicalRoutes.count)
+    for module in schedule.modules {
+      outgoingRouteOffsets.append(UInt32(outgoingRouteIndices.count))
+      for routeIndex in canonicalRoutes.indices
+      where canonicalRoutes[routeIndex].senderModuleIdentifier == module.moduleIdentifier {
+        guard routeIndex <= Int(UInt32.max) else {
+          throw BrainRuntimeError.invalidSchedule(
+            "regional outgoing-route index exceeds ABI limits"
+          )
+        }
+        outgoingRouteIndices.append(UInt32(routeIndex))
+      }
+    }
+    outgoingRouteOffsets.append(UInt32(outgoingRouteIndices.count))
+    guard outgoingRouteIndices.count == canonicalRoutes.count else {
+      throw BrainRuntimeError.invalidSchedule(
+        "regional outgoing-route index does not cover the complete route graph"
+      )
+    }
     var routeHistoryValueOffsets: [UInt32] = []
     var routeMessageDimensions: [UInt32] = []
     routeHistoryValueOffsets.reserveCapacity(canonicalRoutes.count)
@@ -374,6 +400,8 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     self.scheduleFingerprint = schedule.fingerprint
     self.layouts = layouts
     self.routes = canonicalRoutes
+    self.outgoingRouteOffsets = outgoingRouteOffsets
+    self.outgoingRouteIndices = outgoingRouteIndices
     self.routeHistoryValueOffsets = routeHistoryValueOffsets
     self.routeMessageDimensions = routeMessageDimensions
     self.compiledRouteHistoryCapacity = requestedHistoryCapacity

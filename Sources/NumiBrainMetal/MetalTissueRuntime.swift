@@ -544,6 +544,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let regionalProgramHeaderBuffer: any MTLBuffer
   private let regionalLayoutBuffer: any MTLBuffer
   private let regionalRouteBuffer: any MTLBuffer
+  private let regionalOutgoingRouteIndexBuffer: any MTLBuffer
   private let regionalParameterBuffer: any MTLBuffer
   private let regionalTokenStateBuffers: [any MTLBuffer]
   private let regionalTokenCandidateBuffer: any MTLBuffer
@@ -610,6 +611,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let regionalStateByteCount: Int
   public let regionalTokenStateByteCount: Int
   public let regionalRouteByteCount: Int
+  public let regionalOutgoingRouteOffsetByteCount: Int
+  public let regionalOutgoingRouteIndexByteCount: Int
   public let regionalParameterByteCount: Int
   public let regionalRouteHistoryStateByteCount: Int
   public let regionalRouteHistoryTimestampByteCount: Int
@@ -1074,7 +1077,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
-    regionalArgumentDescriptor.maxBufferBindCount = 28
+    regionalArgumentDescriptor.maxBufferBindCount = 29
     regionalArgumentDescriptor.initializeBindings = true
     guard
       let regionalArgumentTable = try? device.makeArgumentTable(
@@ -1315,6 +1318,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let regionalRouteByteCount =
       regionalTokenProgram.routes.count
       * MemoryLayout<NBRegionalRoute>.stride
+    let regionalOutgoingRouteOffsetByteCount =
+      regionalTokenProgram.outgoingRouteOffsets.count * MemoryLayout<UInt32>.stride
+    let regionalOutgoingRouteIndexByteCount =
+      regionalTokenProgram.outgoingRouteIndices.count * MemoryLayout<UInt32>.stride
+    let regionalOutgoingRouteCSRByteCount =
+      regionalOutgoingRouteOffsetByteCount + regionalOutgoingRouteIndexByteCount
     let regionalParameterByteCount =
       regionalTokenProgram.parameters.count
       * MemoryLayout<NBRegionalTokenParameters>.stride
@@ -1493,6 +1502,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       let regionalRouteBuffer = device.makeBuffer(
         length: max(regionalRouteByteCount, MemoryLayout<NBRegionalRoute>.stride),
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let regionalOutgoingRouteIndexBuffer = device.makeBuffer(
+        length: regionalOutgoingRouteCSRByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
       let regionalParameterBuffer = device.makeBuffer(
@@ -1799,6 +1812,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     regionalProgramHeaderBuffer.label = "NumiBrain immutable regional program header"
     regionalLayoutBuffer.label = "NumiBrain immutable region-major token layouts"
     regionalRouteBuffer.label = "NumiBrain immutable sparse regional routes"
+    regionalOutgoingRouteIndexBuffer.label =
+      "NumiBrain immutable outgoing regional route CSR index"
     regionalParameterBuffer.label = "NumiBrain immutable regional slow parameters"
     firstRegionalTokenStateBuffer.label = "NumiBrain regional token state generation 0"
     secondRegionalTokenStateBuffer.label = "NumiBrain regional token state generation 1"
@@ -1911,7 +1926,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       max(
         max(regionalTokenStateByteCount, regionalRouteHistoryTimestampByteCount),
         max(
-          max(regionalLayoutByteCount, regionalRouteByteCount),
+          max(
+            max(regionalLayoutByteCount, regionalRouteByteCount),
+            regionalOutgoingRouteCSRByteCount
+          ),
           max(regionalRouteHistoryStateByteCount, regionalRouteRuntimeStateByteCount)
         )
       )
@@ -2024,6 +2042,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(regionalProgramHeaderBuffer)
     residencySet.addAllocation(regionalLayoutBuffer)
     residencySet.addAllocation(regionalRouteBuffer)
+    residencySet.addAllocation(regionalOutgoingRouteIndexBuffer)
     residencySet.addAllocation(regionalParameterBuffer)
     for buffer in regionalTokenStateBuffers {
       residencySet.addAllocation(buffer)
@@ -2173,6 +2192,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalProgramHeaderBuffer = regionalProgramHeaderBuffer
     self.regionalLayoutBuffer = regionalLayoutBuffer
     self.regionalRouteBuffer = regionalRouteBuffer
+    self.regionalOutgoingRouteIndexBuffer = regionalOutgoingRouteIndexBuffer
     self.regionalParameterBuffer = regionalParameterBuffer
     self.regionalTokenStateBuffers = regionalTokenStateBuffers
     self.regionalTokenCandidateBuffer = regionalTokenCandidateBuffer
@@ -2244,6 +2264,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.regionalStateByteCount = regionalStateByteCount
     self.regionalTokenStateByteCount = regionalTokenStateByteCount
     self.regionalRouteByteCount = regionalRouteByteCount
+    self.regionalOutgoingRouteOffsetByteCount = regionalOutgoingRouteOffsetByteCount
+    self.regionalOutgoingRouteIndexByteCount = regionalOutgoingRouteIndexByteCount
     self.regionalParameterByteCount = regionalParameterByteCount
     self.regionalRouteHistoryStateByteCount = regionalRouteHistoryStateByteCount
     self.regionalRouteHistoryTimestampByteCount = regionalRouteHistoryTimestampByteCount
@@ -2453,6 +2475,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         label: "NumiBrain sparse regional-route upload"
       )
     }
+    let regionalOutgoingRouteCSR =
+      regionalTokenProgram.outgoingRouteOffsets
+      + regionalTokenProgram.outgoingRouteIndices
+    regionalOutgoingRouteCSR.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: regionalOutgoingRouteCSRByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: regionalOutgoingRouteIndexBuffer,
+      size: regionalOutgoingRouteCSRByteCount,
+      label: "NumiBrain outgoing regional-route CSR upload"
+    )
     let regionalParameterRecords = regionalTokenProgram.parameters.map(\.abiRecord)
     regionalParameterRecords.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -5998,6 +6036,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       : defaultRegionalPlasticModulationBuffer
     regionalArgumentTable.setAddress(plasticModulationBuffer.gpuAddress, index: 24)
     regionalArgumentTable.setAddress(maturationBuffer.gpuAddress, index: 25)
+    regionalArgumentTable.setAddress(
+      regionalOutgoingRouteIndexBuffer.gpuAddress,
+      index: 28
+    )
     encoder.setComputePipelineState(regionalPipeline)
     encoder.setArgumentTable(regionalArgumentTable)
     encoder.dispatchThreads(

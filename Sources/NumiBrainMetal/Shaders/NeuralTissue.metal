@@ -1844,6 +1844,7 @@ kernel void advance_due_regional_tokens(
     device const NBRegionalMaturationRecordABI *maturation [[buffer(25)]],
     device const float *routeParameters [[buffer(26)]],
     device const float *denseParameters [[buffer(27)]],
+    device const uint *outgoingRouteCSR [[buffer(28)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
@@ -2320,62 +2321,73 @@ kernel void advance_due_regional_tokens(
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint routeIndex = 0u;
-             routeIndex < header->route_count;
-             ++routeIndex) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            NBDueInvocationABI senderInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    route.sender_module_id,
-                    senderInvocation)) {
-                continue;
-            }
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
             const uint senderIndex = regional_module_index(
                 layouts,
                 header->module_count,
-                route.sender_module_id
+                invocations[invocationIndex].module_id
             );
+            if (senderIndex == ~0u) {
+                continue;
+            }
             const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
-            const uint senderTokenBase = sender.scalar_offset
-                + uint(route.sender_token) * uint(sender.token_dimension);
-            const uint writeSlot = outputRouteHistoryStates[routeIndex].next_slot;
-            const uint historyValueBase = route.history_value_offset
-                + writeSlot * route.message_dimension;
-            for (uint feature = lane;
-                 feature < route.message_dimension;
-                 feature += laneCount) {
-                outputRouteHistoryValues[historyValueBase + feature] =
-                    outputTokens[senderTokenBase + feature];
+            const uint outgoingBegin = outgoingRouteCSR[senderIndex];
+            const uint outgoingEnd = outgoingRouteCSR[senderIndex + 1u];
+            for (uint outgoingIndex = outgoingBegin;
+                 outgoingIndex < outgoingEnd;
+                 ++outgoingIndex) {
+                const uint routeIndex = outgoingRouteCSR[
+                    header->module_count + 1u + outgoingIndex
+                ];
+                const NBRegionalRouteABI route = routes[routeIndex];
+                const uint senderTokenBase = sender.scalar_offset
+                    + uint(route.sender_token) * uint(sender.token_dimension);
+                const uint writeSlot =
+                    outputRouteHistoryStates[routeIndex].next_slot;
+                const uint historyValueBase = route.history_value_offset
+                    + writeSlot * route.message_dimension;
+                for (uint feature = lane;
+                     feature < route.message_dimension;
+                     feature += laneCount) {
+                    outputRouteHistoryValues[historyValueBase + feature] =
+                        outputTokens[senderTokenBase + feature];
+                }
             }
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint routeIndex = lane;
-             routeIndex < header->route_count;
-             routeIndex += laneCount) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            NBDueInvocationABI senderInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    route.sender_module_id,
-                    senderInvocation)) {
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const uint senderIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocations[invocationIndex].module_id
+            );
+            if (senderIndex == ~0u) {
                 continue;
             }
-            NBRegionalRouteHistoryStateABI history =
-                outputRouteHistoryStates[routeIndex];
-            const uint writeSlot = history.next_slot;
-            outputRouteHistoryTimestamps[
-                routeIndex * header->history_capacity + writeSlot
-            ] = timestamp;
-            history.next_slot = (writeSlot + 1u) % header->history_capacity;
-            history.count = min(history.count + 1u, header->history_capacity);
-            history.latest_timestamp_microseconds = timestamp;
-            outputRouteHistoryStates[routeIndex] = history;
+            const uint outgoingBegin = outgoingRouteCSR[senderIndex];
+            const uint outgoingEnd = outgoingRouteCSR[senderIndex + 1u];
+            for (uint outgoingIndex = outgoingBegin + lane;
+                 outgoingIndex < outgoingEnd;
+                 outgoingIndex += laneCount) {
+                const uint routeIndex = outgoingRouteCSR[
+                    header->module_count + 1u + outgoingIndex
+                ];
+                NBRegionalRouteHistoryStateABI history =
+                    outputRouteHistoryStates[routeIndex];
+                const uint writeSlot = history.next_slot;
+                outputRouteHistoryTimestamps[
+                    routeIndex * header->history_capacity + writeSlot
+                ] = timestamp;
+                history.next_slot = (writeSlot + 1u) % header->history_capacity;
+                history.count = min(history.count + 1u, header->history_capacity);
+                history.latest_timestamp_microseconds = timestamp;
+                outputRouteHistoryStates[routeIndex] = history;
+            }
         }
         threadgroup_barrier(mem_flags::mem_device);
         cursor = groupEnd;
@@ -2512,6 +2524,7 @@ kernel void advance_cohort_regional_tokens_routed(
     device uint *selectedRouteCounts [[buffer(27)]],
     device const float *routeParameters [[buffer(28)]],
     device const float *denseParameters [[buffer(29)]],
+    device const uint *outgoingRouteCSR [[buffer(30)]],
     uint lane [[thread_index_in_threadgroup]],
     uint3 lanesPerThreadgroup [[threads_per_threadgroup]],
     uint3 threadgroupPosition [[threadgroup_position_in_grid]]
@@ -2953,67 +2966,77 @@ kernel void advance_cohort_regional_tokens_routed(
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint routeIndex = 0u;
-             routeIndex < header->route_count;
-             ++routeIndex) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            NBDueInvocationABI senderInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    route.sender_module_id,
-                    senderInvocation)) {
-                continue;
-            }
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
             const uint senderIndex = regional_module_index(
                 layouts,
                 header->module_count,
-                route.sender_module_id
+                invocations[invocationIndex].module_id
             );
+            if (senderIndex == ~0u) {
+                continue;
+            }
             const NBRegionalTokenLayoutABI sender = layouts[senderIndex];
-            const uint senderTokenBase = sender.scalar_offset
-                + uint(route.sender_token) * uint(sender.token_dimension);
-            const uint writeSlot =
-                outputRouteHistoryStates[routeBase + routeIndex].next_slot;
-            const ulong destinationBase = historyValueBase
-                + ulong(route.history_value_offset)
-                + ulong(writeSlot) * ulong(route.message_dimension);
-            for (uint feature = lane;
-                 feature < route.message_dimension;
-                 feature += laneCount) {
-                outputRouteHistoryValues[destinationBase + ulong(feature)] =
-                    outputTokens[
-                        tokenBase + ulong(senderTokenBase + feature)
-                    ];
+            const uint outgoingBegin = outgoingRouteCSR[senderIndex];
+            const uint outgoingEnd = outgoingRouteCSR[senderIndex + 1u];
+            for (uint outgoingIndex = outgoingBegin;
+                 outgoingIndex < outgoingEnd;
+                 ++outgoingIndex) {
+                const uint routeIndex = outgoingRouteCSR[
+                    header->module_count + 1u + outgoingIndex
+                ];
+                const NBRegionalRouteABI route = routes[routeIndex];
+                const uint senderTokenBase = sender.scalar_offset
+                    + uint(route.sender_token) * uint(sender.token_dimension);
+                const uint writeSlot =
+                    outputRouteHistoryStates[routeBase + routeIndex].next_slot;
+                const ulong destinationBase = historyValueBase
+                    + ulong(route.history_value_offset)
+                    + ulong(writeSlot) * ulong(route.message_dimension);
+                for (uint feature = lane;
+                     feature < route.message_dimension;
+                     feature += laneCount) {
+                    outputRouteHistoryValues[destinationBase + ulong(feature)] =
+                        outputTokens[
+                            tokenBase + ulong(senderTokenBase + feature)
+                        ];
+                }
             }
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        for (uint routeIndex = lane;
-             routeIndex < header->route_count;
-             routeIndex += laneCount) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            NBDueInvocationABI senderInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    route.sender_module_id,
-                    senderInvocation)) {
+        for (uint invocationIndex = cursor;
+             invocationIndex < groupEnd;
+             ++invocationIndex) {
+            const uint senderIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                invocations[invocationIndex].module_id
+            );
+            if (senderIndex == ~0u) {
                 continue;
             }
-            NBRegionalRouteHistoryStateABI history =
-                outputRouteHistoryStates[routeBase + routeIndex];
-            const uint writeSlot = history.next_slot;
-            outputRouteHistoryTimestamps[
-                historyTimestampBase
-                + ulong(routeIndex * header->history_capacity + writeSlot)
-            ] = timestamp;
-            history.next_slot = (writeSlot + 1u) % header->history_capacity;
-            history.count = min(history.count + 1u, header->history_capacity);
-            history.latest_timestamp_microseconds = timestamp;
-            outputRouteHistoryStates[routeBase + routeIndex] = history;
+            const uint outgoingBegin = outgoingRouteCSR[senderIndex];
+            const uint outgoingEnd = outgoingRouteCSR[senderIndex + 1u];
+            for (uint outgoingIndex = outgoingBegin + lane;
+                 outgoingIndex < outgoingEnd;
+                 outgoingIndex += laneCount) {
+                const uint routeIndex = outgoingRouteCSR[
+                    header->module_count + 1u + outgoingIndex
+                ];
+                NBRegionalRouteHistoryStateABI history =
+                    outputRouteHistoryStates[routeBase + routeIndex];
+                const uint writeSlot = history.next_slot;
+                outputRouteHistoryTimestamps[
+                    historyTimestampBase
+                    + ulong(routeIndex * header->history_capacity + writeSlot)
+                ] = timestamp;
+                history.next_slot = (writeSlot + 1u) % header->history_capacity;
+                history.count = min(history.count + 1u, header->history_capacity);
+                history.latest_timestamp_microseconds = timestamp;
+                outputRouteHistoryStates[routeBase + routeIndex] = history;
+            }
         }
         threadgroup_barrier(mem_flags::mem_device);
         cursor = groupEnd;

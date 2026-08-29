@@ -372,6 +372,9 @@ public enum MetalDispatchPlanRuntime {
     var programHeader = regionalProgram.headerRecord
     let layoutRecords = regionalProgram.layouts.map(\.abiRecord)
     let routeRecords = regionalProgram.routeABIRecords
+    let outgoingRouteOffsets = regionalProgram.outgoingRouteOffsets
+    let outgoingRouteIndices = regionalProgram.outgoingRouteIndices
+    let outgoingRouteCSR = outgoingRouteOffsets + outgoingRouteIndices
     let parameterRecords = regionalProgram.parameters.map(\.abiRecord)
     let canonicalInitialRoutingStates: [BrainCohortRoutingState]
     if let initialRoutingStates {
@@ -581,7 +584,7 @@ public enum MetalDispatchPlanRuntime {
     }
     let tokenArgumentDescriptor = MTL4ArgumentTableDescriptor()
     tokenArgumentDescriptor.label = "NumiBrain cohort regional-token arguments"
-    tokenArgumentDescriptor.maxBufferBindCount = 30
+    tokenArgumentDescriptor.maxBufferBindCount = 31
     tokenArgumentDescriptor.initializeBindings = true
     guard
       let tokenArgumentTable = try? device.makeArgumentTable(
@@ -622,6 +625,12 @@ public enum MetalDispatchPlanRuntime {
     let programHeaderByteCount = MemoryLayout<NBRegionalProgramHeader>.stride
     let layoutByteCount = layoutRecords.count * MemoryLayout<NBRegionalTokenLayout>.stride
     let routeByteCount = routeRecords.count * MemoryLayout<NBRegionalRoute>.stride
+    let outgoingRouteOffsetByteCount =
+      outgoingRouteOffsets.count * MemoryLayout<UInt32>.stride
+    let outgoingRouteIndexByteCount =
+      outgoingRouteIndices.count * MemoryLayout<UInt32>.stride
+    let outgoingRouteCSRByteCount =
+      outgoingRouteOffsetByteCount + outgoingRouteIndexByteCount
     let parameterByteCount =
       parameterRecords.count * MemoryLayout<NBRegionalTokenParameters>.stride
     let tokenLastUpdateByteCount = regionalStateCount * MemoryLayout<UInt64>.stride
@@ -658,7 +667,13 @@ public enum MetalDispatchPlanRuntime {
             max(
               max(moduleByteCount, regionalStateByteCount),
               max(
-                max(max(layoutByteCount, routeByteCount), parameterByteCount),
+                max(
+                  max(
+                    max(layoutByteCount, routeByteCount),
+                    outgoingRouteCSRByteCount
+                  ),
+                  parameterByteCount
+                ),
                 max(
                   max(tokenStateByteCount, tokenLastUpdateByteCount),
                   max(
@@ -757,6 +772,10 @@ public enum MetalDispatchPlanRuntime {
       length: routeByteCount,
       label: "NumiBrain immutable cohort regional-token routes"
     )
+    let outgoingRouteCSRBuffer = try privateBuffer(
+      length: outgoingRouteCSRByteCount,
+      label: "NumiBrain immutable cohort outgoing-route CSR index"
+    )
     let parameterBuffer = try privateBuffer(
       length: parameterByteCount,
       label: "NumiBrain immutable cohort regional-token parameters"
@@ -841,7 +860,7 @@ public enum MetalDispatchPlanRuntime {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain dispatch-plan residency"
-    residencyDescriptor.initialCapacity = 37
+    residencyDescriptor.initialCapacity = 38
       + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
@@ -868,6 +887,7 @@ public enum MetalDispatchPlanRuntime {
       programHeaderBuffer,
       layoutBuffer,
       routeBuffer,
+      outgoingRouteCSRBuffer,
       parameterBuffer,
       inputRegionalStateBuffer,
       outputRegionalStateBuffer,
@@ -1059,6 +1079,16 @@ public enum MetalDispatchPlanRuntime {
       }
     }
     try upload(
+      to: outgoingRouteCSRBuffer,
+      byteCount: outgoingRouteCSRByteCount,
+      label: "cohort outgoing regional-route CSR upload"
+    ) { destination in
+      outgoingRouteCSR.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        destination.copyMemory(from: source, byteCount: outgoingRouteCSRByteCount)
+      }
+    }
+    try upload(
       to: parameterBuffer,
       byteCount: parameterByteCount,
       label: "cohort regional-token parameter upload"
@@ -1206,6 +1236,7 @@ public enum MetalDispatchPlanRuntime {
       ),
       index: 29
     )
+    tokenArgumentTable.setAddress(outgoingRouteCSRBuffer.gpuAddress, index: 30)
     let maximumEntryCount = inputGroups.map { Int($0.entry_count) }.max() ?? 1
     let threadgroupWidth = min(64, pipeline.maxTotalThreadsPerThreadgroup)
     let consumerThreadgroupWidth = 64
@@ -1789,6 +1820,7 @@ public enum MetalDispatchPlanRuntime {
         + bindingByteCount + cohortUniformByteCount + environmentIdentifierByteCount
         + moduleByteCount + regionalStateByteCount + tokenUniformByteCount
         + programHeaderByteCount + layoutByteCount + routeByteCount
+        + outgoingRouteOffsetByteCount + outgoingRouteIndexByteCount
         + parameterByteCount + tokenStateByteCount + routeHistoryByteCount
         + routeRuntimeStateByteCount,
       privateOutputByteCount: groupByteCount + entryByteCount + resultByteCount
