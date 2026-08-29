@@ -50,6 +50,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case proceduralExecutionTrace = 35
   /// Transactional mutation epoch for each Tier-2 archive page.
   case archivePageEpochs = 36
+  /// Independent per-agent locomotor and vital central-pattern state.
+  case cpgState = 37
 }
 
 @frozen
@@ -379,6 +381,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       .archivePageEpochs,
       count: archivePageCount,
       stride: MemoryLayout<UInt32>.stride
+    )
+    try builder.append(
+      .cpgState,
+      count: max(species.cpg.oscillators.count, 1),
+      stride: 32
     )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)

@@ -7,6 +7,7 @@ constant uint NB_CONTROL_MODE_PLANNING = 3u;
 constant uint NB_CONTROL_FLAG_VALID = 1u;
 constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
+constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
 constant uint NB_OPTION_PROPOSAL_REST_RECOVERY = 3u;
 constant ulong NB_REST_OPTION_IDENTIFIER = NB_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_EVENT_OPTION_BASE = 5760u;
@@ -36,6 +37,8 @@ struct NBDecisionUniforms {
   ulong internal_action_offset;
   ulong developmental_state_offset;
   ulong cerebellar_expert_memory_offset;
+  ulong event_queue_offset;
+  ulong cpg_state_offset;
   ulong parameter_version_fingerprint;
   ulong reserved_identity;
   uint recurrent_scalar_count;
@@ -59,6 +62,9 @@ struct NBDecisionUniforms {
   uint object_slot_count;
   uint internal_action_capacity;
   uint maximum_planning_horizon;
+  uint cpg_oscillator_count;
+  uint cpg_coupling_count;
+  uint event_capacity;
   float risk_weight;
   float damage_risk_budget;
   float switching_margin;
@@ -202,6 +208,51 @@ struct NBCommunicationChannelDescriptor {
   uint flags;
 };
 
+struct NBCPGOscillatorDescriptor {
+  uint identifier;
+  uint output_synergy_identifier;
+  float natural_frequency_hertz;
+  float duty_factor;
+  ulong sensory_reset_mask;
+  ulong reserved;
+};
+
+struct NBCPGCouplingDescriptor {
+  uint source_oscillator_index;
+  uint destination_oscillator_index;
+  float phase_offset;
+  float gain;
+};
+
+struct NBCPGStateRecord {
+  float phase;
+  float output;
+  float effective_frequency_hertz;
+  float reset_magnitude;
+  ulong timestamp_microseconds;
+  uint output_synergy_identifier;
+  uint flags;
+};
+
+struct NBEventQueueHeader {
+  atomic_uint count;
+  uint capacity;
+  atomic_uint overflow_count;
+  uint flags;
+  ulong target_timestamp_microseconds;
+  ulong generation;
+};
+
+struct NBReceptorEventRecord {
+  uint environment_identifier;
+  uint kind;
+  uint source_identifier;
+  uint flags;
+  ulong timestamp_microseconds;
+  float magnitude;
+  float auxiliary_value;
+};
+
 struct NBActiveSensingCommandRecord {
   float command;
   float confidence;
@@ -271,7 +322,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 312);
+static_assert(sizeof(NBDecisionUniforms) == 336);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -283,6 +334,11 @@ static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
+static_assert(sizeof(NBCPGOscillatorDescriptor) == 32);
+static_assert(sizeof(NBCPGCouplingDescriptor) == 16);
+static_assert(sizeof(NBCPGStateRecord) == 32);
+static_assert(sizeof(NBEventQueueHeader) == 32);
+static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
@@ -315,6 +371,22 @@ inline float3 nb_rotate_vector(float3 vector, float4 quaternion) {
   const float3 twice_cross = 2.0f * cross(normalized.xyz, vector);
   return vector + normalized.w * twice_cross
     + cross(normalized.xyz, twice_cross);
+}
+
+inline ulong nb_interrupt_mask_for_event_kind(uint kind) {
+  switch (kind) {
+    case 3u: return 1ul << 3u;
+    case 5u: return 1ul << 2u;
+    case 6u: return 1ul << 5u;
+    case 7u: return 1ul << 6u;
+    case 8u: return 1ul << 0u;
+    case 9u: return 1ul << 1u;
+    case 10u: return 1ul << 7u;
+    case 11u: return 1ul << 8u;
+    case 12u: return 1ul << 4u;
+    case 13u: return 1ul << 9u;
+    default: return 0ul;
+  }
 }
 
 kernel void generate_active_goal_state(
@@ -1286,6 +1358,134 @@ kernel void select_cerebellar_context_experts(
   }
 }
 
+/// Advances the species-defined central pattern generator as independent,
+/// transactional per-agent state. This first production path is analytic at
+/// the committed control timestamp; physical-substep sampling can consume the
+/// resulting state without making oscillator phase a shared parameter.
+kernel void advance_cpg_state(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const NBCPGOscillatorDescriptor *oscillator_descriptors [[buffer(7)]],
+  device const NBCPGCouplingDescriptor *coupling_descriptors [[buffer(8)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.cpg_oscillator_count == 0u) return;
+  device const NBControlHeader *header =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  device const NBOptionCandidateRecord *candidates =
+    reinterpret_cast<device const NBOptionCandidateRecord *>(
+      hot_state + uniforms.candidate_offset
+    );
+  device NBCPGStateRecord *states =
+    reinterpret_cast<device NBCPGStateRecord *>(
+      hot_state + uniforms.cpg_state_offset
+    );
+  const uint selected = min(
+    uint(header->reserved0), max(uniforms.candidate_capacity, 1u) - 1u
+  );
+  const NBOptionCandidateRecord candidate = candidates[selected];
+  const bool active = candidate.source_module == 72u
+    && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
+    && (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) == 0u;
+
+  device NBEventQueueHeader *event_header =
+    reinterpret_cast<device NBEventQueueHeader *>(
+      hot_state + uniforms.event_queue_offset
+    );
+  const uint event_count = min(
+    min(
+      atomic_load_explicit(&event_header->count, memory_order_relaxed),
+      event_header->capacity
+    ),
+    uniforms.event_capacity
+  );
+  device const NBReceptorEventRecord *events =
+    reinterpret_cast<device const NBReceptorEventRecord *>(event_header + 1);
+  ulong delivered_interrupt_mask = 0ul;
+  for (uint event_index = 0u; event_index < event_count; ++event_index) {
+    if (events[event_index].timestamp_microseconds
+        <= uniforms.target_timestamp_microseconds) {
+      delivered_interrupt_mask |= nb_interrupt_mask_for_event_kind(
+        events[event_index].kind
+      );
+    }
+  }
+
+  float prior_phases[64];
+  for (uint oscillator = 0u; oscillator < uniforms.cpg_oscillator_count;
+      ++oscillator) {
+    const float phase = states[oscillator].phase;
+    prior_phases[oscillator] = isfinite(phase)
+      ? phase - floor(phase)
+      : 0.0f;
+  }
+  constexpr float two_pi = 6.28318530717958647692f;
+  for (uint oscillator = 0u; oscillator < uniforms.cpg_oscillator_count;
+      ++oscillator) {
+    const NBCPGOscillatorDescriptor descriptor = oscillator_descriptors[oscillator];
+    NBCPGStateRecord state = states[oscillator];
+    const ulong prior_timestamp = state.timestamp_microseconds;
+    const float elapsed_seconds = prior_timestamp > 0ul
+        && uniforms.target_timestamp_microseconds > prior_timestamp
+      ? float(uniforms.target_timestamp_microseconds - prior_timestamp) * 1.0e-6f
+      : 0.0f;
+    const bool reset = active && (descriptor.sensory_reset_mask
+      & delivered_interrupt_mask) != 0ul;
+    float reset_magnitude = 0.0f;
+    if (reset) {
+      for (uint event_index = 0u; event_index < event_count; ++event_index) {
+        const NBReceptorEventRecord event = events[event_index];
+        if (event.timestamp_microseconds <= uniforms.target_timestamp_microseconds
+            && (descriptor.sensory_reset_mask
+              & nb_interrupt_mask_for_event_kind(event.kind)) != 0ul) {
+          reset_magnitude = max(reset_magnitude, clamp(event.magnitude, 0.0f, 1.0f));
+        }
+      }
+    }
+    float phase = active ? prior_phases[oscillator] : 0.0f;
+    float coupling_frequency = 0.0f;
+    if (active && !reset) {
+      for (uint coupling = 0u; coupling < uniforms.cpg_coupling_count;
+          ++coupling) {
+        const NBCPGCouplingDescriptor edge = coupling_descriptors[coupling];
+        if (edge.destination_oscillator_index == oscillator
+            && edge.source_oscillator_index < uniforms.cpg_oscillator_count) {
+          coupling_frequency += edge.gain * sin(
+            two_pi * (prior_phases[edge.source_oscillator_index]
+              - prior_phases[oscillator]) - edge.phase_offset
+          );
+        }
+      }
+    }
+    const float vigor_scale = clamp(0.5f + header->vigor, 0.25f, 1.5f);
+    const float effective_frequency = active
+      ? max(descriptor.natural_frequency_hertz * vigor_scale
+          + coupling_frequency, 0.0f)
+      : descriptor.natural_frequency_hertz;
+    if (reset) {
+      phase = 0.0f;
+    } else if (active && elapsed_seconds > 0.0f) {
+      phase = fract(phase + elapsed_seconds * effective_frequency);
+    }
+    const float normalized_active_phase = phase / max(descriptor.duty_factor, 1.0e-6f);
+    const float output = active && phase < descriptor.duty_factor
+      ? 0.5f - 0.5f * cos(two_pi * normalized_active_phase)
+      : 0.0f;
+    state.phase = phase;
+    state.output = clamp(output, 0.0f, 1.0f);
+    state.effective_frequency_hertz = effective_frequency;
+    state.reset_magnitude = reset_magnitude;
+    state.timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    state.output_synergy_identifier = descriptor.output_synergy_identifier;
+    state.flags = NB_CONTROL_FLAG_VALID
+      | (active ? (1u << 1u) : 0u)
+      | (reset ? (1u << 2u) : 0u);
+    states[oscillator] = state;
+  }
+}
+
 kernel void generate_motor_spinal_autonomic_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -1338,6 +1538,10 @@ kernel void generate_motor_spinal_autonomic_state(
     learned_cerebellar_residual += experts[expert_index].weight
       * experts[expert_index].state[1];
   }
+  device const NBCPGStateRecord *cpg_states =
+    reinterpret_cast<device const NBCPGStateRecord *>(
+      hot_state + uniforms.cpg_state_offset
+    );
   if (gid < uniforms.actuator_count) {
     device NBMotorCommandRecord *motor =
       reinterpret_cast<device NBMotorCommandRecord *>(hot_state + uniforms.motor_offset);
@@ -1404,10 +1608,26 @@ kernel void generate_motor_spinal_autonomic_state(
     command.flags = NB_CONTROL_FLAG_VALID
       | (communication_selected && communication_actuator ? (1u << 4u) : 0u);
     motor[gid] = command;
+    float cpg_output = 0.0f;
+    const uint actuator_synergy = gid % max(uniforms.synergy_count, 1u);
+    for (uint oscillator = 0u; oscillator < uniforms.cpg_oscillator_count;
+        ++oscillator) {
+      const NBCPGStateRecord oscillator_state = cpg_states[oscillator];
+      if ((oscillator_state.flags & NB_CONTROL_FLAG_VALID) != 0u
+          && oscillator_state.output_synergy_identifier == actuator_synergy) {
+        cpg_output += oscillator_state.output;
+      }
+    }
+    cpg_output = clamp(
+      cpg_output * (1.0f - inhibition) * development->muscle_strength_multiplier,
+      0.0f,
+      1.0f
+    );
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
-    spinal_state.cpg_output = 0.0f;
-    spinal_state.motor_neuron_state = command.excitation + command.cerebellar_residual;
+    spinal_state.cpg_output = cpg_output;
+    spinal_state.motor_neuron_state = command.excitation
+      + command.cerebellar_residual + spinal_state.cpg_output;
     spinal_state.final_excitation = clamp(
       spinal_state.motor_neuron_state + spinal_state.reflex_output,
       0.0f,

@@ -307,7 +307,9 @@ public struct CPGOscillatorTemplate: Codable, Equatable, Hashable, Sendable {
 public struct CPGCouplingTemplate: Codable, Equatable, Hashable, Sendable {
   public let sourceOscillatorIdentifier: UInt16
   public let destinationOscillatorIdentifier: UInt16
+  /// Desired source-to-destination phase relation in radians.
   public let phaseOffset: Float
+  /// Maximum signed coupling correction in cycles per second.
   public let gain: Float
 
   public init(
@@ -342,7 +344,8 @@ public struct CPGTopology: Codable, Equatable, Hashable, Sendable {
       (UInt32($0.sourceOscillatorIdentifier) << 16)
         | UInt32($0.destinationOscillatorIdentifier)
     }
-    guard identifiers.count == oscillators.count,
+    guard oscillators.count <= 64,
+      identifiers.count == oscillators.count,
       Set(couplingEdges).count == couplingEdges.count,
       couplings.allSatisfy({
         identifiers.contains($0.sourceOscillatorIdentifier)

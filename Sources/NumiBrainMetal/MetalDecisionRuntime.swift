@@ -25,6 +25,8 @@ private struct DecisionUniforms {
   var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
+  var eventQueueOffset: UInt64 = 0
+  var cpgStateOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var reservedIdentity: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -48,6 +50,9 @@ private struct DecisionUniforms {
   var objectSlotCount: UInt32 = 0
   var internalActionCapacity: UInt32 = 0
   var maximumPlanningHorizon: UInt32 = 0
+  var cpgOscillatorCount: UInt32 = 0
+  var cpgCouplingCount: UInt32 = 0
+  var eventCapacity: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
   var switchingMargin: Float = 0
@@ -63,6 +68,22 @@ private struct CommunicationChannelDescriptor {
   var localChannelIndex: UInt32 = 0
   var gain: Float = 0
   var flags: UInt32 = 0
+}
+
+private struct CPGOscillatorDescriptor {
+  var identifier: UInt32 = 0
+  var outputSynergyIdentifier: UInt32 = 0
+  var naturalFrequencyHertz: Float = 0
+  var dutyFactor: Float = 0
+  var sensoryResetMask: UInt64 = 0
+  var reserved: UInt64 = 0
+}
+
+private struct CPGCouplingDescriptor {
+  var sourceOscillatorIndex: UInt32 = 0
+  var destinationOscillatorIndex: UInt32 = 0
+  var phaseOffset: Float = 0
+  var gain: Float = 0
 }
 
 @available(macOS 26.0, *)
@@ -96,10 +117,13 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let selectionPipeline: any MTLComputePipelineState
   private let internalActionPipeline: any MTLComputePipelineState
   private let cerebellarPipeline: any MTLComputePipelineState
+  private let cpgPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let communicationDescriptorBuffer: any MTLBuffer
+  private let cpgOscillatorDescriptorBuffer: any MTLBuffer
+  private let cpgCouplingDescriptorBuffer: any MTLBuffer
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
@@ -117,8 +141,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 312,
+    guard MemoryLayout<DecisionUniforms>.stride == 336,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
+      MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
+      MemoryLayout<CPGCouplingDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -155,6 +181,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "simulate_candidate_option_outcomes",
       "select_option_and_control_mode", "generate_internal_action_state",
       "select_cerebellar_context_experts",
+      "advance_cpg_state",
       "generate_motor_spinal_autonomic_state",
     ]
     let functions = try names.map { name -> any MTLFunction in
@@ -171,7 +198,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 7
+    descriptor.maxBufferBindCount = 9
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -215,6 +242,39 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
           )
       }
     }
+    let oscillatorIndices = Dictionary(
+      uniqueKeysWithValues: species.cpg.oscillators.enumerated().map {
+        ($0.element.identifier, $0.offset)
+      }
+    )
+    var cpgOscillatorDescriptors = species.cpg.oscillators.map {
+      CPGOscillatorDescriptor(
+        identifier: UInt32($0.identifier),
+        outputSynergyIdentifier: UInt32($0.outputSynergyIdentifier),
+        naturalFrequencyHertz: $0.naturalFrequencyHertz,
+        dutyFactor: $0.dutyFactor,
+        sensoryResetMask: $0.sensoryResetMask.rawValue
+      )
+    }
+    if cpgOscillatorDescriptors.isEmpty {
+      cpgOscillatorDescriptors = [CPGOscillatorDescriptor()]
+    }
+    var cpgCouplingDescriptors = try species.cpg.couplings.map { coupling in
+      guard let source = oscillatorIndices[coupling.sourceOscillatorIdentifier],
+        let destination = oscillatorIndices[coupling.destinationOscillatorIdentifier]
+      else {
+        throw TissueError.metal("CPG coupling references an absent oscillator")
+      }
+      return CPGCouplingDescriptor(
+        sourceOscillatorIndex: UInt32(source),
+        destinationOscillatorIndex: UInt32(destination),
+        phaseOffset: coupling.phaseOffset,
+        gain: coupling.gain
+      )
+    }
+    if cpgCouplingDescriptors.isEmpty {
+      cpgCouplingDescriptors = [CPGCouplingDescriptor()]
+    }
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<DecisionUniforms>.stride,
@@ -224,6 +284,16 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         length: communicationDescriptors.count
           * MemoryLayout<CommunicationChannelDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let cpgOscillatorDescriptorBuffer = device.makeBuffer(
+        length: cpgOscillatorDescriptors.count
+          * MemoryLayout<CPGOscillatorDescriptor>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let cpgCouplingDescriptorBuffer = device.makeBuffer(
+        length: cpgCouplingDescriptors.count
+          * MemoryLayout<CPGCouplingDescriptor>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -231,9 +301,25 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     uniformBuffer.label = "NumiBrain decision-state uniforms"
     communicationDescriptorBuffer.label =
       "NumiBrain immutable embodied communication map"
+    cpgOscillatorDescriptorBuffer.label =
+      "NumiBrain immutable species CPG oscillators"
+    cpgCouplingDescriptorBuffer.label =
+      "NumiBrain immutable species CPG couplings"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    cpgOscillatorDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      cpgOscillatorDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    cpgCouplingDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      cpgCouplingDescriptorBuffer.contents().copyMemory(
         from: source, byteCount: bytes.count
       )
     }
@@ -250,10 +336,13 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.selectionPipeline = pipelines[4]
     self.internalActionPipeline = pipelines[5]
     self.cerebellarPipeline = pipelines[6]
-    self.motorPipeline = pipelines[7]
+    self.cpgPipeline = pipelines[7]
+    self.motorPipeline = pipelines[8]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
+    self.cpgOscillatorDescriptorBuffer = cpgOscillatorDescriptorBuffer
+    self.cpgCouplingDescriptorBuffer = cpgCouplingDescriptorBuffer
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -272,7 +361,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, communicationDescriptorBuffer]
+    [
+      uniformBuffer, communicationDescriptorBuffer,
+      cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
+    ]
   }
 
   public func encode(
@@ -293,6 +385,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(motorParameterGPUAddress, index: 4)
     argumentTable.setAddress(cerebellarParameterGPUAddress, index: 5)
     argumentTable.setAddress(communicationDescriptorBuffer.gpuAddress, index: 6)
+    argumentTable.setAddress(cpgOscillatorDescriptorBuffer.gpuAddress, index: 7)
+    argumentTable.setAddress(cpgCouplingDescriptorBuffer.gpuAddress, index: 8)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
@@ -322,6 +416,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       pipeline: cerebellarPipeline,
       count: 1
     )
+    barrier(encoder)
+    dispatch(encoder, pipeline: cpgPipeline, count: 1)
     barrier(encoder)
     dispatch(
       encoder,
@@ -424,6 +520,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       cerebellarExpertMemoryOffset: UInt64(
         arena.layout.section(.cerebellarExpertMemory).byteOffset
       ),
+      eventQueueOffset: UInt64(arena.layout.section(.eventQueue).byteOffset),
+      cpgStateOffset: UInt64(arena.layout.section(.cpgState).byteOffset),
       parameterVersionFingerprint: parameterVersion.fingerprint,
       reservedIdentity: species.fingerprint,
       recurrentScalarCount: UInt32(recurrent.elementCount),
@@ -456,6 +554,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       ),
       internalActionCapacity: UInt32(internalActions.elementCount),
       maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
+      cpgOscillatorCount: UInt32(species.cpg.oscillators.count),
+      cpgCouplingCount: UInt32(species.cpg.couplings.count),
+      eventCapacity: UInt32(
+        max(arena.layout.section(.eventQueue).elementCount - 1, 0)
+      ),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,
       switchingMargin: dynamics.switchingMargin,
