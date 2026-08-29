@@ -2310,11 +2310,6 @@ kernel void broadcast_social_context(
     neuromodulators[8] = social_modulator;
   }
 
-  if (development->stage < 9u || best_agent_index == 0xffffffffu
-      || active_workspace_capacity <= 11u) {
-    return;
-  }
-
   ulong object_token_identifier = 0ul;
   if (best_object_index != 0xffffffffu && active_workspace_capacity > 12u) {
     const uint slot = 12u;
@@ -2343,6 +2338,11 @@ kernel void broadcast_social_context(
     object_token.kind_and_source = 3u | (39u << 16u);
     object_token.confidence = nb_saturate(best_object_score);
     metadata[slot] = object_token;
+  }
+
+  if (development->stage < 9u || best_agent_index == 0xffffffffu
+      || active_workspace_capacity <= 11u) {
+    return;
   }
 
   uint selected_indices[4] = {

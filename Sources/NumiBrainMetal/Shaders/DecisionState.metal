@@ -1423,9 +1423,17 @@ kernel void generate_internal_action_state(
     ? clamp(max(drives[7].level, drives[7].deficit), 0.0f, 1.0f) : 0.0f;
   float maximum_token_age = 0.0f;
   ulong stalest_token_identifier = 0ul;
+  ulong focused_entity_identifier = 0ul;
+  float focused_entity_confidence = 0.0f;
   for (uint slot = 2u; slot < uniforms.workspace_capacity; ++slot) {
     const NBWorkspaceMetadataRecord token = workspace_metadata[slot];
     if (token.identifier == 0ul) continue;
+    const uint token_kind = token.kind_and_source & 0xffffu;
+    if (token_kind == 3u && token.entity_identifier != 0ul
+        && token.confidence > focused_entity_confidence) {
+      focused_entity_identifier = token.entity_identifier;
+      focused_entity_confidence = token.confidence;
+    }
     const ulong age_microseconds = uniforms.target_timestamp_microseconds
       >= token.last_refresh_timestamp_microseconds
       ? uniforms.target_timestamp_microseconds
@@ -1448,7 +1456,8 @@ kernel void generate_internal_action_state(
       header->unsupported_uncertainty,
       max(epistemic, header->predicted_information_gain)
     );
-    action.target_identifier = header->active_goal_identifier;
+    action.target_identifier = focused_entity_identifier != 0ul
+      ? focused_entity_identifier : header->active_goal_identifier;
   } else if (gid == 1u) {
     action.priority = max(model_error, 1.0f - header->progress) * header->confidence;
     action.target_identifier = header->active_goal_identifier;

@@ -1729,7 +1729,14 @@ kernel void score_archive_retrieval_shortlist(
     query, uniforms.recurrent_scalar_count, record
   ) + 0.25f * record->salience
     - 0.10f * max(memory_parameters[6], 0.0f)
-      * record->epistemic_uncertainty;
+      * record->epistemic_uncertainty
+    + (((internal_actions[0].target_identifier & 0xf000000000000000ul)
+          == 0x1000000000000000ul
+        && (record->flags & (1u << 8u)) != 0u
+        && record->source_identifier == uint(
+          internal_actions[0].target_identifier
+            ^ (internal_actions[0].target_identifier >> 32u)
+        )) ? 1.0f : 0.0f);
   if (!isfinite(coarse_score)) return;
   const uint quantized_score = min(
     uint(clamp(coarse_score / 1.25f, 0.0f, 1.0f) * 4095.0f), 4095u
@@ -1789,6 +1796,13 @@ kernel void rerank_archive_retrieval_shortlist(
       ) + record->salience
         - max(memory_parameters[6], 0.0f) * record->epistemic_uncertainty
     );
+  if ((retrieval_request.target_identifier & 0xf000000000000000ul)
+        == 0x1000000000000000ul
+      && (record->flags & (1u << 8u)) != 0u
+      && record->source_identifier == uint(
+        retrieval_request.target_identifier
+          ^ (retrieval_request.target_identifier >> 32u)
+      )) score += 1.0f;
   if (record->identifier == retrieval_request.target_identifier) score += 1.0f;
   score += 0.25f * retrieval_request.priority;
   if (!isfinite(score) || score < uniforms.minimum_score) return;
@@ -1841,6 +1855,8 @@ kernel void score_memory_retrieval_candidates(
   );
   uint kind = 0u;
   ulong identifier = 0ul;
+  uint episodic_source_identifier = 0u;
+  uint episodic_flags = 0u;
   float score = -INFINITY;
   uint local_index = gid;
   if (local_index < uniforms.active_episode_capacity) {
@@ -1853,6 +1869,8 @@ kernel void score_memory_retrieval_candidates(
         && record->identifier != 0ul) {
       kind = 1u;
       identifier = record->identifier;
+      episodic_source_identifier = record->source_identifier;
+      episodic_flags = record->flags;
       score = uniforms.episodic_weight * max(memory_parameters[0], 0.0f) * (
         retrieval_similarity(
           query, uniforms.recurrent_scalar_count, record->retrieval_key, 10u
@@ -1872,6 +1890,8 @@ kernel void score_memory_retrieval_candidates(
           && record->identifier != 0ul) {
         kind = 6u;
         identifier = record->identifier;
+        episodic_source_identifier = record->source_identifier;
+        episodic_flags = record->flags;
         score = 0.85f * uniforms.episodic_weight
           * max(memory_parameters[0], 0.0f) * (
             retrieval_similarity(
@@ -1975,6 +1995,13 @@ kernel void score_memory_retrieval_candidates(
     }
     }
   }
+  if ((retrieval_request.target_identifier & 0xf000000000000000ul)
+        == 0x1000000000000000ul
+      && (episodic_flags & (1u << 8u)) != 0u
+      && episodic_source_identifier == uint(
+        retrieval_request.target_identifier
+          ^ (retrieval_request.target_identifier >> 32u)
+      )) score += 1.0f;
   if (identifier == retrieval_request.target_identifier) score += 1.0f;
   score += 0.25f * retrieval_request.priority;
   if (kind == 0u || !isfinite(score) || score < uniforms.minimum_score) return;
