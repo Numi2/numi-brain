@@ -3316,11 +3316,17 @@ kernel void map_protective_motor_output(
         state.output = clamp(selectedOutput, -1.0f, 1.0f);
         state.event_magnitude = selectedMagnitude;
         state.circuit_identifier = rule.circuit_identifier;
+        const bool resetRootActivation =
+            (cpgUniforms->flags & (1u << 2u)) != 0u;
+        const bool activatedInRoot = state.output != 0.0f
+            || (!resetRootActivation && (state.flags & (1u << 5u)) != 0u);
         state.flags = 1u
             | (state.output != 0.0f ? (1u << 1u) : 0u)
             | (hasPending ? (1u << 2u) : 0u)
             | (queueOverflow ? (1u << 3u) : 0u)
-            | (hasSeenEvent ? (1u << 4u) : 0u);
+            | (hasSeenEvent ? (1u << 4u) : 0u)
+            | (activatedInRoot ? (1u << 5u) : 0u)
+            | ((rule.circuit_kind & 0xffu) << 8u);
         reflexStates[ruleIndex] = state;
     }
     const ulong unlocalizedWithdrawalCauses =

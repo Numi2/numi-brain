@@ -26,6 +26,7 @@ private struct AcceptedConsequenceUniforms {
   var activeSensingCommandOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var acceptedSomaticOutputOffset: UInt64 = 0
+  var reflexStateOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
@@ -41,6 +42,7 @@ private struct AcceptedConsequenceUniforms {
   var activeCerebellarCount: UInt32 = 0
   var actuatorCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
+  var reflexStateCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
   var optionCandidateCapacity: UInt32 = 0
   var proceduralTraceRecordCapacity: UInt32 = 0
@@ -106,7 +108,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 352,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 360,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -400,6 +402,14 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let maximumPlanningHorizon =
       planSteps.elementCount / optionCandidates.elementCount
+    let reflexStateCount = species.reflexes.reduce(0) {
+      $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
+    }
+    guard reflexStateCount <= Int(UInt32.max),
+      reflexStateCount <= hot(.reflexState).elementCount
+    else {
+      throw TissueError.metal("accepted reflex state exceeds UInt32 or its arena section")
+    }
     return AcceptedConsequenceUniforms(
       targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
@@ -432,6 +442,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       acceptedSomaticOutputOffset: UInt64(
         hot(.acceptedSomaticOutput).byteOffset
       ),
+      reflexStateOffset: UInt64(hot(.reflexState).byteOffset),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
@@ -449,6 +460,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       actuatorCount: species.motor.actuatorCount,
       activeSensingCount: UInt32(species.motor.activeSensingActionDimension),
+      reflexStateCount: UInt32(reflexStateCount),
       eventCapacity: eventCapacity,
       optionCandidateCapacity: UInt32(optionCandidates.elementCount),
       proceduralTraceRecordCapacity: UInt32(

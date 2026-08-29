@@ -6,6 +6,8 @@ constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
 constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
 constant uint NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP = 1u << 1;
+constant uint NB_ACCEPTED_CONTROL_MODE_REFLEX = 1u;
+constant uint NB_ACCEPTED_REFLEX_ACTIVATED_IN_ROOT = 1u << 5;
 constant ulong NB_ACCEPTED_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
@@ -39,6 +41,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong active_sensing_command_offset;
   ulong active_sensing_efficacy_offset;
   ulong accepted_somatic_output_offset;
+  ulong reflex_state_offset;
   ulong physics_state_fingerprint;
   uint observation_count;
   uint body_count;
@@ -54,6 +57,7 @@ struct NBAcceptedConsequenceUniforms {
   uint active_cerebellar_count;
   uint actuator_count;
   uint active_sensing_count;
+  uint reflex_state_count;
   uint event_capacity;
   uint option_candidate_capacity;
   uint procedural_trace_record_capacity;
@@ -211,6 +215,19 @@ struct NBFastBodySchemaRecord {
   ulong state_timestamp_microseconds;
 };
 
+struct NBFastReflexStateRecord {
+  ulong last_event_timestamp_microseconds;
+  ulong state_timestamp_microseconds;
+  float output;
+  float event_magnitude;
+  uint circuit_identifier;
+  uint flags;
+  ulong pending_delivery_timestamp_microseconds[4];
+  ulong pending_event_timestamp_microseconds[4];
+  float pending_output[4];
+  float pending_event_magnitude[4];
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -283,7 +300,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 352);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 360);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -294,6 +311,7 @@ static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
+static_assert(sizeof(NBFastReflexStateRecord) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
@@ -905,6 +923,31 @@ inline void nb_raise_accepted_drive(
   drives[index] = state;
 }
 
+inline bool nb_has_accepted_protective_reflex(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms)
+{
+  device const NBFastReflexStateRecord *states =
+    reinterpret_cast<device const NBFastReflexStateRecord *>(
+      hot_state + uniforms.reflex_state_offset
+    );
+  for (uint index = 0u; index < uniforms.reflex_state_count; ++index) {
+    const NBFastReflexStateRecord state = states[index];
+    if ((state.flags & NB_ACCEPTED_STATE_VALID) == 0u
+        || (state.flags & NB_ACCEPTED_REFLEX_ACTIVATED_IN_ROOT) == 0u) {
+      continue;
+    }
+    const uint circuit_kind = (state.flags >> 8u) & 0xffu;
+    const bool protective = circuit_kind == 3u   // withdrawal
+      || circuit_kind == 4u                     // crossed extension
+      || circuit_kind == 7u                     // joint-limit protection
+      || circuit_kind == 9u                     // pain inhibition
+      || circuit_kind == 10u;                   // muscle-overload inhibition
+    if (protective) return true;
+  }
+  return false;
+}
+
 kernel void broadcast_accepted_prediction_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
@@ -945,6 +988,15 @@ kernel void broadcast_accepted_prediction_error(
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
+  if (nb_has_accepted_protective_reflex(hot_state, uniforms)) {
+    // Preserve the cached option identifier as causal provenance while
+    // recording that accepted fast protection interrupted its execution.
+    control->flags |= NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP;
+    control->mode = NB_ACCEPTED_CONTROL_MODE_REFLEX;
+    control->active_plan_identifier = 0ul;
+    control->plan_step_count = 0u;
+    control->vigor = 0.0f;
+  }
   const float3 embodied_risk = nb_accepted_embodied_risk(
     hot_state, uniforms
   );

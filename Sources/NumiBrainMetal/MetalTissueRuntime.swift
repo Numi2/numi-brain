@@ -3375,7 +3375,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       timestamp: lease.decision.decisionTimestamp,
       oscillatorCount: lease.decision.cpgStateCount,
       synergyCount: lease.decision.cpgSynergyCount,
-      consumeInterruptEvents: true
+      consumeInterruptEvents: true,
+      resetReflexRootActivation: true
     )
     writeFastAutonomicUniforms(
       timestamp: lease.decision.decisionTimestamp,
@@ -4660,7 +4661,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     timestamp: BrainTimestamp,
     oscillatorCount: Int? = nil,
     synergyCount: Int? = nil,
-    consumeInterruptEvents: Bool = false
+    consumeInterruptEvents: Bool = false,
+    resetReflexRootActivation: Bool = false
   ) {
     let resolvedOscillatorCount = oscillatorCount ?? stagedFastCPGOscillatorCount
     let resolvedSynergyCount = synergyCount ?? stagedFastCPGSynergyCount
@@ -4670,7 +4672,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       synergyCount: UInt32(resolvedSynergyCount),
       flags: resolvedOscillatorCount > 0
         ? 1 | (consumeInterruptEvents ? 1 << 1 : 0)
-        : (consumeInterruptEvents ? 1 << 1 : 0),
+          | (resetReflexRootActivation ? 1 << 2 : 0)
+        : (consumeInterruptEvents ? 1 << 1 : 0)
+          | (resetReflexRootActivation ? 1 << 2 : 0),
       reflexRuleCount: UInt32(boundFastReflexRuleCount)
     )
     withUnsafeBytes(of: &uniforms) { bytes in
