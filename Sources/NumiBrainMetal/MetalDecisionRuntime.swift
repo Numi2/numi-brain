@@ -20,6 +20,7 @@ private struct DecisionUniforms {
   var autonomicOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
   var activeSensingOffset: UInt64 = 0
+  var spatialTransformOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
@@ -41,6 +42,7 @@ private struct DecisionUniforms {
   var communicationSynergyDescriptorOffset: UInt32 = 0
   var activeSensingDescriptorOffset: UInt32 = 0
   var communicationDescriptorCount: UInt32 = 0
+  var spatialTransformCount: UInt32 = 0
   var maximumPlanningHorizon: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
@@ -107,7 +109,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 272,
+    guard MemoryLayout<DecisionUniforms>.stride == 288,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -384,6 +386,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       autonomicOffset: UInt64(autonomic.byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
       activeSensingOffset: UInt64(activeSensing.byteOffset),
+      spatialTransformOffset: UInt64(
+        arena.layout.section(.spatialTransforms).byteOffset
+      ),
       developmentalStateOffset: UInt64(
         arena.layout.section(.developmentalState).byteOffset
       ),
@@ -414,6 +419,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         communicationSynergyDescriptorOffset,
       activeSensingDescriptorOffset: activeSensingDescriptorOffset,
       communicationDescriptorCount: communicationDescriptorCount,
+      spatialTransformCount: UInt32(
+        arena.layout.section(.spatialTransforms).elementCount
+      ),
       maximumPlanningHorizon: UInt32(maximumPlanningHorizon),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,

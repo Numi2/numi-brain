@@ -22,6 +22,7 @@ struct NBCognitiveUniforms {
   ulong other_agent_slot_offset;
   ulong context_belief_offset;
   ulong relation_slot_offset;
+  ulong spatial_transform_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -36,8 +37,8 @@ struct NBCognitiveUniforms {
   uint module_count;
   uint world_level_count;
   uint world_head_count;
-  uint reserved2;
-  uint reserved3;
+  uint proprioception_observation_offset;
+  uint proprioception_observation_count;
   uint observation_count;
   uint vision_observation_offset;
   uint vision_observation_count;
@@ -47,7 +48,9 @@ struct NBCognitiveUniforms {
   uint other_agent_slot_count;
   uint context_belief_count;
   uint relation_slot_count;
-  uint reserved4;
+  uint vestibular_observation_offset;
+  uint vestibular_observation_count;
+  uint spatial_transform_count;
 };
 
 struct NBWorldModelLevelRecord {
@@ -167,6 +170,20 @@ struct NBRelationSlotRecord {
   float latent[6];
 };
 
+struct NBSpatialTransformRecord {
+  uint source_frame;
+  uint destination_frame;
+  uint flags;
+  uint reserved;
+  float translation[4];
+  float rotation[4];
+  float linear_velocity[4];
+  float angular_velocity[4];
+  float uncertainty;
+  float confidence;
+  ulong last_evidence_timestamp_microseconds;
+};
+
 struct NBDevelopmentalHeader {
   uint format_version;
   uint stage;
@@ -210,7 +227,7 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 264);
+static_assert(sizeof(NBCognitiveUniforms) == 280);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -221,6 +238,7 @@ static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBOtherAgentSlotRecord) == 512);
 static_assert(sizeof(NBRelationSlotRecord) == 64);
+static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
@@ -931,6 +949,200 @@ kernel void advance_entity_relation_graph(
     }
   }
   relations[gid] = relation;
+}
+
+/// Advances the five canonical coordinate frames from causal receptor
+/// evidence. The persistent-map transform integrates its own prior; no exact
+/// simulator pose or privileged world transform enters this path.
+kernel void advance_spatial_coordinate_transforms(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.spatial_transform_count) return;
+  device NBSpatialTransformRecord *transforms =
+    reinterpret_cast<device NBSpatialTransformRecord *>(
+      hot_state + uniforms.spatial_transform_offset
+    );
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  if (gid >= 5u) {
+    NBSpatialTransformRecord inactive = {};
+    transforms[gid] = inactive;
+    return;
+  }
+  uint minimum_stage = 0u;
+  if (gid == 1u || gid == 4u) minimum_stage = 2u;
+  if (gid == 2u) minimum_stage = 4u;
+  if (gid == 3u) minimum_stage = 6u;
+  if (development->stage < minimum_stage) {
+    NBSpatialTransformRecord inactive = {};
+    transforms[gid] = inactive;
+    return;
+  }
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  NBSpatialTransformRecord transform = transforms[gid];
+  if (gid == 0u) {
+    transform.source_frame = 1u;
+    transform.destination_frame = 2u;
+  } else if (gid == 1u) {
+    transform.source_frame = 2u;
+    transform.destination_frame = 3u;
+  } else if (gid == 2u) {
+    transform.source_frame = 3u;
+    transform.destination_frame = 4u;
+  } else if (gid == 3u) {
+    transform.source_frame = 4u;
+    transform.destination_frame = 5u;
+  } else {
+    transform.source_frame = 1u;
+    transform.destination_frame = 3u;
+  }
+  const float visual_energy = nb_observation_energy(
+    observations,
+    uniforms.vision_observation_offset,
+    uniforms.vision_observation_count,
+    gid * 17u + 1u
+  );
+  const float proprioceptive_energy = nb_observation_energy(
+    observations,
+    uniforms.proprioception_observation_offset,
+    uniforms.proprioception_observation_count,
+    gid * 19u + 2u
+  );
+  const float vestibular_energy = nb_observation_energy(
+    observations,
+    uniforms.vestibular_observation_offset,
+    uniforms.vestibular_observation_count,
+    gid * 23u + 3u
+  );
+  const float evidence = nb_saturate(max(
+    vestibular_energy,
+    max(visual_energy, proprioceptive_energy)
+  ));
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float correction_gain = clamp(
+    belief_parameters[0] * development->sensor_precision_multiplier,
+    0.001f,
+    1.0f
+  );
+  float observed_translation[4] = {};
+  for (uint component = 0u; component < 3u; ++component) {
+    const float visual = nb_observation_feature(
+      observations,
+      uniforms.vision_observation_offset,
+      uniforms.vision_observation_count,
+      gid * 47u + component * 13u
+    );
+    const float proprioception = nb_observation_feature(
+      observations,
+      uniforms.proprioception_observation_offset,
+      uniforms.proprioception_observation_count,
+      gid * 43u + component * 17u
+    );
+    const float vestibular = nb_observation_feature(
+      observations,
+      uniforms.vestibular_observation_offset,
+      uniforms.vestibular_observation_count,
+      gid * 37u + component * 19u
+    );
+    if (gid == 0u) observed_translation[component] = visual;
+    else if (gid == 1u) observed_translation[component] = proprioception;
+    else if (gid == 2u) {
+      observed_translation[component] = proprioception + vestibular;
+    } else if (gid == 3u) {
+      observed_translation[component] = transform.translation[component]
+        + transform.linear_velocity[component] * elapsed_seconds
+        + belief_parameters[6] * visual;
+    } else {
+      observed_translation[component] = visual + proprioception;
+    }
+  }
+  observed_translation[3] = 1.0f;
+  float mismatch = 0.0f;
+  for (uint component = 0u; component < 4u; ++component) {
+    const float difference = observed_translation[component]
+      - transform.translation[component];
+    mismatch += abs(difference) * 0.25f;
+    transform.linear_velocity[component] = mix(
+      clamp(belief_parameters[7], 0.0f, 1.0f)
+        * transform.linear_velocity[component],
+      difference / elapsed_seconds,
+      correction_gain * max(evidence, 0.05f)
+    );
+    transform.translation[component] = mix(
+      transform.translation[component],
+      observed_translation[component],
+      correction_gain * max(evidence, 0.05f)
+    );
+  }
+  float observed_rotation[4];
+  float rotation_norm = 0.0f;
+  for (uint component = 0u; component < 4u; ++component) {
+    observed_rotation[component] = nb_observation_feature(
+      observations,
+      uniforms.vestibular_observation_offset,
+      uniforms.vestibular_observation_count,
+      gid * 31u + component * 11u
+    );
+    rotation_norm += observed_rotation[component] * observed_rotation[component];
+  }
+  if (rotation_norm <= 1.0e-8f) {
+    observed_rotation[0] = 0.0f;
+    observed_rotation[1] = 0.0f;
+    observed_rotation[2] = 0.0f;
+    observed_rotation[3] = 1.0f;
+  } else {
+    const float inverse_norm = rsqrt(rotation_norm);
+    for (uint component = 0u; component < 4u; ++component) {
+      observed_rotation[component] *= inverse_norm;
+    }
+  }
+  for (uint component = 0u; component < 4u; ++component) {
+    const float difference = observed_rotation[component]
+      - transform.rotation[component];
+    transform.angular_velocity[component] = mix(
+      clamp(belief_parameters[7], 0.0f, 1.0f)
+        * transform.angular_velocity[component],
+      difference / elapsed_seconds,
+      correction_gain * max(vestibular_energy, 0.05f)
+    );
+    transform.rotation[component] = mix(
+      transform.rotation[component],
+      observed_rotation[component],
+      correction_gain * max(vestibular_energy, 0.05f)
+    );
+  }
+  const float updated_rotation_norm = sqrt(max(
+    transform.rotation[0] * transform.rotation[0]
+      + transform.rotation[1] * transform.rotation[1]
+      + transform.rotation[2] * transform.rotation[2]
+      + transform.rotation[3] * transform.rotation[3],
+    1.0e-8f
+  ));
+  for (uint component = 0u; component < 4u; ++component) {
+    transform.rotation[component] /= updated_rotation_norm;
+  }
+  transform.confidence = nb_saturate(mix(
+    transform.confidence * clamp(belief_parameters[7], 0.0f, 1.0f),
+    1.0f - nb_saturate(mismatch),
+    correction_gain * max(evidence, 0.05f)
+  ));
+  transform.uncertainty = nb_saturate(
+    1.0f - transform.confidence + belief_parameters[4] * (1.0f - evidence)
+  );
+  transform.flags = 1u;
+  if (gid == 3u) transform.flags |= 2u | 4u;
+  transform.last_evidence_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  transforms[gid] = transform;
 }
 
 kernel void advance_fast_plasticity_foundation(

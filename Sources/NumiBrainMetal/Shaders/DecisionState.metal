@@ -31,6 +31,7 @@ struct NBDecisionUniforms {
   ulong autonomic_offset;
   ulong somatic_output_offset;
   ulong active_sensing_offset;
+  ulong spatial_transform_offset;
   ulong developmental_state_offset;
   ulong cerebellar_expert_memory_offset;
   ulong parameter_version_fingerprint;
@@ -52,6 +53,7 @@ struct NBDecisionUniforms {
   uint communication_synergy_descriptor_offset;
   uint active_sensing_descriptor_offset;
   uint communication_descriptor_count;
+  uint spatial_transform_count;
   uint maximum_planning_horizon;
   float risk_weight;
   float damage_risk_budget;
@@ -203,6 +205,20 @@ struct NBActiveSensingCommandRecord {
   uint kind_and_flags;
 };
 
+struct NBSpatialTransformRecord {
+  uint source_frame;
+  uint destination_frame;
+  uint flags;
+  uint reserved;
+  float translation[4];
+  float rotation[4];
+  float linear_velocity[4];
+  float angular_velocity[4];
+  float uncertainty;
+  float confidence;
+  ulong last_evidence_timestamp_microseconds;
+};
+
 struct NBDevelopmentalHeader {
   uint format_version;
   uint stage;
@@ -224,7 +240,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 272);
+static_assert(sizeof(NBDecisionUniforms) == 288);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -237,6 +253,7 @@ static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
+static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline uint nb_active_candidate_limit(
@@ -256,6 +273,15 @@ inline uint nb_active_candidate_limit(
 inline ulong nb_goal_identifier(uint origin, ulong source_identifier) {
   return (ulong(origin) << 56) | ((source_identifier + 1ul)
     & 0x00fffffffffffffful);
+}
+
+inline float3 nb_rotate_vector(float3 vector, float4 quaternion) {
+  const float norm_squared = dot(quaternion, quaternion);
+  if (norm_squared <= 1.0e-8f) return vector;
+  const float4 normalized = quaternion * rsqrt(norm_squared);
+  const float3 twice_cross = 2.0f * cross(normalized.xyz, vector);
+  return vector + normalized.w * twice_cross
+    + cross(normalized.xyz, twice_cross);
 }
 
 kernel void generate_active_goal_state(
@@ -407,6 +433,10 @@ kernel void propose_dynamic_options(
     reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
       hot_state + uniforms.workspace_metadata_offset
     );
+  device const NBSpatialTransformRecord *spatial_transforms =
+    reinterpret_cast<device const NBSpatialTransformRecord *>(
+      hot_state + uniforms.spatial_transform_offset
+    );
   device const NBDriveRecord *drives = reinterpret_cast<device const NBDriveRecord *>(
     hot_state + uniforms.drive_offset
   );
@@ -539,6 +569,26 @@ kernel void propose_dynamic_options(
   if (gid == 8u && social_token_confidence > 0.0f) {
     candidate.source_module = social_token_source;
     candidate.competence = max(candidate.competence, social_token_confidence);
+    if (uniforms.spatial_transform_count > 4u
+        && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u) {
+      const NBSpatialTransformRecord sensor_to_body = spatial_transforms[4];
+      const float3 sensor_relative = float3(
+        candidate.parameters[8] - sensor_to_body.translation[0],
+        candidate.parameters[9] - sensor_to_body.translation[1],
+        candidate.parameters[10] - sensor_to_body.translation[2]
+      );
+      const float3 body_relative = nb_rotate_vector(
+        sensor_relative,
+        float4(
+          sensor_to_body.rotation[0], sensor_to_body.rotation[1],
+          sensor_to_body.rotation[2], sensor_to_body.rotation[3]
+        )
+      );
+      candidate.parameters[8] = body_relative.x;
+      candidate.parameters[9] = body_relative.y;
+      candidate.parameters[10] = body_relative.z;
+      candidate.competence *= sensor_to_body.confidence;
+    }
   }
   candidates[gid] = candidate;
 }
