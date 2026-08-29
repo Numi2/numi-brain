@@ -39,6 +39,12 @@ constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
 constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
+constant uint NB_JOINT_POSITION_VARIANCE = 12u;
+constant uint NB_JOINT_VELOCITY_VARIANCE = 18u;
+constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
+constant uint NB_JOINT_OWNERSHIP = 30u;
+constant uint NB_JOINT_PREDICTION_ERROR = 31u;
+constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -109,8 +115,10 @@ struct NBDecisionUniforms {
   uint cerebellar_expert_capacity;
   ulong fast_cerebellar_state_offset;
   ulong body_belief_offset;
+  ulong joint_belief_offset;
   ulong somatic_effector_belief_offset;
   uint body_belief_count;
+  uint joint_belief_count;
   uint somatic_effector_belief_count;
   ulong active_sensing_efficacy_offset;
   uint actuator_command_kind;
@@ -507,7 +515,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 432);
+static_assert(sizeof(NBDecisionUniforms) == 448);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
@@ -726,6 +734,55 @@ inline float nb_modality_epistemic_uncertainty(
   return sqrt(total_variance / float(max(end - begin, 1u)));
 }
 
+inline float nb_articulated_joint_risk(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  thread float &uncertainty)
+{
+  float risk = 0.0f;
+  uncertainty = 0.0f;
+  device const uchar *joint_belief = hot_state + uniforms.joint_belief_offset;
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      joint_belief + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    float variance = 0.0f;
+    float limit_activation = 0.0f;
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      variance += max(joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f)
+        + max(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f);
+      limit_activation = max(
+        limit_activation,
+        clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f)
+      );
+    }
+    const float normalized_uncertainty = sqrt(
+      variance / max(float(coordinate_count * 2u), 1.0f)
+    );
+    const float unsupported = normalized_uncertainty
+      / (1.0f + normalized_uncertainty);
+    uncertainty = max(
+      uncertainty,
+      max(unsupported, 1.0f - clamp(joint[NB_JOINT_OWNERSHIP], 0.0f, 1.0f))
+    );
+    risk = max(
+      risk,
+      max(
+        limit_activation,
+        abs(joint[NB_JOINT_PREDICTION_ERROR])
+          / (1.0f + abs(joint[NB_JOINT_PREDICTION_ERROR]))
+      )
+    );
+  }
+  return clamp(risk, 0.0f, 1.0f);
+}
+
 inline float nb_embodied_self_risk(
   device const uchar *hot_state,
   constant NBDecisionUniforms &uniforms)
@@ -758,6 +815,11 @@ inline float nb_embodied_self_risk(
     );
     risk = max(risk, clamp(effector[9], 0.0f, 1.0f));
   }
+  float joint_uncertainty = 0.0f;
+  risk = max(
+    risk,
+    nb_articulated_joint_risk(hot_state, uniforms, joint_uncertainty)
+  );
   return risk;
 }
 
@@ -2409,6 +2471,10 @@ kernel void generate_structured_motor_goal_state(
   );
   const bool absolute_task_target = candidate.source_module == 71u
     || candidate.source_module == 60u || candidate.source_module == 51u;
+  float joint_uncertainty = 0.0f;
+  const float joint_limit_risk = nb_articulated_joint_risk(
+    hot_state, uniforms, joint_uncertainty
+  );
   const uint parameter_count = min(max(candidate.parameter_count, 1u), 16u);
   for (uint axis = 0u; axis < 3u; ++axis) {
     const float parameter = candidate.parameters[axis % parameter_count];
@@ -2422,7 +2488,10 @@ kernel void generate_structured_motor_goal_state(
       candidate.parameters[(8u + axis) % parameter_count]
     );
     next.stiffness_target[axis] = clamp(
-      max(header->selected_damage_cvar, 1.0f - body[NB_BODY_SUPPORT])
+      max(
+        max(header->selected_damage_cvar, joint_limit_risk),
+        1.0f - body[NB_BODY_SUPPORT]
+      )
         + 0.25f * abs(candidate.parameters[(12u + axis) % parameter_count]),
       0.0f,
       1.0f
@@ -2474,11 +2543,16 @@ kernel void generate_structured_motor_goal_state(
   next.confidence = clamp(
     header->confidence * (1.0f - selected_body_uncertainty), 0.0f, 1.0f
   );
-  next.risk = clamp(header->selected_damage_cvar, 0.0f, 1.0f);
+  next.risk = clamp(
+    max(header->selected_damage_cvar, joint_limit_risk), 0.0f, 1.0f
+  );
   next.support = clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f);
   next.uncertainty = max(
     selected_body_uncertainty,
-    clamp(header->unsupported_uncertainty, 0.0f, 1.0f)
+    max(
+      clamp(header->unsupported_uncertainty, 0.0f, 1.0f),
+      joint_uncertainty
+    )
   );
   next.target_body_identifier = uint(body_identity[0]);
   next.flags = NB_CONTROL_FLAG_VALID
@@ -2904,9 +2978,15 @@ kernel void generate_motor_spinal_autonomic_state(
     const float external_disturbance =
       uniforms.somatic_effector_belief_count > 0u
         ? clamp(effector[9], 0.0f, 1.0f) : 0.0f;
+    float joint_uncertainty = 0.0f;
+    const float joint_limit_risk = nb_articulated_joint_risk(
+      hot_state, uniforms, joint_uncertainty
+    );
     const float embodied_risk = clamp(
       body_risk * max(motor_parameters[11], 0.0f)
-        + external_disturbance * max(motor_parameters[12], 0.0f),
+        + external_disturbance * max(motor_parameters[12], 0.0f)
+        + joint_limit_risk * max(motor_parameters[14], 0.25f)
+        + joint_uncertainty * max(motor_parameters[15], 0.1f),
       0.0f,
       1.0f
     );
@@ -3009,6 +3089,8 @@ kernel void generate_motor_spinal_autonomic_state(
     command.stiffness_target = clamp(
       uniforms.stiffness_gain * motor_parameters[1]
         * (max(safety, body_risk)
+          + joint_limit_risk
+          + 0.5f * joint_uncertainty
           + (body_evidence_count > 0u ? 1.0f - support_confidence : 0.0f)
             * max(motor_parameters[13], 0.0f)
           + goal_stiffness),
