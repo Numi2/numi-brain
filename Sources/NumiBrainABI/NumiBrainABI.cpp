@@ -54,6 +54,11 @@ static_assert(sizeof(NBAutonomicCommand) == NB_AUTONOMIC_COMMAND_BYTE_COUNT);
 static_assert(offsetof(NBAutonomicCommand, command) == 0);
 static_assert(offsetof(NBAutonomicCommand, flags) == 12);
 static_assert(
+    sizeof(NBActiveSensingCommand) == NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT
+);
+static_assert(offsetof(NBActiveSensingCommand, command) == 0);
+static_assert(offsetof(NBActiveSensingCommand, kind_and_flags) == 12);
+static_assert(
     sizeof(NBNumanXMotorCandidate) == NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT
 );
 static_assert(offsetof(NBMotorChannelDescriptor, muscle_id) == 0);
@@ -85,7 +90,10 @@ static_assert(offsetof(NBNumanXMotorCandidate, motor_output_header_byte_count) =
 static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_gpu_address) == 88);
 static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_byte_count) == 96);
 static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_count) == 100);
-static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 104);
+static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_gpu_address) == 104);
+static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_byte_count) == 112);
+static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_count) == 116);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 120);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -1626,6 +1634,9 @@ uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
   mix_little_endian(hash, candidate->autonomic_command_gpu_address);
   mix_little_endian(hash, candidate->autonomic_command_byte_count);
   mix_little_endian(hash, candidate->autonomic_command_count);
+  mix_little_endian(hash, candidate->active_sensing_command_gpu_address);
+  mix_little_endian(hash, candidate->active_sensing_command_byte_count);
+  mix_little_endian(hash, candidate->active_sensing_command_count);
   return hash;
 }
 
@@ -1667,9 +1678,11 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
   if (candidate->motor_output_header_gpu_address == 0
       || candidate->muscle_excitation_gpu_address == 0
       || candidate->autonomic_command_gpu_address == 0
+      || candidate->active_sensing_command_gpu_address == 0
       || candidate->motor_output_header_gpu_address % 8 != 0
       || candidate->muscle_excitation_gpu_address % 4 != 0
-      || candidate->autonomic_command_gpu_address % 4 != 0) {
+      || candidate->autonomic_command_gpu_address % 4 != 0
+      || candidate->active_sensing_command_gpu_address % 4 != 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_ADDRESS;
   }
   const uint64_t expected_excitation_bytes =
@@ -1677,6 +1690,9 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
   const uint64_t expected_autonomic_bytes =
       static_cast<uint64_t>(candidate->autonomic_command_count)
         * sizeof(NBAutonomicCommand);
+  const uint64_t expected_active_sensing_bytes =
+      static_cast<uint64_t>(candidate->active_sensing_command_count)
+        * sizeof(NBActiveSensingCommand);
   if (candidate->motor_output_header_byte_count
           != NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT
       || candidate->muscle_count == 0
@@ -1684,7 +1700,10 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
       || candidate->muscle_excitation_byte_count != expected_excitation_bytes
       || candidate->autonomic_command_count == 0
       || expected_autonomic_bytes > UINT32_MAX
-      || candidate->autonomic_command_byte_count != expected_autonomic_bytes) {
+      || candidate->autonomic_command_byte_count != expected_autonomic_bytes
+      || expected_active_sensing_bytes > UINT32_MAX
+      || candidate->active_sensing_command_byte_count
+          != expected_active_sensing_bytes) {
     return NB_NUMANX_MOTOR_CANDIDATE_SIZE;
   }
   if (candidate->candidate_fingerprint == 0

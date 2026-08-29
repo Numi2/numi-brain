@@ -202,6 +202,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   static let fastAutonomicStateStride = 64
   static let autonomicCommandStride = 16
   static let maximumFastAutonomicChannelCount = 64
+  static let activeSensingCommandStride = 16
+  static let maximumActiveSensingChannelCount = 64
 
   final class AcceptedFastMotorStateLease: @unchecked Sendable {
     let transactionFingerprint: UInt64
@@ -261,17 +263,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     private let headerBuffer: any MTLBuffer
     private let excitationBuffer: any MTLBuffer
     private let autonomicBuffer: any MTLBuffer
+    private let activeSensingBuffer: any MTLBuffer
 
     fileprivate init(
       output: ProtectiveMotorOutputBufferView,
       headerBuffer: any MTLBuffer,
       excitationBuffer: any MTLBuffer,
-      autonomicBuffer: any MTLBuffer
+      autonomicBuffer: any MTLBuffer,
+      activeSensingBuffer: any MTLBuffer
     ) {
       self.output = output
       self.headerBuffer = headerBuffer
       self.excitationBuffer = excitationBuffer
       self.autonomicBuffer = autonomicBuffer
+      self.activeSensingBuffer = activeSensingBuffer
     }
 
     public var headerMetalBufferObject: UnsafeMutableRawPointer {
@@ -284,6 +289,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     public var autonomicMetalBufferObject: UnsafeMutableRawPointer {
       Unmanaged.passUnretained(autonomicBuffer as AnyObject).toOpaque()
+    }
+
+    public var activeSensingMetalBufferObject: UnsafeMutableRawPointer {
+      Unmanaged.passUnretained(activeSensingBuffer as AnyObject).toOpaque()
     }
   }
 
@@ -313,6 +322,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let protectiveCommand: ProtectiveCommandBufferView
     public let protectiveMotorOutput: ProtectiveMotorOutputBufferView
     public let fastAutonomicOutput: FastAutonomicOutputBufferView
+    public let activeSensingOutput: ActiveSensingOutputBufferView
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -340,6 +350,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public struct FastAutonomicOutputBufferView: Equatable, Sendable {
+    public let gpuAddress: UInt64
+    public let byteCount: Int
+    public let channelCount: Int
+    public let timestamp: BrainTimestamp
+    public let brainGeneration: UInt64
+  }
+
+  public struct ActiveSensingOutputBufferView: Equatable, Sendable {
     public let gpuAddress: UInt64
     public let byteCount: Int
     public let channelCount: Int
@@ -484,6 +502,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedFastAutonomicStateBuffer: any MTLBuffer
   private let baselineFastAutonomicCommandBuffer: any MTLBuffer
   private let stagedFastAutonomicOutputBuffer: any MTLBuffer
+  private let stagedActiveSensingCommandBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
@@ -541,6 +560,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let stagedMotorCommandByteCount: Int
   public let fastAutonomicStateByteCount: Int
   public let fastAutonomicCommandByteCount: Int
+  public let activeSensingCommandByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -575,6 +595,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var boundFastReflexRuleCount: Int = 0
   private var boundFastAutonomicVitalGain: Float = 0
   private var boundFastAutonomicChannelCount: Int = 0
+  private var boundActiveSensingChannelCount: Int = 0
 
   private struct InteractiveCandidate {
     let substep: BrainJointSubstepToken
@@ -1255,6 +1276,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       * Self.fastAutonomicStateStride
     let fastAutonomicCommandByteCount = Self.maximumFastAutonomicChannelCount
       * Self.autonomicCommandStride
+    let activeSensingCommandByteCount = Self.maximumActiveSensingChannelCount
+      * Self.activeSensingCommandStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       !fastCerebellarStateByteOverflow, !stagedMotorCommandByteOverflow,
@@ -1514,6 +1537,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: fastAutonomicCommandByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let stagedActiveSensingCommandBuffer = device.makeBuffer(
+        length: activeSensingCommandByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let defaultRegionalMaturationBuffer = device.makeBuffer(
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1692,6 +1719,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain transaction autonomic baseline"
     stagedFastAutonomicOutputBuffer.label =
       "NumiBrain transaction fast autonomic output"
+    stagedActiveSensingCommandBuffer.label =
+      "NumiBrain transaction active sensing commands"
     defaultRegionalMaturationBuffer.label =
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
@@ -1772,7 +1801,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                                 stagedMotorCommandByteCount,
                                 max(
                                   fastAutonomicStateByteCount,
-                                  fastAutonomicCommandByteCount
+                                  max(
+                                    fastAutonomicCommandByteCount,
+                                    activeSensingCommandByteCount
+                                  )
                                 )
                               )
                             )
@@ -1884,6 +1916,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(stagedFastAutonomicStateBuffer)
     residencySet.addAllocation(baselineFastAutonomicCommandBuffer)
     residencySet.addAllocation(stagedFastAutonomicOutputBuffer)
+    residencySet.addAllocation(stagedActiveSensingCommandBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
@@ -2014,6 +2047,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedFastAutonomicStateBuffer = stagedFastAutonomicStateBuffer
     self.baselineFastAutonomicCommandBuffer = baselineFastAutonomicCommandBuffer
     self.stagedFastAutonomicOutputBuffer = stagedFastAutonomicOutputBuffer
+    self.stagedActiveSensingCommandBuffer = stagedActiveSensingCommandBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
     self.defaultRegionalPlasticModulationBuffer =
@@ -2067,6 +2101,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedMotorCommandByteCount = stagedMotorCommandByteCount
     self.fastAutonomicStateByteCount = fastAutonomicStateByteCount
     self.fastAutonomicCommandByteCount = fastAutonomicCommandByteCount
+    self.activeSensingCommandByteCount = activeSensingCommandByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2429,7 +2464,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
             fastCerebellarStateByteCount,
             max(
               stagedMotorCommandByteCount,
-              max(fastAutonomicStateByteCount, fastAutonomicCommandByteCount)
+              max(
+                fastAutonomicStateByteCount,
+                max(fastAutonomicCommandByteCount, activeSensingCommandByteCount)
+              )
             )
           )
         )
@@ -2488,6 +2526,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: stagedFastAutonomicOutputBuffer,
       size: fastAutonomicCommandByteCount,
       label: "NumiBrain initial fast autonomic output upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedActiveSensingCommandBuffer,
+      size: activeSensingCommandByteCount,
+      label: "NumiBrain initial active sensing command upload"
     )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
@@ -2759,7 +2803,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       interactiveJointRoot == nil,
       Int(species.motor.actuatorCount) == protectiveMotorProfile.channels.count,
       Int(species.physiology.autonomicActionDimension)
-        <= Self.maximumFastAutonomicChannelCount
+        <= Self.maximumFastAutonomicChannelCount,
+      Int(species.motor.activeSensingActionDimension)
+        <= Self.maximumActiveSensingChannelCount
     else {
       throw TissueError.transaction(
         "species reflex program cannot bind to this active motor runtime"
@@ -2806,6 +2852,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     boundFastReflexRuleCount = rules.count
     boundFastAutonomicChannelCount = Int(
       species.physiology.autonomicActionDimension
+    )
+    boundActiveSensingChannelCount = Int(
+      species.motor.activeSensingActionDimension
     )
     boundFastAutonomicVitalGain = species.innateBehaviors
       .filter { $0.kind == .vitalAutonomic }
@@ -2931,6 +2980,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.fastAutonomicStateCount == boundFastAutonomicChannelCount,
       lease.decision.fastAutonomicStateByteCount
         == boundFastAutonomicChannelCount * Self.fastAutonomicStateStride,
+      lease.decision.activeSensingCommandCount == boundActiveSensingChannelCount,
       lease.descendingBaselineSourceOffset <= lease.buffer.length,
       protectiveMuscleExcitationByteCount
         <= lease.buffer.length - lease.descendingBaselineSourceOffset,
@@ -2957,7 +3007,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         <= lease.buffer.length - lease.autonomicSourceOffset,
       lease.fastAutonomicStateSourceOffset <= lease.buffer.length,
       lease.decision.fastAutonomicStateByteCount
-        <= lease.buffer.length - lease.fastAutonomicStateSourceOffset
+        <= lease.buffer.length - lease.fastAutonomicStateSourceOffset,
+      lease.activeSensingSourceOffset <= lease.buffer.length,
+      boundActiveSensingChannelCount * Self.activeSensingCommandStride
+        <= lease.buffer.length - lease.activeSensingSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -3068,6 +3121,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destinationOffset: 0,
         size: lease.decision.fastAutonomicStateByteCount
       )
+      if boundActiveSensingChannelCount > 0 {
+        encoder.copy(
+          sourceBuffer: lease.buffer,
+          sourceOffset: lease.activeSensingSourceOffset,
+          destinationBuffer: stagedActiveSensingCommandBuffer,
+          destinationOffset: 0,
+          size: boundActiveSensingChannelCount * Self.activeSensingCommandStride
+        )
+      }
       encoder.copy(
         sourceBuffer: lease.buffer,
         sourceOffset: lease.fastAutonomicStateSourceOffset,
@@ -3356,6 +3418,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         timestamp: protectiveTimestamp,
         brainGeneration: protectiveMotorGeneration
       ),
+      activeSensingOutput: ActiveSensingOutputBufferView(
+        gpuAddress: stagedActiveSensingCommandBuffer.gpuAddress,
+        byteCount: boundActiveSensingChannelCount * Self.activeSensingCommandStride,
+        channelCount: boundActiveSensingChannelCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration
+      ),
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
     )
@@ -3445,6 +3514,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let output = fastSystems.protectiveMotorOutput
     let autonomic = fastSystems.fastAutonomicOutput
+    let activeSensing = fastSystems.activeSensingOutput
     guard
       let headerBuffer = protectiveMotorOutputHeaderBuffers.first(where: {
         $0.gpuAddress == output.headerGPUAddress
@@ -3463,7 +3533,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       autonomic.channelCount == boundFastAutonomicChannelCount,
       autonomic.timestamp == output.timestamp,
       autonomic.brainGeneration == output.brainGeneration,
-      stagedFastAutonomicOutputBuffer.length >= autonomic.byteCount
+      stagedFastAutonomicOutputBuffer.length >= autonomic.byteCount,
+      activeSensing.gpuAddress == stagedActiveSensingCommandBuffer.gpuAddress,
+      activeSensing.byteCount
+        == boundActiveSensingChannelCount * Self.activeSensingCommandStride,
+      activeSensing.channelCount == boundActiveSensingChannelCount,
+      activeSensing.timestamp == output.timestamp,
+      activeSensing.brainGeneration == output.brainGeneration,
+      stagedActiveSensingCommandBuffer.length >= activeSensing.byteCount
     else {
       throw TissueError.transaction(
         "fast-system motor view does not identify this runtime's resident buffers"
@@ -3473,7 +3550,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       output: output,
       headerBuffer: headerBuffer,
       excitationBuffer: excitationBuffer,
-      autonomicBuffer: stagedFastAutonomicOutputBuffer
+      autonomicBuffer: stagedFastAutonomicOutputBuffer,
+      activeSensingBuffer: stagedActiveSensingCommandBuffer
     )
   }
 
