@@ -378,7 +378,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       stride: 32
     )
     try builder.append(.activeEpisodeAccumulator, count: 1, stride: 256)
-    try builder.append(.prospectiveLifecycle, count: 1, stride: 256)
+    try builder.append(.prospectiveLifecycle, count: 1, stride: 512)
     let archivePageCount = max(
       (Int(species.capacities.archiveEpisodicCapacity)
         + Self.archiveRecordsPerPage - 1) / Self.archiveRecordsPerPage,
@@ -503,7 +503,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 14
+  public static let recordLayoutVersion: UInt32 = 15
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536

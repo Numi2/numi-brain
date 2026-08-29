@@ -210,11 +210,15 @@ private struct ProspectiveLifecycleUniforms {
   var recurrentOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var lifecycleStateOffset: UInt64 = 0
+  var workspaceContentOffset: UInt64 = 0
+  var workspaceMetadataOffset: UInt64 = 0
   var prospectiveMemoryOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var defaultDeadlineMicroseconds: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
+  var workspaceCapacity: UInt32 = 0
+  var workspaceDimension: UInt32 = 0
   var prospectiveCapacity: UInt32 = 0
   var prospectiveStride: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
@@ -356,7 +360,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
-      MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
+      MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
       MemoryLayout<CommittedTransitionUniforms>.stride == 368,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -772,13 +776,19 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let prospective = arena.memoryLayout.section(.prospectiveIntentions)
     let recurrent = arena.layout.section(.regionalRecurrent)
     let lifecycle = arena.layout.section(.prospectiveLifecycle)
+    let workspace = arena.layout.section(.workspaceContent)
+    let workspaceMetadata = arena.layout.section(.workspaceMetadata)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
     guard regionalProgram.scalarCount > 0,
       regionalProgram.scalarCount <= Int(UInt32.max),
       prospective.elementCount > 0,
       prospective.elementCount <= Int(UInt32.max),
       prospective.elementStride <= Int(UInt32.max),
-      lifecycle.byteCount >= 256,
+      lifecycle.byteCount >= 512,
+      workspaceMetadata.elementCount > 0,
+      workspaceMetadata.elementCount <= Int(UInt32.max),
+      workspace.elementCount / max(workspaceMetadata.elementCount, 1)
+        <= Int(UInt32.max),
       journalEntryCapacity > 0,
       journalEntryCapacity <= Int(UInt32.max)
     else {
@@ -791,11 +801,17 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       recurrentOffset: UInt64(recurrent.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       lifecycleStateOffset: UInt64(lifecycle.byteOffset),
+      workspaceContentOffset: UInt64(workspace.byteOffset),
+      workspaceMetadataOffset: UInt64(workspaceMetadata.byteOffset),
       prospectiveMemoryOffset: UInt64(prospective.byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
       defaultDeadlineMicroseconds: 60_000_000,
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
+      workspaceCapacity: UInt32(workspaceMetadata.elementCount),
+      workspaceDimension: UInt32(
+        workspace.elementCount / workspaceMetadata.elementCount
+      ),
       prospectiveCapacity: UInt32(prospective.elementCount),
       prospectiveStride: UInt32(prospective.elementStride),
       journalEntryCapacity: UInt32(journalEntryCapacity),

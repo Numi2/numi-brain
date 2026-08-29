@@ -368,11 +368,15 @@ struct NBProspectiveLifecycleUniforms {
   ulong recurrent_offset;
   ulong control_header_offset;
   ulong lifecycle_state_offset;
+  ulong workspace_content_offset;
+  ulong workspace_metadata_offset;
   ulong prospective_memory_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
   ulong default_deadline_microseconds;
   uint recurrent_scalar_count;
+  uint workspace_capacity;
+  uint workspace_dimension;
   uint prospective_capacity;
   uint prospective_stride;
   uint journal_entry_capacity;
@@ -859,6 +863,13 @@ struct NBProspectiveIntentionSummaryRecord {
   float context_match;
   float reserved_float;
   float trigger_code[16];
+  float damage_risk_budget;
+  float persistence;
+  float base_priority;
+  float goal_target[16];
+  float success_model[16];
+  float failure_model[16];
+  float semantic_reserved;
 };
 
 struct NBProspectiveLifecycleState {
@@ -872,6 +883,13 @@ struct NBProspectiveLifecycleState {
   uint reserved;
   float previous_progress;
   float context[51];
+  float external_damage_risk_budget;
+  float external_persistence;
+  float external_base_priority;
+  float external_goal_target[16];
+  float external_success_model[16];
+  float external_failure_model[16];
+  float external_reserved[13];
 };
 
 struct NBCommittedTransitionRecord {
@@ -993,7 +1011,7 @@ static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 288);
-static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
+static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 368);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -1022,8 +1040,8 @@ static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 992);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
-static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
-static_assert(sizeof(NBProspectiveLifecycleState) == 256);
+static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 336);
+static_assert(sizeof(NBProspectiveLifecycleState) == 512);
 static_assert(sizeof(NBCommittedTransitionRecord) == 1104);
 static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
 static_assert(sizeof(NBRegionalTransitionRecord) == 1104);
@@ -2257,6 +2275,26 @@ kernel void publish_memory_retrieval_winner(
         );
       }
       workspace[base + index] = relation_component;
+    } else if (kind == 4u && prospective_value != nullptr) {
+      float prospective_component = 0.0f;
+      if (index < 16u) {
+        prospective_component = prospective_value->trigger_code[index];
+      } else if (index < 32u) {
+        prospective_component = prospective_value->goal_target[index - 16u];
+      } else if (index < 48u) {
+        prospective_component = prospective_value->success_model[index - 32u];
+      } else if (index < 64u) {
+        prospective_component = prospective_value->failure_model[index - 48u];
+      } else if (index == 64u) {
+        prospective_component = prospective_value->damage_risk_budget;
+      } else if (index == 65u) {
+        prospective_component = prospective_value->persistence;
+      } else if (index == 66u) {
+        prospective_component = prospective_value->base_priority;
+      } else if (index == 67u) {
+        prospective_component = prospective_value->context_match;
+      }
+      workspace[base + index] = prospective_component;
     } else if (kind == 3u && procedural_value != nullptr) {
       float procedural_component = 0.0f;
       if (index < 16u) {
@@ -2335,7 +2373,9 @@ kernel void publish_memory_retrieval_winner(
     : (archived_value != nullptr
       ? archived_value->active_option_identifier
       : (semantic_relation_value != nullptr
-        ? semantic_relation_value->destination_concept_identifier : 0ul));
+        ? semantic_relation_value->destination_concept_identifier
+        : (prospective_value != nullptr
+          ? prospective_value->deadline_timestamp_microseconds : 0ul)));
   token.provenance_record_identifier = identifier;
   const uint source_module = kind == 2u
     ? 58u
@@ -3021,6 +3061,25 @@ kernel void advance_prospective_memory(
       for (uint component = 0u; component < 16u; ++component) {
         intention.trigger_code[component] = lifecycle->context[component];
       }
+      const ulong previous_goal_code = previous_goal
+        & NB_MEMORY_GOAL_SOURCE_MASK;
+      const bool previous_external_goal = uint(previous_goal >> 56u) == 2u
+        && (previous_goal_code & (1ul << 55u)) != 0ul;
+      if (previous_external_goal) {
+        intention.flags |= 1u << 1u;
+        intention.damage_risk_budget =
+          lifecycle->external_damage_risk_budget;
+        intention.persistence = lifecycle->external_persistence;
+        intention.base_priority = lifecycle->external_base_priority;
+        for (uint component = 0u; component < 16u; ++component) {
+          intention.goal_target[component] =
+            lifecycle->external_goal_target[component];
+          intention.success_model[component] =
+            lifecycle->external_success_model[component];
+          intention.failure_model[component] =
+            lifecycle->external_failure_model[component];
+        }
+      }
       append_memory_record(
         journal, uniforms, intention, destination,
         NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION,
@@ -3046,6 +3105,49 @@ kernel void advance_prospective_memory(
     lifecycle->context[component] = recurrent[
       component % uniforms.recurrent_scalar_count
     ];
+  }
+  lifecycle->external_damage_risk_budget = 0.0f;
+  lifecycle->external_persistence = 0.0f;
+  lifecycle->external_base_priority = 0.0f;
+  for (uint component = 0u; component < 16u; ++component) {
+    lifecycle->external_goal_target[component] = 0.0f;
+    lifecycle->external_success_model[component] = 0.0f;
+    lifecycle->external_failure_model[component] = 0.0f;
+  }
+  const ulong current_goal_code = control->active_goal_identifier
+    & NB_MEMORY_GOAL_SOURCE_MASK;
+  const bool current_external_goal =
+    uint(control->active_goal_identifier >> 56u) == 2u
+      && (current_goal_code & (1ul << 55u)) != 0ul
+      && uniforms.workspace_dimension >= 55u;
+  if (current_external_goal) {
+    device const float *workspace = reinterpret_cast<device const float *>(
+      hot_state + uniforms.workspace_content_offset
+    );
+    device const NBWorkspaceMetadataRecord *metadata =
+      reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+        hot_state + uniforms.workspace_metadata_offset
+      );
+    for (uint slot = 7u; slot < min(uniforms.workspace_capacity, 11u); ++slot) {
+      const NBWorkspaceMetadataRecord goal_token = metadata[slot];
+      if (goal_token.goal_identifier != control->active_goal_identifier
+          || goal_token.provenance_record_identifier == 0ul) continue;
+      const uint base = slot * uniforms.workspace_dimension;
+      lifecycle->external_damage_risk_budget =
+        clamp(workspace[base + 20u], 0.0f, 1.0f);
+      lifecycle->external_persistence =
+        clamp(workspace[base + 21u], 0.0f, 1.0f);
+      lifecycle->external_base_priority = max(workspace[base + 22u], 0.0f);
+      for (uint component = 0u; component < 16u; ++component) {
+        lifecycle->external_goal_target[component] =
+          workspace[base + 4u + component];
+        lifecycle->external_success_model[component] =
+          workspace[base + 23u + component];
+        lifecycle->external_failure_model[component] =
+          workspace[base + 39u + component];
+      }
+      break;
+    }
   }
 }
 

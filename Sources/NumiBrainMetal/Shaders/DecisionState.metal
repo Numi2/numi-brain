@@ -1053,6 +1053,35 @@ kernel void generate_active_goal_state(
     const bool active_plan = source_module == 25u && token_kind == 9u;
     if ((!prospective && !social && !communication && !active_plan)
         || token.entity_identifier == 0ul) continue;
+    const bool prospective_external = prospective
+      && uint(token.goal_identifier >> 56u) == 2u
+      && (token.goal_identifier & (1ul << 55u)) != 0ul;
+    if (prospective_external && external_goal_identifier == 0ul
+        && uniforms.workspace_dimension >= 67u) {
+      const uint prospective_base = slot * uniforms.workspace_dimension;
+      external_goal_identifier = token.goal_identifier;
+      external_goal_source_identifier = token.goal_identifier
+        & 0x007ffffffffffffful;
+      external_goal_created_timestamp = token.source_timestamp_microseconds;
+      external_goal_deadline = token.bound_token_identifier;
+      external_goal_risk_budget = clamp(
+        workspace[prospective_base + 64u], 0.0f, 1.0f
+      );
+      external_goal_persistence = clamp(
+        workspace[prospective_base + 65u], 0.0f, 1.0f
+      );
+      external_goal_base_priority = max(
+        workspace[prospective_base + 66u], 0.0f
+      );
+      for (uint component = 0u; component < 16u; ++component) {
+        external_goal_target[component] =
+          workspace[prospective_base + 16u + component];
+        external_goal_success_model[component] =
+          workspace[prospective_base + 32u + component];
+        external_goal_failure_model[component] =
+          workspace[prospective_base + 48u + component];
+      }
+    }
     const uint origin = prospective ? 3u
       : (communication ? 8u : (active_plan ? 7u : 4u));
     // A prospective record reactivates the goal it remembers. Its own record
