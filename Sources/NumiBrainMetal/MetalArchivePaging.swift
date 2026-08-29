@@ -8,6 +8,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
   public let formatVersion: UInt32
   public let pageIdentifier: UInt32
   public let sourceGeneration: UInt64
+  public let pageEpoch: UInt64
   public let memoryLayoutFingerprint: UInt64
   public let recordLayoutVersion: UInt32
   public let recordStride: UInt32
@@ -18,6 +19,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
   public init(
     pageIdentifier: UInt32,
     sourceGeneration: UInt64,
+    pageEpoch: UInt64,
     memoryLayoutFingerprint: UInt64,
     recordLayoutVersion: UInt32,
     recordStride: UInt32,
@@ -33,6 +35,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
     formatVersion = Self.currentFormatVersion
     self.pageIdentifier = pageIdentifier
     self.sourceGeneration = sourceGeneration
+    self.pageEpoch = pageEpoch
     self.memoryLayoutFingerprint = memoryLayoutFingerprint
     self.recordLayoutVersion = recordLayoutVersion
     self.recordStride = recordStride
@@ -41,6 +44,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
     checksum = Self.checksum(
       pageIdentifier: pageIdentifier,
       sourceGeneration: sourceGeneration,
+      pageEpoch: pageEpoch,
       memoryLayoutFingerprint: memoryLayoutFingerprint,
       recordLayoutVersion: recordLayoutVersion,
       recordStride: recordStride,
@@ -53,6 +57,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
     formatVersion == Self.currentFormatVersion && checksum == Self.checksum(
       pageIdentifier: pageIdentifier,
       sourceGeneration: sourceGeneration,
+      pageEpoch: pageEpoch,
       memoryLayoutFingerprint: memoryLayoutFingerprint,
       recordLayoutVersion: recordLayoutVersion,
       recordStride: recordStride,
@@ -64,6 +69,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
   private static func checksum(
     pageIdentifier: UInt32,
     sourceGeneration: UInt64,
+    pageEpoch: UInt64,
     memoryLayoutFingerprint: UInt64,
     recordLayoutVersion: UInt32,
     recordStride: UInt32,
@@ -82,6 +88,7 @@ public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
     mix(UInt64(currentFormatVersion))
     mix(UInt64(pageIdentifier))
     mix(sourceGeneration)
+    mix(pageEpoch)
     mix(memoryLayoutFingerprint)
     mix(UInt64(recordLayoutVersion))
     mix(UInt64(recordStride))

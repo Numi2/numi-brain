@@ -48,6 +48,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case archivePageRequests = 34
   /// Accepted option phases retained until procedural consolidation consumes them.
   case proceduralExecutionTrace = 35
+  /// Transactional mutation epoch for each Tier-2 archive page.
+  case archivePageEpochs = 36
 }
 
 @frozen
@@ -371,6 +373,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       stride: archiveRequestByteCount
     )
     try builder.append(.proceduralExecutionTrace, count: 4, stride: 1_024)
+    try builder.append(
+      .archivePageEpochs,
+      count: archivePageCount,
+      stride: MemoryLayout<UInt32>.stride
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)

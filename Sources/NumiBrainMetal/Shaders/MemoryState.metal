@@ -47,6 +47,7 @@ struct NBMemoryUniforms {
   ulong compressed_episode_memory_offset;
   ulong archive_episode_memory_offset;
   ulong replay_memory_offset;
+  ulong archive_page_epoch_offset;
   ulong journal_byte_count;
   ulong persistent_memory_byte_count;
   uint recurrent_scalar_count;
@@ -59,6 +60,8 @@ struct NBMemoryUniforms {
   uint archive_episode_stride;
   uint replay_capacity;
   uint replay_stride;
+  uint archive_records_per_page;
+  uint archive_page_count;
   uint journal_entry_capacity;
   uint surprise_sample_count;
   float boundary_threshold;
@@ -291,6 +294,7 @@ struct NBMemoryReconsolidationUniforms {
   ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
   ulong replay_memory_offset;
+  ulong archive_page_epoch_offset;
   ulong control_header_offset;
   ulong drive_offset;
   ulong persistent_memory_byte_count;
@@ -312,6 +316,8 @@ struct NBMemoryReconsolidationUniforms {
   uint procedural_stride;
   uint replay_capacity;
   uint replay_stride;
+  uint archive_records_per_page;
+  uint archive_page_count;
   uint drive_count;
   uint maximum_results;
   uint journal_entry_capacity;
@@ -665,7 +671,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 192);
+static_assert(sizeof(NBMemoryUniforms) == 208);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -675,7 +681,7 @@ static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 232);
-static_assert(sizeof(NBMemoryReconsolidationUniforms) == 256);
+static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -703,6 +709,28 @@ inline ulong consolidation_hash(ulong value) {
   value ^= value >> 27;
   value *= 0x94d049bb133111ebul;
   return value ^ (value >> 31);
+}
+
+inline void advance_archive_page_epoch(
+  device uchar *hot_state,
+  ulong epoch_offset,
+  uint page_count,
+  uint page_identifier)
+{
+  if (page_identifier >= page_count) return;
+  device atomic_uint *epochs = reinterpret_cast<device atomic_uint *>(
+    hot_state + epoch_offset
+  );
+  uint current = atomic_load_explicit(
+    &epochs[page_identifier], memory_order_relaxed
+  );
+  while (current != 0xffffffffu) {
+    const uint next = current + 1u;
+    if (atomic_compare_exchange_weak_explicit(
+        &epochs[page_identifier], &current, next,
+        memory_order_relaxed, memory_order_relaxed
+      )) return;
+  }
 }
 
 inline uint archive_cluster(thread const float *key) {
@@ -961,6 +989,7 @@ inline bool append_memory_record(
 }
 
 inline bool journal_accumulated_episode(
+  device uchar *hot_state,
   device const uchar *persistent_memory,
   device NBMemoryJournalHeader *journal,
   constant NBMemoryUniforms &uniforms,
@@ -1048,10 +1077,18 @@ inline bool journal_accumulated_episode(
         );
       const ulong archive_destination = uniforms.archive_episode_memory_offset
         + ulong(archive_slot) * ulong(uniforms.archive_episode_stride);
-      append_memory_record(
+      const bool archived_written = append_memory_record(
         journal, uniforms, archived, archive_destination,
         NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE, archived.identifier
       );
+      if (archived_written && uniforms.archive_records_per_page > 0u) {
+        advance_archive_page_epoch(
+          hot_state,
+          uniforms.archive_page_epoch_offset,
+          uniforms.archive_page_count,
+          archive_slot / uniforms.archive_records_per_page
+        );
+      }
     }
   }
   if (uniforms.replay_capacity > 0u) {
@@ -1973,10 +2010,18 @@ kernel void reconsolidate_retrieved_memory(
       ));
     }
     updated.flags = record->flags | 8u;
-    append_memory_record(
+    const bool archived_written = append_memory_record(
       journal, uniforms, updated, destination,
       NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE, updated.identifier
     );
+    if (archived_written && uniforms.archive_records_per_page > 0u) {
+      advance_archive_page_epoch(
+        hot_state,
+        uniforms.archive_page_epoch_offset,
+        uniforms.archive_page_count,
+        archive_index / uniforms.archive_records_per_page
+      );
+    }
     return;
   }
 
@@ -3471,7 +3516,7 @@ kernel void segment_and_journal_episode(
       accumulator->option_transition_count += 1u;
     }
     journal_accumulated_episode(
-      persistent_memory, journal, uniforms, accumulator
+      hot_state, persistent_memory, journal, uniforms, accumulator
     );
     completed_episode_this_root = true;
     NBActiveEpisodeAccumulator cleared = {};
@@ -3531,7 +3576,7 @@ kernel void segment_and_journal_episode(
     accumulator->last_boundary_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     journal_accumulated_episode(
-      persistent_memory, journal, uniforms, accumulator
+      hot_state, persistent_memory, journal, uniforms, accumulator
     );
     NBActiveEpisodeAccumulator cleared = {};
     *accumulator = cleared;

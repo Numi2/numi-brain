@@ -181,9 +181,12 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
     let requested = Set(snapshot.requests.map(\.pageIdentifier))
     let loaded = Set(loadedPages.map(\.pageIdentifier))
-    guard loaded.isSubset(of: requested) else {
+    guard snapshot.committedGeneration
+        == cognitive.agentStateRuntime.arena.committedGeneration,
+      loaded.isSubset(of: requested)
+    else {
       throw TissueError.transaction(
-        "archive worker supplied an unrequested page payload"
+        "archive request snapshot is stale or contains an unrequested page"
       )
     }
     try cognitive.agentStateRuntime.loadArchivePages(loadedPages)

@@ -18,6 +18,7 @@ private struct MemoryUniforms {
   var compressedEpisodeMemoryOffset: UInt64 = 0
   var archiveEpisodeMemoryOffset: UInt64 = 0
   var replayMemoryOffset: UInt64 = 0
+  var archivePageEpochOffset: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -30,6 +31,8 @@ private struct MemoryUniforms {
   var archiveEpisodeStride: UInt32 = 0
   var replayCapacity: UInt32 = 0
   var replayStride: UInt32 = 0
+  var archiveRecordsPerPage: UInt32 = 0
+  var archivePageCount: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
   var boundaryThreshold: Float = 0
@@ -146,6 +149,7 @@ private struct MemoryReconsolidationUniforms {
   var semanticRelationMemoryOffset: UInt64 = 0
   var proceduralMemoryOffset: UInt64 = 0
   var replayMemoryOffset: UInt64 = 0
+  var archivePageEpochOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
@@ -167,6 +171,8 @@ private struct MemoryReconsolidationUniforms {
   var proceduralStride: UInt32 = 0
   var replayCapacity: UInt32 = 0
   var replayStride: UInt32 = 0
+  var archiveRecordsPerPage: UInt32 = 0
+  var archivePageCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var maximumResults: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
@@ -273,9 +279,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 192,
+    guard MemoryLayout<MemoryUniforms>.stride == 208,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
-      MemoryLayout<MemoryReconsolidationUniforms>.stride == 256,
+      MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 232,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
@@ -637,6 +643,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
       proceduralMemoryOffset: UInt64(procedural.byteOffset),
       replayMemoryOffset: UInt64(replay.byteOffset),
+      archivePageEpochOffset: UInt64(
+        layout.section(.archivePageEpochs).byteOffset
+      ),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       driveOffset: UInt64(layout.section(.drives).byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
@@ -658,6 +667,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       proceduralStride: UInt32(procedural.elementStride),
       replayCapacity: UInt32(replay.elementCount),
       replayStride: UInt32(replay.elementStride),
+      archiveRecordsPerPage: UInt32(
+        MetalAgentStateLayout.archiveRecordsPerPage
+      ),
+      archivePageCount: UInt32(
+        layout.section(.archivePageEpochs).elementCount
+      ),
       driveCount: UInt32(layout.section(.drives).elementCount),
       maximumResults: UInt32(maximumResults),
       journalEntryCapacity: UInt32(journalEntryCapacity),
@@ -996,6 +1011,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       compressedEpisodeMemoryOffset: UInt64(compressedEpisodes.byteOffset),
       archiveEpisodeMemoryOffset: UInt64(archiveEpisodes.byteOffset),
       replayMemoryOffset: UInt64(replayQueue.byteOffset),
+      archivePageEpochOffset: UInt64(
+        arena.layout.section(.archivePageEpochs).byteOffset
+      ),
       journalByteCount: UInt64(memory.journalByteCount),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
@@ -1008,6 +1026,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       archiveEpisodeStride: UInt32(archiveEpisodes.elementStride),
       replayCapacity: UInt32(replayQueue.elementCount),
       replayStride: UInt32(replayQueue.elementStride),
+      archiveRecordsPerPage: UInt32(
+        MetalAgentStateLayout.archiveRecordsPerPage
+      ),
+      archivePageCount: UInt32(
+        arena.layout.section(.archivePageEpochs).elementCount
+      ),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
       boundaryThreshold: segmentation.boundaryThreshold,

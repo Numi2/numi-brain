@@ -698,6 +698,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("archive page snapshot selection is invalid")
     }
+    let pageEpochs = try snapshotArchivePageEpochsLocked()
     var payloads: [MetalArchivePagePayload] = []
     payloads.reserveCapacity(pageIdentifiers.count)
     for pageIdentifier in pageIdentifiers.sorted() {
@@ -752,6 +753,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
         try MetalArchivePagePayload(
           pageIdentifier: pageIdentifier,
           sourceGeneration: arena.committedGeneration,
+          pageEpoch: UInt64(pageEpochs[Int(pageIdentifier)]),
           memoryLayoutFingerprint: arena.memoryLayout.fingerprint,
           recordLayoutVersion: MetalAgentMemoryLayout.recordLayoutVersion,
           recordStride: UInt32(archive.elementStride),
@@ -776,6 +778,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     _ = try arena.checkpointSourceView()
     let archive = arena.memoryLayout.section(.archiveIndex)
     let pageCount = arena.layout.section(.archivePageResidency).elementCount
+    let pageEpochs = try snapshotArchivePageEpochsLocked()
     guard Set(payloads.map(\.pageIdentifier)).count == payloads.count else {
       throw TissueError.transaction("archive page load contains duplicates")
     }
@@ -788,6 +791,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
       guard Int(payload.pageIdentifier) < pageCount,
         expectedRecordCount > 0,
+        payload.pageEpoch == UInt64(pageEpochs[Int(payload.pageIdentifier)]),
         payload.memoryLayoutFingerprint == arena.memoryLayout.fingerprint,
         payload.recordLayoutVersion == MetalAgentMemoryLayout.recordLayoutVersion,
         payload.recordStride == UInt32(archive.elementStride),
@@ -971,6 +975,58 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
         threadsPerThreadgroup: threadgroupSize(for: archivePageResidencyPipeline)
       )
     }
+  }
+
+  private func snapshotArchivePageEpochsLocked() throws -> [UInt32] {
+    let layout = arena.layout.section(.archivePageEpochs)
+    guard layout.elementStride == MemoryLayout<UInt32>.stride,
+      layout.byteCount == layout.elementCount * layout.elementStride,
+      let snapshot = device.makeBuffer(
+        length: layout.byteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate archive page-epoch snapshot")
+    }
+    snapshot.label = "NumiBrain committed archive page epochs"
+    addTemporaryResidency([snapshot])
+    defer { removeTemporaryResidency([snapshot]) }
+    var uniforms = MemoryRangeCopyUniforms(byteCount: UInt64(layout.byteCount))
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      memoryRangeCopyUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    let epochGPUAddress = try arena.committedHotSectionAddress(
+      .archivePageEpochs
+    )
+    try submit(label: "NumiBrain snapshot archive page epochs") { encoder in
+      memoryRangeSnapshotArguments.setAddress(
+        epochGPUAddress, index: 0
+      )
+      memoryRangeSnapshotArguments.setAddress(snapshot.gpuAddress, index: 1)
+      memoryRangeSnapshotArguments.setAddress(
+        memoryRangeCopyUniformBuffer.gpuAddress, index: 2
+      )
+      encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+      encoder.setArgumentTable(memoryRangeSnapshotArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(
+          width: layout.elementCount,
+          height: 1,
+          depth: 1
+        ),
+        threadsPerThreadgroup: threadgroupSize(
+          for: memoryRangeSnapshotPipeline
+        )
+      )
+    }
+    let pointer = snapshot.contents().bindMemory(
+      to: UInt32.self,
+      capacity: layout.elementCount
+    )
+    return Array(UnsafeBufferPointer(start: pointer, count: layout.elementCount))
   }
 
   private var journalEntryCapacity: Int {
