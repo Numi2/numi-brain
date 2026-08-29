@@ -99,6 +99,7 @@ private struct MemoryConsolidationUniforms {
   var developmentalStateOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
+  var compressedEpisodeMemoryOffset: UInt64 = 0
   var semanticMemoryOffset: UInt64 = 0
   var semanticRelationMemoryOffset: UInt64 = 0
   var proceduralMemoryOffset: UInt64 = 0
@@ -108,6 +109,8 @@ private struct MemoryConsolidationUniforms {
   var journalByteCount: UInt64 = 0
   var activeEpisodeCapacity: UInt32 = 0
   var activeEpisodeStride: UInt32 = 0
+  var compressedEpisodeCapacity: UInt32 = 0
+  var compressedEpisodeStride: UInt32 = 0
   var semanticCapacity: UInt32 = 0
   var semanticStride: UInt32 = 0
   var semanticRelationCapacity: UInt32 = 0
@@ -307,7 +310,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     guard MemoryLayout<MemoryUniforms>.stride == 208,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
-      MemoryLayout<MemoryConsolidationUniforms>.stride == 232,
+      MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
       MemoryLayout<CommittedTransitionUniforms>.stride == 192,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
@@ -821,12 +824,15 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
     let active = arena.memoryLayout.section(.activeEpisodes)
+    let compressed = arena.memoryLayout.section(.compressedEpisodeMetadata)
     let semantic = arena.memoryLayout.section(.semanticConcepts)
     let semanticRelations = arena.memoryLayout.section(.semanticRelations)
     let procedural = arena.memoryLayout.section(.proceduralSkills)
     let replayQueue = arena.memoryLayout.section(.replayQueue)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
-    let sections = [active, semantic, semanticRelations, procedural, replayQueue]
+    let sections = [
+      active, compressed, semantic, semanticRelations, procedural, replayQueue,
+    ]
     guard journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max),
       sections.allSatisfy({
         $0.elementCount > 0 && $0.elementCount <= Int(UInt32.max)
@@ -849,6 +855,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       driveOffset: UInt64(layout.section(.drives).byteOffset),
       activeEpisodeMemoryOffset: UInt64(active.byteOffset),
+      compressedEpisodeMemoryOffset: UInt64(compressed.byteOffset),
       semanticMemoryOffset: UInt64(semantic.byteOffset),
       semanticRelationMemoryOffset: UInt64(semanticRelations.byteOffset),
       proceduralMemoryOffset: UInt64(procedural.byteOffset),
@@ -860,6 +867,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       journalByteCount: UInt64(memory.journalByteCount),
       activeEpisodeCapacity: UInt32(active.elementCount),
       activeEpisodeStride: UInt32(active.elementStride),
+      compressedEpisodeCapacity: UInt32(compressed.elementCount),
+      compressedEpisodeStride: UInt32(compressed.elementStride),
       semanticCapacity: UInt32(semantic.elementCount),
       semanticStride: UInt32(semantic.elementStride),
       semanticRelationCapacity: UInt32(semanticRelations.elementCount),

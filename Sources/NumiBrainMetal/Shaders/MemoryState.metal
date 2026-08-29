@@ -249,6 +249,7 @@ struct NBMemoryConsolidationUniforms {
   ulong developmental_state_offset;
   ulong drive_offset;
   ulong active_episode_memory_offset;
+  ulong compressed_episode_memory_offset;
   ulong semantic_memory_offset;
   ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
@@ -258,6 +259,8 @@ struct NBMemoryConsolidationUniforms {
   ulong journal_byte_count;
   uint active_episode_capacity;
   uint active_episode_stride;
+  uint compressed_episode_capacity;
+  uint compressed_episode_stride;
   uint semantic_capacity;
   uint semantic_stride;
   uint semantic_relation_capacity;
@@ -773,7 +776,7 @@ static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
-static_assert(sizeof(NBMemoryConsolidationUniforms) == 232);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 272);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 192);
@@ -2765,9 +2768,35 @@ kernel void consolidate_lived_memory_during_rest(
       latest_index = index;
     }
   }
-  // A queue entry can outlive the active exact episode it references. Fall
-  // back to the newest lived record rather than blocking consolidation; the
-  // stale queue entry is decayed below and naturally loses priority.
+  for (uint index = 0u; index < uniforms.compressed_episode_capacity; ++index) {
+    device const NBEpisodicSummaryRecord *candidate =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + uniforms.compressed_episode_memory_offset
+          + ulong(index) * ulong(uniforms.compressed_episode_stride)
+      );
+    const bool committed_lived_record = candidate->format_version
+        == NB_MEMORY_EPISODE_RECORD_VERSION
+      && candidate->identifier != 0ul
+      && candidate->source_generation <= uniforms.base_generation
+      && candidate->end_timestamp_microseconds <= uniforms.target_timestamp_microseconds
+      && candidate->salience >= uniforms.minimum_salience;
+    const bool matches_replay = selected_replay == nullptr
+      || (target_episode_identifier != 0ul
+        && candidate->identifier == target_episode_identifier)
+      || (target_option_identifier != 0ul
+        && candidate->active_option_identifier == target_option_identifier);
+    if (committed_lived_record && matches_replay && (latest == nullptr
+        || candidate->end_timestamp_microseconds
+          > latest->end_timestamp_microseconds
+        || (candidate->end_timestamp_microseconds
+              == latest->end_timestamp_microseconds
+            && candidate->identifier > latest->identifier))) {
+      latest = candidate;
+      latest_index = uniforms.active_episode_capacity + index;
+    }
+  }
+  // A queue entry can outlive both exact tiers. Fall back only after checking
+  // hot and warm memory; the stale queue entry is then decayed below.
   if (latest == nullptr && selected_replay != nullptr) {
     for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
       device const NBEpisodicSummaryRecord *candidate =
@@ -2792,6 +2821,29 @@ kernel void consolidate_lived_memory_during_rest(
         latest_index = index;
       }
     }
+    for (uint index = 0u; index < uniforms.compressed_episode_capacity; ++index) {
+      device const NBEpisodicSummaryRecord *candidate =
+        reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+          persistent_memory + uniforms.compressed_episode_memory_offset
+            + ulong(index) * ulong(uniforms.compressed_episode_stride)
+        );
+      const bool committed_lived_record = candidate->format_version
+          == NB_MEMORY_EPISODE_RECORD_VERSION
+        && candidate->identifier != 0ul
+        && candidate->source_generation <= uniforms.base_generation
+        && candidate->end_timestamp_microseconds
+          <= uniforms.target_timestamp_microseconds
+        && candidate->salience >= uniforms.minimum_salience;
+      if (committed_lived_record && (latest == nullptr
+          || candidate->end_timestamp_microseconds
+            > latest->end_timestamp_microseconds
+          || (candidate->end_timestamp_microseconds
+                == latest->end_timestamp_microseconds
+              && candidate->identifier > latest->identifier))) {
+        latest = candidate;
+        latest_index = uniforms.active_episode_capacity + index;
+      }
+    }
   }
   if (latest == nullptr) return;
 
@@ -2814,6 +2866,42 @@ kernel void consolidate_lived_memory_during_rest(
       reinterpret_cast<device const NBEpisodicSummaryRecord *>(
         persistent_memory + uniforms.active_episode_memory_offset
           + ulong(index) * ulong(uniforms.active_episode_stride)
+      );
+    const bool committed_lived_record = episode->format_version
+        == NB_MEMORY_EPISODE_RECORD_VERSION
+      && episode->identifier != 0ul
+      && episode->source_generation <= uniforms.base_generation
+      && episode->end_timestamp_microseconds <= uniforms.target_timestamp_microseconds;
+    if (!committed_lived_record) continue;
+    if (episode->event_kind == latest->event_kind
+        && episode->source_identifier == latest->source_identifier) {
+      semantic_count += 1u;
+      for (uint component = 0u; component < 10u; ++component) {
+        semantic_embedding[component] += episode->retrieval_key[component];
+      }
+      semantic_embedding[10] += episode->salience;
+      semantic_embedding[11] += episode->epistemic_uncertainty;
+      semantic_embedding[12] += episode->damage_severity;
+      semantic_embedding[13] += episode->factored_reinforcement;
+    }
+    if (latest->active_option_identifier != 0ul
+        && episode->active_option_identifier == latest->active_option_identifier
+        && episode->damage_severity <= uniforms.maximum_damage) {
+      procedural_count += 1u;
+      accumulated_damage += episode->damage_severity;
+      accumulated_value += episode->factored_reinforcement;
+      accumulated_procedural_uncertainty += episode->epistemic_uncertainty;
+      for (uint component = 0u; component < 10u; ++component) {
+        procedural_code[component] += episode->retrieval_key[component];
+      }
+    }
+  }
+
+  for (uint index = 0u; index < uniforms.compressed_episode_capacity; ++index) {
+    device const NBEpisodicSummaryRecord *episode =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + uniforms.compressed_episode_memory_offset
+          + ulong(index) * ulong(uniforms.compressed_episode_stride)
       );
     const bool committed_lived_record = episode->format_version
         == NB_MEMORY_EPISODE_RECORD_VERSION
@@ -2886,7 +2974,11 @@ kernel void consolidate_lived_memory_during_rest(
       concept.embedding[14] = float(latest->event_kind) / 16.0f;
       concept.embedding[15] = float(latest->source_identifier & 0xffffu) / 65535.0f;
       concept.embedding[16] = float(latest_index)
-        / float(max(uniforms.active_episode_capacity, 1u));
+        / float(max(
+          uniforms.active_episode_capacity
+            + uniforms.compressed_episode_capacity,
+          1u
+        ));
       concept.embedding[17] = development->maturation_progress;
       concept.embedding[18] = development->replay_allocation_multiplier;
       if (append_memory_record(
