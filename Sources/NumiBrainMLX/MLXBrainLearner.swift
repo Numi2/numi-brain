@@ -313,8 +313,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let completeAction = batch.completeActions
     let reward = batch.factoredReinforcement
     let metrics = batch.outcomeMetrics
-    let priorBody = batch.priorBodyState
-    let posteriorBody = batch.posteriorBodyState
+    let priorBody = batch.priorEmbodiedState
+    let posteriorBody = batch.posteriorEmbodiedState
     let acceptedBodyRisk = maximum(
       posteriorBody[0..., 5..<6], posteriorBody[0..., 7..<8]
     )
@@ -339,10 +339,10 @@ public final class MLXBrainLearner: @unchecked Sendable {
       * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights
         + Float(2) * batch.acceptedStopMask)
     let bodyTransitionMask =
-      batch.bodyStateMask
+      batch.embodiedStateMask
       * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
     let acceptedRiskMask = maximum(
-      batch.bodyStateMask, batch.acceptedStopMask
+      batch.embodiedStateMask, batch.acceptedStopMask
     ) * (Float(1) + replayTransitionWeights
       + Float(2) * threatTransitionWeights
       + Float(2) * batch.acceptedStopMask)

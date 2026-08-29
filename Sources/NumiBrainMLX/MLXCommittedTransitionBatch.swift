@@ -6,8 +6,8 @@ import NumiBrainMetal
 /// Zero-copy MLX view of committed-transition slots. Every valid record carries
 /// 19 recurrent features, five exact structured world-context features,
 /// accepted somatic, autonomic, active-sensing, and internal action features,
-/// and bounded plasticity/cerebellar traces; empty ring slots are excluded by
-/// `validMask`.
+/// bounded plasticity/cerebellar traces, and accepted body-joint state; empty
+/// ring slots are excluded by `validMask`.
 @available(macOS 26.0, *)
 public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public static let transitionStride = MetalLearningBatch.transitionStride
@@ -35,6 +35,11 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let fastPlasticityTrace: MLXArray
   public let cerebellarTrace: MLXArray
   public let activeSensingTrace: MLXArray
+  public let priorEmbodiedState: MLXArray
+  public let posteriorEmbodiedState: MLXArray
+  public let embodiedStateMask: MLXArray
+  /// Compatibility aliases for the v7 body-only trace name. In v8 these carry
+  /// the complete body-and-joint summary.
   public let priorBodyState: MLXArray
   public let posteriorBodyState: MLXArray
   public let bodyStateMask: MLXArray
@@ -173,10 +178,16 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.fastPlasticityTrace = finite(rawFastPlasticityTrace)
     self.cerebellarTrace = finite(rawCerebellarTrace)
     self.activeSensingTrace = finite(rawActiveSensingTrace)
-    self.priorBodyState = finite(rawBodySchemaTrace[0..., 0..<8])
-    self.posteriorBodyState = finite(rawBodySchemaTrace[0..., 8..<16])
-    self.bodyStateMask = ((flags & UInt32(2)) .== UInt32(2)).asType(.float32)
+    let priorEmbodiedState = finite(rawBodySchemaTrace[0..., 0..<8])
+    let posteriorEmbodiedState = finite(rawBodySchemaTrace[0..., 8..<16])
+    let embodiedStateMask = ((flags & UInt32(2)) .== UInt32(2)).asType(.float32)
       * validMask
+    self.priorEmbodiedState = priorEmbodiedState
+    self.posteriorEmbodiedState = posteriorEmbodiedState
+    self.embodiedStateMask = embodiedStateMask
+    self.priorBodyState = priorEmbodiedState
+    self.posteriorBodyState = posteriorEmbodiedState
+    self.bodyStateMask = embodiedStateMask
     self.acceptedStopMask = ((flags & UInt32(4)) .== UInt32(4)).asType(.float32)
       * validMask
     self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32)

@@ -21,8 +21,8 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 7u;
-constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 8u;
+constant uint NB_COMMITTED_TRANSITION_HAS_EMBODIED_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 2u;
 constant uint NB_PROCEDURAL_SKILL_RECORD_VERSION = 3u;
@@ -50,6 +50,15 @@ constant uint NB_BODY_LOAD = 28u;
 constant uint NB_BODY_LOAD_VARIANCE = 29u;
 constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
+constant uint NB_JOINT_POSITION_VARIANCE = 12u;
+constant uint NB_JOINT_VELOCITY_VARIANCE = 18u;
+constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
+constant uint NB_JOINT_PREDICTION_ERROR = 31u;
+constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
+constant uint NB_MUSCLE_FATIGUE = 4u;
+constant uint NB_MUSCLE_PREDICTION_ERROR = 5u;
+constant uint NB_MUSCLE_EXTERNAL_DISTURBANCE = 9u;
+constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 
 struct NBMemoryUniforms {
   ulong target_timestamp_microseconds;
@@ -417,6 +426,8 @@ struct NBCommittedTransitionUniforms {
   ulong internal_action_offset;
   ulong active_sensing_efficacy_offset;
   ulong body_belief_offset;
+  ulong joint_belief_offset;
+  ulong muscle_belief_offset;
   ulong object_slot_offset;
   ulong other_agent_slot_offset;
   ulong relation_slot_offset;
@@ -438,6 +449,8 @@ struct NBCommittedTransitionUniforms {
   uint active_sensing_count;
   uint internal_action_count;
   uint body_belief_count;
+  uint joint_belief_count;
+  uint muscle_belief_count;
   uint object_slot_count;
   uint other_agent_slot_count;
   uint relation_slot_count;
@@ -1043,7 +1056,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 376);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 400);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -4410,6 +4423,14 @@ kernel void journal_committed_learning_transition(
     input_hot_state + uniforms.body_belief_offset;
   device const uchar *accepted_body_belief =
     output_hot_state + uniforms.body_belief_offset;
+  device const uchar *prior_joint_belief =
+    input_hot_state + uniforms.joint_belief_offset;
+  device const uchar *accepted_joint_belief =
+    output_hot_state + uniforms.joint_belief_offset;
+  device const uchar *prior_muscle_belief =
+    input_hot_state + uniforms.muscle_belief_offset;
+  device const uchar *accepted_muscle_belief =
+    output_hot_state + uniforms.muscle_belief_offset;
   device const NBControlHeader *control =
     reinterpret_cast<device const NBControlHeader *>(
       output_hot_state + uniforms.control_header_offset
@@ -4597,17 +4618,23 @@ kernel void journal_committed_learning_transition(
       const float uncertainty = sqrt(
         max(prior_body[NB_BODY_LOAD_VARIANCE], 0.0f)
       );
-      const float values[4] = {
-        load / (1.0f + load), uncertainty / (1.0f + uncertainty),
-        clamp(prior_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
-        clamp(prior_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
-      };
-      for (uint value = 0u; value < 4u; ++value) {
-        record.body_schema_trace[2u * value] += values[value];
-        record.body_schema_trace[2u * value + 1u] = max(
-          record.body_schema_trace[2u * value + 1u], values[value]
-        );
-      }
+      const float normalized_load = load / (1.0f + load);
+      const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+      const float vulnerability = clamp(
+        prior_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f
+      );
+      const float damage = clamp(
+        prior_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f
+      );
+      record.body_schema_trace[0] += normalized_load;
+      record.body_schema_trace[1] += normalized_uncertainty;
+      record.body_schema_trace[4] = max(
+        record.body_schema_trace[4], normalized_load
+      );
+      record.body_schema_trace[5] = max(
+        record.body_schema_trace[5], max(vulnerability, damage)
+      );
+      record.body_schema_trace[7] = max(record.body_schema_trace[7], damage);
       prior_body_count += 1u;
     }
     if ((accepted_identity[3] & 1ul) != 0ul
@@ -4619,38 +4646,204 @@ kernel void journal_committed_learning_transition(
       const float uncertainty = sqrt(
         max(accepted_body[NB_BODY_LOAD_VARIANCE], 0.0f)
       );
-      const float values[4] = {
-        load / (1.0f + load), uncertainty / (1.0f + uncertainty),
-        clamp(accepted_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
-        clamp(accepted_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
-      };
-      for (uint value = 0u; value < 4u; ++value) {
-        const uint base = 8u + 2u * value;
-        record.body_schema_trace[base] += values[value];
-        record.body_schema_trace[base + 1u] = max(
-          record.body_schema_trace[base + 1u], values[value]
-        );
-      }
+      const float normalized_load = load / (1.0f + load);
+      const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+      const float vulnerability = clamp(
+        accepted_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f
+      );
+      const float damage = clamp(
+        accepted_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f
+      );
+      record.body_schema_trace[8] += normalized_load;
+      record.body_schema_trace[9] += normalized_uncertainty;
+      record.body_schema_trace[12] = max(
+        record.body_schema_trace[12], normalized_load
+      );
+      record.body_schema_trace[13] = max(
+        record.body_schema_trace[13], max(vulnerability, damage)
+      );
+      record.body_schema_trace[15] = max(record.body_schema_trace[15], damage);
       accepted_body_count += 1u;
     }
   }
   if (prior_body_count > 0u) {
     const float inverse_count = 1.0f / float(prior_body_count);
-    for (uint value = 0u; value < 4u; ++value) {
-      record.body_schema_trace[2u * value] *= inverse_count;
-    }
+    record.body_schema_trace[0] *= inverse_count;
+    record.body_schema_trace[1] *= inverse_count;
   }
   if (accepted_body_count > 0u) {
     const float inverse_count = 1.0f / float(accepted_body_count);
-    for (uint value = 0u; value < 4u; ++value) {
-      record.body_schema_trace[8u + 2u * value] *= inverse_count;
+    record.body_schema_trace[8] *= inverse_count;
+    record.body_schema_trace[9] *= inverse_count;
+  }
+  uint prior_joint_count = 0u;
+  uint accepted_joint_count = 0u;
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *prior_joint = reinterpret_cast<device const float *>(
+      prior_joint_belief + ulong(joint_index) * 256ul
+    );
+    device const float *accepted_joint = reinterpret_cast<device const float *>(
+      accepted_joint_belief + ulong(joint_index) * 256ul
+    );
+    device const ulong *prior_identity =
+      reinterpret_cast<device const ulong *>(
+        prior_joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+      );
+    device const ulong *accepted_identity =
+      reinterpret_cast<device const ulong *>(
+        accepted_joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+      );
+    if ((prior_identity[7] & 1ul) != 0ul) {
+      const uint coordinate_count = min(uint(prior_identity[3]), 6u);
+      float limit = 0.0f;
+      float variance = 0.0f;
+      for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+        limit = max(limit, clamp(
+          prior_joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f
+        ));
+        variance += max(
+          prior_joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f
+        ) + max(
+          prior_joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f
+        );
+      }
+      const float uncertainty = sqrt(
+        variance / max(float(coordinate_count * 2u), 1.0f)
+      );
+      const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+      const float prediction_error = abs(prior_joint[NB_JOINT_PREDICTION_ERROR]);
+      const float normalized_error = prediction_error / (1.0f + prediction_error);
+      record.body_schema_trace[2] += limit;
+      record.body_schema_trace[3] += normalized_uncertainty;
+      record.body_schema_trace[5] = max(record.body_schema_trace[5], limit);
+      record.body_schema_trace[6] += normalized_error;
+      record.body_schema_trace[7] = max(
+        record.body_schema_trace[7], normalized_error
+      );
+      prior_joint_count += 1u;
+    }
+    if ((accepted_identity[7] & 1ul) != 0ul) {
+      const uint coordinate_count = min(uint(accepted_identity[3]), 6u);
+      float limit = 0.0f;
+      float variance = 0.0f;
+      for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+        limit = max(limit, clamp(
+          accepted_joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f
+        ));
+        variance += max(
+          accepted_joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f
+        ) + max(
+          accepted_joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f
+        );
+      }
+      const float uncertainty = sqrt(
+        variance / max(float(coordinate_count * 2u), 1.0f)
+      );
+      const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+      const float prediction_error = abs(
+        accepted_joint[NB_JOINT_PREDICTION_ERROR]
+      );
+      const float normalized_error = prediction_error / (1.0f + prediction_error);
+      record.body_schema_trace[10] += limit;
+      record.body_schema_trace[11] += normalized_uncertainty;
+      record.body_schema_trace[13] = max(record.body_schema_trace[13], limit);
+      record.body_schema_trace[14] += normalized_error;
+      record.body_schema_trace[15] = max(
+        record.body_schema_trace[15], normalized_error
+      );
+      accepted_joint_count += 1u;
     }
   }
-  if (prior_body_count > 0u && accepted_body_count > 0u) {
-    record.flags |= NB_COMMITTED_TRANSITION_HAS_BODY_TRACE;
+  if (prior_joint_count > 0u) {
+    const float inverse_count = 1.0f / float(prior_joint_count);
+    record.body_schema_trace[2] *= inverse_count;
+    record.body_schema_trace[3] *= inverse_count;
   }
+  if (accepted_joint_count > 0u) {
+    const float inverse_count = 1.0f / float(accepted_joint_count);
+    record.body_schema_trace[10] *= inverse_count;
+    record.body_schema_trace[11] *= inverse_count;
+  }
+  uint prior_muscle_count = 0u;
+  uint accepted_muscle_count = 0u;
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+    device const float *prior_muscle = reinterpret_cast<device const float *>(
+      prior_muscle_belief + ulong(muscle_index) * 192ul
+    );
+    device const float *accepted_muscle = reinterpret_cast<device const float *>(
+      accepted_muscle_belief + ulong(muscle_index) * 192ul
+    );
+    device const ulong *prior_identity =
+      reinterpret_cast<device const ulong *>(
+        prior_muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+      );
+    device const ulong *accepted_identity =
+      reinterpret_cast<device const ulong *>(
+        accepted_muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+      );
+    if ((prior_identity[3] & 1ul) != 0ul) {
+      const float fatigue = clamp(prior_muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f);
+      const float disturbance = clamp(
+        prior_muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f
+      );
+      const float prediction_error = abs(
+        prior_muscle[NB_MUSCLE_PREDICTION_ERROR]
+      );
+      const float normalized_error = prediction_error / (1.0f + prediction_error);
+      record.body_schema_trace[4] = max(record.body_schema_trace[4], fatigue);
+      record.body_schema_trace[5] = max(
+        record.body_schema_trace[5], max(fatigue, disturbance)
+      );
+      record.body_schema_trace[6] += normalized_error;
+      record.body_schema_trace[7] = max(
+        record.body_schema_trace[7], max(normalized_error, disturbance)
+      );
+      prior_muscle_count += 1u;
+    }
+    if ((accepted_identity[3] & 1ul) != 0ul) {
+      const float fatigue = clamp(
+        accepted_muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f
+      );
+      const float disturbance = clamp(
+        accepted_muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f
+      );
+      const float prediction_error = abs(
+        accepted_muscle[NB_MUSCLE_PREDICTION_ERROR]
+      );
+      const float normalized_error = prediction_error / (1.0f + prediction_error);
+      record.body_schema_trace[12] = max(record.body_schema_trace[12], fatigue);
+      record.body_schema_trace[13] = max(
+        record.body_schema_trace[13], max(fatigue, disturbance)
+      );
+      record.body_schema_trace[14] += normalized_error;
+      record.body_schema_trace[15] = max(
+        record.body_schema_trace[15], max(normalized_error, disturbance)
+      );
+      accepted_muscle_count += 1u;
+    }
+  }
+  const uint prior_effect_count = prior_joint_count + prior_muscle_count;
+  const uint accepted_effect_count = accepted_joint_count
+    + accepted_muscle_count;
+  if (prior_effect_count > 0u) {
+    record.body_schema_trace[6] /= float(prior_effect_count);
+  }
+  if (accepted_effect_count > 0u) {
+    record.body_schema_trace[14] /= float(accepted_effect_count);
+  }
+  if (prior_body_count > 0u && accepted_body_count > 0u
+      && prior_joint_count > 0u && accepted_joint_count > 0u
+      && prior_muscle_count > 0u && accepted_muscle_count > 0u) {
+    record.flags |= NB_COMMITTED_TRANSITION_HAS_EMBODIED_TRACE;
+  }
+  record.uncertainty = max(
+    record.uncertainty, record.body_schema_trace[11]
+  );
   record.damage_cvar = max(
-    record.damage_cvar, record.body_schema_trace[15]
+    record.damage_cvar,
+    max(record.body_schema_trace[13], record.body_schema_trace[15])
   );
   record.factored_reinforcement[0] = -record.mean_drive_deficit;
   record.factored_reinforcement[1] = control->selected_score;

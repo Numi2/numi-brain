@@ -253,6 +253,8 @@ private struct CommittedTransitionUniforms {
   var internalActionOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var jointBeliefOffset: UInt64 = 0
+  var muscleBeliefOffset: UInt64 = 0
   var objectSlotOffset: UInt64 = 0
   var otherAgentSlotOffset: UInt64 = 0
   var relationSlotOffset: UInt64 = 0
@@ -274,6 +276,8 @@ private struct CommittedTransitionUniforms {
   var activeSensingCount: UInt32 = 0
   var internalActionCount: UInt32 = 0
   var bodyBeliefCount: UInt32 = 0
+  var jointBeliefCount: UInt32 = 0
+  var muscleBeliefCount: UInt32 = 0
   var objectSlotCount: UInt32 = 0
   var otherAgentSlotCount: UInt32 = 0
   var relationSlotCount: UInt32 = 0
@@ -366,7 +370,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 376,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 400,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -574,6 +578,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let acceptedActiveSensing = layout.section(.acceptedActiveSensingOutput)
     let internalActions = controlLayout.section(.internalActions)
     let bodyBelief = layout.section(.bodyBelief)
+    let jointBelief = layout.section(.jointBelief)
+    let muscleBelief = layout.section(.muscleBelief)
     let objectSlots = layout.section(.objectSlots)
     let otherAgentSlots = layout.section(.otherAgentSlots)
     let relationSlots = layout.section(.relationSlots)
@@ -591,6 +597,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       acceptedAutonomic.elementCount, acceptedActiveSensing.elementCount,
       internalActions.elementCount,
       bodyBelief.elementCount,
+      jointBelief.elementCount,
+      muscleBelief.elementCount,
       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
       transitions.elementCount, transitions.elementStride, journalEntryCapacity,
@@ -632,6 +640,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         layout.section(.activeSensingEfficacy).byteOffset
       ),
       bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
+      jointBeliefOffset: UInt64(jointBelief.byteOffset),
+      muscleBeliefOffset: UInt64(muscleBelief.byteOffset),
       objectSlotOffset: UInt64(objectSlots.byteOffset),
       otherAgentSlotOffset: UInt64(otherAgentSlots.byteOffset),
       relationSlotOffset: UInt64(relationSlots.byteOffset),
@@ -655,6 +665,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeSensingCount: UInt32(activeSensingCount),
       internalActionCount: UInt32(internalActionCount),
       bodyBeliefCount: UInt32(bodyBelief.elementCount),
+      jointBeliefCount: UInt32(jointBelief.elementCount),
+      muscleBeliefCount: UInt32(muscleBelief.elementCount),
       objectSlotCount: UInt32(objectSlots.elementCount),
       otherAgentSlotCount: UInt32(otherAgentSlots.elementCount),
       relationSlotCount: UInt32(relationSlots.elementCount),

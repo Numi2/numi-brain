@@ -60,8 +60,8 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 /// rollout resumes because every section resides in a distinct allocation.
 @available(macOS 26.0, *)
 public final class MetalLearningBatch: @unchecked Sendable {
-  public static let formatVersion: UInt32 = 11
-  public static let transitionRecordVersion: UInt32 = 7
+  public static let formatVersion: UInt32 = 12
+  public static let transitionRecordVersion: UInt32 = 8
   public static let episodicRecordVersion: UInt32 = 2
   public static let proceduralRecordVersion =
     MetalAgentMemoryLayout.proceduralSkillRecordVersion
