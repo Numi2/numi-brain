@@ -28,8 +28,9 @@ public struct SpeciesBodyTopology: Codable, Equatable, Hashable, Sendable {
     actuatorCount: UInt32,
     morphologyCode: UInt64
   ) throws {
-    guard bodyCount > 0, jointCount > 0, muscleCount > 0,
-      muscleAttachmentFingerprint > 0, skinSurfaceCount > 0,
+    guard bodyCount > 0, jointCount > 0,
+      (muscleCount == 0) == (muscleAttachmentFingerprint == 0),
+      skinSurfaceCount > 0,
       actuatorCount > 0, morphologyCode > 0
     else {
       throw BrainRuntimeError.invalidDescriptor("species body topology is incomplete")
@@ -679,7 +680,7 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
   /// Version 5 maps physiological state to stable interoceptive receptor IDs.
-  public static let formatVersion: UInt32 = 6
+  public static let formatVersion: UInt32 = 7
 
   public let family: SpeciesFamily
   public let name: String
@@ -743,6 +744,8 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     let physiologicalReceptorIdentifiers = Set(
       physiology.receptorMappings.map(\.receptorIdentifier)
     )
+    let biologicalFamily = family == .human || family == .quadruped
+      || family == .bird
     guard let interoception, interoception.enabled else {
       throw BrainRuntimeError.invalidDescriptor(
         "species physiology requires an enabled interoceptive topology"
@@ -764,6 +767,11 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
           .isSubset(of: physiologicalReceptorIdentifiers)
       }),
       motor.actuatorCount == body.actuatorCount,
+      !biologicalFamily || (
+        body.muscleCount == motor.actuatorCount
+          && body.muscleAttachmentFingerprint > 0
+          && motor.actuatorCommandKind == .muscleExcitation
+      ),
       motor.autonomicActionDimension == physiology.autonomicActionDimension,
       activeSensingDimension == Int(motor.activeSensingActionDimension),
       Set(reflexes.map(\.identifier)).count == reflexes.count,

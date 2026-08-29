@@ -7,7 +7,7 @@ public enum BrainAgentStateFactory {
     environmentIdentifier: UInt32,
     episodeIdentifier: UInt64,
     species: SpeciesTemplate,
-    attachmentCatalog: NumanXMuscleAttachmentCatalog,
+    attachmentCatalog: NumanXMuscleAttachmentCatalog? = nil,
     graph: ReferenceBrainGraph,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
@@ -16,9 +16,15 @@ public enum BrainAgentStateFactory {
     maximumResidentMemoryBytes: UInt64 = 512 * 1_024 * 1_024
   ) throws -> BrainAgentState {
     guard species.referenceGraphFingerprint == graph.fingerprint,
-      species.body.bodyCount == attachmentCatalog.bodyCount,
-      species.body.muscleCount == UInt32(attachmentCatalog.attachments.count),
-      species.body.muscleAttachmentFingerprint == attachmentCatalog.fingerprint,
+      (species.body.muscleCount == 0 && attachmentCatalog == nil)
+        || (
+          species.body.muscleCount > 0
+            && species.body.bodyCount == attachmentCatalog?.bodyCount
+            && species.body.muscleCount
+              == UInt32(attachmentCatalog?.attachments.count ?? 0)
+            && species.body.muscleAttachmentFingerprint
+              == attachmentCatalog?.fingerprint
+        ),
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
       Set(regionalProgram.layouts.map(\.moduleIdentifier))
         == Set(species.enabledModuleIdentifiers),
@@ -32,7 +38,7 @@ public enum BrainAgentStateFactory {
 
     let zero = try BrainVector3.zero
     let pose = try BrainPoseEstimate.origin
-    let bodyNodes = try (0..<attachmentCatalog.bodyCount).map { identifier in
+    let bodyNodes = try (0..<species.body.bodyCount).map { identifier in
       try BodyNodeBelief(
         bodyIdentifier: identifier,
         pose: pose,
@@ -47,7 +53,7 @@ public enum BrainAgentStateFactory {
       )
     }
     let unknownScalar = try BeliefScalar(mean: 0, logVariance: 0)
-    let muscleEdges = try attachmentCatalog.attachments.map { attachment in
+    let muscleEdges = try (attachmentCatalog?.attachments ?? []).map { attachment in
       try MuscleEdgeBelief(
         muscleIdentifier: attachment.muscleIdentifier,
         firstBodyIdentifier: attachment.firstBodyIdentifier,
@@ -60,9 +66,20 @@ public enum BrainAgentStateFactory {
         learnedEffect: BrainLatentVector.zeros(count: 16)
       )
     }
+    let actuatorEffects = try species.motor.actuatorChannels.map { channel in
+      try SomaticActuatorBelief(
+        actuatorIdentifier: channel.identifier,
+        commandKind: species.motor.actuatorCommandKind,
+        lastCommand: unknownScalar,
+        predictedSensoryEffect: .zeros(count: 16),
+        agencyConfidence: 0,
+        externalDisturbance: 0,
+        observationTimestamp: nil
+      )
+    }
     let bodyDynamics = try BodySchemaPosteriorDynamics.runtimeFoundationV0
     let bodyPosterior = try bodyDynamics.initialState(
-      bodyCount: attachmentCatalog.bodyCount,
+      bodyCount: species.body.bodyCount,
       timestamp: initialTimestamp
     )
     let physiologyBelief = PhysiologyBeliefState(
@@ -91,6 +108,7 @@ public enum BrainAgentStateFactory {
       timestamp: initialTimestamp,
       bodyNodes: bodyNodes,
       muscleEdges: muscleEdges,
+      actuatorEffects: actuatorEffects,
       bodyLoadPosterior: bodyPosterior,
       objects: [],
       otherAgents: [],

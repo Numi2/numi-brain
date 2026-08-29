@@ -6,6 +6,8 @@ import NumiBrainCore
 public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case regionalRecurrent = 1
   case bodyBelief = 2
+  /// Per-somatic-effector causal state. Biological layouts index muscles;
+  /// robot layouts index physical actuators without fabricating muscle edges.
   case muscleBelief = 3
   case objectSlots = 4
   case otherAgentSlots = 5
@@ -180,7 +182,10 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     )
     try builder.append(
       .muscleBelief,
-      count: Int(species.body.muscleCount),
+      count: max(
+        Int(species.body.muscleCount),
+        Int(species.motor.actuatorCount)
+      ),
       stride: Self.muscleBeliefStride
     )
     try builder.append(
@@ -467,7 +472,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 10
+  public static let recordLayoutVersion: UInt32 = 11
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536

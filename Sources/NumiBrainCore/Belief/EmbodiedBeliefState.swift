@@ -100,6 +100,43 @@ public struct MuscleEdgeBelief: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+/// Learned causal state for one physical somatic effector. Biological agents
+/// retain their anatomical muscle graph separately; robot agents use this
+/// actuator graph without inventing muscle attachments.
+@frozen
+public struct SomaticActuatorBelief: Codable, Equatable, Hashable, Sendable {
+  public let actuatorIdentifier: UInt32
+  public let commandKind: ActuatorCommandKind
+  public let lastCommand: BeliefScalar
+  public let predictedSensoryEffect: BrainLatentVector
+  public let agencyConfidence: Float
+  public let externalDisturbance: Float
+  public let observationTimestamp: BrainTimestamp?
+
+  public init(
+    actuatorIdentifier: UInt32,
+    commandKind: ActuatorCommandKind,
+    lastCommand: BeliefScalar,
+    predictedSensoryEffect: BrainLatentVector,
+    agencyConfidence: Float,
+    externalDisturbance: Float,
+    observationTimestamp: BrainTimestamp?
+  ) throws {
+    guard agencyConfidence.isFinite, (0...1).contains(agencyConfidence),
+      externalDisturbance.isFinite, externalDisturbance >= 0
+    else {
+      throw BrainRuntimeError.transaction("somatic actuator belief is invalid")
+    }
+    self.actuatorIdentifier = actuatorIdentifier
+    self.commandKind = commandKind
+    self.lastCommand = lastCommand
+    self.predictedSensoryEffect = predictedSensoryEffect
+    self.agencyConfidence = agencyConfidence
+    self.externalDisturbance = externalDisturbance
+    self.observationTimestamp = observationTimestamp
+  }
+}
+
 @frozen
 public struct ObjectBeliefSlot: Codable, Equatable, Hashable, Sendable {
   public let slotIdentifier: UInt16
@@ -381,6 +418,7 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
   public let timestamp: BrainTimestamp
   public let bodyNodes: [BodyNodeBelief]
   public let muscleEdges: [MuscleEdgeBelief]
+  public let actuatorEffects: [SomaticActuatorBelief]
   public let bodyLoadPosterior: [BodySchemaPosteriorCell]
   public let objects: [ObjectBeliefSlot]
   public let otherAgents: [OtherAgentBeliefSlot]
@@ -396,6 +434,7 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
     timestamp: BrainTimestamp,
     bodyNodes: [BodyNodeBelief],
     muscleEdges: [MuscleEdgeBelief],
+    actuatorEffects: [SomaticActuatorBelief],
     bodyLoadPosterior: [BodySchemaPosteriorCell],
     objects: [ObjectBeliefSlot],
     otherAgents: [OtherAgentBeliefSlot],
@@ -413,6 +452,8 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
       objects.count <= maximumObjectSlots, otherAgents.count <= maximumAgentSlots,
       Set(bodyNodes.map(\.bodyIdentifier)).count == bodyNodes.count,
       Set(muscleEdges.map(\.muscleIdentifier)).count == muscleEdges.count,
+      Set(actuatorEffects.map(\.actuatorIdentifier)).count
+        == actuatorEffects.count,
       Set(objects.map(\.slotIdentifier)).count == objects.count,
       Set(otherAgents.map(\.slotIdentifier)).count == otherAgents.count,
       bodyLoadPosterior.allSatisfy({ $0.stateTimestamp == timestamp }),
@@ -432,6 +473,9 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
     self.timestamp = timestamp
     self.bodyNodes = bodyNodes.sorted { $0.bodyIdentifier < $1.bodyIdentifier }
     self.muscleEdges = muscleEdges.sorted { $0.muscleIdentifier < $1.muscleIdentifier }
+    self.actuatorEffects = actuatorEffects.sorted {
+      $0.actuatorIdentifier < $1.actuatorIdentifier
+    }
     self.bodyLoadPosterior = bodyLoadPosterior.sorted {
       $0.bodyIdentifier < $1.bodyIdentifier
     }

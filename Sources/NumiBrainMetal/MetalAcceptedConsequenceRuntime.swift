@@ -224,7 +224,10 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       pipeline: pipelines[0],
       count: max(
         Int(species.body.bodyCount),
-        max(Int(species.body.muscleCount), Int(species.physiology.stateDimension))
+        max(
+          arena.layout.section(.muscleBelief).elementCount,
+          Int(species.physiology.stateDimension)
+        )
       )
     )
     barrier(encoder)
@@ -307,7 +310,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
-      muscleCount: species.body.muscleCount,
+      muscleCount: UInt32(hot(.muscleBelief).elementCount),
       physiologyCount: UInt32(species.physiology.stateDimension),
       worldModelCount: UInt32(hot(.worldModel).elementCount),
       neuromodulatorCount: UInt32(NeuromodulatorKind.allCases.count),
