@@ -1395,7 +1395,6 @@ kernel void broadcast_accepted_prediction_error(
       );
       const float deficit = max(goal_drive.deficit, 0.0f);
       satisfaction = viable_span / (viable_span + deficit);
-      progress_time_constant = 0.5f;
     } else if (control->active_goal_identifier != 0ul) {
       const float accepted_risk = max(
         max(embodied_risk.x, embodied_risk.y), protective_risk
@@ -1407,14 +1406,21 @@ kernel void broadcast_accepted_prediction_error(
         0.0f, 1.0f
       );
     }
-    const float progress_alpha = 1.0f - exp(
-      -max(elapsed_seconds, 1.0e-6f) / progress_time_constant
-    );
-    control->progress = mix(
-      clamp(control->progress, 0.0f, 1.0f),
-      satisfaction,
-      clamp(progress_alpha, 0.0f, 1.0f)
-    );
+    if (drive_bound_goal) {
+      // A viable accepted drive state is completion evidence now; retaining a
+      // lag here would turn a satisfied disappearing goal into a false
+      // prospective-memory interruption on the following root.
+      control->progress = clamp(satisfaction, 0.0f, 1.0f);
+    } else {
+      const float progress_alpha = 1.0f - exp(
+        -max(elapsed_seconds, 1.0e-6f) / progress_time_constant
+      );
+      control->progress = mix(
+        clamp(control->progress, 0.0f, 1.0f),
+        satisfaction,
+        clamp(progress_alpha, 0.0f, 1.0f)
+      );
+    }
   }
 }
 
