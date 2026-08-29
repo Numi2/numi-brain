@@ -1909,36 +1909,21 @@ kernel void advance_due_regional_tokens(
             groupEnd += 1u;
         }
 
-        for (uint routeIndex = lane;
-             routeIndex < header->route_count;
-             routeIndex += laneCount) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            uint resolvedSlot = ~0u;
-            if (route.delay_microseconds > 0u
-                && timestamp >= ulong(route.delay_microseconds)) {
-                const ulong targetTimestamp = timestamp - ulong(route.delay_microseconds);
-                const NBRegionalRouteHistoryStateABI history =
-                    outputRouteHistoryStates[routeIndex];
-                for (uint age = 0u; age < history.count; ++age) {
-                    const uint slot = (
-                        history.next_slot + header->history_capacity - 1u - age
-                    ) % header->history_capacity;
-                    const ulong messageTimestamp = outputRouteHistoryTimestamps[
-                        routeIndex * header->history_capacity + slot
-                    ];
-                    if (messageTimestamp <= targetTimestamp) {
-                        resolvedSlot = slot;
-                        break;
-                    }
-                }
+        // Due receivers own disjoint incoming-route ranges, so each lane can
+        // resolve delay history, score, and select routes without a full scan.
+        for (uint invocationIndex = cursor + lane;
+             invocationIndex < groupEnd;
+             invocationIndex += laneCount) {
+            const NBDueInvocationABI receiverInvocation =
+                invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                receiverInvocation.module_id
+            );
+            if (moduleIndex == ~0u) {
+                continue;
             }
-            resolvedRouteHistorySlots[routeIndex] = resolvedSlot;
-        }
-        threadgroup_barrier(mem_flags::mem_device);
-
-        for (uint moduleIndex = lane;
-             moduleIndex < header->module_count;
-             moduleIndex += laneCount) {
             selectedRouteCounts[moduleIndex] = 0u;
             const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
             const NBRegionalMaturationRecordABI maturationRecord =
@@ -1955,19 +1940,36 @@ kernel void advance_due_regional_tokens(
                     ))
                 )
                 : 0u;
-            NBDueInvocationABI receiverInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    receiver.module_id,
-                    receiverInvocation)) {
-                continue;
-            }
             const uint routeBegin = receiver.incoming_route_offset;
             const uint routeEnd = routeBegin + uint(receiver.incoming_route_count);
             if (routeBegin == routeEnd) {
                 continue;
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                const NBRegionalRouteABI route = routes[routeIndex];
+                uint resolvedSlot = ~0u;
+                if (route.delay_microseconds > 0u
+                    && timestamp >= ulong(route.delay_microseconds)) {
+                    const ulong targetTimestamp =
+                        timestamp - ulong(route.delay_microseconds);
+                    const NBRegionalRouteHistoryStateABI history =
+                        outputRouteHistoryStates[routeIndex];
+                    for (uint age = 0u; age < history.count; ++age) {
+                        const uint slot = (
+                            history.next_slot + header->history_capacity - 1u - age
+                        ) % header->history_capacity;
+                        const ulong messageTimestamp = outputRouteHistoryTimestamps[
+                            routeIndex * header->history_capacity + slot
+                        ];
+                        if (messageTimestamp <= targetTimestamp) {
+                            resolvedSlot = slot;
+                            break;
+                        }
+                    }
+                }
+                resolvedRouteHistorySlots[routeIndex] = resolvedSlot;
             }
             const uint queryDimension = uint(receiver.token_dimension);
             for (uint routeIndex = routeBegin;
@@ -2596,53 +2598,53 @@ kernel void advance_cohort_regional_tokens_routed(
             groupEnd += 1u;
         }
 
-        for (uint routeIndex = lane;
-             routeIndex < header->route_count;
-             routeIndex += laneCount) {
-            const NBRegionalRouteABI route = routes[routeIndex];
-            uint resolvedSlot = ~0u;
-            if (route.delay_microseconds > 0u
-                && timestamp >= ulong(route.delay_microseconds)) {
-                const ulong targetTimestamp =
-                    timestamp - ulong(route.delay_microseconds);
-                const NBRegionalRouteHistoryStateABI history =
-                    outputRouteHistoryStates[routeBase + routeIndex];
-                for (uint age = 0u; age < history.count; ++age) {
-                    const uint slot = (
-                        history.next_slot + header->history_capacity - 1u - age
-                    ) % header->history_capacity;
-                    const ulong messageTimestamp = outputRouteHistoryTimestamps[
-                        historyTimestampBase
-                        + ulong(routeIndex * header->history_capacity + slot)
-                    ];
-                    if (messageTimestamp <= targetTimestamp) {
-                        resolvedSlot = slot;
-                        break;
-                    }
-                }
-            }
-            resolvedRouteHistorySlots[routeBase + routeIndex] = resolvedSlot;
-        }
-        threadgroup_barrier(mem_flags::mem_device);
-
-        for (uint moduleIndex = lane;
-             moduleIndex < header->module_count;
-             moduleIndex += laneCount) {
-            selectedRouteCounts[diagnosticBase + moduleIndex] = 0u;
-            const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
-            NBDueInvocationABI receiverInvocation;
-            if (!regional_invocation_for_module(
-                    invocations,
-                    cursor,
-                    groupEnd,
-                    receiver.module_id,
-                    receiverInvocation)) {
+        // The compacted cohort set also partitions incoming routes by receiver.
+        for (uint invocationIndex = cursor + lane;
+             invocationIndex < groupEnd;
+             invocationIndex += laneCount) {
+            const NBDueInvocationABI receiverInvocation =
+                invocations[invocationIndex];
+            const uint moduleIndex = regional_module_index(
+                layouts,
+                header->module_count,
+                receiverInvocation.module_id
+            );
+            if (moduleIndex == ~0u) {
                 continue;
             }
+            selectedRouteCounts[diagnosticBase + moduleIndex] = 0u;
+            const NBRegionalTokenLayoutABI receiver = layouts[moduleIndex];
             const uint routeBegin = receiver.incoming_route_offset;
             const uint routeEnd = routeBegin + uint(receiver.incoming_route_count);
             if (routeBegin == routeEnd) {
                 continue;
+            }
+            for (uint routeIndex = routeBegin;
+                 routeIndex < routeEnd;
+                 ++routeIndex) {
+                const NBRegionalRouteABI route = routes[routeIndex];
+                uint resolvedSlot = ~0u;
+                if (route.delay_microseconds > 0u
+                    && timestamp >= ulong(route.delay_microseconds)) {
+                    const ulong targetTimestamp =
+                        timestamp - ulong(route.delay_microseconds);
+                    const NBRegionalRouteHistoryStateABI history =
+                        outputRouteHistoryStates[routeBase + routeIndex];
+                    for (uint age = 0u; age < history.count; ++age) {
+                        const uint slot = (
+                            history.next_slot + header->history_capacity - 1u - age
+                        ) % header->history_capacity;
+                        const ulong messageTimestamp = outputRouteHistoryTimestamps[
+                            historyTimestampBase
+                            + ulong(routeIndex * header->history_capacity + slot)
+                        ];
+                        if (messageTimestamp <= targetTimestamp) {
+                            resolvedSlot = slot;
+                            break;
+                        }
+                    }
+                }
+                resolvedRouteHistorySlots[routeBase + routeIndex] = resolvedSlot;
             }
             const uint queryDimension = uint(receiver.token_dimension);
             for (uint routeIndex = routeBegin;
