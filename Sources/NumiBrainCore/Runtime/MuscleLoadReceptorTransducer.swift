@@ -71,7 +71,9 @@ public struct MuscleLoadReceptorTransducer: Codable, Equatable, Hashable, Sendab
       timestamp: acceptedPhysicsState.acceptedTimestamp,
       mask: .muscleOverload,
       identifier: receptorIdentifier,
-      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+      flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED),
+      magnitude: maximumAbsoluteMuscleForce,
+      auxiliaryValue: overloadThreshold
     )
   }
 

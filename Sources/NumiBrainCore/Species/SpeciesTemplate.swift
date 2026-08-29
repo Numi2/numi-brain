@@ -533,6 +533,17 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       enabledModuleIdentifiers: enabled
     )
     let regionalIdentifiers = regionGraph.modules.map(\.identifier)
+    var reflexRuleCount = 0
+    var reflexRuleCountOverflow = false
+    for reflex in reflexes {
+      let product = reflex.receptorChannelCodes.count.multipliedReportingOverflow(
+        by: reflex.actuatorIdentifiers.count
+      )
+      let total = reflexRuleCount.addingReportingOverflow(product.partialValue)
+      reflexRuleCount = total.partialValue
+      reflexRuleCountOverflow = reflexRuleCountOverflow || product.overflow
+        || total.overflow
+    }
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !enabled.isEmpty, Set(enabled).count == enabled.count,
       regionGraph.referenceGraphFingerprint == referenceGraph.fingerprint,
@@ -543,6 +554,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       motor.actuatorCount == body.actuatorCount,
       motor.autonomicActionDimension == physiology.autonomicActionDimension,
       Set(reflexes.map(\.identifier)).count == reflexes.count,
+      !reflexRuleCountOverflow, reflexRuleCount <= 4_096,
       reflexes.allSatisfy({ reflex in
         reflex.actuatorIdentifiers.allSatisfy({ $0 < motor.actuatorCount })
       }),

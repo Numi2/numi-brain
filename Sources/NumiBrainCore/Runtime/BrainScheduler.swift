@@ -251,20 +251,30 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
   public let mask: BrainInterruptMask
   public let identifier: UInt32
   public let flags: UInt32
+  public let magnitude: Float
+  public let auxiliaryValue: Float
 
   public init(
     timestamp: BrainTimestamp,
     mask: BrainInterruptMask,
     identifier: UInt32,
-    flags: UInt32 = 0
+    flags: UInt32 = 0,
+    magnitude: Float = 1,
+    auxiliaryValue: Float = 0
   ) throws {
-    guard !mask.isEmpty else {
-      throw BrainRuntimeError.invalidEvent("interrupt mask must not be empty")
+    guard !mask.isEmpty, magnitude.isFinite, magnitude >= 0,
+      auxiliaryValue.isFinite
+    else {
+      throw BrainRuntimeError.invalidEvent(
+        "interrupt event needs a nonempty mask and finite graded values"
+      )
     }
     self.timestamp = timestamp
     self.mask = mask
     self.identifier = identifier
     self.flags = flags
+    self.magnitude = magnitude
+    self.auxiliaryValue = auxiliaryValue
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -272,6 +282,8 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
     case mask
     case identifier
     case flags
+    case magnitude
+    case auxiliaryValue
   }
 
   public init(from decoder: any Decoder) throws {
@@ -280,7 +292,10 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
       timestamp: values.decode(BrainTimestamp.self, forKey: .timestamp),
       mask: values.decode(BrainInterruptMask.self, forKey: .mask),
       identifier: values.decode(UInt32.self, forKey: .identifier),
-      flags: values.decode(UInt32.self, forKey: .flags)
+      flags: values.decode(UInt32.self, forKey: .flags),
+      magnitude: values.decodeIfPresent(Float.self, forKey: .magnitude) ?? 1,
+      auxiliaryValue:
+        values.decodeIfPresent(Float.self, forKey: .auxiliaryValue) ?? 0
     )
   }
 
@@ -290,6 +305,8 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
     try values.encode(mask, forKey: .mask)
     try values.encode(identifier, forKey: .identifier)
     try values.encode(flags, forKey: .flags)
+    try values.encode(magnitude, forKey: .magnitude)
+    try values.encode(auxiliaryValue, forKey: .auxiliaryValue)
   }
 
   public var abiRecord: NBInterruptEvent {
@@ -298,6 +315,8 @@ public struct BrainInterruptEvent: Codable, Equatable, Hashable, Sendable {
     record.interrupt_mask = mask.rawValue
     record.identifier = identifier
     record.flags = flags
+    record.magnitude = magnitude
+    record.auxiliary_value = auxiliaryValue
     return record
   }
 }
@@ -634,7 +653,11 @@ public struct CPUMultiRateScheduler: Sendable {
     if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
     if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
     if lhs.mask.rawValue != rhs.mask.rawValue { return lhs.mask.rawValue < rhs.mask.rawValue }
-    return lhs.flags < rhs.flags
+    if lhs.flags != rhs.flags { return lhs.flags < rhs.flags }
+    if lhs.magnitude.bitPattern != rhs.magnitude.bitPattern {
+      return lhs.magnitude.bitPattern < rhs.magnitude.bitPattern
+    }
+    return lhs.auxiliaryValue.bitPattern < rhs.auxiliaryValue.bitPattern
   }
 
   private static func invocationOrder(

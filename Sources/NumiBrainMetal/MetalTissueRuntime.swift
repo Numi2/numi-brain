@@ -17,7 +17,18 @@ private struct FastCPGUniforms {
   var oscillatorCount: UInt32 = 0
   var synergyCount: UInt32 = 0
   var flags: UInt32 = 0
-  var reserved: UInt32 = 0
+  var reflexRuleCount: UInt32 = 0
+}
+
+private struct FastReflexRule {
+  var receptorIdentifier: UInt32 = 0
+  var actuatorIdentifier: UInt32 = 0
+  var circuitIdentifier: UInt32 = 0
+  var circuitKind: UInt32 = 0
+  var latencyMicroseconds: UInt32 = 0
+  var flags: UInt32 = 0
+  var activationThreshold: Float = 0
+  var gain: Float = 0
 }
 
 private struct BodyLoadFieldUniforms {
@@ -172,26 +183,38 @@ private struct TissueRegionalPlasticModulationRecord {
 public final class MetalTissueRuntime: @unchecked Sendable {
   static let maximumFastCPGOscillatorCount = 64
   static let fastCPGStateStride = 64
+  static let maximumFastReflexRuleCount = 4_096
+  static let fastReflexRuleStride = 32
+  static let fastReflexStateStride = 128
 
-  final class AcceptedCPGStateLease: @unchecked Sendable {
+  final class AcceptedFastMotorStateLease: @unchecked Sendable {
     let transactionFingerprint: UInt64
     let acceptedTimestamp: BrainTimestamp
     let oscillatorCount: Int
     let byteCount: Int
-    let buffer: any MTLBuffer
+    let cpgBuffer: any MTLBuffer
+    let reflexRuleCount: Int
+    let reflexStateByteCount: Int
+    let reflexStateBuffer: any MTLBuffer
 
     fileprivate init(
       transactionFingerprint: UInt64,
       acceptedTimestamp: BrainTimestamp,
       oscillatorCount: Int,
       byteCount: Int,
-      buffer: any MTLBuffer
+      cpgBuffer: any MTLBuffer,
+      reflexRuleCount: Int,
+      reflexStateByteCount: Int,
+      reflexStateBuffer: any MTLBuffer
     ) {
       self.transactionFingerprint = transactionFingerprint
       self.acceptedTimestamp = acceptedTimestamp
       self.oscillatorCount = oscillatorCount
       self.byteCount = byteCount
-      self.buffer = buffer
+      self.cpgBuffer = cpgBuffer
+      self.reflexRuleCount = reflexRuleCount
+      self.reflexStateByteCount = reflexStateByteCount
+      self.reflexStateBuffer = reflexStateBuffer
     }
   }
   /// Retains the exact Metal allocations lent to one immediate NumanX
@@ -397,6 +420,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let descendingSomaticBuffer: any MTLBuffer
   private let fastCPGUniformBuffer: any MTLBuffer
   private let stagedFastCPGStateBuffer: any MTLBuffer
+  private let fastReflexRuleBuffer: any MTLBuffer
+  private let stagedFastReflexStateBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
@@ -448,6 +473,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let developmentalMaturationByteCount: Int
   public let regionalPlasticModulationByteCount: Int
   public let fastCPGStateCapacityByteCount: Int
+  public let fastReflexRuleCapacityByteCount: Int
+  public let fastReflexStateCapacityByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -478,6 +505,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var stagedFastCPGTransactionFingerprint: UInt64?
   private var stagedFastCPGOscillatorCount: Int = 0
   private var stagedFastCPGSynergyCount: Int = 0
+  private var boundFastReflexSpeciesFingerprint: UInt64?
+  private var boundFastReflexRuleCount: Int = 0
 
   private struct InteractiveCandidate {
     let substep: BrainJointSubstepToken
@@ -871,7 +900,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 15
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 17
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -1094,11 +1123,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     let fastCPGStateCapacityByteCount = Self.maximumFastCPGOscillatorCount
       * Self.fastCPGStateStride
+    let fastReflexRuleCapacityByteCount = Self.maximumFastReflexRuleCount
+      * Self.fastReflexRuleStride
+    let fastReflexStateCapacityByteCount = Self.maximumFastReflexRuleCount
+      * Self.fastReflexStateStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
       MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32,
-      MemoryLayout<FastCPGUniforms>.stride == 24
+      MemoryLayout<FastCPGUniforms>.stride == 24,
+      MemoryLayout<FastReflexRule>.stride == Self.fastReflexRuleStride
     else {
       throw TissueError.metal("protective motor profile byte count overflows Int")
     }
@@ -1310,6 +1344,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: fastCPGStateCapacityByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let fastReflexRuleBuffer = device.makeBuffer(
+        length: fastReflexRuleCapacityByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let stagedFastReflexStateBuffer = device.makeBuffer(
+        length: fastReflexStateCapacityByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let defaultRegionalMaturationBuffer = device.makeBuffer(
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1472,6 +1514,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     descendingSomaticBuffer.label = "NumiBrain transaction descending somatic command"
     fastCPGUniformBuffer.label = "NumiBrain accepted fast CPG sampling uniforms"
     stagedFastCPGStateBuffer.label = "NumiBrain transaction fast CPG state"
+    fastReflexRuleBuffer.label = "NumiBrain immutable species reflex program"
+    stagedFastReflexStateBuffer.label = "NumiBrain transaction fast reflex state"
     defaultRegionalMaturationBuffer.label =
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
@@ -1540,7 +1584,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                   max(
                     max(
                       max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount),
-                      fastCPGStateCapacityByteCount
+                      max(
+                        fastCPGStateCapacityByteCount,
+                        max(
+                          fastReflexRuleCapacityByteCount,
+                          fastReflexStateCapacityByteCount
+                        )
+                      )
                     ),
                     max(
                       developmentalMaturationByteCount,
@@ -1636,6 +1686,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(descendingSomaticBuffer)
     residencySet.addAllocation(fastCPGUniformBuffer)
     residencySet.addAllocation(stagedFastCPGStateBuffer)
+    residencySet.addAllocation(fastReflexRuleBuffer)
+    residencySet.addAllocation(stagedFastReflexStateBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
@@ -1752,6 +1804,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.descendingSomaticBuffer = descendingSomaticBuffer
     self.fastCPGUniformBuffer = fastCPGUniformBuffer
     self.stagedFastCPGStateBuffer = stagedFastCPGStateBuffer
+    self.fastReflexRuleBuffer = fastReflexRuleBuffer
+    self.stagedFastReflexStateBuffer = stagedFastReflexStateBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
     self.defaultRegionalPlasticModulationBuffer =
@@ -1799,6 +1853,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.developmentalMaturationByteCount = developmentalMaturationByteCount
     self.regionalPlasticModulationByteCount = regionalPlasticModulationByteCount
     self.fastCPGStateCapacityByteCount = fastCPGStateCapacityByteCount
+    self.fastReflexRuleCapacityByteCount = fastReflexRuleCapacityByteCount
+    self.fastReflexStateCapacityByteCount = fastReflexStateCapacityByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2150,6 +2206,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: fastCPGStateCapacityByteCount,
       label: "NumiBrain initial fast CPG state upload"
     )
+    stagingBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: fastReflexRuleCapacityByteCount
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: fastReflexRuleBuffer,
+      size: fastReflexRuleCapacityByteCount,
+      label: "NumiBrain initial species reflex program upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedFastReflexStateBuffer,
+      size: fastReflexStateCapacityByteCount,
+      label: "NumiBrain initial fast reflex state upload"
+    )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
     }
@@ -2412,6 +2485,59 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
   }
 
+  /// Compiles the immutable species reflex graph into bounded receptor to
+  /// actuator rules. Mutable rule history remains in the per-agent shadow
+  /// state and is never shared across minds.
+  func bindSpeciesReflexProgram(_ species: SpeciesTemplate) throws {
+    guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
+      interactiveJointRoot == nil,
+      Int(species.motor.actuatorCount) == protectiveMotorProfile.channels.count
+    else {
+      throw TissueError.transaction(
+        "species reflex program cannot bind to this active motor runtime"
+      )
+    }
+    var rules: [FastReflexRule] = []
+    for reflex in species.reflexes {
+      for receptorIdentifier in reflex.receptorChannelCodes {
+        for actuatorIdentifier in reflex.actuatorIdentifiers {
+          rules.append(
+            FastReflexRule(
+              receptorIdentifier: receptorIdentifier,
+              actuatorIdentifier: actuatorIdentifier,
+              circuitIdentifier: UInt32(reflex.identifier),
+              circuitKind: UInt32(reflex.kind.rawValue),
+              latencyMicroseconds: reflex.latencyMicroseconds,
+              flags: 1 | (reflex.innateEnabled ? 1 << 1 : 0),
+              activationThreshold: reflex.activationThreshold,
+              gain: reflex.gain
+            )
+          )
+        }
+      }
+    }
+    guard rules.count <= Self.maximumFastReflexRuleCount,
+      rules.count * MemoryLayout<FastReflexRule>.stride
+        <= fastReflexRuleCapacityByteCount
+    else {
+      throw TissueError.metal("species reflex program exceeds fast GPU capacity")
+    }
+    if !rules.isEmpty {
+      rules.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        stagingBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
+      }
+      try copy(
+        source: stagingBuffer,
+        destination: fastReflexRuleBuffer,
+        size: rules.count * MemoryLayout<FastReflexRule>.stride,
+        label: "NumiBrain species reflex-program upload"
+      )
+    }
+    boundFastReflexSpeciesFingerprint = species.fingerprint
+    boundFastReflexRuleCount = rules.count
+  }
+
   /// Creates the stable root identity used by a NumanX shadow transaction.
   /// Physical state remains external and is represented only by acceptance
   /// tokens returned through `BrainJointTransaction`.
@@ -2515,6 +2641,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         == lease.decision.cpgStateCount * Self.fastCPGStateStride,
       lease.decision.cpgStateByteCount <= fastCPGStateCapacityByteCount,
       lease.decision.cpgSynergyCount > 0,
+      boundFastReflexSpeciesFingerprint == lease.speciesTemplateFingerprint,
+      lease.decision.reflexStateCount == boundFastReflexRuleCount,
+      lease.decision.reflexStateByteCount
+        == lease.decision.reflexStateCount * Self.fastReflexStateStride,
+      lease.decision.reflexStateByteCount <= fastReflexStateCapacityByteCount,
       lease.descendingBaselineSourceOffset <= lease.buffer.length,
       protectiveMuscleExcitationByteCount
         <= lease.buffer.length - lease.descendingBaselineSourceOffset,
@@ -2526,7 +2657,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         <= lease.buffer.length - lease.plasticModulationSourceOffset,
       lease.cpgStateSourceOffset <= lease.buffer.length,
       lease.decision.cpgStateByteCount
-        <= lease.buffer.length - lease.cpgStateSourceOffset
+        <= lease.buffer.length - lease.cpgStateSourceOffset,
+      lease.reflexStateSourceOffset <= lease.buffer.length,
+      lease.decision.reflexStateByteCount
+        <= lease.buffer.length - lease.reflexStateSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -2588,6 +2722,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
           size: lease.decision.cpgStateByteCount
         )
       }
+      if lease.decision.reflexStateByteCount > 0 {
+        encoder.copy(
+          sourceBuffer: lease.buffer,
+          sourceOffset: lease.reflexStateSourceOffset,
+          destinationBuffer: stagedFastReflexStateBuffer,
+          destinationOffset: 0,
+          size: lease.decision.reflexStateByteCount
+        )
+      }
       encoder.copy(
         sourceBuffer: protectiveCommandBuffers[committedSchedulerClockIndex],
         sourceOffset: 0,
@@ -2647,6 +2790,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveMotorArgumentTable.setAddress(
         receptorEventTransductionResultBuffer.gpuAddress,
         index: 14
+      )
+      protectiveMotorArgumentTable.setAddress(fastReflexRuleBuffer.gpuAddress, index: 15)
+      protectiveMotorArgumentTable.setAddress(
+        stagedFastReflexStateBuffer.gpuAddress,
+        index: 16
       )
       encoder.setComputePipelineState(protectiveMotorPipeline)
       encoder.setArgumentTable(protectiveMotorArgumentTable)
@@ -3070,13 +3218,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     interactiveJointRoot = nil
   }
 
-  /// Lends the accepted-only CPG phase generation after fast-root
+  /// Lends accepted-only CPG phase and reflex history after fast-root
   /// finalization and before joint publication. The cognitive transaction
-  /// copies it into its own shadow generation, so neither runtime can publish
-  /// a different oscillator history.
-  func borrowPreparedAcceptedCPGState(
+  /// copies both into its own shadow generation, so neither runtime can
+  /// publish a different fast motor history.
+  func borrowPreparedAcceptedFastMotorState(
     for transaction: BrainJointTransactionToken
-  ) throws -> AcceptedCPGStateLease {
+  ) throws -> AcceptedFastMotorStateLease {
     guard let pendingJointTransaction,
       pendingJointTransaction.token == transaction,
       pendingSchedulerTargetTime == transaction.targetTimestamp,
@@ -3084,15 +3232,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       stagedFastCPGOscillatorCount <= Self.maximumFastCPGOscillatorCount
     else {
       throw TissueError.transaction(
-        "accepted fast CPG state is not prepared for this joint root"
+        "accepted fast motor state is not prepared for this joint root"
       )
     }
-    return AcceptedCPGStateLease(
+    return AcceptedFastMotorStateLease(
       transactionFingerprint: transaction.fingerprint,
       acceptedTimestamp: transaction.targetTimestamp,
       oscillatorCount: stagedFastCPGOscillatorCount,
       byteCount: stagedFastCPGOscillatorCount * Self.fastCPGStateStride,
-      buffer: stagedFastCPGStateBuffer
+      cpgBuffer: stagedFastCPGStateBuffer,
+      reflexRuleCount: boundFastReflexRuleCount,
+      reflexStateByteCount: boundFastReflexRuleCount * Self.fastReflexStateStride,
+      reflexStateBuffer: stagedFastReflexStateBuffer
     )
   }
 
@@ -3562,8 +3713,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       synergyCount: UInt32(resolvedSynergyCount),
       flags: resolvedOscillatorCount > 0
         ? 1 | (consumeInterruptEvents ? 1 << 1 : 0)
-        : 0,
-      reserved: 0
+        : (consumeInterruptEvents ? 1 << 1 : 0),
+      reflexRuleCount: UInt32(boundFastReflexRuleCount)
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -5040,6 +5191,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       receptorEventTransductionResultBuffer.gpuAddress,
       index: 14
     )
+    protectiveMotorArgumentTable.setAddress(fastReflexRuleBuffer.gpuAddress, index: 15)
+    protectiveMotorArgumentTable.setAddress(stagedFastReflexStateBuffer.gpuAddress, index: 16)
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)
     encoder.dispatchThreads(
@@ -5080,7 +5233,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       if lhs.mask.rawValue != rhs.mask.rawValue {
         return lhs.mask.rawValue < rhs.mask.rawValue
       }
-      return lhs.flags < rhs.flags
+      if lhs.flags != rhs.flags { return lhs.flags < rhs.flags }
+      if lhs.magnitude.bitPattern != rhs.magnitude.bitPattern {
+        return lhs.magnitude.bitPattern < rhs.magnitude.bitPattern
+      }
+      return lhs.auxiliaryValue.bitPattern < rhs.auxiliaryValue.bitPattern
     }
     guard
       canonicalEvents.allSatisfy({

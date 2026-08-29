@@ -252,6 +252,8 @@ struct NBInterruptEventABI {
     ulong interrupt_mask;
     uint identifier;
     uint flags;
+    float magnitude;
+    float auxiliary_value;
 };
 
 struct NBReceptorEventTransductionUniformsABI {
@@ -427,7 +429,7 @@ struct NBFastCPGUniformsABI {
     uint oscillator_count;
     uint synergy_count;
     uint flags;
-    uint reserved;
+    uint reflex_rule_count;
 };
 
 struct NBFastCPGStateABI {
@@ -445,6 +447,30 @@ struct NBFastCPGStateABI {
     uint oscillator_identifier;
     uint flags;
     uint reserved;
+};
+
+struct NBFastReflexRuleABI {
+    uint receptor_identifier;
+    uint actuator_identifier;
+    uint circuit_identifier;
+    uint circuit_kind;
+    uint latency_microseconds;
+    uint flags;
+    float activation_threshold;
+    float gain;
+};
+
+struct NBFastReflexStateABI {
+    ulong last_event_timestamp_microseconds;
+    ulong state_timestamp_microseconds;
+    float output;
+    float event_magnitude;
+    uint circuit_identifier;
+    uint flags;
+    ulong pending_delivery_timestamp_microseconds[4];
+    ulong pending_event_timestamp_microseconds[4];
+    float pending_output[4];
+    float pending_event_magnitude[4];
 };
 
 struct NBProtectiveCommandABI {
@@ -620,7 +646,7 @@ struct NBRegionalRouteRuntimeStateABI {
 static_assert(sizeof(NBModuleDescriptorABI) == 32, "module descriptor ABI drift");
 static_assert(sizeof(NBModuleClockStateABI) == 16, "module clock ABI drift");
 static_assert(sizeof(NBReceptorEventABI) == 64, "receptor event ABI drift");
-static_assert(sizeof(NBInterruptEventABI) == 24, "interrupt event ABI drift");
+static_assert(sizeof(NBInterruptEventABI) == 32, "interrupt event ABI drift");
 static_assert(
     sizeof(NBReceptorEventTransductionUniformsABI) == 40,
     "receptor transduction uniform ABI drift"
@@ -649,6 +675,8 @@ static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift"
 static_assert(sizeof(NBProtectiveCommandUniformsABI) == 32, "protective uniforms drift");
 static_assert(sizeof(NBFastCPGUniformsABI) == 24, "fast CPG uniforms drift");
 static_assert(sizeof(NBFastCPGStateABI) == 64, "fast CPG state drift");
+static_assert(sizeof(NBFastReflexRuleABI) == 32, "fast reflex rule drift");
+static_assert(sizeof(NBFastReflexStateABI) == 128, "fast reflex state drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
@@ -778,7 +806,14 @@ inline bool interrupt_event_less(
     if (lhs.interrupt_mask != rhs.interrupt_mask) {
         return lhs.interrupt_mask < rhs.interrupt_mask;
     }
-    return lhs.flags < rhs.flags;
+    if (lhs.flags != rhs.flags) {
+        return lhs.flags < rhs.flags;
+    }
+    if (as_type<uint>(lhs.magnitude) != as_type<uint>(rhs.magnitude)) {
+        return as_type<uint>(lhs.magnitude) < as_type<uint>(rhs.magnitude);
+    }
+    return as_type<uint>(lhs.auxiliary_value)
+        < as_type<uint>(rhs.auxiliary_value);
 }
 
 /// Materializes one already compiled active-module cohort plan into private
@@ -1279,6 +1314,8 @@ kernel void transduce_receptor_interrupts(
         event.interrupt_mask = receptor.interrupt_mask;
         event.identifier = receptor.receptor_identifier;
         event.flags = NBInterruptEventFlagReceptorDerived;
+        event.magnitude = receptor.magnitude;
+        event.auxiliary_value = receptor.auxiliary_value;
         outputEvents[outputCount++] = event;
         receptorCount += 1u;
     }
@@ -2885,6 +2922,8 @@ kernel void map_protective_motor_output(
     device const NBInterruptEventABI *interruptEvents [[buffer(13)]],
     device const NBReceptorEventTransductionResultABI *interruptResult
         [[buffer(14)]],
+    device const NBFastReflexRuleABI *reflexRules [[buffer(15)]],
+    device NBFastReflexStateABI *reflexStates [[buffer(16)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -2902,19 +2941,23 @@ kernel void map_protective_motor_output(
         NBFastCPGStateABI state = cpgStates[oscillator];
         const bool valid = (state.flags & 1u) != 0u;
         const bool active = (state.flags & (1u << 1u)) != 0u;
-        bool reset = false;
+        float resetMagnitude = 0.0f;
         if (valid && active) {
             for (uint eventIndex = 0u; eventIndex < interruptEventCount;
                  ++eventIndex) {
                 const NBInterruptEventABI event = interruptEvents[eventIndex];
-                reset = reset || (
-                    event.timestamp_microseconds > state.timestamp_microseconds &&
+                if (event.timestamp_microseconds > state.timestamp_microseconds &&
                     event.timestamp_microseconds
                         <= cpgUniforms->sample_timestamp_microseconds &&
-                    (event.interrupt_mask & state.sensory_reset_mask) != 0ul
-                );
+                    (event.interrupt_mask & state.sensory_reset_mask) != 0ul) {
+                    resetMagnitude = max(
+                        resetMagnitude,
+                        max(event.magnitude, 0.0f)
+                    );
+                }
             }
         }
+        const bool reset = resetMagnitude > 0.0f;
         const float elapsedSeconds = valid && active
                 && cpgUniforms->sample_timestamp_microseconds
                     > state.timestamp_microseconds
@@ -2935,11 +2978,132 @@ kernel void map_protective_motor_output(
             ? 0.5f - 0.5f * cos(twoPi * normalizedActivePhase)
             : 0.0f;
         state.output = clamp(rawOutput * state.output_gain, 0.0f, 1.0f);
-        state.reset_magnitude = reset ? 1.0f : 0.0f;
+        state.reset_magnitude = resetMagnitude;
         state.timestamp_microseconds = cpgUniforms->sample_timestamp_microseconds;
         state.flags = (state.flags & ~(1u << 2u))
             | (reset ? (1u << 2u) : 0u);
         cpgStates[oscillator] = state;
+    }
+    const uint reflexRuleCount = min(cpgUniforms->reflex_rule_count, 4096u);
+    for (uint ruleIndex = 0u; ruleIndex < reflexRuleCount; ++ruleIndex) {
+        const NBFastReflexRuleABI rule = reflexRules[ruleIndex];
+        NBFastReflexStateABI state = reflexStates[ruleIndex];
+        float selectedOutput = 0.0f;
+        float selectedMagnitude = 0.0f;
+        ulong latestEventTimestamp = state.last_event_timestamp_microseconds;
+        const bool hadSeenEvent = (state.flags & (1u << 4u)) != 0u;
+        bool hasSeenEvent = hadSeenEvent;
+        bool queueOverflow = false;
+        for (uint pendingIndex = 0u; pendingIndex < 4u; ++pendingIndex) {
+            const ulong delivery =
+                state.pending_delivery_timestamp_microseconds[pendingIndex];
+            if (delivery != 0ul &&
+                delivery <= cpgUniforms->sample_timestamp_microseconds) {
+                selectedOutput += state.pending_output[pendingIndex];
+                selectedMagnitude = max(
+                    selectedMagnitude,
+                    state.pending_event_magnitude[pendingIndex]
+                );
+                state.pending_delivery_timestamp_microseconds[pendingIndex] = 0ul;
+                state.pending_event_timestamp_microseconds[pendingIndex] = 0ul;
+                state.pending_output[pendingIndex] = 0.0f;
+                state.pending_event_magnitude[pendingIndex] = 0.0f;
+            }
+        }
+        const bool innateEnabled = (rule.flags & 3u) == 3u;
+        if (innateEnabled) {
+            for (uint eventIndex = 0u; eventIndex < interruptEventCount;
+                 ++eventIndex) {
+                const NBInterruptEventABI event = interruptEvents[eventIndex];
+                if (event.identifier != rule.receptor_identifier ||
+                    (hadSeenEvent && event.timestamp_microseconds
+                        <= state.last_event_timestamp_microseconds)) {
+                    continue;
+                }
+                hasSeenEvent = true;
+                latestEventTimestamp = max(
+                    latestEventTimestamp,
+                    event.timestamp_microseconds
+                );
+                if (event.magnitude < rule.activation_threshold) {
+                    continue;
+                }
+                const ulong latency = ulong(rule.latency_microseconds);
+                const bool deliveryOverflow = event.timestamp_microseconds
+                    > (~0ul) - latency;
+                const ulong deliveryTimestamp = deliveryOverflow
+                    ? ~0ul
+                    : event.timestamp_microseconds + latency;
+                if (deliveryOverflow) {
+                    queueOverflow = true;
+                    continue;
+                }
+                const float response = clamp(
+                    max(event.magnitude - rule.activation_threshold, 0.0f)
+                        * rule.gain,
+                    -1.0f,
+                    1.0f
+                );
+                if (deliveryTimestamp
+                    <= cpgUniforms->sample_timestamp_microseconds) {
+                    selectedOutput += response;
+                    selectedMagnitude = max(selectedMagnitude, event.magnitude);
+                    continue;
+                }
+                uint emptyPendingIndex = 4u;
+                uint matchingPendingIndex = 4u;
+                for (uint pendingIndex = 0u; pendingIndex < 4u;
+                     ++pendingIndex) {
+                    const ulong pendingDelivery =
+                        state.pending_delivery_timestamp_microseconds[pendingIndex];
+                    if (pendingDelivery == deliveryTimestamp) {
+                        matchingPendingIndex = pendingIndex;
+                        break;
+                    }
+                    if (pendingDelivery == 0ul && emptyPendingIndex == 4u) {
+                        emptyPendingIndex = pendingIndex;
+                    }
+                }
+                const uint pendingIndex = matchingPendingIndex != 4u
+                    ? matchingPendingIndex
+                    : emptyPendingIndex;
+                if (pendingIndex == 4u) {
+                    queueOverflow = true;
+                    continue;
+                }
+                state.pending_delivery_timestamp_microseconds[pendingIndex] =
+                    deliveryTimestamp;
+                state.pending_event_timestamp_microseconds[pendingIndex] = max(
+                    state.pending_event_timestamp_microseconds[pendingIndex],
+                    event.timestamp_microseconds
+                );
+                state.pending_output[pendingIndex] = clamp(
+                    state.pending_output[pendingIndex] + response,
+                    -1.0f,
+                    1.0f
+                );
+                state.pending_event_magnitude[pendingIndex] = max(
+                    state.pending_event_magnitude[pendingIndex],
+                    event.magnitude
+                );
+            }
+        }
+        bool hasPending = false;
+        for (uint pendingIndex = 0u; pendingIndex < 4u; ++pendingIndex) {
+            hasPending = hasPending ||
+                state.pending_delivery_timestamp_microseconds[pendingIndex] != 0ul;
+        }
+        state.last_event_timestamp_microseconds = latestEventTimestamp;
+        state.state_timestamp_microseconds = cpgUniforms->sample_timestamp_microseconds;
+        state.output = clamp(selectedOutput, -1.0f, 1.0f);
+        state.event_magnitude = selectedMagnitude;
+        state.circuit_identifier = rule.circuit_identifier;
+        state.flags = 1u
+            | (state.output != 0.0f ? (1u << 1u) : 0u)
+            | (hasPending ? (1u << 2u) : 0u)
+            | (queueOverflow ? (1u << 3u) : 0u)
+            | (hasSeenEvent ? (1u << 4u) : 0u);
+        reflexStates[ruleIndex] = state;
     }
     const ulong unlocalizedWithdrawalCauses =
         NBInterruptPain | NBInterruptDamagingContact | NBInterruptJointLimit;
@@ -3016,6 +3180,7 @@ kernel void map_protective_motor_output(
             withdrawalExcitation
         );
         float sampledCPGOutput = 0.0f;
+        float sampledReflexOutput = 0.0f;
         const uint actuatorSynergy = index % max(cpgUniforms->synergy_count, 1u);
         for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
             const NBFastCPGStateABI state = cpgStates[oscillator];
@@ -3024,8 +3189,14 @@ kernel void map_protective_motor_output(
                 sampledCPGOutput += state.output;
             }
         }
+        for (uint ruleIndex = 0u; ruleIndex < reflexRuleCount; ++ruleIndex) {
+            if (reflexRules[ruleIndex].actuator_identifier == index) {
+                sampledReflexOutput += reflexStates[ruleIndex].output;
+            }
+        }
         const float descendingExcitation = clamp(
-            descendingSomaticExcitations[index] + sampledCPGOutput,
+            descendingSomaticExcitations[index] + sampledCPGOutput
+                + sampledReflexOutput,
             0.0f,
             channel.maximum_excitation
         ) * (1.0f - clamp(command.motor_inhibition, 0.0f, 1.0f));

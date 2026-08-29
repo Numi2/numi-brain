@@ -70,6 +70,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         "cognitive and fast runtimes do not share one device and immutable brain version"
       )
     }
+    try fastTissue.bindSpeciesReflexProgram(cognitive.boundSpeciesTemplate)
     self.cognitive = cognitive
     self.fastTissue = fastTissue
     self.parameterVersionFingerprint = cognitive.parameterVersionFingerprint
@@ -495,11 +496,11 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         schedulerEvents: schedulerEvents
       )
       fastPrepared = true
-      let acceptedCPGState = try fastTissue.borrowPreparedAcceptedCPGState(
+      let acceptedFastMotorState = try fastTissue.borrowPreparedAcceptedFastMotorState(
         for: transaction.token
       )
-      try cognitive.importAcceptedFastCPGState(
-        acceptedCPGState,
+      try cognitive.importAcceptedFastMotorState(
+        acceptedFastMotorState,
         transaction: transaction.cognitiveTransaction
       )
       let consequence = try cognitive.finalizeAcceptedControl(

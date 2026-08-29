@@ -592,7 +592,11 @@ public struct BrainJointTransaction: Sendable {
       if lhs.mask.rawValue != rhs.mask.rawValue {
         return lhs.mask.rawValue < rhs.mask.rawValue
       }
-      return lhs.flags < rhs.flags
+      if lhs.flags != rhs.flags { return lhs.flags < rhs.flags }
+      if lhs.magnitude.bitPattern != rhs.magnitude.bitPattern {
+        return lhs.magnitude.bitPattern < rhs.magnitude.bitPattern
+      }
+      return lhs.auxiliaryValue.bitPattern < rhs.auxiliaryValue.bitPattern
     }
   }
 

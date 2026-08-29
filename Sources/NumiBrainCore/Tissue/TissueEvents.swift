@@ -395,7 +395,9 @@ public struct TissueEventSchedule: Equatable, Sendable {
           timestamp: timestamp,
           mask: event.interruptMask,
           identifier: event.receptorIdentifier,
-          flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED)
+          flags: UInt32(NB_INTERRUPT_EVENT_FLAG_RECEPTOR_DERIVED),
+          magnitude: event.magnitude,
+          auxiliaryValue: event.auxiliaryValue
         )
       )
     }
@@ -423,7 +425,11 @@ public struct TissueEventSchedule: Equatable, Sendable {
     if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
     if lhs.identifier != rhs.identifier { return lhs.identifier < rhs.identifier }
     if lhs.mask.rawValue != rhs.mask.rawValue { return lhs.mask.rawValue < rhs.mask.rawValue }
-    return lhs.flags < rhs.flags
+    if lhs.flags != rhs.flags { return lhs.flags < rhs.flags }
+    if lhs.magnitude.bitPattern != rhs.magnitude.bitPattern {
+      return lhs.magnitude.bitPattern < rhs.magnitude.bitPattern
+    }
+    return lhs.auxiliaryValue.bitPattern < rhs.auxiliaryValue.bitPattern
   }
 
   private static func canonicalOrder(

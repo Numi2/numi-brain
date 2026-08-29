@@ -9,11 +9,11 @@ extern "C" {
 #endif
 
 enum {
-  NB_BRAIN_ABI_VERSION = 1,
+  NB_BRAIN_ABI_VERSION = 2,
   NB_MODULE_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MODULE_CLOCK_STATE_BYTE_COUNT = 16,
   NB_RECEPTOR_EVENT_BYTE_COUNT = 64,
-  NB_INTERRUPT_EVENT_BYTE_COUNT = 24,
+  NB_INTERRUPT_EVENT_BYTE_COUNT = 32,
   NB_RECEPTOR_EVENT_TRANSDUCTION_UNIFORMS_BYTE_COUNT = 40,
   NB_RECEPTOR_EVENT_TRANSDUCTION_RESULT_BYTE_COUNT = 16,
   NB_DUE_INVOCATION_BYTE_COUNT = 32,
@@ -113,6 +113,8 @@ typedef struct NBInterruptEvent {
   uint64_t interrupt_mask;
   uint32_t identifier;
   uint32_t flags;
+  float magnitude;
+  float auxiliary_value;
 } NBInterruptEvent;
 
 typedef struct NBReceptorEventTransductionUniforms {
