@@ -504,7 +504,7 @@ struct NBWorkspaceMetadataRecord {
   uint provenance_kind;
   uint flags;
   ulong provenance_source_generation;
-  ulong reserved;
+  ulong last_score_update_timestamp_microseconds;
 };
 
 struct NBControlHeader {
@@ -1692,10 +1692,32 @@ inline float procedural_similarity(
   return dot * rsqrt(query_norm * key_norm);
 }
 
+inline float memory_workspace_time_scaled_retention(
+  const float retained_per_second,
+  const float persistence_priority,
+  const float elapsed_seconds)
+{
+  const float effective_retention = mix(
+    clamp(retained_per_second, 0.0f, 1.0f),
+    1.0f,
+    0.75f * clamp(persistence_priority, 0.0f, 1.0f)
+  );
+  if (effective_retention <= 0.0f) return 0.0f;
+  if (effective_retention >= 1.0f) return 1.0f;
+  return pow(effective_retention, max(elapsed_seconds, 0.0f));
+}
+
+inline bool is_memory_workspace_source(const uint source_module) {
+  return source_module == 56u || source_module == 58u
+    || source_module == 59u || source_module == 60u
+    || source_module == 61u;
+}
+
 kernel void begin_memory_retrieval(
   device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
   constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
+  device const float *memory_parameters [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.maximum_results || gid >= 4u) return;
@@ -1709,6 +1731,47 @@ kernel void begin_memory_retrieval(
   scratch->winner_indices[gid] = 0u;
   scratch->winner_scores[gid] = 0.0f;
   if (gid == 0u) scratch->flags = 0u;
+
+  const uint slot = 3u + gid;
+  if (slot >= uniforms.workspace_capacity || uniforms.workspace_dimension == 0u) {
+    return;
+  }
+  device NBWorkspaceMetadataRecord *metadata =
+    reinterpret_cast<device NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  NBWorkspaceMetadataRecord token = metadata[slot];
+  const uint source_module = token.kind_and_source >> 16u;
+  if (token.identifier == 0ul || (token.flags & 1u) == 0u
+      || (token.kind_and_source & 0xffffu) != 5u
+      || !is_memory_workspace_source(source_module)) return;
+  const ulong last_update = token.last_score_update_timestamp_microseconds != 0ul
+    ? token.last_score_update_timestamp_microseconds
+    : token.last_refresh_timestamp_microseconds;
+  const float elapsed_seconds = last_update != 0ul
+      && uniforms.target_timestamp_microseconds >= last_update
+    ? float(uniforms.target_timestamp_microseconds - last_update) * 1.0e-6f
+    : 0.0f;
+  const float retention = memory_workspace_time_scaled_retention(
+    memory_parameters[7], token.persistence_priority, elapsed_seconds
+  );
+  token.confidence = clamp(token.confidence, 0.0f, 1.0f) * retention;
+  token.selection_score = clamp(token.selection_score, 0.0f, 1.0f)
+    * retention;
+  token.last_score_update_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  if (token.selection_score < max(memory_parameters[16], 0.01f)) {
+    device float *workspace = reinterpret_cast<device float *>(
+      hot_state + uniforms.workspace_content_offset
+    );
+    const uint base = slot * uniforms.workspace_dimension;
+    for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+      workspace[base + feature] = 0.0f;
+    }
+    metadata[slot] = {};
+    return;
+  }
+  metadata[slot] = token;
 }
 
 kernel void clear_archive_retrieval_shortlist(
@@ -2393,16 +2456,31 @@ kernel void publish_memory_retrieval_winner(
     reinterpret_cast<device NBWorkspaceMetadataRecord *>(
       hot_state + uniforms.workspace_metadata_offset
     );
-  NBWorkspaceMetadataRecord token = {};
-  token.identifier = (uniforms.target_timestamp_microseconds << 8) | ulong(slot + 1u);
-  token.source_timestamp_microseconds = episodic_value != nullptr
-    ? episodic_value->end_timestamp_microseconds
-    : (archived_value != nullptr
-      ? archived_value->end_timestamp_microseconds
-      : (prospective_value != nullptr
-        ? prospective_value->created_timestamp_microseconds
-        : uniforms.target_timestamp_microseconds));
-  token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  const uint source_module = kind == 2u
+    ? 58u
+    : (kind == 5u ? 59u
+      : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
+  const NBWorkspaceMetadataRecord prior = metadata[slot];
+  const bool same_record = prior.identifier != 0ul
+    && (prior.flags & 1u) != 0u
+    && (prior.kind_and_source & 0xffffu) == 5u
+    && (prior.kind_and_source >> 16u) == source_module
+    && prior.entity_identifier == identifier;
+  NBWorkspaceMetadataRecord token = same_record
+    ? prior : NBWorkspaceMetadataRecord{};
+  if (!same_record) {
+    token.identifier = (uniforms.target_timestamp_microseconds << 8)
+      | ulong(slot + 1u);
+    token.source_timestamp_microseconds = episodic_value != nullptr
+      ? episodic_value->end_timestamp_microseconds
+      : (archived_value != nullptr
+        ? archived_value->end_timestamp_microseconds
+        : (prospective_value != nullptr
+          ? prospective_value->created_timestamp_microseconds
+          : uniforms.target_timestamp_microseconds));
+  }
+  token.last_refresh_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
   token.entity_identifier = identifier;
   token.goal_identifier = episodic_value != nullptr
     ? episodic_value->active_goal_identifier
@@ -2425,10 +2503,6 @@ kernel void publish_memory_retrieval_winner(
         : (prospective_value != nullptr
           ? prospective_value->deadline_timestamp_microseconds : 0ul)));
   token.provenance_record_identifier = identifier;
-  const uint source_module = kind == 2u
-    ? 58u
-    : (kind == 5u ? 59u
-      : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
   token.kind_and_source = 5u | (source_module << 16);
   const float retrieval_confidence = sqrt(
     clamp(score, 0.0f, 1.0f) * clamp(retrieval_relevance, 0.0f, 1.0f)
@@ -2449,7 +2523,8 @@ kernel void publish_memory_retrieval_winner(
     ? episodic_value->source_generation
     : (archived_value != nullptr
       ? archived_value->source_generation : uniforms.shadow_generation);
-  token.reserved = 0ul;
+  token.last_score_update_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
   metadata[slot] = token;
   scratch->winner_record_identifiers[uniforms.retrieval_pass] = identifier;
   scratch->winner_kinds[uniforms.retrieval_pass] = kind;

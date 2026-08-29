@@ -497,7 +497,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       )
     }
     argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.memory, minimumScalarCount: 8),
+      try sharedParameters.gpuAddress(.memory, minimumScalarCount: 18),
       index: 6
     )
     argumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 7)

@@ -165,7 +165,7 @@ struct NBWorkspaceMetadataRecord {
   uint provenance_kind;
   uint flags;
   ulong provenance_source_generation;
-  ulong reserved;
+  ulong last_score_update_timestamp_microseconds;
 };
 
 struct NBControlHeader {
@@ -1285,7 +1285,8 @@ kernel void generate_active_goal_state(
     token.provenance_kind = 0u;
     token.flags = 1u;
     token.provenance_source_generation = 0ul;
-    token.reserved = 0ul;
+    token.last_score_update_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
     metadata[slot] = token;
   }
 }
@@ -1346,7 +1347,8 @@ kernel void apply_internal_workspace_write(
   token.provenance_kind = 0u;
   token.flags = 1u;
   token.provenance_source_generation = 0ul;
-  token.reserved = 0ul;
+  token.last_score_update_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
   metadata[slot] = token;
 }
 
