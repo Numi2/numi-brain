@@ -1591,6 +1591,41 @@ inline bool scheduler_invocation_less(
     return lhs.module_id < rhs.module_id;
 }
 
+/// Returns the cadence for the current root shadow. Regional integration and
+/// due-time generation consume the same developmental and neuromodulatory
+/// timescale state, preventing a region from integrating as "slow" while the
+/// scheduler continues to wake it at its immutable base rate. The multiplier
+/// is bounded to [0.25, 4] so capacity and overflow remain provable. Physical,
+/// emergency, spinal, and CPG clocks retain their compiled protective cadence.
+inline ulong scheduler_effective_period(
+    const NBModuleDescriptorABI module,
+    const NBRegionalMaturationRecordABI maturation,
+    const NBRegionalPlasticModulationRecordABI modulation
+) {
+    const ulong basePeriod = ulong(module.period_microseconds);
+    if (module.clock_class <= 3u) {
+        return basePeriod;
+    }
+    const bool validMaturation = maturation.module_identifier
+            == uint(module.module_id)
+        && maturation.unlocked != 0u
+        && isfinite(maturation.timescale_multiplier);
+    const bool validModulation = modulation.module_identifier
+            == uint(module.module_id)
+        && (modulation.flags & 1u) != 0u
+        && isfinite(modulation.timescale_multiplier);
+    const float multiplier = clamp(
+        (validMaturation ? maturation.timescale_multiplier : 1.0f)
+            * (validModulation ? modulation.timescale_multiplier : 1.0f),
+        0.25f,
+        4.0f
+    );
+    const float scaled = max(
+        1.0f, floor(float(module.period_microseconds) * multiplier + 0.5f)
+    );
+    return ulong(scaled);
+}
+
 /// Deterministic one-agent reference kernel. It consumes the compiled v1 ABI,
 /// advances private shadow clocks, and compacts periodic/event invocations.
 /// Later cohort kernels will assign one lane per agent and prefix-sum groups.
@@ -1605,6 +1640,8 @@ kernel void schedule_due_modules(
     device const NBReceptorEventTransductionResultABI *eventResult [[buffer(7)]],
     device const NBParameterVersionBindingABI *parameterVersion [[buffer(8)]],
     device const NBRegionalMaturationRecordABI *maturation [[buffer(9)]],
+    device const NBRegionalPlasticModulationRecordABI *plasticModulation
+        [[buffer(10)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -1658,7 +1695,9 @@ kernel void schedule_due_modules(
                 invocations[invocationCount++] = invocation;
                 clock.last_update_microseconds = nextDue;
             }
-            const ulong period = ulong(module.period_microseconds);
+            const ulong period = scheduler_effective_period(
+                module, maturation[moduleIndex], plasticModulation[moduleIndex]
+            );
             if (nextDue > (~0ul) - period) {
                 result->invocation_count = invocationCount;
                 result->status = NBSchedulerStatusTimeOverflow;

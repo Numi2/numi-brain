@@ -237,6 +237,10 @@ private struct TissueRegionalPlasticBasisUniforms {
 
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
+  /// Adaptive cortical cadence is bounded so the scheduler can prove its
+  /// invocation capacity before encoding a root transaction. Timing-critical
+  /// physical, emergency, spinal, and CPG clocks retain their compiled period.
+  static let maximumAdaptiveCadenceSpeedup: UInt64 = 4
   static let maximumFastCPGOscillatorCount = 64
   static let fastCPGStateStride = 64
   static let maximumFastReflexRuleCount = 4_096
@@ -1127,7 +1131,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let schedulerArgumentDescriptor = MTL4ArgumentTableDescriptor()
     schedulerArgumentDescriptor.label = "NumiBrain scheduler arguments"
-    schedulerArgumentDescriptor.maxBufferBindCount = 10
+    schedulerArgumentDescriptor.maxBufferBindCount = 11
     schedulerArgumentDescriptor.initializeBindings = true
     guard
       let schedulerArgumentTable = try? device.makeArgumentTable(
@@ -6194,7 +6198,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         == interactiveJointRoot?.transaction.token.fingerprint
       ? stagedRegionalMaturationBuffer
       : defaultRegionalMaturationBuffer
+    let plasticModulationBuffer =
+      descendingSomaticTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? stagedRegionalPlasticModulationBuffer
+      : defaultRegionalPlasticModulationBuffer
     schedulerArgumentTable.setAddress(maturationBuffer.gpuAddress, index: 9)
+    schedulerArgumentTable.setAddress(plasticModulationBuffer.gpuAddress, index: 10)
     encoder.setComputePipelineState(schedulerPipeline)
     encoder.setArgumentTable(schedulerArgumentTable)
     encoder.dispatchThreads(
@@ -6275,11 +6285,6 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       index: 22
     )
     regionalArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 23)
-    let plasticModulationBuffer =
-      descendingSomaticTransactionFingerprint
-        == interactiveJointRoot?.transaction.token.fingerprint
-      ? stagedRegionalPlasticModulationBuffer
-      : defaultRegionalPlasticModulationBuffer
     regionalArgumentTable.setAddress(plasticModulationBuffer.gpuAddress, index: 24)
     regionalArgumentTable.setAddress(maturationBuffer.gpuAddress, index: 25)
     regionalArgumentTable.setAddress(
@@ -6612,10 +6617,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     var invocationUpperBound: UInt64 = 0
     for module in brainSchedule.modules {
-      guard targetMicroseconds <= UInt64.max - UInt64(module.periodMicroseconds) else {
+      let basePeriod = UInt64(module.periodMicroseconds)
+      let adaptiveClock = module.clockClass > .cpg
+      let (maximumPeriod, maximumPeriodOverflow) = basePeriod
+        .multipliedReportingOverflow(
+          by: adaptiveClock ? Self.maximumAdaptiveCadenceSpeedup : 1
+        )
+      guard !maximumPeriodOverflow,
+        targetMicroseconds <= UInt64.max - maximumPeriod
+      else {
         throw TissueError.transaction("scheduler next-due time would overflow UInt64")
       }
-      let periodic = duration / UInt64(module.periodMicroseconds) + 2
+      let minimumPeriod = adaptiveClock
+        ? max(basePeriod / Self.maximumAdaptiveCadenceSpeedup, 1)
+        : basePeriod
+      let periodic = duration / minimumPeriod + 2
       let (next, overflow) = invocationUpperBound.addingReportingOverflow(periodic)
       guard !overflow else {
         throw TissueError.transaction("scheduler invocation bound overflows UInt64")
