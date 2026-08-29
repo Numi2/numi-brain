@@ -27,6 +27,10 @@ private struct MemoryRangeCopyUniforms {
 /// publishes or discards generation pointers after command completion.
 @available(macOS 26.0, *)
 public final class MetalAgentStateRuntime: @unchecked Sendable {
+  struct PreparedCommit: Equatable, Sendable {
+    let arenaCommit: MetalAgentStateArena.PreparedCommit
+  }
+
   struct CheckpointPayload: Equatable, Sendable {
     let generation: UInt64
     let hotState: Data
@@ -344,6 +348,22 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     try arena.commit(transaction: transaction)
+  }
+
+  func prepareCommit(
+    transaction: MetalAgentStateTransactionToken
+  ) throws -> PreparedCommit {
+    lock.lock()
+    defer { lock.unlock() }
+    return PreparedCommit(
+      arenaCommit: try arena.prepareCommit(transaction: transaction)
+    )
+  }
+
+  func publishPreparedCommit(_ prepared: PreparedCommit) {
+    lock.lock()
+    defer { lock.unlock() }
+    arena.publishPreparedCommit(prepared.arenaCommit)
   }
 
   public func abort(transaction: MetalAgentStateTransactionToken) throws {

@@ -541,6 +541,19 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     try transaction.commit(with: receipt)
   }
 
+  func prepareCommit(
+    transaction: MetalJointAgentStateTransaction,
+    receipt: BrainJointCommitToken
+  ) throws {
+    try transaction.prepareCommit(with: receipt)
+  }
+
+  func publishPreparedCommit(
+    transaction: MetalJointAgentStateTransaction
+  ) {
+    transaction.publishPreparedCommit()
+  }
+
   public func abort(transaction: MetalJointAgentStateTransaction) throws {
     try transaction.abort()
   }

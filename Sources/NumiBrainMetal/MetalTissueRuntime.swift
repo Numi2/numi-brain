@@ -251,6 +251,25 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let transductionStatus: UInt32
   }
 
+  fileprivate struct PreparedRootPublication: Sendable {
+    let committedIndex: Int
+    let committedHistoryOwnerMask: UInt32
+    let committedRelayHistoryTimestamps: [UInt64]
+    let committedStep: UInt64
+    let committedSchedulerClockIndex: Int
+    let committedRegionalStateIndex: Int
+    let committedSchedulerTime: BrainTimestamp
+    let committedSchedulerGeneration: UInt64
+  }
+
+  struct PreparedJointRootCommit: Sendable {
+    let receipt: BrainJointCommitToken
+    fileprivate let root: PreparedRootPublication
+    fileprivate let localizedObservations: [LocalizedMuscleLoadReceptorObservation]
+    fileprivate let bodyLoadFrame: CommittedBodyLoadFrame?
+    fileprivate let protectiveMuscleSelection: LocalizedProtectiveMuscleSelection?
+  }
+
   public let deviceName: String
   public let deviceRegistryID: UInt64
   public let width: Int
@@ -3206,10 +3225,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         "joint roots require commitJointRootTransaction with the accepted physics token"
       )
     }
-    try publishRootTransaction()
+    publishPreparedRootTransaction(try prepareRootPublication())
   }
 
   public func commitJointRootTransaction() throws -> BrainJointCommitToken {
+    let prepared = try prepareJointRootTransactionCommit()
+    publishPreparedJointRootTransactionCommit(prepared)
+    return prepared.receipt
+  }
+
+  func prepareJointRootTransactionCommit() throws -> PreparedJointRootCommit {
     guard var transaction = pendingJointTransaction else {
       throw TissueError.transaction("there is no joint Metal root to commit")
     }
@@ -3241,12 +3266,25 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       bodyLoadFrame = nil
       protectiveMuscleSelection = nil
     }
-    try publishRootTransaction()
-    latestCommittedMuscleLoadObservations = localizedObservations
-    latestCommittedBodyLoadFrame = bodyLoadFrame
-    latestCommittedProtectiveMuscleSelection = protectiveMuscleSelection
+    return PreparedJointRootCommit(
+      receipt: receipt,
+      root: try prepareRootPublication(),
+      localizedObservations: localizedObservations,
+      bodyLoadFrame: bodyLoadFrame,
+      protectiveMuscleSelection: protectiveMuscleSelection
+    )
+  }
+
+  /// Fallible receipt, anatomy, and generation checks are complete. Only
+  /// committed pointer/counter publication remains.
+  func publishPreparedJointRootTransactionCommit(
+    _ prepared: PreparedJointRootCommit
+  ) {
+    publishPreparedRootTransaction(prepared.root)
+    latestCommittedMuscleLoadObservations = prepared.localizedObservations
+    latestCommittedBodyLoadFrame = prepared.bodyLoadFrame
+    latestCommittedProtectiveMuscleSelection = prepared.protectiveMuscleSelection
     pendingJointTransaction = nil
-    return receipt
   }
 
   private func validateLocalizedMuscleLoadObservations(
@@ -3389,7 +3427,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
   }
 
-  private func publishRootTransaction() throws {
+  private func prepareRootPublication() throws -> PreparedRootPublication {
     guard let pendingRootShadowIndex, let pendingRootShadowOwnerMask,
       let pendingRootShadowStep, let pendingRelayHistoryTimestamps,
       let pendingSchedulerClockIndex,
@@ -3408,15 +3446,30 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard !schedulerGenerationOverflow else {
       throw TissueError.transaction("scheduler generation overflow")
     }
-    committedIndex = pendingRootShadowIndex
-    committedHistoryOwnerMask = pendingRootShadowOwnerMask
-    committedRelayHistoryTimestamps = pendingRelayHistoryTimestamps
-    committedStep = pendingRootShadowStep
-    committedSchedulerClockIndex = pendingSchedulerClockIndex
-    committedRegionalStateIndex = pendingRegionalStateIndex
-    committedBodyLoadFieldStateIndex = pendingRegionalStateIndex
-    committedSchedulerTime = pendingSchedulerTargetTime
-    committedSchedulerGeneration = nextSchedulerGeneration
+    return PreparedRootPublication(
+      committedIndex: pendingRootShadowIndex,
+      committedHistoryOwnerMask: pendingRootShadowOwnerMask,
+      committedRelayHistoryTimestamps: pendingRelayHistoryTimestamps,
+      committedStep: pendingRootShadowStep,
+      committedSchedulerClockIndex: pendingSchedulerClockIndex,
+      committedRegionalStateIndex: pendingRegionalStateIndex,
+      committedSchedulerTime: pendingSchedulerTargetTime,
+      committedSchedulerGeneration: nextSchedulerGeneration
+    )
+  }
+
+  private func publishPreparedRootTransaction(
+    _ prepared: PreparedRootPublication
+  ) {
+    committedIndex = prepared.committedIndex
+    committedHistoryOwnerMask = prepared.committedHistoryOwnerMask
+    committedRelayHistoryTimestamps = prepared.committedRelayHistoryTimestamps
+    committedStep = prepared.committedStep
+    committedSchedulerClockIndex = prepared.committedSchedulerClockIndex
+    committedRegionalStateIndex = prepared.committedRegionalStateIndex
+    committedBodyLoadFieldStateIndex = prepared.committedRegionalStateIndex
+    committedSchedulerTime = prepared.committedSchedulerTime
+    committedSchedulerGeneration = prepared.committedSchedulerGeneration
     hasCommittedSchedulerResult = true
     self.pendingRootShadowIndex = nil
     self.pendingRootShadowOwnerMask = nil

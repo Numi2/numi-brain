@@ -643,6 +643,10 @@ public struct MetalAgentStateTransactionToken: Equatable, Hashable, Sendable {
 
 @available(macOS 26.0, *)
 public final class MetalAgentStateArena: @unchecked Sendable {
+  struct PreparedCommit: Equatable, Sendable {
+    let transaction: MetalAgentStateTransactionToken
+  }
+
   public struct HotStateView: Equatable, Sendable {
     public let inputGPUAddress: UInt64
     public let outputGPUAddress: UInt64
@@ -824,12 +828,27 @@ public final class MetalAgentStateArena: @unchecked Sendable {
   }
 
   public func commit(transaction: MetalAgentStateTransactionToken) throws {
+    let prepared = try prepareCommit(transaction: transaction)
+    publishPreparedCommit(prepared)
+  }
+
+  func prepareCommit(
+    transaction: MetalAgentStateTransactionToken
+  ) throws -> PreparedCommit {
     try validate(transaction)
     guard pendingHotStateDefined, pendingJournalFinalized else {
       throw TissueError.transaction(
         "complete hot state and memory journal must finish before commit"
       )
     }
+    return PreparedCommit(transaction: transaction)
+  }
+
+  /// Preparation proves every fallible condition. Publication is only pointer
+  /// and generation assignment, so the joint coordinator can publish this
+  /// state after the fast-tissue side has also prepared successfully.
+  func publishPreparedCommit(_ prepared: PreparedCommit) {
+    let transaction = prepared.transaction
     committedIndex = Int(transaction.outputBufferIndex)
     committedJournalIndex = Int(transaction.outputBufferIndex)
     committedGeneration = transaction.shadowGeneration

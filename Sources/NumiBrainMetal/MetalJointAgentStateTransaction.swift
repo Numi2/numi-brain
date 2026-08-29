@@ -7,6 +7,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   public enum Status: Equatable, Sendable {
     case open
     case gpuStateFinished
+    case commitPrepared
     case committed
     case aborted
   }
@@ -20,6 +21,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
 
   private let runtime: MetalAgentStateRuntime
   private let lock = NSLock()
+  private var preparedCommit: MetalAgentStateRuntime.PreparedCommit?
 
   public init(
     jointToken: BrainJointTransactionToken,
@@ -86,6 +88,11 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   }
 
   public func commit(with receipt: BrainJointCommitToken) throws {
+    try prepareCommit(with: receipt)
+    publishPreparedCommit()
+  }
+
+  func prepareCommit(with receipt: BrainJointCommitToken) throws {
     lock.lock()
     defer { lock.unlock() }
     try require(.gpuStateFinished)
@@ -99,18 +106,34 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
         "joint receipt cannot publish the complete agent-state generation"
       )
     }
-    try runtime.commit(transaction: agentStateToken)
+    preparedCommit = try runtime.prepareCommit(transaction: agentStateToken)
+    status = .commitPrepared
+  }
+
+  /// All receipt and arena conditions were checked by `prepareCommit`. This
+  /// method performs only non-failing committed-generation publication.
+  func publishPreparedCommit() {
+    lock.lock()
+    defer { lock.unlock() }
+    guard status == .commitPrepared, let preparedCommit else {
+      preconditionFailure("joint cognitive commit was not prepared")
+    }
+    runtime.publishPreparedCommit(preparedCommit)
+    self.preparedCommit = nil
     status = .committed
   }
 
   public func abort() throws {
     lock.lock()
     defer { lock.unlock() }
-    guard status == .open || status == .gpuStateFinished else {
+    guard status == .open || status == .gpuStateFinished
+      || status == .commitPrepared
+    else {
       throw TissueError.transaction("joint brain-state transaction is already \(status)")
     }
     try runtime.abort(transaction: agentStateToken)
     acceptedPhysicsTokenFingerprint = nil
+    preparedCommit = nil
     status = .aborted
   }
 

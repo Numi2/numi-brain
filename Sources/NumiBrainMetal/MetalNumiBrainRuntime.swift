@@ -344,15 +344,19 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
           "complete agent state did not finish the accepted joint generation"
         )
       }
-      let receipt = try fastTissue.commitJointRootTransaction()
-      try cognitive.commit(
+      let preparedFastCommit = try fastTissue.prepareJointRootTransactionCommit()
+      try cognitive.prepareCommit(
         transaction: transaction.cognitiveTransaction,
-        receipt: receipt
+        receipt: preparedFastCommit.receipt
+      )
+      fastTissue.publishPreparedJointRootTransactionCommit(preparedFastCommit)
+      cognitive.publishPreparedCommit(
+        transaction: transaction.cognitiveTransaction
       )
       transaction.status = .committed
       activeTransaction = nil
       return CommitResult(
-        receipt: receipt,
+        receipt: preparedFastCommit.receipt,
         decision: decision,
         acceptedConsequence: consequence,
         fastSubmission: submission
@@ -365,6 +369,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       }
       if transaction.cognitiveTransaction.status == .open
         || transaction.cognitiveTransaction.status == .gpuStateFinished
+        || transaction.cognitiveTransaction.status == .commitPrepared
       {
         try? cognitive.abort(transaction: transaction.cognitiveTransaction)
       }
@@ -404,6 +409,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
     if transaction.cognitiveTransaction.status == .open
       || transaction.cognitiveTransaction.status == .gpuStateFinished
+      || transaction.cognitiveTransaction.status == .commitPrepared
     {
       try? cognitive.abort(transaction: transaction.cognitiveTransaction)
     }
