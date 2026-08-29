@@ -51,6 +51,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
   ulong delta_microseconds;
   ulong observation_offset;
+  ulong observation_validity_offset;
   ulong event_queue_offset;
   ulong body_belief_offset;
   ulong muscle_belief_offset;
@@ -419,7 +420,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 408);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 416);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -488,20 +489,48 @@ inline float nb_observation(
   return count == 0u ? 0.0f : observations[offset + index % count];
 }
 
-inline float nb_observation_energy(
+inline float nb_valid_observation(
   device const float *observations,
+  device const uint *validity,
   uint offset,
   uint count,
-  uint seed)
+  uint index,
+  thread bool &is_valid)
 {
+  if (count == 0u) {
+    is_valid = false;
+    return 0.0f;
+  }
+  const uint scalar_index = offset + index % count;
+  is_valid = validity[scalar_index] != 0u;
+  return is_valid ? observations[scalar_index] : 0.0f;
+}
+
+inline float nb_observation_energy(
+  device const float *observations,
+  device const uint *validity,
+  uint offset,
+  uint count,
+  uint seed,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
   if (count == 0u) return 0.0f;
   float energy = 0.0f;
+  uint valid_count = 0u;
   for (uint sample = 0u; sample < 8u; ++sample) {
-    energy += abs(nb_observation(
-      observations, offset, count, seed * 17u + sample * 29u
-    )) * 0.125f;
+    bool sample_valid = false;
+    const float observed = nb_valid_observation(
+      observations, validity, offset, count,
+      seed * 17u + sample * 29u, sample_valid
+    );
+    if (!sample_valid) continue;
+    energy += abs(observed);
+    valid_count += 1u;
   }
-  return clamp(energy, 0.0f, 1.0f);
+  has_evidence = valid_count > 0u;
+  return has_evidence ? clamp(energy / float(valid_count), 0.0f, 1.0f)
+    : 0.0f;
 }
 
 inline float nb_physical_alpha(float elapsed_seconds, float time_constant_seconds) {
@@ -536,30 +565,43 @@ inline float nb_selected_object_accepted_uncertainty(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   const uint seed = (one_based_slot - 1u) * 23u + 3u;
+  bool has_visual_energy = false;
   const float visual_presence = clamp(
     (nb_observation_energy(
-      observations, uniforms.vision_offset, uniforms.vision_count, seed
+      observations, validity, uniforms.vision_offset, uniforms.vision_count,
+      seed, has_visual_energy
     ) - max(belief_parameters[4], 0.0f))
       * max(4.0f * belief_parameters[3], 0.25f),
     0.0f,
     1.0f
   );
+  if (!has_visual_energy) return 1.0f;
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
   );
   float pose_difference = 0.0f;
+  uint valid_pose_components = 0u;
   for (uint component = 0u; component < 4u; ++component) {
-    const float observed_pose = nb_observation(
-      observations,
+    bool pose_valid = false;
+    const float observed_pose = nb_valid_observation(
+      observations, validity,
       uniforms.vision_offset,
       uniforms.vision_count,
-      seed * 11u + component * 31u
+      seed * 11u + component * 31u,
+      pose_valid
     );
+    if (!pose_valid) continue;
     const float predicted_pose = object.pose[component]
       + object.velocity[component] * elapsed_seconds;
-    pose_difference += abs(observed_pose - predicted_pose) * 0.25f;
+    pose_difference += abs(observed_pose - predicted_pose);
+    valid_pose_components += 1u;
   }
+  if (valid_pose_components == 0u) return 1.0f;
+  pose_difference /= float(valid_pose_components);
   const float association_likelihood = exp(
     -max(0.5f, 4.0f * max(belief_parameters[3], 0.0f))
       * (1.0f - 0.75f * clamp(object.uncertainty, 0.0f, 1.0f))
@@ -585,8 +627,10 @@ inline float nb_selected_object_accepted_uncertainty(
 
 inline float nb_world_observation(
   device const float *observations,
+  device const uint *validity,
   constant NBAcceptedConsequenceUniforms &uniforms,
-  uint world_index)
+  uint world_index,
+  thread bool &is_valid)
 {
   uint local_index = world_index;
   uint offset = uniforms.vision_offset;
@@ -626,16 +670,14 @@ inline float nb_world_observation(
     offset = uniforms.interoception_offset;
     count = uniforms.interoception_count;
   }
-  if (count > 0u) return nb_observation(observations, offset, count, local_index);
-  const uint fallback = uint(
-    (ulong(world_index) * ulong(uniforms.observation_count))
-      / ulong(NB_WORLD_RECEPTOR_DIMENSION)
+  return nb_valid_observation(
+    observations, validity, offset, count, local_index, is_valid
   );
-  return observations[min(fallback, uniforms.observation_count - 1u)];
 }
 
 inline float nb_mean_prediction_error(
   device const float *observations,
+  device const uint *validity,
   device const float *world,
   constant NBAcceptedConsequenceUniforms &uniforms)
 {
@@ -649,6 +691,7 @@ inline float nb_mean_prediction_error(
       );
   if (sample_count == 0u) return 0.0f;
   float total = 0.0f;
+  uint valid_count = 0u;
   for (uint index = 0u; index < sample_count; ++index) {
     float prediction = world[index];
     if (structured_world_available) {
@@ -659,12 +702,20 @@ inline float nb_mean_prediction_error(
         ] / float(NB_WORLD_HEAD_COUNT);
       }
     }
+    bool observation_valid = false;
     const float observed = structured_world_available
-      ? nb_world_observation(observations, uniforms, index)
-      : observations[index];
+      ? nb_world_observation(
+          observations, validity, uniforms, index, observation_valid
+        )
+      : nb_valid_observation(
+          observations, validity, 0u, uniforms.observation_count, index,
+          observation_valid
+        );
+    if (!observation_valid) continue;
     total += abs(observed - prediction);
+    valid_count += 1u;
   }
-  return total / float(sample_count);
+  return valid_count > 0u ? total / float(valid_count) : 0.0f;
 }
 
 inline float nb_mean_sensorimotor_prediction_error(
@@ -885,6 +936,9 @@ kernel void assimilate_accepted_body_and_physiology(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   const float gain = clamp(
     min(uniforms.belief_gain, max(belief_parameters[0], 0.0f)), 0.0f, 1.0f
   );
@@ -902,16 +956,20 @@ kernel void assimilate_accepted_body_and_physiology(
     device float *body = reinterpret_cast<device float *>(
       hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
     );
-    const float proprioception = nb_observation(
-      observations, uniforms.proprioception_offset,
-      uniforms.proprioception_count, gid
+    bool proprioception_valid = false;
+    const float proprioception = nb_valid_observation(
+      observations, validity, uniforms.proprioception_offset,
+      uniforms.proprioception_count, gid, proprioception_valid
     );
-    const float touch = nb_observation(
-      observations, uniforms.touch_offset, uniforms.touch_count, gid
+    bool touch_valid = false;
+    const float touch = nb_valid_observation(
+      observations, validity, uniforms.touch_offset, uniforms.touch_count, gid,
+      touch_valid
     );
-    const float vestibular = nb_observation(
-      observations, uniforms.vestibular_offset,
-      uniforms.vestibular_count, gid
+    bool vestibular_valid = false;
+    const float vestibular = nb_valid_observation(
+      observations, validity, uniforms.vestibular_offset,
+      uniforms.vestibular_count, gid, vestibular_valid
     );
     device ulong *identity = reinterpret_cast<device ulong *>(
       body + NB_BODY_IDENTITY_FLOAT_OFFSET
@@ -940,7 +998,6 @@ kernel void assimilate_accepted_body_and_physiology(
     float pain_weight = 0.0f;
     float vestibular_total = 0.0f;
     float vestibular_weight = 0.0f;
-    uint body_binding_count = 0u;
     device const NBBodyReceptorBindingRange *body_receptor_ranges =
       reinterpret_cast<device const NBBodyReceptorBindingRange *>(
         body_receptor_table + 1
@@ -963,6 +1020,7 @@ kernel void assimilate_accepted_body_and_physiology(
       if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
           || binding.body_identifier != gid
           || binding.observation_scalar_index >= uniforms.observation_count
+          || validity[binding.observation_scalar_index] == 0u
           || !isfinite(binding.scale) || !isfinite(binding.bias)
           || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
       const float evidence = fma(
@@ -971,7 +1029,6 @@ kernel void assimilate_accepted_body_and_physiology(
         binding.bias
       );
       const uint component = (binding.flags >> 16u) & 0xffffu;
-      body_binding_count += 1u;
       switch (binding.signal) {
         case 1u:
           if (component < 3u) {
@@ -1038,21 +1095,26 @@ kernel void assimilate_accepted_body_and_physiology(
           break;
       }
     }
+    const bool has_configured_body_bindings =
+      body_receptor_range.binding_count > 0u;
     const float contact_evidence = contact_weight > 0.0f
       ? contact_total / contact_weight
-      : clamp(abs(touch), 0.0f, 1.0f);
+      : (!has_configured_body_bindings && touch_valid
+        ? clamp(abs(touch), 0.0f, 1.0f) : body[NB_BODY_CONTACT]);
     const float vestibular_stability = vestibular_weight > 0.0f
       ? vestibular_total / vestibular_weight
-      : clamp(
-      1.0f - abs(vestibular), 0.0f, 1.0f
-    );
+      : (!has_configured_body_bindings && vestibular_valid
+        ? clamp(1.0f - abs(vestibular), 0.0f, 1.0f)
+        : body[NB_BODY_SUPPORT]);
     const float velocity_limit = max(belief_parameters[13], 1.0f);
     const float support_evidence = support_weight > 0.0f
       ? support_total / support_weight
-      : contact_evidence * vestibular_stability;
+      : (!has_configured_body_bindings && (touch_valid || vestibular_valid)
+        ? contact_evidence * vestibular_stability : body[NB_BODY_SUPPORT]);
     const float pain_evidence = pain_weight > 0.0f
       ? pain_total / pain_weight
-      : (body_binding_count == 0u ? clamp(abs(touch), 0.0f, 1.0f) : 0.0f);
+      : (!has_configured_body_bindings && touch_valid
+        ? clamp(abs(touch), 0.0f, 1.0f) : 0.0f);
     const float retained_per_second = clamp(
       belief_parameters[7], 0.0f, 1.0f
     );
@@ -1064,7 +1126,8 @@ kernel void assimilate_accepted_body_and_physiology(
       const float prior_position = body[NB_BODY_POSITION + component];
       const float position_evidence = position_weight[component] > 0.0f
         ? position_total[component] / position_weight[component]
-        : (component == 0u ? proprioception : prior_position);
+        : (component == 0u && !has_configured_body_bindings
+          && proprioception_valid ? proprioception : prior_position);
       const float observed_velocity = clamp(
         velocity_weight[component] > 0.0f
           ? velocity_total[component] / velocity_weight[component]
@@ -1086,7 +1149,8 @@ kernel void assimilate_accepted_body_and_physiology(
       const float prior_variance = prior_valid
         ? max(body[NB_BODY_POSITION_VARIANCE + component], 0.0f) : 1.0f;
       const bool has_position_evidence = position_weight[component] > 0.0f
-        || (component == 0u && uniforms.proprioception_count > 0u);
+        || (component == 0u && !has_configured_body_bindings
+          && proprioception_valid);
       const float variance_evidence = position_variance_weight[component] > 0.0f
         ? position_variance_total[component]
           / position_variance_weight[component]
@@ -1122,7 +1186,8 @@ kernel void assimilate_accepted_body_and_physiology(
       ), 0.0f);
       const float force_evidence = force_weight[component] > 0.0f
         ? force_total[component] / force_weight[component]
-        : (component == 2u && body_binding_count == 0u ? abs(touch) : 0.0f);
+        : (component == 2u && !has_configured_body_bindings && touch_valid
+          ? abs(touch) : body[NB_BODY_LOCAL_FORCE + component]);
       body[NB_BODY_LOCAL_FORCE + component] = mix(
         body[NB_BODY_LOCAL_FORCE + component], force_evidence, body_gain
       );
@@ -1191,9 +1256,10 @@ kernel void assimilate_accepted_body_and_physiology(
       reinterpret_cast<device const float *>(
         hot_state + uniforms.accepted_somatic_output_offset
       );
-    const float proprioception = nb_observation(
-      observations, uniforms.proprioception_offset,
-      uniforms.proprioception_count, gid
+    bool proprioception_valid = false;
+    const float sensed_proprioception = nb_valid_observation(
+      observations, validity, uniforms.proprioception_offset,
+      uniforms.proprioception_count, gid, proprioception_valid
     );
     const uint actuator_index = gid % max(uniforms.actuator_count, 1u);
     const NBAcceptedActuatorDescriptor actuator =
@@ -1210,16 +1276,20 @@ kernel void assimilate_accepted_body_and_physiology(
       somatic[gid] = command;
     }
     const float prior_proprioception = muscle[1];
+    const float proprioception = proprioception_valid
+      ? sensed_proprioception : prior_proprioception;
     const float observed_delta = proprioception - prior_proprioception;
-    const float effect_learning_rate = clamp(
-      min(gain, max(belief_parameters[4], 0.0f)), 0.0f, 1.0f
-    );
+    const float effect_learning_rate = proprioception_valid
+      ? clamp(
+          min(gain, max(belief_parameters[4], 0.0f)), 0.0f, 1.0f
+        ) : 0.0f;
     const float prior_effect_gain = muscle[6];
     const float prior_effect_bias = muscle[7];
     const float predicted_delta = fma(
       prior_effect_gain, command, prior_effect_bias
     );
-    const float effect_error = observed_delta - predicted_delta;
+    const float effect_error = proprioception_valid
+      ? observed_delta - predicted_delta : muscle[5];
     const float normalized_command_energy = fma(command, command, 1.0e-4f);
     const float effect_limit = max(belief_parameters[6], 1.0f);
     const float learned_effect_gain = clamp(
@@ -1238,8 +1308,9 @@ kernel void assimilate_accepted_body_and_physiology(
     const float agency_measurement = 1.0f
       / (1.0f + agency_error_scale * abs(effect_error));
     const float causal_evidence = clamp(
-      abs(command)
-        + abs(observed_delta) * max(belief_parameters[14], 0.0f),
+      proprioception_valid ? abs(command)
+        + abs(observed_delta) * max(belief_parameters[14], 0.0f)
+        : 0.0f,
       0.0f,
       1.0f
     );
@@ -1270,8 +1341,10 @@ kernel void assimilate_accepted_body_and_physiology(
     ), 0.0f, 1.0f);
     muscle[0] = mix(muscle[0], command, gain);
     muscle[1] = mix(muscle[1], proprioception, gain);
-    muscle[2] = observed_delta;
-    muscle[3] = mix(muscle[3], abs(proprioception), gain);
+    muscle[2] = proprioception_valid
+      ? observed_delta : muscle[2] * state_retention;
+    muscle[3] = proprioception_valid
+      ? mix(muscle[3], abs(proprioception), gain) : muscle[3];
     muscle[4] = clamp(
       muscle[4]
         + elapsed_seconds * (
@@ -1300,11 +1373,14 @@ kernel void assimilate_accepted_body_and_physiology(
     device float *physiology = reinterpret_cast<device float *>(
       hot_state + uniforms.physiology_offset
     );
-    const float interoception = nb_observation(
-      observations, uniforms.interoception_offset,
-      uniforms.interoception_count, gid
+    bool interoception_valid = false;
+    const float interoception = nb_valid_observation(
+      observations, validity, uniforms.interoception_offset,
+      uniforms.interoception_count, gid, interoception_valid
     );
-    physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
+    if (interoception_valid) {
+      physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
+    }
   }
 }
 
@@ -1444,10 +1520,17 @@ kernel void reconcile_accepted_world_model(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   device float *world = reinterpret_cast<device float *>(
     hot_state + uniforms.world_model_offset
   );
-  const float observed = nb_world_observation(observations, uniforms, gid);
+  bool observation_valid = false;
+  const float observed = nb_world_observation(
+    observations, validity, uniforms, gid, observation_valid
+  );
+  if (!observation_valid) return;
   float predicted_mean = 0.0f;
   for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
     predicted_mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + gid]
@@ -1752,11 +1835,14 @@ kernel void broadcast_accepted_prediction_error(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
   const float error = max(
-    nb_mean_prediction_error(observations, world, uniforms),
+    nb_mean_prediction_error(observations, validity, world, uniforms),
     nb_mean_sensorimotor_prediction_error(world, uniforms.world_model_count)
   );
   const float epistemic = nb_mean_epistemic_disagreement(

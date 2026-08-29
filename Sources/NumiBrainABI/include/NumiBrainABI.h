@@ -47,7 +47,7 @@ enum {
   NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
   NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT = 16,
   NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 144,
-  NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT = 40,
+  NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT = 56,
   NB_NUMANX_SENSOR_PACKET_BYTE_COUNT = 72,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
@@ -55,7 +55,7 @@ enum {
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 3,
   NB_NUMANX_MOTOR_CANDIDATE_VERSION = 5,
-  NB_NUMANX_SENSOR_PACKET_VERSION = 1,
+  NB_NUMANX_SENSOR_PACKET_VERSION = 2,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 3,
@@ -84,6 +84,7 @@ enum {
   NB_NUMANX_SENSOR_PACKET_FLAG_VALID = 1 << 0,
   NB_NUMANX_SENSOR_PACKET_FLAG_ACCEPTED_STATE = 1 << 1,
   NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID = 1 << 0,
+  NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY = 1 << 1,
 };
 
 typedef struct NBModuleDescriptor {
@@ -546,6 +547,9 @@ typedef struct NBNumanXSensorChannel {
   uint32_t receptor_count;
   uint32_t feature_dimension;
   uint32_t latency_microseconds;
+  uint64_t validity_gpu_address;
+  uint32_t validity_byte_count;
+  uint32_t reserved;
 } NBNumanXSensorChannel;
 
 /// Transaction-bound NumanX sensor handoff. A committed-state packet is tied

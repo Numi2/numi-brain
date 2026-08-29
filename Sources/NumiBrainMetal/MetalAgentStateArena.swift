@@ -70,6 +70,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case acceptedAutonomicOutput = 44
   /// Exact active-sensing command exposed during the accepted physical root.
   case acceptedActiveSensingOutput = 45
+  /// Per-observation scalar receptor validity expanded from NumanX masks.
+  case sensoryValidity = 46
 }
 
 @frozen
@@ -463,6 +465,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: max(Int(species.motor.activeSensingActionDimension), 1),
       stride: 16
     )
+    try builder.append(
+      .sensoryValidity,
+      count: max(sensoryObservationScalars, 1),
+      stride: MemoryLayout<UInt32>.stride
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
@@ -512,7 +519,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 16
+  public static let recordLayoutVersion: UInt32 = 17
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536

@@ -174,7 +174,9 @@ public struct NumanXSensorPacket: Equatable, Sendable {
           microseconds: channel.receptor_timestamp_microseconds
         ),
         receptorCount: channel.receptor_count,
-        featureDimension: channel.feature_dimension
+        featureDimension: channel.feature_dimension,
+        validityGPUAddress: channel.validity_gpu_address,
+        validityByteCount: Int(channel.validity_byte_count)
       )
     }
     transactionFingerprint = record.transaction_fingerprint
@@ -215,6 +217,8 @@ public struct NumanXSensorPacket: Equatable, Sendable {
       var channel = NBNumanXSensorChannel()
       channel.modality = UInt32(view.modality.rawValue)
       channel.flags = UInt32(NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID)
+        | (view.hasValidity
+          ? UInt32(NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY) : 0)
       channel.gpu_address = view.gpuAddress
       channel.receptor_timestamp_microseconds = view.receptorTimestamp.rawValue
       channel.byte_count = UInt32(
@@ -226,6 +230,10 @@ public struct NumanXSensorPacket: Equatable, Sendable {
       channel.latency_microseconds = UInt32(
         deliveryTimestamp.rawValue - view.receptorTimestamp.rawValue
       )
+      channel.validity_gpu_address = view.validityGPUAddress
+      channel.validity_byte_count = UInt32(view.hasValidity
+        ? Int(view.receptorCount) * MemoryLayout<UInt32>.stride : 0)
+      channel.reserved = 0
       return channel
     }
   }
@@ -244,7 +252,10 @@ public struct NumanXSensorPacket: Equatable, Sendable {
       let scalarCount = UInt64(view.receptorCount)
         * UInt64(view.featureDimension)
       let byteCount = scalarCount * UInt64(MemoryLayout<Float>.stride)
+      let validityByteCount = UInt64(view.receptorCount)
+        * UInt64(MemoryLayout<UInt32>.stride)
       guard byteCount > 0, byteCount <= UInt64(UInt32.max),
+        !view.hasValidity || validityByteCount <= UInt64(UInt32.max),
         UInt64(topology.latencyMicroseconds)
           == deliveryTimestamp.rawValue - view.receptorTimestamp.rawValue
       else {
@@ -253,12 +264,18 @@ public struct NumanXSensorPacket: Equatable, Sendable {
       var channel = NBNumanXSensorChannel()
       channel.modality = UInt32(view.modality.rawValue)
       channel.flags = UInt32(NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID)
+        | (view.hasValidity
+          ? UInt32(NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY) : 0)
       channel.gpu_address = view.gpuAddress
       channel.receptor_timestamp_microseconds = view.receptorTimestamp.rawValue
       channel.byte_count = UInt32(byteCount)
       channel.receptor_count = view.receptorCount
       channel.feature_dimension = view.featureDimension
       channel.latency_microseconds = topology.latencyMicroseconds
+      channel.validity_gpu_address = view.validityGPUAddress
+      channel.validity_byte_count = view.hasValidity
+        ? UInt32(validityByteCount) : 0
+      channel.reserved = 0
       return channel
     }
   }

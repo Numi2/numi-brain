@@ -21,7 +21,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 6u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 7u;
 constant uint NB_COMMITTED_TRANSITION_HAS_BODY_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 2u;
@@ -320,6 +320,7 @@ struct NBMemoryReconsolidationUniforms {
   ulong shadow_generation;
   ulong recurrent_offset;
   ulong observation_offset;
+  ulong observation_validity_offset;
   ulong retrieval_scratch_offset;
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
@@ -407,6 +408,7 @@ struct NBCommittedTransitionUniforms {
   ulong teacher_content_fingerprint;
   ulong recurrent_offset;
   ulong observation_offset;
+  ulong observation_validity_offset;
   ulong event_queue_offset;
   ulong control_header_offset;
   ulong somatic_output_offset;
@@ -931,7 +933,7 @@ struct NBCommittedTransitionRecord {
   uint action_sample_count;
   uint event_count;
   uint control_mode;
-  uint reserved;
+  uint observation_validity_mask;
   float selected_score;
   float damage_cvar;
   float progress;
@@ -1039,9 +1041,9 @@ static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
-static_assert(sizeof(NBMemoryReconsolidationUniforms) == 288);
+static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 368);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 376);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -2543,13 +2545,17 @@ inline float accepted_memory_evidence_component(
   device const float *recurrent,
   uint recurrent_count,
   device const float *observations,
+  device const uint *observation_validity,
   uint observation_count,
   uint component)
 {
   const float recurrent_value = recurrent_count > 0u
     ? recurrent[component % recurrent_count] : 0.0f;
+  const uint observation_index = observation_count > 0u
+    ? component % observation_count : 0u;
   const float observation_value = observation_count > 0u
-    ? observations[component % observation_count] : recurrent_value;
+      && observation_validity[observation_index] != 0u
+    ? observations[observation_index] : recurrent_value;
   return 0.65f * recurrent_value + 0.35f * observation_value;
 }
 
@@ -2557,6 +2563,7 @@ inline float accepted_memory_similarity(
   device const float *recurrent,
   uint recurrent_count,
   device const float *observations,
+  device const uint *observation_validity,
   uint observation_count,
   device const float *key,
   uint key_count)
@@ -2568,7 +2575,8 @@ inline float accepted_memory_similarity(
   float key_norm = 1.0e-6f;
   for (uint component = 0u; component < count; ++component) {
     const float evidence = accepted_memory_evidence_component(
-      recurrent, recurrent_count, observations, observation_count, component
+      recurrent, recurrent_count, observations, observation_validity,
+      observation_count, component
     );
     dot += evidence * key[component];
     evidence_norm += evidence * evidence;
@@ -2581,6 +2589,7 @@ inline float accepted_archive_memory_similarity(
   device const float *recurrent,
   uint recurrent_count,
   device const float *observations,
+  device const uint *observation_validity,
   uint observation_count,
   device const NBArchivedEpisodicRecord *record)
 {
@@ -2592,7 +2601,8 @@ inline float accepted_archive_memory_similarity(
   float key_norm = 1.0e-6f;
   for (uint component = 0u; component < count; ++component) {
     const float evidence = accepted_memory_evidence_component(
-      recurrent, recurrent_count, observations, observation_count, component
+      recurrent, recurrent_count, observations, observation_validity,
+      observation_count, component
     );
     const float key = float(record->quantized_retrieval_key[component])
       * record->retrieval_key_scale;
@@ -2640,6 +2650,9 @@ kernel void reconsolidate_retrieved_memory(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *observation_validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   const float rate = clamp(
     min(uniforms.learning_rate, max(memory_parameters[4], 0.0f)),
     0.0f,
@@ -2670,7 +2683,7 @@ kernel void reconsolidate_retrieved_memory(
     NBEpisodicSummaryRecord updated = *record;
     const float similarity = accepted_memory_similarity(
       recurrent, uniforms.recurrent_scalar_count,
-      observations, uniforms.observation_count,
+      observations, observation_validity, uniforms.observation_count,
       record->retrieval_key, 10u
     );
     float content_rate = rate * 0.5f;
@@ -2687,7 +2700,8 @@ kernel void reconsolidate_retrieved_memory(
     for (uint component = 0u; component < 10u; ++component) {
       const float evidence = accepted_memory_evidence_component(
         recurrent, uniforms.recurrent_scalar_count,
-        observations, uniforms.observation_count, component
+        observations, observation_validity, uniforms.observation_count,
+        component
       );
       updated.retrieval_key[component] = mix(
         record->retrieval_key[component], evidence, content_rate
@@ -2723,7 +2737,7 @@ kernel void reconsolidate_retrieved_memory(
     NBArchivedEpisodicRecord updated = *record;
     const float similarity = accepted_archive_memory_similarity(
       recurrent, uniforms.recurrent_scalar_count,
-      observations, uniforms.observation_count, record
+      observations, observation_validity, uniforms.observation_count, record
     );
     float content_rate = rate * 0.5f;
     if (similarity >= uniforms.confirmation_similarity) {
@@ -2744,7 +2758,8 @@ kernel void reconsolidate_retrieved_memory(
         * record->retrieval_key_scale;
       const float evidence = accepted_memory_evidence_component(
         recurrent, uniforms.recurrent_scalar_count,
-        observations, uniforms.observation_count, component
+        observations, observation_validity, uniforms.observation_count,
+        component
       );
       reconstructed[component] = mix(prior, evidence, content_rate);
       // Tier-2 placement is keyed by the first eight signs. Preserve that
@@ -2799,7 +2814,8 @@ kernel void reconsolidate_retrieved_memory(
     NBSemanticConceptSummaryRecord updated = *record;
     const float similarity = accepted_memory_similarity(
       recurrent, uniforms.recurrent_scalar_count,
-      observations, uniforms.observation_count, record->embedding, 19u
+      observations, observation_validity, uniforms.observation_count,
+      record->embedding, 19u
     );
     if (similarity >= uniforms.confirmation_similarity) {
       updated.confidence = clamp(
@@ -2811,7 +2827,8 @@ kernel void reconsolidate_retrieved_memory(
     for (uint component = 0u; component < 19u; ++component) {
       const float evidence = accepted_memory_evidence_component(
         recurrent, uniforms.recurrent_scalar_count,
-        observations, uniforms.observation_count, component
+        observations, observation_validity, uniforms.observation_count,
+        component
       );
       updated.embedding[component] = mix(
         record->embedding[component], evidence, rate * 0.25f
@@ -2845,7 +2862,7 @@ kernel void reconsolidate_retrieved_memory(
     NBSemanticRelationSummaryRecord updated = *record;
     const float similarity = accepted_memory_similarity(
       recurrent, uniforms.recurrent_scalar_count,
-      observations, uniforms.observation_count,
+      observations, observation_validity, uniforms.observation_count,
       record->evidence_embedding, 10u
     );
     if (similarity >= uniforms.confirmation_similarity) {
@@ -2864,7 +2881,8 @@ kernel void reconsolidate_retrieved_memory(
     for (uint component = 0u; component < 10u; ++component) {
       const float evidence = accepted_memory_evidence_component(
         recurrent, uniforms.recurrent_scalar_count,
-        observations, uniforms.observation_count, component
+        observations, observation_validity, uniforms.observation_count,
+        component
       );
       updated.evidence_embedding[component] = mix(
         record->evidence_embedding[component], evidence, rate * 0.25f
@@ -3000,7 +3018,8 @@ kernel void reconsolidate_retrieved_memory(
     for (uint component = 0u; component < 16u; ++component) {
       const float evidence = accepted_memory_evidence_component(
         recurrent, uniforms.recurrent_scalar_count,
-        observations, uniforms.observation_count, component
+        observations, observation_validity, uniforms.observation_count,
+        component
       );
       updated.outcome_model[component] = mix(
         record->outcome_model[component],
@@ -4365,6 +4384,9 @@ kernel void journal_committed_learning_transition(
   device const float *observations = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.observation_offset
   );
+  device const uint *observation_validity = reinterpret_cast<device const uint *>(
+    output_hot_state + uniforms.observation_validity_offset
+  );
   device const float *actions = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.somatic_output_offset
   );
@@ -4442,7 +4464,7 @@ kernel void journal_committed_learning_transition(
     | ((control->flags & NB_MEMORY_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
       ? NB_COMMITTED_TRANSITION_ACCEPTED_STOP : 0u);
   record.recurrent_sample_count = min(uniforms.recurrent_scalar_count, 19u) + 5u;
-  record.observation_sample_count = min(uniforms.observation_count, 24u);
+  record.observation_sample_count = 0u;
   record.action_sample_count = min(uniforms.action_count, 16u);
   record.autonomic_action_sample_count = min(
     uniforms.autonomic_action_count, 8u
@@ -4516,9 +4538,14 @@ kernel void journal_committed_learning_transition(
         output_hot_state, uniforms, level
       );
     }
-    record.observation[component] = observations[
-      component % uniforms.observation_count
-    ];
+    const uint observation_index = component % uniforms.observation_count;
+    const bool observation_valid = observation_validity[observation_index] != 0u;
+    record.observation[component] = observation_valid
+      ? observations[observation_index] : 0.0f;
+    if (observation_valid) {
+      record.observation_sample_count += 1u;
+      record.observation_validity_mask |= 1u << component;
+    }
   }
   for (uint component = 0u; component < 16u; ++component) {
     record.action[component] = actions[component % uniforms.action_count];

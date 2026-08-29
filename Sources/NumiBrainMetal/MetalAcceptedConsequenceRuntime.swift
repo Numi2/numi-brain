@@ -6,6 +6,7 @@ private struct AcceptedConsequenceUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
   var deltaMicroseconds: UInt64 = 0
   var observationOffset: UInt64 = 0
+  var observationValidityOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
   var muscleBeliefOffset: UInt64 = 0
@@ -147,7 +148,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
         .latentDimension
     )
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 408,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 416,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
@@ -594,13 +595,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let activeSensing = controlLayout.section(.activeSensingCommands)
     let integerCounts = [
       hot(.sensoryObservations).elementCount,
+      hot(.sensoryValidity).elementCount,
       hot(.worldModel).elementCount,
       hot(.drives).elementCount,
       optionCandidates.elementCount,
       planSteps.elementCount,
       hot(.fastPlasticity).elementCount,
     ]
-    guard integerCounts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+    guard hot(.sensoryValidity).elementCount
+        == hot(.sensoryObservations).elementCount,
+      integerCounts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       planSteps.elementCount % optionCandidates.elementCount == 0
     else {
       throw TissueError.metal("accepted-consequence arena exceeds UInt32")
@@ -619,6 +623,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
       observationOffset: UInt64(hot(.sensoryObservations).byteOffset),
+      observationValidityOffset: UInt64(hot(.sensoryValidity).byteOffset),
       eventQueueOffset: UInt64(hot(.eventQueue).byteOffset),
       bodyBeliefOffset: UInt64(hot(.bodyBelief).byteOffset),
       muscleBeliefOffset: UInt64(hot(.muscleBelief).byteOffset),

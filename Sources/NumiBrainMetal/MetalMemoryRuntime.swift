@@ -156,6 +156,7 @@ private struct MemoryReconsolidationUniforms {
   var shadowGeneration: UInt64 = 0
   var recurrentOffset: UInt64 = 0
   var observationOffset: UInt64 = 0
+  var observationValidityOffset: UInt64 = 0
   var retrievalScratchOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
@@ -243,6 +244,7 @@ private struct CommittedTransitionUniforms {
   var teacherContentFingerprint: UInt64 = 0
   var recurrentOffset: UInt64 = 0
   var observationOffset: UInt64 = 0
+  var observationValidityOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
@@ -361,10 +363,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 280,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
-      MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
+      MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 368,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 376,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -565,6 +567,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let layout = arena.layout
     let recurrent = layout.section(.regionalRecurrent)
     let observations = layout.section(.sensoryObservations)
+    let observationValidity = layout.section(.sensoryValidity)
     let events = layout.section(.eventQueue)
     let somatic = layout.section(.somaticOutput)
     let acceptedAutonomic = layout.section(.acceptedAutonomicOutput)
@@ -594,7 +597,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalTransitions.elementCount, regionalTransitions.elementStride,
       regionalProgram.layouts.count,
     ]
-    guard counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+    guard observationValidity.elementCount == observations.elementCount,
+      counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       [objectSlots, otherAgentSlots, relationSlots, spatialTransforms]
         .allSatisfy({ $0.elementCount <= Int(UInt32.max) }),
       transitions.elementStride == MetalAgentMemoryLayout.committedTransitionStride,
@@ -617,6 +621,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       teacherContentFingerprint: teacherState?.view.contentFingerprint ?? 0,
       recurrentOffset: UInt64(recurrent.byteOffset),
       observationOffset: UInt64(observations.byteOffset),
+      observationValidityOffset: UInt64(observationValidity.byteOffset),
       eventQueueOffset: UInt64(events.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
@@ -882,8 +887,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let recurrent = layout.section(.regionalRecurrent)
     let observations = layout.section(.sensoryObservations)
+    let observationValidity = layout.section(.sensoryValidity)
     let bodyBelief = layout.section(.bodyBelief)
-    guard bodyBelief.elementCount > 0,
+    guard observationValidity.elementCount == observations.elementCount,
+      bodyBelief.elementCount > 0,
       bodyBelief.elementCount <= Int(UInt32.max)
     else {
       throw TissueError.transaction("body belief exceeds reconsolidation capacity")
@@ -894,6 +901,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       shadowGeneration: transaction.shadowGeneration,
       recurrentOffset: UInt64(recurrent.byteOffset),
       observationOffset: UInt64(observations.byteOffset),
+      observationValidityOffset: UInt64(observationValidity.byteOffset),
       retrievalScratchOffset: UInt64(
         layout.section(.memoryRetrievalScratch).byteOffset
       ),

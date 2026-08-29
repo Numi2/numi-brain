@@ -308,6 +308,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let prior = batch.priorState
     let posterior = batch.posteriorState
     let observation = batch.observations
+    let observationMask = batch.observationMask
     let action = batch.actions
     let completeAction = batch.completeActions
     let reward = batch.factoredReinforcement
@@ -379,10 +380,12 @@ public final class MLXBrainLearner: @unchecked Sendable {
     )
     let burnInState = stopGradient(posterior)
     let oneStepObservation = sequences.oneStepSuccessors(observation)
+    let oneStepObservationMask = sequences.oneStepSuccessors(observationMask)
     let oneStepAction = sequences.oneStepSuccessors(completeAction)
     let oneStepPrior = sequences.oneStepSuccessors(prior)
     let oneStepTarget = sequences.oneStepSuccessors(posterior)
     let twoStepObservation = sequences.twoStepSuccessors(observation)
+    let twoStepObservationMask = sequences.twoStepSuccessors(observationMask)
     let twoStepAction = sequences.twoStepSuccessors(completeAction)
     let twoStepPrior = sequences.twoStepSuccessors(prior)
     let twoStepTarget = sequences.twoStepSuccessors(posterior)
@@ -392,18 +395,21 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let twoStepMask =
       sequences.twoStepMask
       * (Float(1) + replayTransitionWeights)
-    let observationLoss = batch.maskedMeanSquaredError(
+    let observationLoss = batch.maskedElementMeanSquaredError(
       sensory[0] * posterior + sensory[1], observation,
-      mask: transitionMask
+      elementMask: transitionMask * observationMask
     )
     let oneStepBelief = tanh(
       belief[7] * burnInState + belief[0] * oneStepObservation
+        + belief[15] * oneStepObservationMask
         + belief[6] * oneStepAction.mean(axis: 1, keepDims: true)
         + belief[4]
     )
     let beliefLoss =
       batch.maskedMeanSquaredError(
-        belief[7] * prior + belief[0] * observation, posterior,
+        belief[7] * prior + belief[0] * observation
+          + belief[15] * observationMask,
+        posterior,
         mask: transitionMask
       ) + Float(0.5)
       * batch.maskedMeanSquaredError(
@@ -411,6 +417,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
       )
     let oneStepWorld = tanh(
       world[0] * burnInState + world[1] * oneStepObservation
+        + world[190] * oneStepObservationMask
         + world[2] * oneStepAction.mean(axis: 1, keepDims: true)
         + worldActionGain * oneStepAction.mean(axis: 1, keepDims: true)
         + structuredWorldGain
@@ -419,6 +426,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     )
     let twoStepWorld = tanh(
       world[0] * oneStepWorld + world[1] * twoStepObservation
+        + world[190] * twoStepObservationMask
         + world[2] * twoStepAction.mean(axis: 1, keepDims: true)
         + worldActionGain * twoStepAction.mean(axis: 1, keepDims: true)
         + structuredWorldGain
@@ -447,6 +455,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
         let prediction = tanh(
           world[base] * prior
             + world[base + 1] * observation
+            + world[190] * observationMask
             + world[base + 3] * metrics[0..., 4..<5]
             + world[base + 4] * metrics[0..., 6..<7]
             + world[160 + level * 5 + head] * worldActionContexts[level]

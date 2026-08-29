@@ -111,6 +111,9 @@ static_assert(
 );
 static_assert(offsetof(NBNumanXSensorChannel, byte_count) == 24);
 static_assert(offsetof(NBNumanXSensorChannel, latency_microseconds) == 36);
+static_assert(offsetof(NBNumanXSensorChannel, validity_gpu_address) == 40);
+static_assert(offsetof(NBNumanXSensorChannel, validity_byte_count) == 48);
+static_assert(offsetof(NBNumanXSensorChannel, reserved) == 52);
 static_assert(offsetof(NBNumanXSensorPacket, format_version) == 0);
 static_assert(offsetof(NBNumanXSensorPacket, transaction_fingerprint) == 8);
 static_assert(
@@ -1815,6 +1818,9 @@ uint64_t nb_brain_abi_numanx_sensor_packet_fingerprint(
     mix_little_endian(hash, channel.receptor_count);
     mix_little_endian(hash, channel.feature_dimension);
     mix_little_endian(hash, channel.latency_microseconds);
+    mix_little_endian(hash, channel.validity_gpu_address);
+    mix_little_endian(hash, channel.validity_byte_count);
+    mix_little_endian(hash, channel.reserved);
   }
   return hash;
 }
@@ -1882,9 +1888,13 @@ uint32_t nb_brain_abi_validate_numanx_sensor_packet(
   uint32_t previous_modality = 0;
   for (uint32_t index = 0; index < packet->channel_count; ++index) {
     const NBNumanXSensorChannel &channel = channels[index];
+    constexpr uint32_t known_channel_flags =
+        NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID
+          | NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY;
     if (channel.modality < 1 || channel.modality > 8
         || channel.modality <= previous_modality
-        || channel.flags != NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID
+        || (channel.flags & NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID) == 0
+        || (channel.flags & ~known_channel_flags) != 0
         || channel.receptor_count == 0 || channel.feature_dimension == 0) {
       return NB_NUMANX_SENSOR_PACKET_CHANNEL;
     }
@@ -1898,6 +1908,27 @@ uint32_t nb_brain_abi_validate_numanx_sensor_packet(
     if (expected_bytes == 0 || expected_bytes > UINT32_MAX
         || channel.byte_count != expected_bytes) {
       return NB_NUMANX_SENSOR_PACKET_SIZE;
+    }
+    const bool has_validity =
+        (channel.flags & NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY) != 0;
+    const uint64_t expected_validity_bytes =
+        static_cast<uint64_t>(channel.receptor_count) * sizeof(uint32_t);
+    if (channel.reserved != 0) {
+      return NB_NUMANX_SENSOR_PACKET_FLAGS;
+    }
+    if (has_validity
+        && (channel.validity_gpu_address == 0
+          || channel.validity_gpu_address % sizeof(uint32_t) != 0)) {
+      return NB_NUMANX_SENSOR_PACKET_ADDRESS;
+    }
+    if ((has_validity
+          && (expected_validity_bytes > UINT32_MAX
+            || channel.validity_byte_count != expected_validity_bytes))
+        || (!has_validity
+          && (channel.validity_gpu_address != 0
+            || channel.validity_byte_count != 0))) {
+      return has_validity
+        ? NB_NUMANX_SENSOR_PACKET_SIZE : NB_NUMANX_SENSOR_PACKET_FLAGS;
     }
     if (channel.receptor_timestamp_microseconds
             > packet->delivery_timestamp_microseconds

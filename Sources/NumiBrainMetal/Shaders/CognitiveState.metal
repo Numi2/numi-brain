@@ -36,6 +36,7 @@ struct NBCognitiveUniforms {
   ulong regional_plastic_modulation_offset;
   ulong hot_state_byte_count;
   ulong observation_offset;
+  ulong observation_validity_offset;
   ulong object_slot_offset;
   ulong other_agent_slot_offset;
   ulong context_belief_offset;
@@ -326,7 +327,7 @@ struct NBPlasticityRegionRangeRecord {
   uint reserved;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 392);
+static_assert(sizeof(NBCognitiveUniforms) == 400);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -430,44 +431,53 @@ inline float nb_event_signal(
 
 inline float nb_observation_feature(
   device const float *observations,
+  device const uint *validity,
   uint range_offset,
   uint range_count,
   uint index)
 {
-  return range_count == 0u
-    ? 0.0f
-    : observations[range_offset + index % range_count];
+  if (range_count == 0u) return 0.0f;
+  const uint scalar_index = range_offset + index % range_count;
+  return validity[scalar_index] == 0u ? 0.0f : observations[scalar_index];
 }
 
 inline float nb_observation_energy(
   device const float *observations,
+  device const uint *validity,
   uint range_offset,
   uint range_count,
   uint seed)
 {
   if (range_count == 0u) return 0.0f;
   float energy = 0.0f;
+  uint valid_count = 0u;
   for (uint sample = 0u; sample < 8u; ++sample) {
-    energy += abs(nb_observation_feature(
-      observations, range_offset, range_count, seed * 17u + sample * 29u
-    )) * 0.125f;
+    const uint scalar_index = range_offset
+      + (seed * 17u + sample * 29u) % range_count;
+    if (validity[scalar_index] == 0u) continue;
+    energy += abs(observations[scalar_index]);
+    valid_count += 1u;
   }
-  return nb_saturate(energy);
+  return valid_count > 0u ? nb_saturate(energy / float(valid_count)) : 0.0f;
 }
 
 inline float nb_fused_interoceptive_feature(
   device const float *observations,
+  device const uint *validity,
   uint observation_offset,
   uint observation_count,
   device const float *physiology,
   uint physiology_count,
   uint index)
 {
-  const bool has_receptor = observation_count > 0u;
+  const uint scalar_index = observation_count > 0u
+    ? observation_offset + index % observation_count : 0u;
+  const bool has_receptor = observation_count > 0u
+    && validity[scalar_index] != 0u;
   const bool has_belief = physiology_count > 0u;
   const float receptor = has_receptor
     ? nb_observation_feature(
-        observations, observation_offset, observation_count, index
+        observations, validity, observation_offset, observation_count, index
       )
     : 0.0f;
   const float belief = has_belief
@@ -524,6 +534,9 @@ kernel void advance_homeostasis_and_neuromodulation(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   device const float *physiology = reinterpret_cast<device const float *>(
     hot_state + uniforms.physiology_belief_offset
   );
@@ -565,6 +578,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     }
     const float energy_availability = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -573,6 +587,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float hydration = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -581,6 +596,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float oxygen = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -589,6 +605,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float carbon_dioxide = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -597,6 +614,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float temperature = nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -605,6 +623,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     );
     const float sensed_fatigue = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -613,6 +632,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float tissue_damage = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -621,6 +641,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float inflammation = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -629,6 +650,7 @@ kernel void advance_homeostasis_and_neuromodulation(
     ));
     const float sleep_pressure = nb_saturate(nb_fused_interoceptive_feature(
       observations,
+      validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
       physiology,
@@ -1257,6 +1279,9 @@ kernel void advance_entity_and_social_slots(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
@@ -1297,18 +1322,21 @@ kernel void advance_entity_and_social_slots(
       const uint seed = gid * 23u + 3u;
       const float energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.vision_observation_offset,
         uniforms.vision_observation_count,
         seed
       );
       const float olfactory_energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.olfaction_observation_offset,
         uniforms.olfaction_observation_count,
         seed + 11u
       );
       const float gustatory_energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.gustation_observation_offset,
         uniforms.gustation_observation_count,
         seed + 19u
@@ -1337,6 +1365,7 @@ kernel void advance_entity_and_social_slots(
             : uniforms.gustation_observation_count);
         observed_pose[component] = nb_observation_feature(
           observations,
+          validity,
           pose_offset,
           pose_count,
           seed * 11u + component * 31u
@@ -1423,18 +1452,21 @@ kernel void advance_entity_and_social_slots(
       for (uint affordance = 0u; affordance < 8u; ++affordance) {
         const float visual_feature = nb_observation_feature(
           observations,
+          validity,
           uniforms.vision_observation_offset,
           uniforms.vision_observation_count,
           seed * 37u + affordance * 19u
         );
         const float olfactory_feature = nb_observation_feature(
           observations,
+          validity,
           uniforms.olfaction_observation_offset,
           uniforms.olfaction_observation_count,
           seed * 43u + affordance * 23u
         );
         const float gustatory_feature = nb_observation_feature(
           observations,
+          validity,
           uniforms.gustation_observation_offset,
           uniforms.gustation_observation_count,
           seed * 47u + affordance * 29u
@@ -1451,18 +1483,21 @@ kernel void advance_entity_and_social_slots(
       for (uint component = 0u; component < 102u; ++component) {
         const float sensed = nb_observation_feature(
           observations,
+          validity,
           uniforms.vision_observation_offset,
           uniforms.vision_observation_count,
           seed * 53u + component * 7u
         );
         const float olfactory = nb_observation_feature(
           observations,
+          validity,
           uniforms.olfaction_observation_offset,
           uniforms.olfaction_observation_count,
           seed * 59u + component * 11u
         );
         const float gustatory = nb_observation_feature(
           observations,
+          validity,
           uniforms.gustation_observation_offset,
           uniforms.gustation_observation_count,
           seed * 61u + component * 13u
@@ -1502,18 +1537,21 @@ kernel void advance_entity_and_social_slots(
       const uint seed = gid * 41u + 5u;
       const float visual_energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.vision_observation_offset,
         uniforms.vision_observation_count,
         seed
       );
       const float auditory_energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.audition_observation_offset,
         uniforms.audition_observation_count,
         seed + 17u
       );
       const float olfactory_energy = nb_observation_energy(
         observations,
+        validity,
         uniforms.olfaction_observation_offset,
         uniforms.olfaction_observation_count,
         seed + 29u
@@ -1541,6 +1579,7 @@ kernel void advance_entity_and_social_slots(
           : uniforms.olfaction_observation_count;
         observed_body[component] = nb_observation_feature(
           observations,
+          validity,
           body_offset,
           body_count,
           seed * 13u + component * 23u
@@ -1595,6 +1634,7 @@ kernel void advance_entity_and_social_slots(
       for (uint component = 0u; component < 4u; ++component) {
         const float gaze_feature = nb_observation_feature(
           observations,
+          validity,
           uniforms.vision_observation_offset,
           uniforms.vision_observation_count,
           seed * 29u + component * 43u
@@ -1656,18 +1696,21 @@ kernel void advance_entity_and_social_slots(
       for (uint component = 0u; component < 102u; ++component) {
         const float visual = nb_observation_feature(
           observations,
+          validity,
           uniforms.vision_observation_offset,
           uniforms.vision_observation_count,
           seed * 61u + component * 11u
         );
         const float auditory = nb_observation_feature(
           observations,
+          validity,
           uniforms.audition_observation_offset,
           uniforms.audition_observation_count,
           seed * 31u + component * 17u
         );
         const float olfactory = nb_observation_feature(
           observations,
+          validity,
           uniforms.olfaction_observation_offset,
           uniforms.olfaction_observation_count,
           seed * 37u + component * 19u
@@ -1855,6 +1898,9 @@ kernel void advance_spatial_coordinate_transforms(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
   NBSpatialTransformRecord transform = transforms[gid];
   if (gid == 0u) {
     transform.source_frame = 1u;
@@ -1874,18 +1920,21 @@ kernel void advance_spatial_coordinate_transforms(
   }
   const float visual_energy = nb_observation_energy(
     observations,
+    validity,
     uniforms.vision_observation_offset,
     uniforms.vision_observation_count,
     gid * 17u + 1u
   );
   const float proprioceptive_energy = nb_observation_energy(
     observations,
+    validity,
     uniforms.proprioception_observation_offset,
     uniforms.proprioception_observation_count,
     gid * 19u + 2u
   );
   const float vestibular_energy = nb_observation_energy(
     observations,
+    validity,
     uniforms.vestibular_observation_offset,
     uniforms.vestibular_observation_count,
     gid * 23u + 3u
@@ -1933,18 +1982,21 @@ kernel void advance_spatial_coordinate_transforms(
   for (uint component = 0u; component < 3u; ++component) {
     const float visual = nb_observation_feature(
       observations,
+      validity,
       uniforms.vision_observation_offset,
       uniforms.vision_observation_count,
       gid * 47u + component * 13u
     );
     const float proprioception = nb_observation_feature(
       observations,
+      validity,
       uniforms.proprioception_observation_offset,
       uniforms.proprioception_observation_count,
       gid * 43u + component * 17u
     );
     const float vestibular = nb_observation_feature(
       observations,
+      validity,
       uniforms.vestibular_observation_offset,
       uniforms.vestibular_observation_count,
       gid * 37u + component * 19u
@@ -1983,6 +2035,7 @@ kernel void advance_spatial_coordinate_transforms(
   for (uint component = 0u; component < 4u; ++component) {
     observed_rotation[component] = nb_observation_feature(
       observations,
+      validity,
       uniforms.vestibular_observation_offset,
       uniforms.vestibular_observation_count,
       gid * 31u + component * 11u

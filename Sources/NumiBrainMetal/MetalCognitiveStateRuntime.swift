@@ -20,6 +20,7 @@ private struct CognitiveUniforms {
   var regionalPlasticModulationOffset: UInt64 = 0
   var hotStateByteCount: UInt64 = 0
   var observationOffset: UInt64 = 0
+  var observationValidityOffset: UInt64 = 0
   var objectSlotOffset: UInt64 = 0
   var otherAgentSlotOffset: UInt64 = 0
   var contextBeliefOffset: UInt64 = 0
@@ -175,7 +176,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 392,
+    guard MemoryLayout<CognitiveUniforms>.stride == 400,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       MemoryLayout<PlasticityRegionRangeRecord>.stride == 24,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -325,7 +326,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       observationScalarOffset += scalarCount
     }
     guard observationScalarOffset
-      == UInt64(arena.layout.section(.sensoryObservations).elementCount)
+        == UInt64(arena.layout.section(.sensoryObservations).elementCount),
+      arena.layout.section(.sensoryValidity).elementCount
+        == arena.layout.section(.sensoryObservations).elementCount
     else {
       throw TissueError.metal("cognitive sensory ranges do not match the arena")
     }
@@ -737,6 +740,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       regionalPlasticModulationOffset: offset(.regionalPlasticModulation),
       hotStateByteCount: UInt64(arena.layout.totalByteCount),
       observationOffset: offset(.sensoryObservations),
+      observationValidityOffset: offset(.sensoryValidity),
       objectSlotOffset: offset(.objectSlots),
       otherAgentSlotOffset: offset(.otherAgentSlots),
       contextBeliefOffset: offset(.contextBelief),

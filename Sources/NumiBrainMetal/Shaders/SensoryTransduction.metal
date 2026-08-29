@@ -5,6 +5,7 @@ constant uint NB_SENSORY_FRAME_VALID = 1u;
 constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
 constant uint NB_SENSORY_REUSE_MATCHING_FRAME = 1u;
 constant uint NB_RECEPTOR_EVENT_DERIVED = 1u;
+constant uint NB_SENSORY_VALIDITY_FLAG_SHIFT = 8u;
 
 struct NBSensoryUniforms {
   ulong target_timestamp_microseconds;
@@ -13,6 +14,7 @@ struct NBSensoryUniforms {
   ulong random_counter_generation;
   ulong observation_offset;
   ulong adaptation_offset;
+  ulong validity_offset;
   ulong frame_metadata_offset;
   ulong event_queue_offset;
   ulong developmental_state_offset;
@@ -106,7 +108,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBSensoryUniforms) == 104);
+static_assert(sizeof(NBSensoryUniforms) == 112);
 static_assert(sizeof(NBSensoryDescriptor) == 64);
 static_assert(sizeof(NBReceptorEventRule) == 48);
 static_assert(sizeof(NBSensoryFrameMetadata) == 32);
@@ -160,6 +162,33 @@ inline float nb_raw_input(
     case 5u: return input5[scalar_index];
     case 6u: return input6[scalar_index];
     default: return input7[scalar_index];
+  }
+}
+
+inline uint nb_raw_validity(
+  uint input_index,
+  uint receptor_index,
+  uint uniform_flags,
+  device const uint *validity0,
+  device const uint *validity1,
+  device const uint *validity2,
+  device const uint *validity3,
+  device const uint *validity4,
+  device const uint *validity5,
+  device const uint *validity6,
+  device const uint *validity7)
+{
+  const uint availability = 1u << (NB_SENSORY_VALIDITY_FLAG_SHIFT + input_index);
+  if ((uniform_flags & availability) == 0u) return 0xffffffffu;
+  switch (input_index) {
+    case 0u: return validity0[receptor_index];
+    case 1u: return validity1[receptor_index];
+    case 2u: return validity2[receptor_index];
+    case 3u: return validity3[receptor_index];
+    case 4u: return validity4[receptor_index];
+    case 5u: return validity5[receptor_index];
+    case 6u: return validity6[receptor_index];
+    default: return validity7[receptor_index];
   }
 }
 
@@ -255,6 +284,14 @@ kernel void update_receptor_adaptation(
   device const float *input6 [[buffer(9)]],
   device const float *input7 [[buffer(10)]],
   device const float *sensory_parameters [[buffer(11)]],
+  device const uint *validity0 [[buffer(12)]],
+  device const uint *validity1 [[buffer(13)]],
+  device const uint *validity2 [[buffer(14)]],
+  device const uint *validity3 [[buffer(15)]],
+  device const uint *validity4 [[buffer(16)]],
+  device const uint *validity5 [[buffer(17)]],
+  device const uint *validity6 [[buffer(18)]],
+  device const uint *validity7 [[buffer(19)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBEventQueueHeader *header =
@@ -271,6 +308,11 @@ kernel void update_receptor_adaptation(
   if (descriptor_index >= uniforms.descriptor_count) return;
   const NBSensoryDescriptor descriptor = descriptors[descriptor_index];
   const uint local_receptor = gid - descriptor.adaptation_offset;
+  if (nb_raw_validity(
+      descriptor.input_buffer_index, local_receptor, uniforms.flags,
+      validity0, validity1, validity2, validity3,
+      validity4, validity5, validity6, validity7
+    ) == 0u) return;
   const uint raw_index = local_receptor * descriptor.feature_dimension;
   const float raw_value = sensory_parameters[0] * nb_raw_input(
     descriptor.input_buffer_index,
@@ -301,6 +343,14 @@ kernel void transduce_receptor_observations(
   device const float *input6 [[buffer(9)]],
   device const float *input7 [[buffer(10)]],
   device const float *sensory_parameters [[buffer(11)]],
+  device const uint *validity0 [[buffer(12)]],
+  device const uint *validity1 [[buffer(13)]],
+  device const uint *validity2 [[buffer(14)]],
+  device const uint *validity3 [[buffer(15)]],
+  device const uint *validity4 [[buffer(16)]],
+  device const uint *validity5 [[buffer(17)]],
+  device const uint *validity6 [[buffer(18)]],
+  device const uint *validity7 [[buffer(19)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBEventQueueHeader *header =
@@ -319,6 +369,16 @@ kernel void transduce_receptor_observations(
   const uint local_scalar = gid - descriptor.output_scalar_offset;
   const uint local_receptor = local_scalar / descriptor.feature_dimension;
   const uint global_receptor = descriptor.adaptation_offset + local_receptor;
+  const uint raw_validity = nb_raw_validity(
+    descriptor.input_buffer_index, local_receptor, uniforms.flags,
+    validity0, validity1, validity2, validity3,
+    validity4, validity5, validity6, validity7
+  );
+  device uint *validity = reinterpret_cast<device uint *>(
+    hot_state + uniforms.validity_offset
+  );
+  validity[gid] = raw_validity;
+  if (raw_validity == 0u) return;
   const float raw_value = sensory_parameters[0] * nb_raw_input(
     descriptor.input_buffer_index,
     local_scalar,
@@ -372,12 +432,16 @@ kernel void extract_receptor_events(
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.validity_offset
+  );
   float strongest = 0.0f;
   uint strongest_receptor = rule.receptor_start;
   for (uint receptor = 0u; receptor < rule.receptor_count; ++receptor) {
     const uint receptor_index = rule.receptor_start + receptor;
     const uint scalar_index = descriptor.output_scalar_offset
       + receptor_index * descriptor.feature_dimension + rule.feature_index;
+    if (validity[scalar_index] == 0u) continue;
     const float value = observations[scalar_index];
     bool active = false;
     float magnitude = 0.0f;

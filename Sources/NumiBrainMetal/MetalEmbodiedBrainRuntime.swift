@@ -1353,14 +1353,21 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     guard !sensors.isEmpty else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain borrowed NumanX sensor residency"
-    descriptor.initialCapacity = sensors.count
+    descriptor.initialCapacity = sensors.reduce(0) {
+      $0 + 1 + ($1.validityBuffer == nil ? 0 : 1)
+    }
     let set: any MTLResidencySet
     do {
       set = try device.makeResidencySet(descriptor: descriptor)
     } catch {
       throw TissueError.metal("failed to borrow sensor residency: \(error)")
     }
-    for sensor in sensors { set.addAllocation(sensor.buffer) }
+    for sensor in sensors {
+      set.addAllocation(sensor.buffer)
+      if let validityBuffer = sensor.validityBuffer {
+        set.addAllocation(validityBuffer)
+      }
+    }
     set.commit()
     set.requestResidency()
     return set
@@ -1377,7 +1384,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
-    descriptor.initialCapacity = sensors.count
+    descriptor.initialCapacity = sensors.reduce(0) {
+      $0 + 1 + ($1.validityBuffer == nil ? 0 : 1)
+    }
       + (developmentalEvidence == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
       + (acceptedFastMotorState == nil ? 0 : 1)
@@ -1388,7 +1397,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     } catch {
       throw TissueError.metal("failed to retain accepted input buffers: \(error)")
     }
-    for sensor in sensors { set.addAllocation(sensor.buffer) }
+    for sensor in sensors {
+      set.addAllocation(sensor.buffer)
+      if let validityBuffer = sensor.validityBuffer {
+        set.addAllocation(validityBuffer)
+      }
+    }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
     if let teacherState { set.addAllocation(teacherState.buffer) }
     if let acceptedFastMotorState {

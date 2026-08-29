@@ -23,6 +23,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let priorState: MLXArray
   public let posteriorState: MLXArray
   public let observations: MLXArray
+  public let observationMask: MLXArray
   public let actions: MLXArray
   public let autonomicActions: MLXArray
   public let activeSensingActions: MLXArray
@@ -85,6 +86,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     let rawPrior = field(128, count: 24, dtype: .float32)
     let rawPosterior = field(224, count: 24, dtype: .float32)
     let rawObservations = field(320, count: 24, dtype: .float32)
+    let observationValidityBits = field(92, count: 1, dtype: .uint32)
     let rawActions = field(416, count: 16, dtype: .float32)
     let rawReinforcement = field(480, count: 8, dtype: .float32)
     let rawMetrics = field(96, count: 8, dtype: .float32)
@@ -126,6 +128,15 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       * allFinite(rawInternalActions, count: 32)
       * allFinite(rawBodySchemaTrace, count: 16)
       * completeActionCountsValid
+    let observationMask = concatenated(
+      (0..<24).map { component in
+        (
+          (observationValidityBits & UInt32(1 << component))
+            .!= UInt32(0)
+        ).asType(.float32)
+      },
+      axis: 1
+    ) * validMask
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
     let teacherFiniteMask = allFinite(rawTeacher, count: 24)
@@ -143,7 +154,8 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.parameterVersionFingerprints = parameterVersionFingerprints
     self.priorState = finite(rawPrior)
     self.posteriorState = finite(rawPosterior)
-    self.observations = finite(rawObservations)
+    self.observations = finite(rawObservations) * observationMask
+    self.observationMask = observationMask
     self.actions = somaticActions
     self.autonomicActions = autonomicActions
     self.activeSensingActions = activeSensingActions
@@ -193,5 +205,14 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     mask: MLXArray? = nil
   ) -> MLXArray {
     maskedMean(square(prediction - target), mask: mask)
+  }
+
+  public func maskedElementMeanSquaredError(
+    _ prediction: MLXArray,
+    _ target: MLXArray,
+    elementMask: MLXArray
+  ) -> MLXArray {
+    let denominator = maximum(elementMask.sum(), MLXArray(Float(1)))
+    return (square(prediction - target) * elementMask).sum() / denominator
   }
 }

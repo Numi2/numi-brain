@@ -9,6 +9,7 @@ private struct SensoryUniforms {
   var randomCounterGeneration: UInt64 = 0
   var observationOffset: UInt64 = 0
   var adaptationOffset: UInt64 = 0
+  var validityOffset: UInt64 = 0
   var frameMetadataOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
@@ -61,6 +62,10 @@ public struct MetalRawSensorBufferView: Equatable, Sendable {
   public let receptorTimestamp: BrainTimestamp
   public let receptorCount: UInt32
   public let featureDimension: UInt32
+  public let validityGPUAddress: UInt64
+  public let validityByteCount: Int
+
+  public var hasValidity: Bool { validityGPUAddress != 0 }
 
   public init(
     modality: SensoryModality,
@@ -68,15 +73,26 @@ public struct MetalRawSensorBufferView: Equatable, Sendable {
     byteCount: Int,
     receptorTimestamp: BrainTimestamp,
     receptorCount: UInt32,
-    featureDimension: UInt32
+    featureDimension: UInt32,
+    validityGPUAddress: UInt64 = 0,
+    validityByteCount: Int = 0
   ) throws {
     let (scalarCount, scalarOverflow) = Int(receptorCount)
       .multipliedReportingOverflow(by: Int(featureDimension))
     let (minimumBytes, byteOverflow) = scalarCount.multipliedReportingOverflow(
       by: MemoryLayout<Float>.stride
     )
-    guard gpuAddress > 0, !scalarOverflow, !byteOverflow,
-      byteCount >= minimumBytes, receptorCount > 0, featureDimension > 0
+    let (minimumValidityBytes, validityOverflow) = Int(receptorCount)
+      .multipliedReportingOverflow(by: MemoryLayout<UInt32>.stride)
+    let hasValidity = validityGPUAddress != 0
+    guard gpuAddress > 0, gpuAddress % UInt64(MemoryLayout<Float>.alignment) == 0,
+      !scalarOverflow, !byteOverflow, !validityOverflow,
+      byteCount >= minimumBytes, receptorCount > 0, featureDimension > 0,
+      hasValidity == (validityByteCount > 0),
+      !hasValidity || (
+        validityGPUAddress % UInt64(MemoryLayout<UInt32>.alignment) == 0
+          && validityByteCount >= minimumValidityBytes
+      )
     else {
       throw TissueError.transaction("raw sensor buffer view is invalid")
     }
@@ -86,6 +102,8 @@ public struct MetalRawSensorBufferView: Equatable, Sendable {
     self.receptorTimestamp = receptorTimestamp
     self.receptorCount = receptorCount
     self.featureDimension = featureDimension
+    self.validityGPUAddress = validityGPUAddress
+    self.validityByteCount = validityByteCount
   }
 }
 
@@ -93,13 +111,15 @@ public struct MetalRawSensorBufferView: Equatable, Sendable {
 public final class MetalRawSensorBufferLease: @unchecked Sendable {
   public let view: MetalRawSensorBufferView
   let buffer: any MTLBuffer
+  let validityBuffer: (any MTLBuffer)?
 
   public init(
     buffer: any MTLBuffer,
     modality: SensoryModality,
     receptorTimestamp: BrainTimestamp,
     receptorCount: UInt32,
-    featureDimension: UInt32
+    featureDimension: UInt32,
+    validityBuffer: (any MTLBuffer)? = nil
   ) throws {
     view = try MetalRawSensorBufferView(
       modality: modality,
@@ -107,9 +127,12 @@ public final class MetalRawSensorBufferLease: @unchecked Sendable {
       byteCount: buffer.length,
       receptorTimestamp: receptorTimestamp,
       receptorCount: receptorCount,
-      featureDimension: featureDimension
+      featureDimension: featureDimension,
+      validityGPUAddress: validityBuffer?.gpuAddress ?? 0,
+      validityByteCount: validityBuffer?.length ?? 0
     )
     self.buffer = buffer
+    self.validityBuffer = validityBuffer
   }
 }
 
@@ -121,6 +144,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     public let randomCounterGeneration: UInt64
     public let observationGPUAddress: UInt64
     public let observationScalarCount: Int
+    public let validityGPUAddress: UInt64
+    public let validityScalarCount: Int
     public let eventQueueGPUAddress: UInt64
     public let eventCapacity: Int
     public let maximumEventCount: Int
@@ -144,6 +169,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
   private let ruleBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
   private let dummyInputBuffer: any MTLBuffer
+  private let dummyValidityBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -152,7 +178,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     profile: SensoryTransductionProfile,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<SensoryUniforms>.stride == 104,
+    guard MemoryLayout<SensoryUniforms>.stride == 112,
       MemoryLayout<SensoryDescriptorRecord>.stride == 64,
       MemoryLayout<ReceptorEventRuleRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -255,7 +281,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain sensory transduction arguments"
-    argumentDescriptor.maxBufferBindCount = 12
+    argumentDescriptor.maxBufferBindCount = 20
     argumentDescriptor.initializeBindings = true
     let descriptorByteCount = max(
       descriptors.count * MemoryLayout<SensoryDescriptorRecord>.stride,
@@ -281,6 +307,10 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       let dummyInputBuffer = device.makeBuffer(
         length: MemoryLayout<Float>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let dummyValidityBuffer = device.makeBuffer(
+        length: MemoryLayout<UInt32>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate sensory transduction bindings")
@@ -289,6 +319,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     ruleBuffer.label = "NumiBrain immutable receptor event rules"
     uniformBuffer.label = "NumiBrain sensory transduction uniforms"
     dummyInputBuffer.label = "NumiBrain disabled sensory input"
+    dummyValidityBuffer.label = "NumiBrain implicit valid receptor mask"
     descriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       descriptorBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
@@ -298,6 +329,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       ruleBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
     }
     dummyInputBuffer.contents().storeBytes(of: Float(0), as: Float.self)
+    dummyValidityBuffer.contents().storeBytes(of: UInt32.max, as: UInt32.self)
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.sensory, minimumScalarCount: 8),
       index: 11
@@ -319,10 +351,14 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     self.ruleBuffer = ruleBuffer
     self.uniformBuffer = uniformBuffer
     self.dummyInputBuffer = dummyInputBuffer
+    self.dummyValidityBuffer = dummyValidityBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [descriptorBuffer, ruleBuffer, uniformBuffer, dummyInputBuffer]
+    [
+      descriptorBuffer, ruleBuffer, uniformBuffer, dummyInputBuffer,
+      dummyValidityBuffer,
+    ]
   }
 
   public func encode(
@@ -363,15 +399,21 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     let hot = try arena.hotStateView(transaction: transaction)
     let observation = arena.layout.section(.sensoryObservations)
     let adaptation = arena.layout.section(.sensoryAdaptation)
+    let validity = arena.layout.section(.sensoryValidity)
     let metadata = arena.layout.section(.sensoryFrameMetadata)
     let eventQueue = arena.layout.section(.eventQueue)
     let eventCapacity = eventQueue.elementCount - 1
-    guard eventCapacity <= Int(UInt32.max), descriptors.count <= Int(UInt32.max),
+    guard validity.elementCount == observation.elementCount,
+      eventCapacity <= Int(UInt32.max), descriptors.count <= Int(UInt32.max),
       totalObservationScalars <= Int(UInt32.max), totalReceptors <= Int(UInt32.max),
       profile.eventRules.count <= eventCapacity,
       profile.eventRules.count <= Int(UInt32.max)
     else {
       throw TissueError.metal("sensory runtime exceeds compiled queue limits")
+    }
+    var validityFlags: UInt32 = 1
+    for view in rawSensorViews where view.hasValidity {
+      validityFlags |= UInt32(1) << UInt32(7 + view.modality.rawValue)
     }
     var uniforms = SensoryUniforms(
       targetTimestampMicroseconds: targetTimestamp.rawValue,
@@ -380,6 +422,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       randomCounterGeneration: randomCounterGeneration,
       observationOffset: UInt64(observation.byteOffset),
       adaptationOffset: UInt64(adaptation.byteOffset),
+      validityOffset: UInt64(validity.byteOffset),
       frameMetadataOffset: UInt64(metadata.byteOffset),
       eventQueueOffset: UInt64(eventQueue.byteOffset),
       developmentalStateOffset: UInt64(
@@ -392,7 +435,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       eventCapacity: UInt32(eventCapacity),
       eventRuleCount: UInt32(profile.eventRules.count),
       deltaMicroseconds: deltaMicroseconds,
-      flags: 1
+      flags: validityFlags
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -408,6 +451,12 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       argumentTable.setAddress(
         viewByModality[modality]?.gpuAddress ?? dummyInputBuffer.gpuAddress,
         index: Int(modality.rawValue) + 2
+      )
+      argumentTable.setAddress(
+        viewByModality[modality].flatMap {
+          $0.hasValidity ? $0.validityGPUAddress : nil
+        } ?? dummyValidityBuffer.gpuAddress,
+        index: Int(modality.rawValue) + 11
       )
     }
     dispatch(
@@ -442,6 +491,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       randomCounterGeneration: randomCounterGeneration,
       observationGPUAddress: hot.outputGPUAddress + UInt64(observation.byteOffset),
       observationScalarCount: totalObservationScalars,
+      validityGPUAddress: hot.outputGPUAddress + UInt64(validity.byteOffset),
+      validityScalarCount: validity.elementCount,
       eventQueueGPUAddress: hot.outputGPUAddress + UInt64(eventQueue.byteOffset),
       eventCapacity: eventCapacity,
       maximumEventCount: profile.eventRules.count
