@@ -112,6 +112,46 @@ public enum ActuatorCommandKind: UInt16, Codable, CaseIterable, Sendable {
   case pressure = 7
 }
 
+/// Immutable physical command contract for one somatic actuator. Neural and
+/// spinal computation remains in normalized drive space; the GPU-resident
+/// species adapter maps that drive into this channel's declared physical
+/// range before NumanX receives the candidate. Neutral and emergency values
+/// are explicit because zero is not a safe command for every position,
+/// pressure, or impedance actuator.
+@frozen
+public struct ActuatorChannelTemplate: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let outputMinimum: Float
+  public let outputMaximum: Float
+  public let neutralCommand: Float
+  public let emergencyCommand: Float
+
+  public init(
+    identifier: UInt32,
+    outputMinimum: Float,
+    outputMaximum: Float,
+    neutralCommand: Float,
+    emergencyCommand: Float
+  ) throws {
+    guard outputMinimum.isFinite, outputMaximum.isFinite,
+      outputMinimum < outputMaximum,
+      neutralCommand.isFinite,
+      (outputMinimum...outputMaximum).contains(neutralCommand),
+      emergencyCommand.isFinite,
+      (outputMinimum...outputMaximum).contains(emergencyCommand)
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "actuator channel command contract is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.outputMinimum = outputMinimum
+    self.outputMaximum = outputMaximum
+    self.neutralCommand = neutralCommand
+    self.emergencyCommand = emergencyCommand
+  }
+}
+
 @frozen
 public enum CommunicationEffectorKind: UInt16, Codable, CaseIterable, Sendable {
   case vocalization = 1
@@ -168,6 +208,7 @@ public struct CommunicationEffectorTemplate: Codable, Equatable, Hashable, Senda
 public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
   public let actuatorCommandKind: ActuatorCommandKind
   public let actuatorCount: UInt32
+  public let actuatorChannels: [ActuatorChannelTemplate]
   public let synergyCount: UInt16
   public let motorNucleusCount: UInt16
   public let autonomicActionDimension: UInt16
@@ -185,8 +226,23 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
     activeSensingActionDimension: UInt16,
     outputMinimum: Float,
     outputMaximum: Float,
+    actuatorChannels requestedActuatorChannels: [ActuatorChannelTemplate] = [],
     communicationEffectors: [CommunicationEffectorTemplate] = []
   ) throws {
+    let actuatorChannels: [ActuatorChannelTemplate]
+    if requestedActuatorChannels.isEmpty && actuatorCommandKind == .muscleExcitation {
+      actuatorChannels = try (0..<actuatorCount).map {
+        try ActuatorChannelTemplate(
+          identifier: $0,
+          outputMinimum: outputMinimum,
+          outputMaximum: outputMaximum,
+          neutralCommand: outputMinimum,
+          emergencyCommand: outputMinimum
+        )
+      }
+    } else {
+      actuatorChannels = requestedActuatorChannels.sorted { $0.identifier < $1.identifier }
+    }
     let communicationEffectors = communicationEffectors.sorted {
       $0.identifier < $1.identifier
     }
@@ -198,6 +254,12 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
     guard actuatorCount > 0, synergyCount > 0, motorNucleusCount > 0,
       outputMinimum.isFinite, outputMaximum.isFinite,
       outputMinimum < outputMaximum,
+      actuatorChannels.count == Int(actuatorCount),
+      actuatorChannels.map(\.identifier) == Array(0..<actuatorCount),
+      actuatorChannels.allSatisfy({ channel in
+        channel.outputMinimum >= outputMinimum
+          && channel.outputMaximum <= outputMaximum
+      }),
       Set(communicationEffectors.map(\.identifier)).count
         == communicationEffectors.count,
       Set(communicationActuators).count == communicationActuators.count,
@@ -214,6 +276,7 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
     }
     self.actuatorCommandKind = actuatorCommandKind
     self.actuatorCount = actuatorCount
+    self.actuatorChannels = actuatorChannels
     self.synergyCount = synergyCount
     self.motorNucleusCount = motorNucleusCount
     self.autonomicActionDimension = autonomicActionDimension
@@ -616,7 +679,7 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
   /// Version 5 maps physiological state to stable interoceptive receptor IDs.
-  public static let formatVersion: UInt32 = 5
+  public static let formatVersion: UInt32 = 6
 
   public let family: SpeciesFamily
   public let name: String
@@ -767,6 +830,14 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     Self.mix(UInt32(motor.activeSensingActionDimension), into: &hash)
     Self.mix(motor.outputMinimum.bitPattern, into: &hash)
     Self.mix(motor.outputMaximum.bitPattern, into: &hash)
+    Self.mix(UInt32(motor.actuatorChannels.count), into: &hash)
+    for channel in motor.actuatorChannels {
+      Self.mix(channel.identifier, into: &hash)
+      Self.mix(channel.outputMinimum.bitPattern, into: &hash)
+      Self.mix(channel.outputMaximum.bitPattern, into: &hash)
+      Self.mix(channel.neutralCommand.bitPattern, into: &hash)
+      Self.mix(channel.emergencyCommand.bitPattern, into: &hash)
+    }
     Self.mix(UInt32(motor.communicationEffectors.count), into: &hash)
     for effector in motor.communicationEffectors {
       Self.mix(UInt32(effector.identifier), into: &hash)
