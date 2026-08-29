@@ -13,7 +13,9 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let source: MetalLearningBatch
   public let rawBytes: MLXArray
   public let validMask: MLXArray
+  public let startTimestamps: MLXArray
   public let endTimestamps: MLXArray
+  public let sourceGenerations: MLXArray
   public let activeOptionIdentifiers: MLXArray
   public let parameterVersionFingerprints: MLXArray
   public let priorState: MLXArray
@@ -51,36 +53,70 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     func field(_ byteOffset: Int, count: Int, dtype: DType) -> MLXArray {
       raw[0..., byteOffset..<(byteOffset + count * dtype.size)].view(dtype: dtype)
     }
+    func finite(_ values: MLXArray) -> MLXArray {
+      which(isFinite(values), values, MLXArray(Float(0)))
+    }
+    func allFinite(_ values: MLXArray, count: Int) -> MLXArray {
+      (
+        isFinite(values).asType(.float32).sum(axis: 1, keepDims: true)
+          .== Float(count)
+      ).asType(.float32)
+    }
+    let identifiers = field(0, count: 1, dtype: .uint64)
+    let startTimestamps = field(8, count: 1, dtype: .uint64)
+    let endTimestamps = field(16, count: 1, dtype: .uint64)
+    let sourceGenerations = field(32, count: 1, dtype: .uint64)
     let format = field(64, count: 1, dtype: .uint32)
+    let flags = field(68, count: 1, dtype: .uint32)
     let parameterVersionFingerprints = field(24, count: 1, dtype: .uint64)
-    let formatMask = (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
-      .asType(.float32)
-    let versionMask = (
-      parameterVersionFingerprints .== source.parameterVersionFingerprint
+    let rawPrior = field(128, count: 24, dtype: .float32)
+    let rawPosterior = field(224, count: 24, dtype: .float32)
+    let rawObservations = field(320, count: 24, dtype: .float32)
+    let rawActions = field(416, count: 16, dtype: .float32)
+    let rawReinforcement = field(480, count: 8, dtype: .float32)
+    let rawMetrics = field(96, count: 8, dtype: .float32)
+    let rawTeacher = field(528, count: 24, dtype: .float32)
+    let validMask = (
+      (identifiers .> UInt64(0))
+        * (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
+        * ((flags & UInt32(1)) .== UInt32(1))
+        * (parameterVersionFingerprints .== source.parameterVersionFingerprint)
+        * (sourceGenerations .> UInt64(0))
+        * (sourceGenerations .<= source.sourceGeneration)
+        * (endTimestamps .>= startTimestamps)
     ).asType(.float32)
-    let validMask = formatMask * versionMask
+      * allFinite(rawPrior, count: 24)
+      * allFinite(rawPosterior, count: 24)
+      * allFinite(rawObservations, count: 24)
+      * allFinite(rawActions, count: 16)
+      * allFinite(rawReinforcement, count: 8)
+      * allFinite(rawMetrics, count: 8)
     let teacherCount = field(520, count: 1, dtype: .uint32)
     let teacherFlags = field(524, count: 1, dtype: .uint32)
+    let teacherFiniteMask = allFinite(rawTeacher, count: 24)
     self.source = source
     self.rawBytes = raw
     self.validMask = validMask
-    self.endTimestamps = field(16, count: 1, dtype: .uint64)
+    self.startTimestamps = startTimestamps
+    self.endTimestamps = endTimestamps
+    self.sourceGenerations = sourceGenerations
     self.activeOptionIdentifiers = field(56, count: 1, dtype: .uint64)
     self.parameterVersionFingerprints = parameterVersionFingerprints
-    self.priorState = field(128, count: 24, dtype: .float32)
-    self.posteriorState = field(224, count: 24, dtype: .float32)
-    self.observations = field(320, count: 24, dtype: .float32)
-    self.actions = field(416, count: 16, dtype: .float32)
-    self.factoredReinforcement = field(480, count: 8, dtype: .float32)
-    self.outcomeMetrics = field(96, count: 8, dtype: .float32)
-    self.teacherState = field(528, count: 24, dtype: .float32)
-    self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32) * validMask
+    self.priorState = finite(rawPrior)
+    self.posteriorState = finite(rawPosterior)
+    self.observations = finite(rawObservations)
+    self.actions = finite(rawActions)
+    self.factoredReinforcement = finite(rawReinforcement)
+    self.outcomeMetrics = finite(rawMetrics)
+    self.teacherState = finite(rawTeacher)
+    self.teacherMask = (teacherCount .> UInt32(0)).asType(.float32)
+      * validMask * teacherFiniteMask
     let hasDemonstratedAction = (
       teacherFlags & MetalTeacherStateFlags.demonstratedAction.rawValue
     ) .!= UInt32(0)
     self.imitationMask = hasDemonstratedAction.asType(.float32)
       * (teacherCount .> UInt32(15)).asType(.float32)
-      * validMask
+      * validMask * teacherFiniteMask
   }
 
   public func maskedMean(_ values: MLXArray, mask: MLXArray? = nil) -> MLXArray {

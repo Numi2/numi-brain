@@ -84,6 +84,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     }
     try parentArtifact.validate(parameterVersion: parentVersion)
     let batch = try MLXCommittedTransitionBatch(sourceBatch)
+    let sequences = MLXCommittedSequenceBatch(batch)
     let replay = try MLXReplayLearningBatch(sourceBatch)
     let counterfactuals = try MLXCounterfactualLearningBatch(sourceBatch)
     let semantics = try MLXSemanticLearningBatch(sourceBatch)
@@ -101,6 +102,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
         parameters: parameters,
         parentParameters: parentParameters,
         batch: batch,
+        sequences: sequences,
         replay: replay,
         counterfactuals: counterfactuals,
         semantics: semantics
@@ -140,6 +142,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
       parameters: updatedParameters,
       parentParameters: parentParameters,
       batch: batch,
+      sequences: sequences,
       replay: replay,
       counterfactuals: counterfactuals,
       semantics: semantics
@@ -177,6 +180,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     parameters: [MLXArray],
     parentParameters: [MLXArray],
     batch: MLXCommittedTransitionBatch,
+    sequences: MLXCommittedSequenceBatch,
     replay: MLXReplayLearningBatch,
     counterfactuals: MLXCounterfactualLearningBatch,
     semantics: MLXSemanticLearningBatch
@@ -214,17 +218,49 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
+    let burnInState = stopGradient(posterior)
+    let oneStepObservation = sequences.oneStepSuccessors(observation)
+    let oneStepAction = sequences.oneStepSuccessors(action)
+    let oneStepTarget = sequences.oneStepSuccessors(posterior)
+    let twoStepObservation = sequences.twoStepSuccessors(observation)
+    let twoStepAction = sequences.twoStepSuccessors(action)
+    let twoStepTarget = sequences.twoStepSuccessors(posterior)
+    let oneStepMask = sequences.oneStepMask
+      * (Float(1) + replayTransitionWeights)
+    let twoStepMask = sequences.twoStepMask
+      * (Float(1) + replayTransitionWeights)
     let observationLoss = batch.maskedMeanSquaredError(
       sensory[0] * posterior + sensory[1], observation,
       mask: transitionMask
     )
+    let oneStepBelief = tanh(
+      belief[7] * burnInState + belief[0] * oneStepObservation
+        + belief[6] * oneStepAction.mean(axis: 1, keepDims: true)
+        + belief[4]
+    )
     let beliefLoss = batch.maskedMeanSquaredError(
       belief[7] * prior + belief[0] * observation, posterior,
       mask: transitionMask
+    ) + Float(0.5) * batch.maskedMeanSquaredError(
+      oneStepBelief, oneStepTarget, mask: oneStepMask
+    )
+    let oneStepWorld = tanh(
+      world[0] * burnInState + world[1] * oneStepObservation
+        + world[2] * oneStepAction.mean(axis: 1, keepDims: true)
+        + world[5]
+    )
+    let twoStepWorld = tanh(
+      world[0] * oneStepWorld + world[1] * twoStepObservation
+        + world[2] * twoStepAction.mean(axis: 1, keepDims: true)
+        + world[5]
     )
     let worldLoss = batch.maskedMeanSquaredError(
       tanh(world[0] * prior + world[1] * observation + world[5]), posterior,
       mask: transitionMask
+    ) + batch.maskedMeanSquaredError(
+      oneStepWorld, oneStepTarget, mask: oneStepMask
+    ) + Float(0.5) * batch.maskedMeanSquaredError(
+      twoStepWorld, twoStepTarget, mask: twoStepMask
     )
     let bodyLoss = batch.maskedMeanSquaredError(
       tanh(
