@@ -2149,6 +2149,9 @@ kernel void generate_motor_spinal_autonomic_state(
       ? clamp(efficacy_state.efficacy, 0.0f, 2.0f)
       : 1.0f;
     float modality_uncertainty = max(epistemic, prior_modality_uncertainty);
+    uint epistemic_target_slot = 0u;
+    float epistemic_target_command = 0.0f;
+    float epistemic_target_score = 0.0f;
     if (sensing_descriptor.modality == 1u) {
       device const NBObjectSlotRecord *object_slots =
         reinterpret_cast<device const NBObjectSlotRecord *>(
@@ -2168,6 +2171,16 @@ kernel void generate_motor_spinal_autonomic_state(
         );
         weighted_uncertainty += clamp(object.uncertainty, 0.0f, 1.0f) * weight;
         evidence_weight += weight;
+        const float target_score = object.existence_probability
+          * clamp(object.uncertainty, 0.0f, 1.0f)
+          * (1.0f - 0.5f * clamp(object.visibility, 0.0f, 1.0f));
+        if (target_score > epistemic_target_score) {
+          epistemic_target_score = target_score;
+          epistemic_target_slot = object_index + 1u;
+          epistemic_target_command = object.pose[
+            sensing_descriptor.modality_local_identifier % 3u
+          ];
+        }
       }
       if (evidence_weight > 0.0f) {
         modality_uncertainty = max(
@@ -2257,16 +2270,28 @@ kernel void generate_motor_spinal_autonomic_state(
         * (1.0f - deliberate_inhibition),
       0.0f, 1.0f
     );
-    const float raw_command = communication_selected && communication_sensing
+    const float policy_command = communication_selected && communication_sensing
       ? candidate.parameters[parameter_index] * communication_descriptor.gain
       : tanh(candidate.parameters[parameter_index])
         * clamp(policy_parameters[9], 0.0f, 1.0f);
+    const bool grounded_visual_target = sensing_descriptor.modality == 1u
+      && sensing_descriptor.modality_local_identifier < 3u
+      && epistemic_target_slot > 0u;
+    const float raw_command = grounded_visual_target
+      ? mix(
+          policy_command,
+          clamp(epistemic_target_command, -1.0f, 1.0f),
+          clamp(epistemic_target_score, 0.0f, 1.0f)
+        )
+      : policy_command;
     NBActiveSensingCommandRecord command;
     command.command = clamp(raw_command * allocation, -1.0f, 1.0f);
     command.confidence = rest_selected ? 1.0f
       : clamp(allocation * max(header->confidence, expected_information), 0.0f, 1.0f);
     command.attention_allocation_mask = allocation > 0.0f
-      ? (1u << min(max(sensing_descriptor.modality, 1u) - 1u, 31u)) : 0u;
+      ? (1u << min(max(sensing_descriptor.modality, 1u) - 1u, 7u))
+        | ((epistemic_target_slot & 0xffffu) << 16u)
+      : 0u;
     command.kind_and_flags =
       (sensing_descriptor.modality & 0xffu)
       | ((sensing_descriptor.modality_local_identifier & 0xffu) << 8u)
