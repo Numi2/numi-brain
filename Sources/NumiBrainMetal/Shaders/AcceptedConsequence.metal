@@ -8,6 +8,8 @@ constant uint NB_ACCEPTED_TRACE_FAILED = 1u << 2;
 constant uint NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP = 1u << 1;
 constant uint NB_ACCEPTED_CONTROL_MODE_REFLEX = 1u;
 constant uint NB_ACCEPTED_REFLEX_ACTIVATED_IN_ROOT = 1u << 5;
+constant uint NB_ACCEPTED_PROTECTIVE_VALID = 1u;
+constant uint NB_ACCEPTED_PROTECTIVE_EMERGENCY_STOP = 1u << 1;
 constant ulong NB_ACCEPTED_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
@@ -242,6 +244,21 @@ struct NBFastAutonomicStateRecord {
   float reserved[6];
 };
 
+struct NBAcceptedProtectiveCommandRecord {
+  uint format_version;
+  uint flags;
+  ulong timestamp_microseconds;
+  ulong brain_generation;
+  ulong interrupt_mask;
+  float withdrawal_drive;
+  float postural_stiffness;
+  float motor_inhibition;
+  float autonomic_arousal;
+  uint environment_identifier;
+  uint reserved;
+  ulong command_fingerprint;
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -327,6 +344,7 @@ static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
 static_assert(sizeof(NBFastAutonomicStateRecord) == 64);
+static_assert(sizeof(NBAcceptedProtectiveCommandRecord) == 64);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
@@ -902,6 +920,30 @@ inline float nb_accepted_fast_autonomic_critical(
   return critical;
 }
 
+inline float nb_accepted_protective_command_risk(
+  device const NBAcceptedProtectiveCommandRecord *command,
+  constant NBAcceptedConsequenceUniforms &uniforms)
+{
+  if (command->format_version != 1u
+      || (command->flags & NB_ACCEPTED_PROTECTIVE_VALID) == 0u
+      || (command->flags & NB_ACCEPTED_PROTECTIVE_EMERGENCY_STOP) == 0u
+      || command->timestamp_microseconds != uniforms.target_timestamp_microseconds
+      || command->interrupt_mask == 0ul) {
+    return 0.0f;
+  }
+  return max(
+    0.5f,
+    clamp(
+      max(
+        max(command->motor_inhibition, command->withdrawal_drive),
+        max(command->postural_stiffness, command->autonomic_arousal)
+      ),
+      0.0f,
+      1.0f
+    )
+  );
+}
+
 inline float3 nb_accepted_embodied_risk(
   device const uchar *hot_state,
   constant NBAcceptedConsequenceUniforms &uniforms,
@@ -992,6 +1034,8 @@ kernel void broadcast_accepted_prediction_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *world_parameters [[buffer(3)]],
+  device const NBAcceptedProtectiveCommandRecord *protective_command
+    [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -1031,8 +1075,11 @@ kernel void broadcast_accepted_prediction_error(
   const float physiological_critical = nb_accepted_fast_autonomic_critical(
     hot_state, uniforms
   );
+  const float protective_risk = nb_accepted_protective_command_risk(
+    protective_command, uniforms
+  );
   if (nb_has_accepted_protective_reflex(hot_state, uniforms)
-      || physiological_critical > 0.0f) {
+      || physiological_critical > 0.0f || protective_risk > 0.0f) {
     // Preserve the cached option identifier as causal provenance while
     // recording that accepted fast protection interrupted its execution.
     control->flags |= NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP;
@@ -1042,7 +1089,7 @@ kernel void broadcast_accepted_prediction_error(
     control->vigor = 0.0f;
   }
   const float3 embodied_risk = nb_accepted_embodied_risk(
-    hot_state, uniforms, physiological_critical
+    hot_state, uniforms, max(physiological_critical, protective_risk)
   );
   device NBDriveStateRecord *drives =
     reinterpret_cast<device NBDriveStateRecord *>(
@@ -1343,6 +1390,8 @@ inline ulong nb_trace_hash(ulong value) {
 kernel void update_accepted_procedural_trace(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const NBAcceptedProtectiveCommandRecord *protective_command
+    [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.procedural_trace_record_capacity == 0u
@@ -1382,8 +1431,11 @@ kernel void update_accepted_procedural_trace(
   const float physiological_critical = nb_accepted_fast_autonomic_critical(
     hot_state, uniforms
   );
+  const float protective_risk = nb_accepted_protective_command_risk(
+    protective_command, uniforms
+  );
   const float3 embodied_risk = nb_accepted_embodied_risk(
-    hot_state, uniforms, physiological_critical
+    hot_state, uniforms, max(physiological_critical, protective_risk)
   );
   const float accepted_damage = max(
     clamp(control->selected_damage_cvar, 0.0f, 1.0f),

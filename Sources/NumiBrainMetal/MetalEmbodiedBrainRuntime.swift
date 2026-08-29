@@ -1265,13 +1265,14 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
   ) throws -> (any MTLResidencySet)? {
     guard !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
-      || (acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0
+      || acceptedFastMotorState != nil
     else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
     descriptor.initialCapacity = sensors.count
       + (developmentalEvidence == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
+      + (acceptedFastMotorState == nil ? 0 : 1)
       + ((acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0 ? 1 : 0)
     let set: any MTLResidencySet
     do {
@@ -1282,6 +1283,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for sensor in sensors { set.addAllocation(sensor.buffer) }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
     if let teacherState { set.addAllocation(teacherState.buffer) }
+    if let acceptedFastMotorState {
+      set.addAllocation(acceptedFastMotorState.protectiveCommandBuffer)
+    }
     if let acceptedFastMotorState,
       acceptedFastMotorState.bodySchemaByteCount > 0
     {

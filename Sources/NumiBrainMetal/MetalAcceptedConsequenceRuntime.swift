@@ -102,6 +102,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let actuatorDescriptorBuffer: any MTLBuffer
+  private let neutralProtectiveCommandBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -151,12 +152,23 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         length: actuatorDescriptors.count
           * MemoryLayout<AcceptedActuatorDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let neutralProtectiveCommandBuffer = device.makeBuffer(
+        length: ProtectiveMotorCommand.byteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate accepted actuator descriptors")
     }
     actuatorDescriptorBuffer.label =
       "NumiBrain immutable accepted actuator descriptors"
+    neutralProtectiveCommandBuffer.label =
+      "NumiBrain neutral accepted protective command"
+    neutralProtectiveCommandBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: ProtectiveMotorCommand.byteCount
+    )
     actuatorDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       actuatorDescriptorBuffer.contents().copyMemory(
@@ -207,7 +219,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 8
+    descriptor.maxBufferBindCount = 9
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -235,6 +247,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       index: 5
     )
     argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
+    argumentTable.setAddress(neutralProtectiveCommandBuffer.gpuAddress, index: 8)
     self.arena = arena
     self.species = species
     self.dynamics = dynamics
@@ -247,10 +260,11 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
+    self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, actuatorDescriptorBuffer]
+    [uniformBuffer, actuatorDescriptorBuffer, neutralProtectiveCommandBuffer]
   }
 
   public func encode(
@@ -281,16 +295,22 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     guard acceptedPhysicsState.acceptedTimestamp.rawValue >= deltaMicroseconds,
       receptorEventCapacity >= 0,
       receptorEventCapacity <= Int(UInt32.max),
-      (acceptedFastMotorState?.bodySchemaCount ?? 0) == 0
+      acceptedFastMotorState == nil
         || (
           acceptedFastMotorState?.transactionFingerprint
             == acceptedPhysicsState.transactionFingerprint
             && acceptedFastMotorState?.acceptedTimestamp
               == acceptedPhysicsState.acceptedTimestamp
-            && acceptedFastMotorState?.bodySchemaCount
-              == Int(species.body.bodyCount)
-            && acceptedFastMotorState?.bodySchemaByteCount
-              == Int(species.body.bodyCount) * 48
+            && acceptedFastMotorState?.protectiveCommandByteCount
+              == ProtectiveMotorCommand.byteCount
+            && (acceptedFastMotorState?.protectiveCommandBuffer.length ?? 0)
+              >= ProtectiveMotorCommand.byteCount
+            && (((acceptedFastMotorState?.bodySchemaCount ?? 0) == 0
+                  && (acceptedFastMotorState?.bodySchemaByteCount ?? 0) == 0)
+              || (acceptedFastMotorState?.bodySchemaCount
+                    == Int(species.body.bodyCount)
+                && acceptedFastMotorState?.bodySchemaByteCount
+                    == Int(species.body.bodyCount) * 48))
         )
     else {
       throw TissueError.transaction("accepted consequence timing or capacity is invalid")
@@ -307,6 +327,11 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(
+      acceptedFastMotorState?.protectiveCommandBuffer.gpuAddress
+        ?? neutralProtectiveCommandBuffer.gpuAddress,
+      index: 8
+    )
     dispatch(
       encoder,
       pipeline: pipelines[0],

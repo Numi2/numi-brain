@@ -245,6 +245,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let reflexRuleCount: Int
     let reflexStateByteCount: Int
     let reflexStateBuffer: any MTLBuffer
+    let protectiveCommandByteCount: Int
+    let protectiveCommandBuffer: any MTLBuffer
     let fastCerebellarStateCount: Int
     let fastCerebellarStateByteCount: Int
     let fastCerebellarStateBuffer: any MTLBuffer
@@ -274,6 +276,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       reflexRuleCount: Int,
       reflexStateByteCount: Int,
       reflexStateBuffer: any MTLBuffer,
+      protectiveCommandByteCount: Int,
+      protectiveCommandBuffer: any MTLBuffer,
       fastCerebellarStateCount: Int,
       fastCerebellarStateByteCount: Int,
       fastCerebellarStateBuffer: any MTLBuffer,
@@ -302,6 +306,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.reflexRuleCount = reflexRuleCount
       self.reflexStateByteCount = reflexStateByteCount
       self.reflexStateBuffer = reflexStateBuffer
+      self.protectiveCommandByteCount = protectiveCommandByteCount
+      self.protectiveCommandBuffer = protectiveCommandBuffer
       self.fastCerebellarStateCount = fastCerebellarStateCount
       self.fastCerebellarStateByteCount = fastCerebellarStateByteCount
       self.fastCerebellarStateBuffer = fastCerebellarStateBuffer
@@ -4143,18 +4149,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     interactiveJointRoot = nil
   }
 
-  /// Lends accepted-only CPG phase, reflex history, per-actuator cerebellar
-  /// load correction, autonomic integration, and body-schema posterior after
-  /// fast-root finalization and before joint publication. The cognitive
-  /// transaction imports every state into its own shadow generation, so
-  /// neither runtime can publish a different fast control history.
+  /// Lends the accepted protective command, CPG phase, reflex history,
+  /// per-actuator cerebellar load correction, autonomic integration, and
+  /// body-schema posterior after fast-root finalization and before joint
+  /// publication. The cognitive transaction imports or consumes every state
+  /// in its own shadow generation, so neither runtime can publish a different
+  /// fast control history.
   func borrowPreparedAcceptedFastMotorState(
     for transaction: BrainJointTransactionToken
   ) throws -> AcceptedFastMotorStateLease {
     guard let pendingJointTransaction,
+      let pendingSchedulerClockIndex,
       let pendingRegionalStateIndex,
       pendingJointTransaction.token == transaction,
       pendingSchedulerTargetTime == transaction.targetTimestamp,
+      pendingSchedulerClockIndex == pendingRegionalStateIndex,
       stagedFastCPGTransactionFingerprint == transaction.fingerprint,
       stagedFastCPGOscillatorCount <= Self.maximumFastCPGOscillatorCount
     else {
@@ -4171,6 +4180,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       reflexRuleCount: boundFastReflexRuleCount,
       reflexStateByteCount: boundFastReflexRuleCount * Self.fastReflexStateStride,
       reflexStateBuffer: stagedFastReflexStateBuffer,
+      protectiveCommandByteCount: ProtectiveMotorCommand.byteCount,
+      protectiveCommandBuffer: protectiveCommandBuffers[pendingRegionalStateIndex],
       fastCerebellarStateCount: protectiveMotorProfile.channels.count,
       fastCerebellarStateByteCount: fastCerebellarStateByteCount,
       fastCerebellarStateBuffer: stagedFastCerebellarStateBuffer,
