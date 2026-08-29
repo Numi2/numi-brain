@@ -2035,6 +2035,7 @@ kernel void publish_memory_retrieval_winner(
   );
   if (key == 0u) return;
   const uint candidate_index = 0xfffffu - (key & 0xfffffu);
+  const float retrieval_relevance = float((key >> 20u) & 0xfffu) / 4095.0f;
   uint kind = 0u;
   ulong identifier = 0ul;
   float score = 0.0f;
@@ -2293,12 +2294,14 @@ kernel void publish_memory_retrieval_winner(
     : (kind == 5u ? 59u
       : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
   token.kind_and_source = 5u | (source_module << 16);
-  token.confidence = clamp(score, 0.0f, 1.0f);
+  token.confidence = sqrt(
+    clamp(score, 0.0f, 1.0f) * clamp(retrieval_relevance, 0.0f, 1.0f)
+  );
   metadata[slot] = token;
   scratch->winner_record_identifiers[uniforms.retrieval_pass] = identifier;
   scratch->winner_kinds[uniforms.retrieval_pass] = kind;
   scratch->winner_indices[uniforms.retrieval_pass] = candidate_index;
-  scratch->winner_scores[uniforms.retrieval_pass] = score;
+  scratch->winner_scores[uniforms.retrieval_pass] = retrieval_relevance;
   scratch->flags |= 1u << uniforms.retrieval_pass;
 }
 
