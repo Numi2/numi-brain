@@ -148,7 +148,7 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
         * (replayQueueKinds .>= UInt32(ReplayQueueKind.episodic.rawValue))
         * (replayQueueKinds .<= UInt32(ReplayQueueKind.rareEvent.rawValue))
         * (replayRecordKinds .>= UInt32(ReplayRecordKind.episode.rawValue))
-        * (replayRecordKinds .<= UInt32(ReplayRecordKind.skill.rawValue))
+        * (replayRecordKinds .<= UInt32(ReplayRecordKind.semanticRelation.rawValue))
         * (replayPriorities .> Float(0))
         * isFinite(replayPriorities)
     ).asType(.float32)

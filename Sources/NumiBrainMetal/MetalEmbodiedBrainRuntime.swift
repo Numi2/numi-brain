@@ -386,6 +386,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let counterfactualRollouts = try agentStateRuntime.snapshotPersistentSection(
       .counterfactualRollouts
     )
+    let semanticConcepts = try agentStateRuntime.snapshotPersistentSection(
+      .semanticConcepts
+    )
+    let semanticRelations = try agentStateRuntime.snapshotPersistentSection(
+      .semanticRelations
+    )
     return try MetalLearningBatch(
       transitions: transitions,
       livedEpisodes: livedEpisodes,
@@ -393,6 +399,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       proceduralSkills: proceduralSkills,
       replayQueue: replayQueue,
       counterfactualRollouts: counterfactualRollouts,
+      semanticConcepts: semanticConcepts,
+      semanticRelations: semanticRelations,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,

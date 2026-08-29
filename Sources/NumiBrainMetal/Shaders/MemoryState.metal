@@ -1085,6 +1085,51 @@ inline bool append_memory_record(
   return true;
 }
 
+inline void enqueue_semantic_consolidation_replay(
+  device const uchar *persistent_memory,
+  device NBMemoryJournalHeader *journal,
+  constant NBMemoryConsolidationUniforms &uniforms,
+  uint record_kind,
+  ulong record_identifier,
+  float confidence,
+  uint supporting_episode_count)
+{
+  if (uniforms.replay_capacity == 0u || record_identifier == 0ul
+      || (record_kind != 3u && record_kind != 4u)) return;
+  NBReplayQueueSummaryRecord replay = {};
+  replay.queue_kind = 5u;
+  replay.record_kind = record_kind;
+  replay.record_identifier = record_identifier;
+  replay.priority = clamp(
+    confidence + 0.1f * log2(float(supporting_episode_count) + 1.0f),
+    0.0f,
+    2.0f
+  );
+  replay.replay_count = 0u;
+  replay.enqueued_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  const uint replay_slot = uint(
+    consolidation_hash(
+      record_identifier ^ (ulong(record_kind) << 56)
+        ^ 0x53454d414e544943ul
+    ) % ulong(uniforms.replay_capacity)
+  );
+  const ulong replay_destination = uniforms.replay_memory_offset
+    + ulong(replay_slot) * ulong(uniforms.replay_stride);
+  device const NBReplayQueueSummaryRecord *existing =
+    reinterpret_cast<device const NBReplayQueueSummaryRecord *>(
+      persistent_memory + replay_destination
+    );
+  if (existing->record_identifier == 0ul
+      || existing->record_identifier == record_identifier
+      || existing->priority <= replay.priority) {
+    append_memory_record(
+      journal, uniforms, replay, replay_destination,
+      NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, record_identifier
+    );
+  }
+}
+
 inline bool journal_accumulated_episode(
   device uchar *hot_state,
   device const uchar *persistent_memory,
@@ -2606,7 +2651,7 @@ kernel void consolidate_lived_memory_during_rest(
           + ulong(index) * ulong(uniforms.replay_stride)
       );
     if (candidate->record_identifier == 0ul
-        || (candidate->record_kind != 1u && candidate->record_kind != 2u)
+        || candidate->record_kind < 1u || candidate->record_kind > 4u
         || !isfinite(candidate->priority) || candidate->priority <= 0.0f) continue;
     const float score = candidate->priority
       / (1.0f + 0.25f * float(candidate->replay_count));
@@ -2627,6 +2672,7 @@ kernel void consolidate_lived_memory_during_rest(
   ulong target_episode_identifier = selected_replay != nullptr
       && selected_replay->record_kind == 1u
     ? selected_replay->record_identifier : 0ul;
+  ulong semantic_replay_source_episode_identifier = 0ul;
   ulong target_option_identifier = 0ul;
   if (selected_replay != nullptr && selected_replay->record_kind == 2u) {
     for (uint index = 0u; index < uniforms.procedural_capacity; ++index) {
@@ -2639,6 +2685,53 @@ kernel void consolidate_lived_memory_during_rest(
           && skill->identifier == selected_replay->record_identifier) {
         target_option_identifier = skill->parent_skill_identifier;
         break;
+      }
+    }
+  }
+  if (selected_replay != nullptr && selected_replay->record_kind == 3u) {
+    for (uint index = 0u; index < uniforms.semantic_capacity; ++index) {
+      device const NBSemanticConceptSummaryRecord *concept =
+        reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+          persistent_memory + uniforms.semantic_memory_offset
+            + ulong(index) * ulong(uniforms.semantic_stride)
+        );
+      if (concept->format_version == NB_MEMORY_RECORD_VERSION
+          && concept->identifier == selected_replay->record_identifier) {
+        semantic_replay_source_episode_identifier =
+          concept->source_episode_identifier;
+        target_episode_identifier = concept->source_episode_identifier;
+        break;
+      }
+    }
+  }
+  if (selected_replay != nullptr && selected_replay->record_kind == 4u) {
+    ulong source_concept_identifier = 0ul;
+    for (uint index = 0u; index < uniforms.semantic_relation_capacity; ++index) {
+      device const NBSemanticRelationSummaryRecord *relation =
+        reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+          persistent_memory + uniforms.semantic_relation_memory_offset
+            + ulong(index) * ulong(uniforms.semantic_relation_stride)
+        );
+      if (relation->format_version == NB_MEMORY_RECORD_VERSION
+          && relation->identifier == selected_replay->record_identifier) {
+        source_concept_identifier = relation->source_concept_identifier;
+        break;
+      }
+    }
+    if (source_concept_identifier != 0ul) {
+      for (uint index = 0u; index < uniforms.semantic_capacity; ++index) {
+        device const NBSemanticConceptSummaryRecord *concept =
+          reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+            persistent_memory + uniforms.semantic_memory_offset
+              + ulong(index) * ulong(uniforms.semantic_stride)
+          );
+        if (concept->format_version == NB_MEMORY_RECORD_VERSION
+            && concept->identifier == source_concept_identifier) {
+          semantic_replay_source_episode_identifier =
+            concept->source_episode_identifier;
+          target_episode_identifier = concept->source_episode_identifier;
+          break;
+        }
       }
     }
   }
@@ -2796,10 +2889,20 @@ kernel void consolidate_lived_memory_during_rest(
         / float(max(uniforms.active_episode_capacity, 1u));
       concept.embedding[17] = development->maturation_progress;
       concept.embedding[18] = development->replay_allocation_multiplier;
-      append_memory_record(
+      if (append_memory_record(
         journal, uniforms, concept, destination,
         NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, concept.identifier
-      );
+      )) {
+        enqueue_semantic_consolidation_replay(
+          persistent_memory,
+          journal,
+          uniforms,
+          3u,
+          concept.identifier,
+          concept.confidence,
+          semantic_count
+        );
+      }
     }
   }
 
@@ -2845,10 +2948,20 @@ kernel void consolidate_lived_memory_during_rest(
       ) * 2.3283064365386963e-10f;
       goal.embedding[12] = latest->factored_reinforcement;
       goal.embedding[13] = latest->damage_severity;
-      append_memory_record(
+      if (append_memory_record(
         journal, uniforms, goal, goal_destination,
         NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, goal.identifier
-      );
+      )) {
+        enqueue_semantic_consolidation_replay(
+          persistent_memory,
+          journal,
+          uniforms,
+          3u,
+          goal.identifier,
+          goal.confidence,
+          semantic_count
+        );
+      }
     }
 
     if (!goal_collision) {
@@ -2892,10 +3005,20 @@ kernel void consolidate_lived_memory_during_rest(
         for (uint component = 0u; component < 10u; ++component) {
           relation.evidence_embedding[component] = latest->retrieval_key[component];
         }
-        append_memory_record(
+        if (append_memory_record(
           journal, uniforms, relation, relation_destination,
           NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION, relation.identifier
-        );
+        )) {
+          enqueue_semantic_consolidation_replay(
+            persistent_memory,
+            journal,
+            uniforms,
+            4u,
+            relation.identifier,
+            relation.confidence,
+            semantic_count
+          );
+        }
       }
     }
   }
@@ -3395,7 +3518,10 @@ kernel void consolidate_lived_memory_during_rest(
       (serviced.record_kind == 1u
         && latest->identifier == serviced.record_identifier)
       || (serviced.record_kind == 2u && target_option_identifier != 0ul
-        && latest->active_option_identifier == target_option_identifier);
+        && latest->active_option_identifier == target_option_identifier)
+      || ((serviced.record_kind == 3u || serviced.record_kind == 4u)
+        && semantic_replay_source_episode_identifier != 0ul
+        && latest->identifier == semantic_replay_source_episode_identifier);
     const float decay = serviced_exact_target ? 0.70f : 0.35f;
     serviced.priority = max(serviced.priority * decay, 0.0f);
     const ulong replay_destination = uniforms.replay_memory_offset

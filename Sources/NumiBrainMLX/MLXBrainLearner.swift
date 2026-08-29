@@ -86,6 +86,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let batch = try MLXCommittedTransitionBatch(sourceBatch)
     let replay = try MLXReplayLearningBatch(sourceBatch)
     let counterfactuals = try MLXCounterfactualLearningBatch(sourceBatch)
+    let semantics = try MLXSemanticLearningBatch(sourceBatch)
     let kinds = BrainSharedParameterArtifact.requiredKinds
     let parentParameters = kinds.map { kind -> MLXArray in
       let payload = parentArtifact.payload(kind)
@@ -101,7 +102,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
         parentParameters: parentParameters,
         batch: batch,
         replay: replay,
-        counterfactuals: counterfactuals
+        counterfactuals: counterfactuals,
+        semantics: semantics
       )
       var total = MLXArray(Float(0))
       for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
@@ -139,7 +141,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
       parentParameters: parentParameters,
       batch: batch,
       replay: replay,
-      counterfactuals: counterfactuals
+      counterfactuals: counterfactuals,
+      semantics: semantics
     )
     eval(updatedParameters + updatedTerms)
     let payloads = try zip(kinds, updatedParameters).map { kind, parameter in
@@ -175,7 +178,8 @@ public final class MLXBrainLearner: @unchecked Sendable {
     parentParameters: [MLXArray],
     batch: MLXCommittedTransitionBatch,
     replay: MLXReplayLearningBatch,
-    counterfactuals: MLXCounterfactualLearningBatch
+    counterfactuals: MLXCounterfactualLearningBatch,
+    semantics: MLXSemanticLearningBatch
   ) -> [MLXArray] {
     let sensory = parameters[0]
     let belief = parameters[1]
@@ -343,6 +347,22 @@ public final class MLXBrainLearner: @unchecked Sendable {
     ) + replay.episodeMaskedMeanSquaredError(
       replayEpisodePrediction, replayEpisodeOutcome
     )
+    let semanticConceptConfidence = sigmoid(
+      semantics.conceptEmbedding.mean(axis: 1, keepDims: true) * memory[12]
+        + memory[13]
+    )
+    let semanticRelationEvidence = tanh(
+      (semantics.relationSourceEmbedding[0..., 0..<10]
+        + semantics.relationDestinationEmbedding[0..., 0..<10])
+        * memory[32..<42] + memory[14]
+    )
+    let semanticRelationConfidence = sigmoid(
+      -abs(
+        semantics.relationSourceEmbedding
+          - semantics.relationDestinationEmbedding
+      ).mean(axis: 1, keepDims: true) * memory[15]
+        - semantics.relationContradiction * memory[16]
+    )
     let semanticLoss = batch.maskedMeanSquaredError(
       posterior.mean(axis: 1, keepDims: true) * memory[1],
       observation.mean(axis: 1, keepDims: true),
@@ -351,6 +371,12 @@ public final class MLXBrainLearner: @unchecked Sendable {
       replay.episodeRetrievalKeys.mean(axis: 1, keepDims: true) * memory[11],
       replay.episodeReinforcement - replay.episodeUncertainty,
       mask: replay.episodeReplayWeights + replay.episodeRareEventWeights
+    ) + semantics.conceptMaskedMeanSquaredError(
+      semanticConceptConfidence, semantics.conceptConfidence
+    ) + semantics.relationMaskedMeanSquaredError(
+      semanticRelationEvidence, semantics.relationEvidenceEmbedding
+    ) + semantics.relationMaskedMeanSquaredError(
+      semanticRelationConfidence, semantics.relationConfidence
     )
     let replaySkillPolicy = tanh(
       replay.skillInitiationModel * memory[16..<32] + memory[3]
