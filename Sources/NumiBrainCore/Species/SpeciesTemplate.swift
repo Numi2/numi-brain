@@ -95,6 +95,13 @@ public struct SensoryTopology: Codable, Equatable, Hashable, Sendable {
 }
 
 @frozen
+public struct ActiveSensingChannelTemplate: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt16
+  public let modality: SensoryModality
+  public let modalityLocalIdentifier: UInt16
+}
+
+@frozen
 public enum ActuatorCommandKind: UInt16, Codable, CaseIterable, Sendable {
   case muscleExcitation = 1
   case motorCurrent = 2
@@ -560,6 +567,9 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     let hasVitalAutonomicScaffold = innateBehaviors.contains {
       $0.kind == .vitalAutonomic && $0.gain > 0
     }
+    let activeSensingDimension = senses.lazy
+      .filter(\.enabled)
+      .reduce(0) { $0 + Int($1.activeSensingActionDimension) }
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !enabled.isEmpty, Set(enabled).count == enabled.count,
       regionGraph.referenceGraphFingerprint == referenceGraph.fingerprint,
@@ -569,6 +579,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       senses.contains(where: \.enabled),
       motor.actuatorCount == body.actuatorCount,
       motor.autonomicActionDimension == physiology.autonomicActionDimension,
+      activeSensingDimension == Int(motor.activeSensingActionDimension),
       Set(reflexes.map(\.identifier)).count == reflexes.count,
       !reflexRuleCountOverflow, reflexRuleCount <= 4_096,
       reflexes.allSatisfy({ reflex in
@@ -751,6 +762,27 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
   }
 
   public var fingerprintHex: String { String(format: "%016llx", fingerprint) }
+
+  /// Stable global channel order used by NumanX and the decision runtime.
+  /// Modalities are ordered by their enum code and each modality contributes
+  /// its declared local channels contiguously.
+  public var activeSensingChannels: [ActiveSensingChannelTemplate] {
+    var channels: [ActiveSensingChannelTemplate] = []
+    channels.reserveCapacity(Int(motor.activeSensingActionDimension))
+    for sense in senses.sorted(by: { $0.modality.rawValue < $1.modality.rawValue })
+    where sense.enabled {
+      for localIdentifier in 0..<sense.activeSensingActionDimension {
+        channels.append(
+          ActiveSensingChannelTemplate(
+            identifier: UInt16(channels.count),
+            modality: sense.modality,
+            modalityLocalIdentifier: localIdentifier
+          )
+        )
+      }
+    }
+    return channels
+  }
 
   public func regionalProgram(
     historyCapacity: Int = RegionalTokenProgram.routeHistoryCapacity

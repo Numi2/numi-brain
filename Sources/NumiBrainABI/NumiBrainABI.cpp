@@ -93,7 +93,8 @@ static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_count) == 100);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_gpu_address) == 104);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_byte_count) == 112);
 static_assert(offsetof(NBNumanXMotorCandidate, active_sensing_command_count) == 116);
-static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 120);
+static_assert(offsetof(NBNumanXMotorCandidate, species_template_fingerprint) == 120);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 128);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -1637,6 +1638,7 @@ uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
   mix_little_endian(hash, candidate->active_sensing_command_gpu_address);
   mix_little_endian(hash, candidate->active_sensing_command_byte_count);
   mix_little_endian(hash, candidate->active_sensing_command_count);
+  mix_little_endian(hash, candidate->species_template_fingerprint);
   return hash;
 }
 
@@ -1665,7 +1667,8 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
       || candidate->random_counter_generation
           != substep->random_counter_generation
       || candidate->environment_identifier != root->environment_identifier
-      || candidate->motor_profile_fingerprint == 0) {
+      || candidate->motor_profile_fingerprint == 0
+      || candidate->species_template_fingerprint == 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
   }
   const uint64_t expected_generation =

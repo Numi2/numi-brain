@@ -319,6 +319,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   public struct FastSystemResult: Equatable, Sendable {
     public let substep: BrainJointSubstepToken
+    public let speciesTemplateFingerprint: UInt64
     public let protectiveCommand: ProtectiveCommandBufferView
     public let protectiveMotorOutput: ProtectiveMotorOutputBufferView
     public let fastAutonomicOutput: FastAutonomicOutputBufferView
@@ -3399,6 +3400,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       : protectiveCommandGeneration
     return FastSystemResult(
       substep: substep,
+      speciesTemplateFingerprint: boundFastReflexSpeciesFingerprint ?? 0,
       protectiveCommand: ProtectiveCommandBufferView(
         gpuAddress: protectiveCommandBuffers[protectiveStateIndex].gpuAddress,
         byteCount: ProtectiveMotorCommand.byteCount,
@@ -3521,6 +3523,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let autonomic = fastSystems.fastAutonomicOutput
     let activeSensing = fastSystems.activeSensingOutput
     guard
+      fastSystems.speciesTemplateFingerprint == boundFastReflexSpeciesFingerprint,
       let headerBuffer = protectiveMotorOutputHeaderBuffers.first(where: {
         $0.gpuAddress == output.headerGPUAddress
       }),

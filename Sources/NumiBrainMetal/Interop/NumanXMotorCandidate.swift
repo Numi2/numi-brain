@@ -15,6 +15,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public let substepFingerprint: UInt64
   public let acceptedBrainTimestamp: BrainTimestamp
   public let brainGeneration: UInt64
+  public let speciesTemplateFingerprint: UInt64
   public let motorProfileFingerprint: UInt64
   public let motorOutputHeaderGPUAddress: UInt64
   public let muscleExcitationGPUAddress: UInt64
@@ -61,6 +62,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.substep_fingerprint = fastSystems.substep.fingerprint
     record.accepted_brain_timestamp_microseconds = output.timestamp.rawValue
     record.brain_generation = output.brainGeneration
+    record.species_template_fingerprint = fastSystems.speciesTemplateFingerprint
     record.motor_profile_fingerprint = output.profileFingerprint
     record.motor_output_header_gpu_address = output.headerGPUAddress
     record.muscle_excitation_gpu_address = output.muscleExcitationGPUAddress
@@ -123,6 +125,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
       microseconds: record.accepted_brain_timestamp_microseconds
     )
     brainGeneration = record.brain_generation
+    speciesTemplateFingerprint = record.species_template_fingerprint
     motorProfileFingerprint = record.motor_profile_fingerprint
     motorOutputHeaderGPUAddress = record.motor_output_header_gpu_address
     muscleExcitationGPUAddress = record.muscle_excitation_gpu_address
@@ -148,6 +151,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.substep_fingerprint = substepFingerprint
     record.accepted_brain_timestamp_microseconds = acceptedBrainTimestamp.rawValue
     record.brain_generation = brainGeneration
+    record.species_template_fingerprint = speciesTemplateFingerprint
     record.motor_profile_fingerprint = motorProfileFingerprint
     record.motor_output_header_gpu_address = motorOutputHeaderGPUAddress
     record.muscle_excitation_gpu_address = muscleExcitationGPUAddress
