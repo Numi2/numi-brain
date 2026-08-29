@@ -423,6 +423,38 @@ inline float3 nb_rotate_vector(float3 vector, float4 quaternion) {
     + cross(normalized.xyz, twice_cross);
 }
 
+inline float nb_embodied_self_risk(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms)
+{
+  float risk = 0.0f;
+  device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+  for (uint body_index = 0u;
+      body_index < uniforms.body_belief_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      body_belief + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    risk = max(
+      risk,
+      max(clamp(body[5], 0.0f, 1.0f), clamp(body[7], 0.0f, 1.0f))
+    );
+  }
+  device const uchar *effector_belief =
+    hot_state + uniforms.somatic_effector_belief_offset;
+  for (uint index = 0u;
+      index < uniforms.somatic_effector_belief_count; ++index) {
+    device const float *effector = reinterpret_cast<device const float *>(
+      effector_belief + ulong(index) * 192ul
+    );
+    risk = max(risk, clamp(effector[9], 0.0f, 1.0f));
+  }
+  return risk;
+}
+
 inline ulong nb_interrupt_mask_for_event_kind(uint kind) {
   switch (kind) {
     case 3u: return 1ul << 3u;
@@ -975,6 +1007,7 @@ kernel void simulate_candidate_option_outcomes(
   }
   const bool structured_world_available = uniforms.world_model_scalar_count
     >= NB_WORLD_EVENT_OPTION_BASE + 9u * NB_WORLD_EVENT_OPTION_DIMENSION;
+  const float embodied_self_risk = nb_embodied_self_risk(hot_state, uniforms);
   float rollout_state[16];
   for (uint component = 0u; component < 16u; ++component) {
     rollout_state[component] = candidates[gid].parameters[component];
@@ -1012,7 +1045,8 @@ kernel void simulate_candidate_option_outcomes(
             * followup.damage_cvar
           - value_parameters[5] * followup.effort_cost
           - value_parameters[6] * followup.switching_cost;
-        if (followup.damage_cvar <= uniforms.damage_risk_budget
+        if (max(followup.damage_cvar, embodied_self_risk)
+              <= uniforms.damage_risk_budget
             && (followup_score > best_followup_score
               || (followup_score == best_followup_score
                 && candidate_index < best_followup))) {
@@ -1048,7 +1082,8 @@ kernel void simulate_candidate_option_outcomes(
       : 0.0f;
     const float step_damage = clamp(
       candidate.damage_cvar + 0.1f * abs(ensemble_mean)
-        + 0.05f * sqrt(aleatoric_variance),
+        + 0.05f * sqrt(aleatoric_variance)
+        + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
       0.0f, 1.0f
     );
     accumulated_damage = 1.0f
@@ -1124,7 +1159,11 @@ kernel void select_option_and_control_mode(
     max(development->planning_horizon_steps, 1u),
     uniforms.maximum_planning_horizon
   );
-  const float safety = uniforms.drive_count > 11u ? drives[11].level : 0.0f;
+  const float embodied_self_risk = nb_embodied_self_risk(hot_state, uniforms);
+  const float safety = max(
+    uniforms.drive_count > 11u ? drives[11].level : 0.0f,
+    embodied_self_risk
+  );
   device const NBInternalActionRecord *internal_actions =
     reinterpret_cast<device const NBInternalActionRecord *>(
       hot_state + uniforms.internal_action_offset
