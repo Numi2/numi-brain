@@ -776,7 +776,13 @@ kernel void generate_active_goal_state(
         || token.entity_identifier == 0ul) continue;
     const uint origin = prospective ? 3u
       : (communication ? 8u : (active_plan ? 7u : 4u));
-    const ulong identifier = nb_goal_identifier(origin, token.entity_identifier);
+    // A prospective record reactivates the goal it remembers. Its own record
+    // identifier remains orthogonal lifecycle provenance in reserved2; using
+    // it as the goal would erase the original physiological/task/social
+    // semantics from action generation and accepted progress evaluation.
+    const ulong identifier = prospective && token.goal_identifier != 0ul
+      ? token.goal_identifier
+      : nb_goal_identifier(origin, token.entity_identifier);
     float priority = clamp(token.confidence, 0.0f, 1.0f)
       * max(value_parameters[min(origin - 1u, 7u)], 0.0f);
     if (prospective) priority += 0.25f;
@@ -796,7 +802,7 @@ kernel void generate_active_goal_state(
           goal_priorities[shift] = goal_priorities[shift - 1u];
         }
         goal_identifiers[rank] = identifier;
-        goal_origins[rank] = origin;
+        goal_origins[rank] = prospective ? uint(identifier >> 56u) : origin;
         goal_sources[rank] = slot;
         goal_priorities[rank] = priority;
         break;
@@ -804,6 +810,21 @@ kernel void generate_active_goal_state(
     }
   }
   header->active_goal_identifier = goal_identifiers[0];
+  header->reserved2 = 0ul;
+  float active_intention_confidence = -INFINITY;
+  for (uint slot = 0u; slot < active_workspace_capacity; ++slot) {
+    const NBWorkspaceMetadataRecord token = metadata[slot];
+    const uint source_module = token.kind_and_source >> 16;
+    if (source_module != 61u || token.entity_identifier == 0ul
+        || token.goal_identifier != goal_identifiers[0]) continue;
+    const float confidence = clamp(token.confidence, 0.0f, 1.0f);
+    if (confidence > active_intention_confidence
+        || (confidence == active_intention_confidence
+          && token.entity_identifier < header->reserved2)) {
+      active_intention_confidence = confidence;
+      header->reserved2 = token.entity_identifier;
+    }
+  }
   if (previous_goal_identifier != goal_identifiers[0]) {
     header->progress = 0.0f;
   }

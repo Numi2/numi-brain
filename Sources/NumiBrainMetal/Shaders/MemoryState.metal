@@ -862,7 +862,7 @@ struct NBProspectiveIntentionSummaryRecord {
 struct NBProspectiveLifecycleState {
   ulong previous_goal_identifier;
   ulong previous_goal_timestamp_microseconds;
-  ulong last_intention_identifier;
+  ulong previous_intention_identifier;
   ulong last_update_timestamp_microseconds;
   uint format_version;
   uint previous_control_mode;
@@ -2884,17 +2884,11 @@ kernel void advance_prospective_memory(
     ? lifecycle->previous_goal_identifier : 0ul;
   const bool goal_changed = lifecycle_valid
     && previous_goal != control->active_goal_identifier;
-  const uint current_goal_origin = uint(control->active_goal_identifier >> 56);
-  const ulong current_goal_code = control->active_goal_identifier
-    & NB_MEMORY_GOAL_SOURCE_MASK;
-  const ulong current_intention_identifier = current_goal_origin == 3u
-      && current_goal_code != 0ul
-    ? current_goal_code - 1ul : 0ul;
-  const uint previous_goal_origin = uint(previous_goal >> 56);
-  const ulong previous_goal_code = previous_goal & NB_MEMORY_GOAL_SOURCE_MASK;
-  const ulong previous_intention_identifier = previous_goal_origin == 3u
-      && previous_goal_code != 0ul
-    ? previous_goal_code - 1ul : 0ul;
+  const ulong current_intention_identifier = control->reserved2;
+  const ulong previous_intention_identifier = lifecycle_valid
+    ? lifecycle->previous_intention_identifier : 0ul;
+  const bool intention_changed = lifecycle_valid
+    && previous_intention_identifier != current_intention_identifier;
 
   for (uint index = 0u; index < uniforms.prospective_capacity; ++index) {
     const ulong destination = uniforms.prospective_memory_offset
@@ -2921,7 +2915,7 @@ kernel void advance_prospective_memory(
       } else {
         next_status = 2u;
       }
-    } else if (goal_changed
+    } else if ((goal_changed || intention_changed)
         && record->identifier == previous_intention_identifier
         && record->status == 2u) {
       next_status = 1u;
@@ -2938,7 +2932,7 @@ kernel void advance_prospective_memory(
   }
 
   const bool interrupted_goal = goal_changed && previous_goal != 0ul
-    && previous_goal_origin != 3u
+    && previous_intention_identifier == 0ul
     && lifecycle->previous_goal_timestamp_microseconds != 0ul
     && lifecycle->previous_progress < uniforms.completion_threshold;
   if (interrupted_goal) {
@@ -2981,17 +2975,16 @@ kernel void advance_prospective_memory(
       for (uint component = 0u; component < 16u; ++component) {
         intention.trigger_code[component] = lifecycle->context[component];
       }
-      if (append_memory_record(
-          journal, uniforms, intention, destination,
-          NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION,
-          intention.identifier
-        )) {
-        lifecycle->last_intention_identifier = intention.identifier;
-      }
+      append_memory_record(
+        journal, uniforms, intention, destination,
+        NB_MEMORY_MUTATION_SECTION_PROSPECTIVE_INTENTION,
+        intention.identifier
+      );
     }
   }
 
   lifecycle->previous_goal_identifier = control->active_goal_identifier;
+  lifecycle->previous_intention_identifier = current_intention_identifier;
   lifecycle->previous_goal_timestamp_microseconds =
     uniforms.target_timestamp_microseconds;
   lifecycle->last_update_timestamp_microseconds =
