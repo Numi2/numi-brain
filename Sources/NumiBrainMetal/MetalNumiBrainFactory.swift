@@ -55,18 +55,13 @@ public struct MetalNumiBrainConfiguration: Sendable {
 
 @available(macOS 26.0, *)
 extension MetalNumiBrainRuntime {
-  /// Creates the authoritative complete runtime from one compiled species and
-  /// one explicit immutable publication. A new developmental agent may use
-  /// `BrainParameterPublication.developmentalSeedV1`; trained cohorts supply
-  /// their exact learner publication instead.
-  public static func create(
+  /// Constructs one unpublished runtime generation. The public owning handle
+  /// uses this for initial creation and isolated checkpoint replacement.
+  static func makeRuntime(
     configuration: MetalNumiBrainConfiguration,
     publication: BrainParameterPublication,
-    device requestedDevice: (any MTLDevice)? = nil
+    device: any MTLDevice
   ) throws -> MetalNumiBrainRuntime {
-    guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
-      throw TissueError.metal("no Metal device is available")
-    }
     let compiledSpeciesTemplate = configuration.compiledSpeciesTemplate
     let species = compiledSpeciesTemplate.species
     let regionalProgram = try species.regionalProgram()
@@ -153,6 +148,34 @@ extension MetalNumiBrainRuntime {
     return try MetalNumiBrainRuntime(
       cognitive: cognitive,
       fastTissue: fastTissue
+    )
+  }
+}
+
+@available(macOS 26.0, *)
+extension MetalNumiBrainHandle {
+  /// Creates the authoritative complete brain behind one replaceable owning
+  /// handle. New developmental agents may explicitly use
+  /// `BrainParameterPublication.developmentalSeedV1`; trained cohorts supply
+  /// their exact learner publication instead.
+  public static func create(
+    configuration: MetalNumiBrainConfiguration,
+    publication: BrainParameterPublication,
+    device requestedDevice: (any MTLDevice)? = nil
+  ) throws -> MetalNumiBrainHandle {
+    guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
+      throw TissueError.metal("no Metal device is available")
+    }
+    let runtime = try MetalNumiBrainRuntime.makeRuntime(
+      configuration: configuration,
+      publication: publication,
+      device: device
+    )
+    return MetalNumiBrainHandle(
+      runtime: runtime,
+      configuration: configuration,
+      publication: publication,
+      device: device
     )
   }
 }
