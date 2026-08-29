@@ -59,6 +59,8 @@ constant uint NB_JOINT_PREDICTION_ERROR = 31u;
 constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
 constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
+constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
+constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -2952,7 +2954,6 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   const bool prediction_is_causal =
     (expert.flags & NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID) != 0u
     && expert.prediction_count > 0u
-    && uniforms.body_count > 0u
     && expert.prediction_timestamp_microseconds
       < uniforms.target_timestamp_microseconds
     && uniforms.target_timestamp_microseconds
@@ -2987,17 +2988,77 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
       break;
     }
   }
-  if (accepted_body == nullptr) {
-    expert.flags &= ~NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID;
-    experts[gid] = expert;
-    return;
-  }
   for (uint sample = 0u; sample < prediction_count; ++sample) {
-    const uint body_feature = uint(expert.state[36u + sample]);
-    if (body_feature >= NB_BODY_SENSORIMOTOR_FEATURE_COUNT) continue;
-    const float accepted_feature = nb_body_sensorimotor_feature(
-      accepted_body, body_feature
-    );
+    const uint feature_code = uint(expert.state[36u + sample]);
+    const uint source_index = uint(expert.state[44u + sample]);
+    float accepted_feature = 0.0f;
+    bool feature_valid = false;
+    if (feature_code < NB_CEREBELLAR_JOINT_FEATURE_BASE) {
+      if (feature_code >= NB_BODY_SENSORIMOTOR_FEATURE_COUNT) continue;
+      device const float *source_body = nullptr;
+      if (source_index < uniforms.body_count) {
+        device const float *candidate = reinterpret_cast<device const float *>(
+          hot_state + uniforms.body_belief_offset
+            + ulong(source_index) * 256ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          candidate + NB_BODY_IDENTITY_FLOAT_OFFSET
+        );
+        if ((identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul
+            && uint(identity[0]) == body_identifier) {
+          source_body = candidate;
+        }
+      }
+      if (source_body == nullptr) source_body = accepted_body;
+      if (source_body != nullptr && isfinite(source_body[feature_code])) {
+        accepted_feature = nb_body_sensorimotor_feature(
+          source_body, feature_code
+        );
+        feature_valid = true;
+      }
+    } else if (feature_code < NB_CEREBELLAR_MUSCLE_FEATURE_BASE) {
+      const uint joint_feature = feature_code
+        - NB_CEREBELLAR_JOINT_FEATURE_BASE;
+      if (source_index < uniforms.joint_count && joint_feature < 32u) {
+        device const float *joint = reinterpret_cast<device const float *>(
+          hot_state + uniforms.joint_belief_offset
+            + ulong(source_index) * 256ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+        );
+        const uint coordinate_count = min(uint(identity[3]), 6u);
+        if ((identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul
+            && nb_joint_feature_is_active(joint_feature, coordinate_count)
+            && isfinite(joint[joint_feature])) {
+          accepted_feature = nb_joint_sensorimotor_feature(
+            joint, joint_feature
+          );
+          feature_valid = true;
+        }
+      }
+    } else {
+      const uint muscle_feature = feature_code
+        - NB_CEREBELLAR_MUSCLE_FEATURE_BASE;
+      if (source_index < uniforms.muscle_count
+          && muscle_feature < NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT) {
+        device const float *muscle = reinterpret_cast<device const float *>(
+          hot_state + uniforms.muscle_belief_offset
+            + ulong(source_index) * 192ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+        );
+        if ((identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul
+            && isfinite(muscle[muscle_feature])) {
+          accepted_feature = nb_muscle_sensorimotor_feature(
+            muscle, muscle_feature
+          );
+          feature_valid = true;
+        }
+      }
+    }
+    if (!feature_valid) continue;
     const float signed_error = accepted_feature - expert.state[4u + sample];
     const float command_feature = expert.state[20u + sample];
     absolute_error_sum += abs(signed_error);

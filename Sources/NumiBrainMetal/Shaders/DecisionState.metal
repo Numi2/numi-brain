@@ -45,6 +45,10 @@ constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
 constant uint NB_JOINT_OWNERSHIP = 30u;
 constant uint NB_JOINT_PREDICTION_ERROR = 31u;
 constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
+constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
+constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
+constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
+constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -634,6 +638,39 @@ inline float nb_normalized_body_feature_value(float value, uint feature) {
       || feature == NB_BODY_DAMAGE_RISK
       || feature == NB_BODY_EXTERNAL_DISTURBANCE) {
     return clamp(value, 0.0f, 1.0f);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline float nb_normalized_joint_feature_value(float value, uint feature) {
+  if (!isfinite(value)) return 0.0f;
+  if ((feature >= NB_JOINT_POSITION_VARIANCE
+        && feature < NB_JOINT_POSITION_VARIANCE + 6u)
+      || (feature >= NB_JOINT_VELOCITY_VARIANCE
+        && feature < NB_JOINT_VELOCITY_VARIANCE + 6u)) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if ((feature >= NB_JOINT_LIMIT_ACTIVATION
+        && feature < NB_JOINT_LIMIT_ACTIVATION + 6u)
+      || feature == NB_JOINT_OWNERSHIP) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == NB_JOINT_PREDICTION_ERROR) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline float nb_normalized_muscle_feature_value(float value, uint feature) {
+  if (!isfinite(value)) return 0.0f;
+  if (feature == 0u || feature == 4u || feature == 8u || feature == 9u) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == 3u || feature == 5u) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
   }
   return value / (1.0f + abs(value));
 }
@@ -2570,6 +2607,109 @@ kernel void generate_structured_motor_goal_state(
   *goal = next;
 }
 
+inline float nb_cerebellar_embodied_context(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  uint target_body_identifier)
+{
+  float body_total = 0.0f;
+  uint body_count = 0u;
+  for (uint body_index = 0u; body_index < uniforms.body_belief_count;
+      ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & NB_CONTROL_FLAG_VALID) == 0ul
+        || uint(identity[0]) != target_body_identifier) continue;
+    const uint features[9] = {
+      NB_BODY_POSITION, NB_BODY_POSITION + 1u, NB_BODY_POSITION + 2u,
+      NB_BODY_LINEAR_VELOCITY, NB_BODY_LINEAR_VELOCITY + 1u,
+      NB_BODY_LINEAR_VELOCITY + 2u, NB_BODY_SUPPORT,
+      NB_BODY_DAMAGE_RISK, NB_BODY_LOAD_VARIANCE,
+    };
+    for (uint index = 0u; index < 9u; ++index) {
+      body_total += nb_normalized_body_feature_value(
+        body[features[index]], features[index]
+      );
+      body_count += 1u;
+    }
+    break;
+  }
+  float joint_total = 0.0f;
+  uint joint_count = 0u;
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul
+        || (uint(identity[1]) != target_body_identifier
+          && uint(identity[2]) != target_body_identifier)) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      const uint position_feature = coordinate;
+      const uint velocity_feature = 6u + coordinate;
+      const uint limit_feature = NB_JOINT_LIMIT_ACTIVATION + coordinate;
+      joint_total += nb_normalized_joint_feature_value(
+        joint[position_feature], position_feature
+      );
+      joint_total += nb_normalized_joint_feature_value(
+        joint[velocity_feature], velocity_feature
+      );
+      joint_total += nb_normalized_joint_feature_value(
+        joint[limit_feature], limit_feature
+      );
+      joint_count += 3u;
+    }
+    joint_total += nb_normalized_joint_feature_value(
+      joint[NB_JOINT_PREDICTION_ERROR], NB_JOINT_PREDICTION_ERROR
+    );
+    joint_count += 1u;
+  }
+  float muscle_total = 0.0f;
+  uint muscle_count = 0u;
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.somatic_effector_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.somatic_effector_belief_offset
+        + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    const uint features[7] = {0u, 1u, 2u, 3u, 4u, 8u, 9u};
+    for (uint index = 0u; index < 7u; ++index) {
+      muscle_total += nb_normalized_muscle_feature_value(
+        muscle[features[index]], features[index]
+      );
+      muscle_count += 1u;
+    }
+  }
+  float total = 0.0f;
+  uint factor_count = 0u;
+  if (body_count > 0u) {
+    total += body_total / float(body_count);
+    factor_count += 1u;
+  }
+  if (joint_count > 0u) {
+    total += joint_total / float(joint_count);
+    factor_count += 1u;
+  }
+  if (muscle_count > 0u) {
+    total += muscle_total / float(muscle_count);
+    factor_count += 1u;
+  }
+  return factor_count > 0u
+    ? clamp(total / float(factor_count), -1.0f, 1.0f) : 0.0f;
+}
+
 kernel void select_cerebellar_context_experts(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -2622,6 +2762,11 @@ kernel void select_cerebellar_context_experts(
         1.0f
       )
     : 0.0f;
+  const float embodied_context = motor_goal_valid
+    ? nb_cerebellar_embodied_context(
+        hot_state, uniforms, motor_goal->target_body_identifier
+      )
+    : 0.0f;
   for (uint expert_identifier = 0u;
       expert_identifier < uniforms.cerebellar_expert_capacity;
       ++expert_identifier) {
@@ -2641,7 +2786,7 @@ kernel void select_cerebellar_context_experts(
     const float adaptation_bonus = clamp(abs(memory.state[2]), 0.0f, 0.25f);
     const float score = cerebellar_parameters[3]
       - abs(tanh(cerebellar_parameters[7] * neural_context + option_context
-        + motor_goal_context)
+        + motor_goal_context + embodied_context)
         - expert_context) + adaptation_bonus;
     for (uint rank = 0u; rank < active_count; ++rank) {
       if (score > selected_scores[rank]
@@ -3489,9 +3634,10 @@ kernel void generate_motor_spinal_autonomic_state(
   }
 }
 
-/// Arms each expert with eight timestamped anatomical body-feature predictions
-/// after the exact motor command has been generated. The feature and body IDs
-/// are stored with the prediction so delayed feedback cannot alias anatomy.
+/// Arms each expert with eight timestamped articulated predictions after the
+/// exact motor command has been generated. Each sample retains a typed feature
+/// code and its source-record index so delayed body, joint, and muscle feedback
+/// cannot alias one another during accepted-consequence learning.
 kernel void predict_delayed_cerebellar_consequences(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -3515,6 +3661,7 @@ kernel void predict_delayed_cerebellar_consequences(
         == uniforms.target_timestamp_microseconds;
   device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
   device const float *body = nullptr;
+  uint target_body_index = 0u;
   if (motor_goal_valid) {
     for (uint body_index = 0u; body_index < uniforms.body_belief_count;
         ++body_index) {
@@ -3527,6 +3674,7 @@ kernel void predict_delayed_cerebellar_consequences(
       if ((identity[3] & NB_CONTROL_FLAG_VALID) != 0ul
           && uint(identity[0]) == motor_goal->target_body_identifier) {
         body = candidate_body;
+        target_body_index = body_index;
         break;
       }
     }
@@ -3543,27 +3691,111 @@ kernel void predict_delayed_cerebellar_consequences(
   const uint prediction_count = 8u;
   float mean_command = 0.0f;
   for (uint sample = 0u; sample < prediction_count; ++sample) {
-    const uint body_feature =
+    uint feature_code =
       (expert.expert_identifier * 17u + sample * 31u)
         % NB_BODY_SENSORIMOTOR_FEATURE_COUNT;
+    uint source_index = target_body_index;
+    float baseline = nb_normalized_body_feature_value(
+      body[feature_code], feature_code
+    );
     const uint actuator_index = sample % max(uniforms.actuator_count, 1u);
     const float actuator_feature = uniforms.actuator_count == 0u
       ? 0.0f
       : nb_motor_feature(
           somatic_output[actuator_index], uniforms.actuator_command_kind
         );
-    const float baseline = nb_normalized_body_feature_value(
-      body[body_feature], body_feature
-    );
-    const float goal_feature = nb_motor_goal_body_feature(
-      motor_goal, body_feature, baseline
-    );
-    const float command_feature = clamp(
-      0.5f * actuator_feature
-        + 0.5f * (goal_feature - baseline) * motor_goal->confidence,
-      -1.0f,
-      1.0f
-    );
+    float command_feature = 0.0f;
+    bool articulated_source = false;
+    if (sample >= 4u && sample < 6u && uniforms.joint_belief_count > 0u) {
+      const uint first_joint = (
+        expert.expert_identifier * 17u + sample * 13u
+      ) % uniforms.joint_belief_count;
+      for (uint joint_lane = 0u; joint_lane < uniforms.joint_belief_count;
+          ++joint_lane) {
+        const uint joint_index = (
+          first_joint + joint_lane
+        ) % uniforms.joint_belief_count;
+        device const float *joint = reinterpret_cast<device const float *>(
+          hot_state + uniforms.joint_belief_offset
+            + ulong(joint_index) * 256ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+        );
+        const uint coordinate_count = min(uint(identity[3]), 6u);
+        if ((identity[7] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+            || coordinate_count == 0u
+            || (uint(identity[1]) != motor_goal->target_body_identifier
+              && uint(identity[2]) != motor_goal->target_body_identifier)) {
+          continue;
+        }
+        const uint coordinate = (
+          expert.expert_identifier + sample + joint_index
+        ) % coordinate_count;
+        const uint joint_feature = sample == 4u
+          ? coordinate : NB_JOINT_LIMIT_ACTIVATION + coordinate;
+        if (!isfinite(joint[joint_feature])) continue;
+        feature_code = NB_CEREBELLAR_JOINT_FEATURE_BASE + joint_feature;
+        source_index = joint_index;
+        baseline = nb_normalized_joint_feature_value(
+          joint[joint_feature], joint_feature
+        );
+        articulated_source = true;
+        break;
+      }
+    } else if (sample >= 6u
+        && uniforms.somatic_effector_belief_count > 0u) {
+      const uint first_muscle = (
+        expert.expert_identifier * 7u + sample
+      ) % uniforms.somatic_effector_belief_count;
+      for (uint muscle_lane = 0u;
+          muscle_lane < uniforms.somatic_effector_belief_count;
+          ++muscle_lane) {
+        const uint muscle_index = (
+          first_muscle + muscle_lane
+        ) % uniforms.somatic_effector_belief_count;
+        device const float *muscle = reinterpret_cast<device const float *>(
+          hot_state + uniforms.somatic_effector_belief_offset
+            + ulong(muscle_index) * 192ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+        );
+        if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul) continue;
+        const uint muscle_feature = sample == 6u
+          ? 1u + (expert.expert_identifier & 1u)
+          : (expert.expert_identifier % 3u == 0u ? 4u
+            : (expert.expert_identifier % 3u == 1u ? 5u : 9u));
+        if (muscle_feature >= NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT
+            || !isfinite(muscle[muscle_feature])) continue;
+        feature_code = NB_CEREBELLAR_MUSCLE_FEATURE_BASE + muscle_feature;
+        source_index = muscle_index;
+        baseline = nb_normalized_muscle_feature_value(
+          muscle[muscle_feature], muscle_feature
+        );
+        articulated_source = true;
+        break;
+      }
+    }
+    if (articulated_source) {
+      command_feature = clamp(
+        actuator_feature * motor_goal->confidence
+          * (1.0f - clamp(motor_goal->risk, 0.0f, 1.0f)),
+        -1.0f,
+        1.0f
+      );
+    } else {
+      const uint body_feature = feature_code;
+      const float goal_feature = nb_motor_goal_body_feature(
+        motor_goal, body_feature, baseline
+      );
+      command_feature = clamp(
+        0.5f * actuator_feature
+          + 0.5f * (goal_feature - baseline) * motor_goal->confidence,
+        -1.0f,
+        1.0f
+      );
+    }
     const float learned_effect = clamp(
       cerebellar_parameters[4] + expert.state[28u + sample],
       -1.0f,
@@ -3573,7 +3805,8 @@ kernel void predict_delayed_cerebellar_consequences(
       + clamp(command_feature * learned_effect, -1.0f, 1.0f);
     expert.state[12u + sample] = baseline;
     expert.state[20u + sample] = command_feature;
-    expert.state[36u + sample] = float(body_feature);
+    expert.state[36u + sample] = float(feature_code);
+    expert.state[44u + sample] = float(source_index);
     mean_command += command_feature;
   }
   expert.state[3] = prediction_count == 0u
