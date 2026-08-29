@@ -90,17 +90,20 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
+  private let worldParameterGPUAddress: UInt64
 
   public init(
     device: any MTLDevice,
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
-    regionalProgram: RegionalTokenProgram
+    regionalProgram: RegionalTokenProgram,
+    sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<CognitiveUniforms>.stride == 184,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
-      arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint
+      arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
+      sharedParameters.parameterVersionFingerprint > 0
     else {
       throw TissueError.metal("cognitive-state layout or uniform ABI drift")
     }
@@ -224,6 +227,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
     self.worldModelLevelRecords = worldModelLevelRecords
+    self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
+      .world, minimumScalarCount: 150
+    )
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -281,6 +287,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       let worldTable = worldModelArgumentTables[index]
       worldTable.setAddress(hot.outputGPUAddress, index: 0)
       worldTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+      worldTable.setAddress(worldParameterGPUAddress, index: 2)
       worldTable.setAddress(
         worldModelDescriptorBuffer.gpuAddress
           + UInt64(index * MemoryLayout<WorldModelLevelRecord>.stride),

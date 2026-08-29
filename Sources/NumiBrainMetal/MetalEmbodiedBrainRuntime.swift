@@ -98,6 +98,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
+  public let sharedParameterBank: MetalSharedParameterBank
   public let agentStateRuntime: MetalAgentStateRuntime
   public let sensoryRuntime: MetalSensoryTransductionRuntime
   public let cognitiveRuntime: MetalCognitiveStateRuntime
@@ -118,6 +119,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
+    sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
     sensoryProfile: SensoryTransductionProfile,
     decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
     acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
@@ -143,6 +145,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       regionalProgram: regionalProgram,
       initialGeneration: initialGeneration
     )
+    let sharedParameterBank = try MetalSharedParameterBank(
+      device: device,
+      parameterVersion: parameterVersion,
+      artifact: sharedParameterArtifact
+    )
     let sensoryRuntime = try MetalSensoryTransductionRuntime(
       device: device,
       arena: agentStateRuntime.arena,
@@ -153,7 +160,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device,
       arena: agentStateRuntime.arena,
       species: species,
-      regionalProgram: regionalProgram
+      regionalProgram: regionalProgram,
+      sharedParameters: sharedParameterBank
     )
     let memoryRuntime = try MetalMemoryRuntime(
       device: device,
@@ -172,7 +180,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       species: species,
       regionalProgram: regionalProgram,
       parameterVersion: parameterVersion,
-      dynamics: requestedDecisionDynamics ?? DecisionDynamics.foundationV1
+      dynamics: requestedDecisionDynamics ?? DecisionDynamics.foundationV1,
+      sharedParameters: sharedParameterBank
     )
     let developmentalRuntime = try MetalDevelopmentalRuntime(
       device: device,
@@ -193,6 +202,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       + sensoryRuntime.residencyAllocations.count
       + cognitiveRuntime.residencyAllocations.count
       + memoryRuntime.residencyAllocations.count
+      + sharedParameterBank.residencyAllocations.count
       + developmentalRuntime.residencyAllocations.count + 2
     let residencySet: any MTLResidencySet
     do {
@@ -201,6 +211,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to create embodied brain residency: \(error)")
     }
     for allocation in agentStateRuntime.arena.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
+    for allocation in sharedParameterBank.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
     for allocation in sensoryRuntime.residencyAllocations {
@@ -224,6 +237,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.regionalProgramFingerprint = regionalProgram.fingerprint
     self.scheduleFingerprint = regionalProgram.scheduleFingerprint
+    self.sharedParameterBank = sharedParameterBank
     self.agentStateRuntime = agentStateRuntime
     self.sensoryRuntime = sensoryRuntime
     self.cognitiveRuntime = cognitiveRuntime

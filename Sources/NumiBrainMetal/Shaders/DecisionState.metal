@@ -240,6 +240,7 @@ inline ulong nb_goal_identifier(uint origin, ulong source_identifier) {
 kernel void generate_active_goal_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *value_parameters [[buffer(2)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -276,6 +277,7 @@ kernel void generate_active_goal_state(
     if (drive_index == 5u || drive_index == 6u || drive_index == 11u) origin = 6u;
     float priority = drives[drive_index].priority_weight
       * max(drives[drive_index].deficit, 0.0f);
+    priority *= max(value_parameters[min(origin - 1u, 7u)], 0.0f);
     if (origin == 6u) priority += clamp(drives[drive_index].level, 0.0f, 1.0f);
     const ulong identifier = nb_goal_identifier(origin, ulong(drive_index));
     if (identifier == header->active_goal_identifier) priority += 0.1f;
@@ -354,6 +356,8 @@ kernel void generate_active_goal_state(
 kernel void propose_dynamic_options(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *value_parameters [[buffer(2)]],
+  device const float *policy_parameters [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -443,17 +447,18 @@ kernel void propose_dynamic_options(
   const float epistemic = uniforms.neuromodulator_count > 3u
     ? neuromodulators[3].value
     : 0.0f;
-  candidate.task_value = task_signal;
+  candidate.task_value = task_signal * value_parameters[0];
   const float fatigue_deficit = uniforms.drive_count > 4u ? drives[4].deficit : 0.0f;
   const float injury_deficit = uniforms.drive_count > 6u ? drives[6].deficit : 0.0f;
   const float sleep_deficit = uniforms.drive_count > 7u ? drives[7].deficit : 0.0f;
   candidate.homeostatic_value = gid == NB_OPTION_PROPOSAL_REST_RECOVERY
-    ? fatigue_deficit + injury_deficit + sleep_deficit
-    : -0.1f * homeostatic;
+    ? (fatigue_deficit + injury_deficit + sleep_deficit) * value_parameters[1]
+    : -policy_parameters[8] * homeostatic * value_parameters[1];
   candidate.social_value = gid == 8u && uniforms.drive_count > 9u
-    ? drives[9].deficit
+    ? drives[9].deficit * value_parameters[2]
     : 0.0f;
-  candidate.information_gain = (gid == 4u || gid == 7u) ? epistemic : 0.0f;
+  candidate.information_gain = (gid == 4u || gid == 7u)
+    ? epistemic * value_parameters[3] : 0.0f;
   candidate.damage_cvar = clamp(safety + pain * (gid > 4u ? 0.5f : 0.1f), 0.0f, 1.0f);
   candidate.effort_cost = gid == NB_OPTION_PROPOSAL_REST_RECOVERY
     ? 0.0f
@@ -479,6 +484,8 @@ kernel void propose_dynamic_options(
 kernel void simulate_candidate_option_outcomes(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *value_parameters [[buffer(2)]],
+  device const float *policy_parameters [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -541,11 +548,15 @@ kernel void simulate_candidate_option_outcomes(
           compatibility += rollout_state[component]
             * followup.parameters[component] * 0.05f;
         }
-        const float followup_score = followup.task_value
-          + followup.homeostatic_value + followup.social_value
-          + uniforms.curiosity_weight * followup.information_gain
-          + compatibility - uniforms.risk_weight * followup.damage_cvar
-          - followup.effort_cost - followup.switching_cost;
+        const float followup_score = value_parameters[0] * followup.task_value
+          + value_parameters[1] * followup.homeostatic_value
+          + value_parameters[2] * followup.social_value
+          + value_parameters[3] * uniforms.curiosity_weight
+            * followup.information_gain
+          + compatibility - value_parameters[4] * uniforms.risk_weight
+            * followup.damage_cvar
+          - value_parameters[5] * followup.effort_cost
+          - value_parameters[6] * followup.switching_cost;
         if (followup.damage_cvar <= uniforms.damage_risk_budget
             && (followup_score > best_followup_score
               || (followup_score == best_followup_score
@@ -594,10 +605,14 @@ kernel void simulate_candidate_option_outcomes(
     accumulated_information += discount * step_information;
     accumulated_drive_change += discount * candidate.homeostatic_value;
     accumulated_objective += discount * (
-      candidate.task_value + candidate.homeostatic_value
-        + candidate.social_value + uniforms.curiosity_weight * step_information
-        - uniforms.risk_weight * step_damage - step_effort
-        - (step == 0u ? candidate.switching_cost : 0.0f)
+      value_parameters[0] * candidate.task_value
+        + value_parameters[1] * candidate.homeostatic_value
+        + value_parameters[2] * candidate.social_value
+        + value_parameters[3] * uniforms.curiosity_weight * step_information
+        - value_parameters[4] * uniforms.risk_weight * step_damage
+        - value_parameters[5] * step_effort
+        - value_parameters[6]
+          * (step == 0u ? candidate.switching_cost : 0.0f)
     );
     NBPlanStepRecord plan = {};
     plan.option_identifier = candidate.option_identifier;
@@ -616,8 +631,9 @@ kernel void simulate_candidate_option_outcomes(
     plan.parameter_count = 16u;
     for (uint component = 0u; component < 16u; ++component) {
       rollout_state[component] = tanh(
-        0.55f * rollout_state[component] + 0.25f * ensemble_mean
-          + 0.20f * candidate.parameters[component]
+        policy_parameters[11] * rollout_state[component]
+          + policy_parameters[12] * ensemble_mean
+          + policy_parameters[13] * candidate.parameters[component]
       );
       plan.predicted_state[component] = rollout_state[component];
     }
@@ -739,6 +755,7 @@ kernel void select_option_and_control_mode(
 kernel void select_cerebellar_context_experts(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *cerebellar_parameters [[buffer(5)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.active_cerebellar_expert_count == 0u) return;
@@ -776,8 +793,9 @@ kernel void select_cerebellar_context_experts(
     ];
     const float expert_context = float(expert_identifier) / 127.0f;
     const float adaptation_bonus = clamp(abs(memory.state[2]), 0.0f, 0.25f);
-    const float score = 1.0f - abs(tanh(neural_context + option_context)
-      - expert_context) + adaptation_bonus;
+    const float score = cerebellar_parameters[3]
+      - abs(tanh(cerebellar_parameters[7] * neural_context + option_context)
+        - expert_context) + adaptation_bonus;
     for (uint rank = 0u; rank < active_count; ++rank) {
       if (score > selected_scores[rank]
           || (score == selected_scores[rank]
@@ -811,6 +829,8 @@ kernel void select_cerebellar_context_experts(
 kernel void generate_motor_spinal_autonomic_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *policy_parameters [[buffer(3)]],
+  device const float *motor_parameters [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
@@ -857,7 +877,7 @@ kernel void generate_motor_spinal_autonomic_state(
       : 1.0f / (
           1.0f + exp(
             -candidate.parameters[gid % candidate.parameter_count]
-              * uniforms.motor_gain
+              * uniforms.motor_gain * motor_parameters[0]
           )
         );
     const float inhibition = (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
@@ -871,18 +891,19 @@ kernel void generate_motor_spinal_autonomic_state(
     );
     command.force_target = descending;
     command.stiffness_target = clamp(
-      uniforms.stiffness_gain * (safety + abs(candidate.parameters[(gid + 1u) % 16u])),
+      uniforms.stiffness_gain * motor_parameters[1]
+        * (safety + abs(candidate.parameters[(gid + 1u) % 16u])),
       0.0f,
       1.0f
     );
     command.damping_target = clamp(
-      uniforms.damping_gain * command.stiffness_target,
+      uniforms.damping_gain * motor_parameters[2] * command.stiffness_target,
       0.0f,
       1.0f
     );
     command.cerebellar_residual = clamp(
       learned_cerebellar_residual
-        - header->unsupported_uncertainty * 0.05f,
+        - header->unsupported_uncertainty * motor_parameters[10],
       -0.25f, 0.25f
     );
     command.risk_inhibition = inhibition;
@@ -905,7 +926,8 @@ kernel void generate_motor_spinal_autonomic_state(
     device float *synergies = reinterpret_cast<device float *>(
       hot_state + uniforms.synergy_offset
     );
-    synergies[gid] = candidate.parameters[gid % candidate.parameter_count];
+    synergies[gid] = candidate.parameters[gid % candidate.parameter_count]
+      * policy_parameters[7];
   }
   if (gid < uniforms.autonomic_dimension) {
     device NBAutonomicCommandRecord *autonomic =

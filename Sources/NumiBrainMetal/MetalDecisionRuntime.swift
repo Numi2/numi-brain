@@ -75,6 +75,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
+  private let valueParameterGPUAddress: UInt64
+  private let policyParameterGPUAddress: UInt64
+  private let motorParameterGPUAddress: UInt64
+  private let cerebellarParameterGPUAddress: UInt64
 
   public init(
     device: any MTLDevice,
@@ -82,7 +86,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
-    dynamics: DecisionDynamics
+    dynamics: DecisionDynamics,
+    sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<DecisionUniforms>.stride == 248,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -135,7 +140,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 2
+    descriptor.maxBufferBindCount = 6
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -160,6 +165,18 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.motorPipeline = pipelines[5]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
+    self.valueParameterGPUAddress = try sharedParameters.gpuAddress(
+      .value, minimumScalarCount: 8
+    )
+    self.policyParameterGPUAddress = try sharedParameters.gpuAddress(
+      .policy, minimumScalarCount: 16
+    )
+    self.motorParameterGPUAddress = try sharedParameters.gpuAddress(
+      .motor, minimumScalarCount: 16
+    )
+    self.cerebellarParameterGPUAddress = try sharedParameters.gpuAddress(
+      .cerebellar, minimumScalarCount: 8
+    )
   }
 
   public var residencyAllocation: any MTLAllocation { uniformBuffer }
@@ -177,6 +194,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(valueParameterGPUAddress, index: 2)
+    argumentTable.setAddress(policyParameterGPUAddress, index: 3)
+    argumentTable.setAddress(motorParameterGPUAddress, index: 4)
+    argumentTable.setAddress(cerebellarParameterGPUAddress, index: 5)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(

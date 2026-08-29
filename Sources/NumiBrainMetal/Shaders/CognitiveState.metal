@@ -282,6 +282,7 @@ kernel void advance_homeostasis_and_neuromodulation(
 kernel void advance_hierarchical_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device const float *world_parameters [[buffer(2)]],
   constant NBWorldModelLevelRecord &level [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
@@ -351,11 +352,14 @@ kernel void advance_hierarchical_world_model(
   float mean_prediction = 0.0f;
   float head_predictions[5];
   for (uint head = 0u; head < 5u; ++head) {
-    const float signed_head_offset = (float(head) - 2.0f) * 0.035f;
+    const uint parameter_base = (level.level * 5u + head) * 6u;
     const float prediction = tanh(
-      (0.58f + signed_head_offset) * previous_latent
-        + 0.24f * bottom_up + 0.10f * top_down
-        + 0.05f * drive + 0.03f * modulation
+      world_parameters[parameter_base] * previous_latent
+        + world_parameters[parameter_base + 1u] * bottom_up
+        + world_parameters[parameter_base + 2u] * top_down
+        + world_parameters[parameter_base + 3u] * drive
+        + world_parameters[parameter_base + 4u] * modulation
+        + world_parameters[parameter_base + 5u]
     );
     head_predictions[head] = prediction;
     mean_prediction += prediction * 0.2f;

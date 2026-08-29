@@ -248,13 +248,16 @@ public struct BrainParameterVersion: Codable, Equatable, Hashable, Sendable {
       byteCount: UInt64(regionalBytes),
       contentFingerprint: regionalProgram.fingerprint
     )
+    let sharedComponents = try BrainSharedParameterArtifact.foundationPayloads().map {
+      try $0.component
+    }
     return try BrainParameterVersion(
       sequence: 0,
       parentFingerprint: 0,
       scheduleFingerprint: schedule.fingerprint,
       regionalShapeFingerprint: regionalProgram.shapeFingerprint,
       regionalProgramFingerprint: regionalProgram.fingerprint,
-      components: [tissueComponent, regionalComponent]
+      components: sharedComponents + [tissueComponent, regionalComponent]
     )
   }
 }
@@ -345,5 +348,11 @@ public final class BrainParameterRegistry: @unchecked Sendable {
       }
       storedVersion = candidate
     }
+  }
+
+  public func publish(_ update: BrainLearnerUpdate) throws {
+    let parent = currentVersion
+    try update.validate(parentVersion: parent)
+    try publish(update.candidateVersion)
   }
 }
