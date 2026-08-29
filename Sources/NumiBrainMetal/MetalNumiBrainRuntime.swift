@@ -495,6 +495,13 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         schedulerEvents: schedulerEvents
       )
       fastPrepared = true
+      let acceptedCPGState = try fastTissue.borrowPreparedAcceptedCPGState(
+        for: transaction.token
+      )
+      try cognitive.importAcceptedFastCPGState(
+        acceptedCPGState,
+        transaction: transaction.cognitiveTransaction
+      )
       let consequence = try cognitive.finalizeAcceptedControl(
         transaction: transaction.cognitiveTransaction,
         acceptedPhysicsState: accepted,

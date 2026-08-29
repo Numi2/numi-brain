@@ -39,6 +39,7 @@ struct NBDecisionUniforms {
   ulong cerebellar_expert_memory_offset;
   ulong event_queue_offset;
   ulong cpg_state_offset;
+  ulong descending_somatic_baseline_offset;
   ulong parameter_version_fingerprint;
   ulong reserved_identity;
   uint recurrent_scalar_count;
@@ -228,10 +229,17 @@ struct NBCPGStateRecord {
   float phase;
   float output;
   float effective_frequency_hertz;
-  float reset_magnitude;
+  float duty_factor;
   ulong timestamp_microseconds;
+  ulong sensory_reset_mask;
+  float reset_magnitude;
+  float output_gain;
+  float decision_output;
+  float reserved_float;
   uint output_synergy_identifier;
+  uint oscillator_identifier;
   uint flags;
+  uint reserved;
 };
 
 struct NBEventQueueHeader {
@@ -322,7 +330,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 336);
+static_assert(sizeof(NBDecisionUniforms) == 344);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
@@ -336,7 +344,7 @@ static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBCPGOscillatorDescriptor) == 32);
 static_assert(sizeof(NBCPGCouplingDescriptor) == 16);
-static_assert(sizeof(NBCPGStateRecord) == 32);
+static_assert(sizeof(NBCPGStateRecord) == 64);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -1386,6 +1394,30 @@ kernel void advance_cpg_state(
     uint(header->reserved0), max(uniforms.candidate_capacity, 1u) - 1u
   );
   const NBOptionCandidateRecord candidate = candidates[selected];
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBInternalActionRecord *internal_actions =
+    reinterpret_cast<device const NBInternalActionRecord *>(
+      hot_state + uniforms.internal_action_offset
+    );
+  const NBInternalActionRecord inhibition_request = internal_actions[6];
+  const float deliberate_inhibition = inhibition_request.kind == 7u
+      && (inhibition_request.flags & NB_CONTROL_FLAG_VALID) != 0u
+    ? clamp(inhibition_request.priority, 0.0f, 1.0f)
+    : 0.0f;
+  device const NBDriveRecord *drives =
+    reinterpret_cast<device const NBDriveRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  const float safety = uniforms.drive_count > 11u
+    ? clamp(drives[11].level, 0.0f, 1.0f)
+    : 0.0f;
+  const float motor_inhibition = max(
+    (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u ? 1.0f : safety,
+    deliberate_inhibition
+  );
   const bool active = candidate.source_module == 72u
     && candidate.proposal_kind == NB_OPTION_PROPOSAL_LOCOMOTION
     && (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) == 0u;
@@ -1470,18 +1502,28 @@ kernel void advance_cpg_state(
       phase = fract(phase + elapsed_seconds * effective_frequency);
     }
     const float normalized_active_phase = phase / max(descriptor.duty_factor, 1.0e-6f);
-    const float output = active && phase < descriptor.duty_factor
+    const float raw_output = active && phase < descriptor.duty_factor
       ? 0.5f - 0.5f * cos(two_pi * normalized_active_phase)
       : 0.0f;
+    const float output_gain = active
+      ? (1.0f - motor_inhibition) * development->muscle_strength_multiplier
+      : 0.0f;
     state.phase = phase;
-    state.output = clamp(output, 0.0f, 1.0f);
+    state.output = clamp(raw_output * output_gain, 0.0f, 1.0f);
     state.effective_frequency_hertz = effective_frequency;
+    state.duty_factor = descriptor.duty_factor;
+    state.sensory_reset_mask = descriptor.sensory_reset_mask;
     state.reset_magnitude = reset_magnitude;
+    state.output_gain = output_gain;
+    state.decision_output = state.output;
+    state.reserved_float = 0.0f;
     state.timestamp_microseconds = uniforms.target_timestamp_microseconds;
     state.output_synergy_identifier = descriptor.output_synergy_identifier;
+    state.oscillator_identifier = descriptor.identifier;
     state.flags = NB_CONTROL_FLAG_VALID
       | (active ? (1u << 1u) : 0u)
       | (reset ? (1u << 2u) : 0u);
+    state.reserved = 0u;
     states[oscillator] = state;
   }
 }
@@ -1549,6 +1591,9 @@ kernel void generate_motor_spinal_autonomic_state(
       reinterpret_cast<device NBSpinalStateRecord *>(hot_state + uniforms.spinal_offset);
     device float *somatic_output = reinterpret_cast<device float *>(
       hot_state + uniforms.somatic_output_offset
+    );
+    device float *descending_baseline = reinterpret_cast<device float *>(
+      hot_state + uniforms.descending_somatic_baseline_offset
     );
     const NBCommunicationChannelDescriptor communication_descriptor =
       communication_descriptors[gid];
@@ -1618,18 +1663,21 @@ kernel void generate_motor_spinal_autonomic_state(
         cpg_output += oscillator_state.output;
       }
     }
-    cpg_output = clamp(
-      cpg_output * (1.0f - inhibition) * development->muscle_strength_multiplier,
-      0.0f,
-      1.0f
-    );
+    cpg_output = clamp(cpg_output, 0.0f, 1.0f);
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
     spinal_state.cpg_output = cpg_output;
     spinal_state.motor_neuron_state = command.excitation
       + command.cerebellar_residual + spinal_state.cpg_output;
+    const float baseline_excitation = clamp(
+      command.excitation + command.cerebellar_residual
+        + spinal_state.reflex_output,
+      0.0f,
+      1.0f
+    );
+    descending_baseline[gid] = baseline_excitation;
     spinal_state.final_excitation = clamp(
-      spinal_state.motor_neuron_state + spinal_state.reflex_output,
+      baseline_excitation + spinal_state.cpg_output,
       0.0f,
       1.0f
     );

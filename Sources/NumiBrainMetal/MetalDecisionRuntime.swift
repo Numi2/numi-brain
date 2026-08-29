@@ -27,6 +27,7 @@ private struct DecisionUniforms {
   var cerebellarExpertMemoryOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var cpgStateOffset: UInt64 = 0
+  var descendingSomaticBaselineOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var reservedIdentity: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -141,7 +142,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 336,
+    guard MemoryLayout<DecisionUniforms>.stride == 344,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -522,6 +523,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       ),
       eventQueueOffset: UInt64(arena.layout.section(.eventQueue).byteOffset),
       cpgStateOffset: UInt64(arena.layout.section(.cpgState).byteOffset),
+      descendingSomaticBaselineOffset: UInt64(
+        arena.layout.section(.descendingSomaticBaseline).byteOffset
+      ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
       reservedIdentity: species.fingerprint,
       recurrentScalarCount: UInt32(recurrent.elementCount),

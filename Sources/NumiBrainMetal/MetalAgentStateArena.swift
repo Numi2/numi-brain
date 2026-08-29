@@ -52,6 +52,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case archivePageEpochs = 36
   /// Independent per-agent locomotor and vital central-pattern state.
   case cpgState = 37
+  /// Voluntary/cerebellar/reflex command before fast CPG resampling.
+  case descendingSomaticBaseline = 38
 }
 
 @frozen
@@ -385,7 +387,12 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     try builder.append(
       .cpgState,
       count: max(species.cpg.oscillators.count, 1),
-      stride: 32
+      stride: 64
+    )
+    try builder.append(
+      .descendingSomaticBaseline,
+      count: Int(species.motor.actuatorCount),
+      stride: MemoryLayout<Float>.stride
     )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)

@@ -12,6 +12,14 @@ private struct ProtectiveCommandUniforms {
   var reserved: UInt32 = 0
 }
 
+private struct FastCPGUniforms {
+  var sampleTimestampMicroseconds: UInt64 = 0
+  var oscillatorCount: UInt32 = 0
+  var synergyCount: UInt32 = 0
+  var flags: UInt32 = 0
+  var reserved: UInt32 = 0
+}
+
 private struct BodyLoadFieldUniforms {
   var attachmentCatalogFingerprint: UInt64 = 0
   var bodyCount: UInt32 = 0
@@ -162,6 +170,30 @@ private struct TissueRegionalPlasticModulationRecord {
 
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
+  static let maximumFastCPGOscillatorCount = 64
+  static let fastCPGStateStride = 64
+
+  final class AcceptedCPGStateLease: @unchecked Sendable {
+    let transactionFingerprint: UInt64
+    let acceptedTimestamp: BrainTimestamp
+    let oscillatorCount: Int
+    let byteCount: Int
+    let buffer: any MTLBuffer
+
+    fileprivate init(
+      transactionFingerprint: UInt64,
+      acceptedTimestamp: BrainTimestamp,
+      oscillatorCount: Int,
+      byteCount: Int,
+      buffer: any MTLBuffer
+    ) {
+      self.transactionFingerprint = transactionFingerprint
+      self.acceptedTimestamp = acceptedTimestamp
+      self.oscillatorCount = oscillatorCount
+      self.byteCount = byteCount
+      self.buffer = buffer
+    }
+  }
   /// Retains the exact Metal allocations lent to one immediate NumanX
   /// candidate. The opaque object handles are CF-style, unretained views of
   /// the retained `MTLBuffer` objects; a consumer must not store them beyond
@@ -363,6 +395,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveSourceInhibitionMaskBuffer: any MTLBuffer
   private let zeroDescendingSomaticBuffer: any MTLBuffer
   private let descendingSomaticBuffer: any MTLBuffer
+  private let fastCPGUniformBuffer: any MTLBuffer
+  private let stagedFastCPGStateBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
@@ -413,6 +447,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveMuscleExcitationByteCount: Int
   public let developmentalMaturationByteCount: Int
   public let regionalPlasticModulationByteCount: Int
+  public let fastCPGStateCapacityByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -440,6 +475,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var hasCommittedSchedulerResult = false
   private var pendingJointTransaction: BrainJointTransaction?
   private var descendingSomaticTransactionFingerprint: UInt64?
+  private var stagedFastCPGTransactionFingerprint: UInt64?
+  private var stagedFastCPGOscillatorCount: Int = 0
+  private var stagedFastCPGSynergyCount: Int = 0
 
   private struct InteractiveCandidate {
     let substep: BrainJointSubstepToken
@@ -833,7 +871,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 11
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 15
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -1054,10 +1092,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       brainSchedule.modules.count.multipliedReportingOverflow(
         by: MemoryLayout<TissueRegionalPlasticModulationRecord>.stride
       )
+    let fastCPGStateCapacityByteCount = Self.maximumFastCPGOscillatorCount
+      * Self.fastCPGStateStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       MemoryLayout<TissueRegionalMaturationRecord>.stride == 32,
-      MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32
+      MemoryLayout<TissueRegionalPlasticModulationRecord>.stride == 32,
+      MemoryLayout<FastCPGUniforms>.stride == 24
     else {
       throw TissueError.metal("protective motor profile byte count overflows Int")
     }
@@ -1261,6 +1302,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: protectiveMuscleExcitationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let fastCPGUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<FastCPGUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let stagedFastCPGStateBuffer = device.makeBuffer(
+        length: fastCPGStateCapacityByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let defaultRegionalMaturationBuffer = device.makeBuffer(
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1421,6 +1470,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
     zeroDescendingSomaticBuffer.label = "NumiBrain zero descending somatic command"
     descendingSomaticBuffer.label = "NumiBrain transaction descending somatic command"
+    fastCPGUniformBuffer.label = "NumiBrain accepted fast CPG sampling uniforms"
+    stagedFastCPGStateBuffer.label = "NumiBrain transaction fast CPG state"
     defaultRegionalMaturationBuffer.label =
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
@@ -1487,7 +1538,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                 max(
                   regionalUploadByteCount,
                   max(
-                    max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount),
+                    max(
+                      max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount),
+                      fastCPGStateCapacityByteCount
+                    ),
                     max(
                       developmentalMaturationByteCount,
                       max(
@@ -1580,6 +1634,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(protectiveSourceInhibitionMaskBuffer)
     residencySet.addAllocation(zeroDescendingSomaticBuffer)
     residencySet.addAllocation(descendingSomaticBuffer)
+    residencySet.addAllocation(fastCPGUniformBuffer)
+    residencySet.addAllocation(stagedFastCPGStateBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
@@ -1694,6 +1750,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveSourceInhibitionMaskBuffer = protectiveSourceInhibitionMaskBuffer
     self.zeroDescendingSomaticBuffer = zeroDescendingSomaticBuffer
     self.descendingSomaticBuffer = descendingSomaticBuffer
+    self.fastCPGUniformBuffer = fastCPGUniformBuffer
+    self.stagedFastCPGStateBuffer = stagedFastCPGStateBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
     self.defaultRegionalPlasticModulationBuffer =
@@ -1740,6 +1798,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMuscleExcitationByteCount = protectiveMuscleExcitationByteCount
     self.developmentalMaturationByteCount = developmentalMaturationByteCount
     self.regionalPlasticModulationByteCount = regionalPlasticModulationByteCount
+    self.fastCPGStateCapacityByteCount = fastCPGStateCapacityByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2080,6 +2139,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: protectiveMuscleExcitationByteCount,
       label: "NumiBrain initial descending somatic command upload"
     )
+    stagingBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: fastCPGStateCapacityByteCount
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedFastCPGStateBuffer,
+      size: fastCPGStateCapacityByteCount,
+      label: "NumiBrain initial fast CPG state upload"
+    )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
     }
@@ -2408,6 +2478,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lastGPUEndSeconds: nil
     )
     descendingSomaticTransactionFingerprint = nil
+    stagedFastCPGTransactionFingerprint = nil
+    stagedFastCPGOscillatorCount = 0
+    stagedFastCPGSynergyCount = 0
+    protectiveSourceInhibitionMaskBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: protectiveSourceInhibitionMaskByteCount
+    )
+    writeFastCPGUniforms(timestamp: committedTimestamp)
     return transaction.token
   }
 
@@ -2431,14 +2510,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.regionalPlasticModulationCount == brainSchedule.modules.count,
       lease.decision.regionalPlasticModulationByteCount
         == regionalPlasticModulationByteCount,
-      lease.sourceOffset <= lease.buffer.length,
-      protectiveMuscleExcitationByteCount <= lease.buffer.length - lease.sourceOffset,
+      lease.decision.cpgStateCount <= Self.maximumFastCPGOscillatorCount,
+      lease.decision.cpgStateByteCount
+        == lease.decision.cpgStateCount * Self.fastCPGStateStride,
+      lease.decision.cpgStateByteCount <= fastCPGStateCapacityByteCount,
+      lease.decision.cpgSynergyCount > 0,
+      lease.descendingBaselineSourceOffset <= lease.buffer.length,
+      protectiveMuscleExcitationByteCount
+        <= lease.buffer.length - lease.descendingBaselineSourceOffset,
       lease.maturationSourceOffset <= lease.buffer.length,
       developmentalMaturationByteCount
         <= lease.buffer.length - lease.maturationSourceOffset,
       lease.plasticModulationSourceOffset <= lease.buffer.length,
       regionalPlasticModulationByteCount
-        <= lease.buffer.length - lease.plasticModulationSourceOffset
+        <= lease.buffer.length - lease.plasticModulationSourceOffset,
+      lease.cpgStateSourceOffset <= lease.buffer.length,
+      lease.decision.cpgStateByteCount
+        <= lease.buffer.length - lease.cpgStateSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -2457,13 +2545,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
+    writeFastCPGUniforms(
+      timestamp: lease.decision.decisionTimestamp,
+      oscillatorCount: lease.decision.cpgStateCount,
+      synergyCount: lease.decision.cpgSynergyCount
+    )
+    writeProtectiveCommandUniforms(
+      brainGeneration: transaction.shadowGeneration
+    )
+    let initialMotorStateIndex = 1 - committedSchedulerClockIndex
     _ = try submit(
       label: "NumiBrain descending somatic GPU handoff",
       additionalResidencySet: borrowedResidency
     ) { encoder in
       encoder.copy(
         sourceBuffer: lease.buffer,
-        sourceOffset: lease.sourceOffset,
+        sourceOffset: lease.descendingBaselineSourceOffset,
         destinationBuffer: descendingSomaticBuffer,
         destinationOffset: 0,
         size: protectiveMuscleExcitationByteCount
@@ -2482,8 +2579,86 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         destinationOffset: 0,
         size: regionalPlasticModulationByteCount
       )
+      if lease.decision.cpgStateByteCount > 0 {
+        encoder.copy(
+          sourceBuffer: lease.buffer,
+          sourceOffset: lease.cpgStateSourceOffset,
+          destinationBuffer: stagedFastCPGStateBuffer,
+          destinationOffset: 0,
+          size: lease.decision.cpgStateByteCount
+        )
+      }
+      encoder.copy(
+        sourceBuffer: protectiveCommandBuffers[committedSchedulerClockIndex],
+        sourceOffset: 0,
+        destinationBuffer: protectiveCommandBuffers[initialMotorStateIndex],
+        destinationOffset: 0,
+        size: ProtectiveMotorCommand.byteCount
+      )
+      encoder.barrier(
+        afterEncoderStages: .blit,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveCommandBuffers[initialMotorStateIndex].gpuAddress,
+        index: 0
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveMotorProfileBuffer.gpuAddress,
+        index: 1
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveCommandUniformBuffer.gpuAddress,
+        index: 2
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveMotorOutputHeaderBuffers[initialMotorStateIndex].gpuAddress,
+        index: 3
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveMuscleExcitationBuffers[initialMotorStateIndex].gpuAddress,
+        index: 4
+      )
+      protectiveMotorArgumentTable.setAddress(
+        protectiveSourceInhibitionMaskBuffer.gpuAddress,
+        index: 5
+      )
+      protectiveMotorArgumentTable.setAddress(
+        bodyLoadFieldUniformBuffer.gpuAddress,
+        index: 6
+      )
+      protectiveMotorArgumentTable.setAddress(
+        bodyLoadFieldStateBuffers[committedBodyLoadFieldStateIndex].gpuAddress,
+        index: 7
+      )
+      protectiveMotorArgumentTable.setAddress(muscleAttachmentBuffer.gpuAddress, index: 8)
+      protectiveMotorArgumentTable.setAddress(
+        bodySchemaStateBuffers[committedBodyLoadFieldStateIndex].gpuAddress,
+        index: 9
+      )
+      protectiveMotorArgumentTable.setAddress(descendingSomaticBuffer.gpuAddress, index: 10)
+      protectiveMotorArgumentTable.setAddress(fastCPGUniformBuffer.gpuAddress, index: 11)
+      protectiveMotorArgumentTable.setAddress(stagedFastCPGStateBuffer.gpuAddress, index: 12)
+      protectiveMotorArgumentTable.setAddress(
+        transducedSchedulerEventBuffer.gpuAddress,
+        index: 13
+      )
+      protectiveMotorArgumentTable.setAddress(
+        receptorEventTransductionResultBuffer.gpuAddress,
+        index: 14
+      )
+      encoder.setComputePipelineState(protectiveMotorPipeline)
+      encoder.setArgumentTable(protectiveMotorArgumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      )
     }
     descendingSomaticTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGOscillatorCount = lease.decision.cpgStateCount
+    stagedFastCPGSynergyCount = lease.decision.cpgSynergyCount
   }
 
   /// Advances one neural tissue candidate without publishing it. Corrected
@@ -2605,22 +2780,29 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     interactiveJointRoot = root
     let protectiveStateIndex =
       root.fastSchedulerWindow?.outputClockIndex
-      ?? committedRegionalStateIndex
+      ?? (descendingSomaticTransactionFingerprint
+        == root.transaction.token.fingerprint
+          ? 1 - committedSchedulerClockIndex
+          : committedSchedulerClockIndex)
     let protectiveTimestamp =
       root.fastSchedulerWindow == nil
       ? committedSchedulerTime ?? BrainTimestamp(microseconds: 0)
       : root.acceptedTimestamp
-    let protectiveGeneration =
+    let protectiveCommandGeneration =
       root.fastSchedulerWindow == nil
       ? root.transaction.token.baseBrainGeneration
       : root.transaction.token.shadowGeneration
+    let protectiveMotorGeneration = descendingSomaticTransactionFingerprint
+        == root.transaction.token.fingerprint
+      ? root.transaction.token.shadowGeneration
+      : protectiveCommandGeneration
     return FastSystemResult(
       substep: substep,
       protectiveCommand: ProtectiveCommandBufferView(
         gpuAddress: protectiveCommandBuffers[protectiveStateIndex].gpuAddress,
         byteCount: ProtectiveMotorCommand.byteCount,
         timestamp: protectiveTimestamp,
-        brainGeneration: protectiveGeneration
+        brainGeneration: protectiveCommandGeneration
       ),
       protectiveMotorOutput: ProtectiveMotorOutputBufferView(
         headerGPUAddress: protectiveMotorOutputHeaderBuffers[protectiveStateIndex].gpuAddress,
@@ -2630,7 +2812,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         muscleExcitationByteCount: protectiveMuscleExcitationByteCount,
         muscleCount: protectiveMotorProfile.channels.count,
         timestamp: protectiveTimestamp,
-        brainGeneration: protectiveGeneration,
+        brainGeneration: protectiveMotorGeneration,
         profileFingerprint: protectiveMotorProfile.fingerprint
       ),
       gpuStartSeconds: feedback.gpuStartTime,
@@ -2675,6 +2857,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard committedRegionalStateIndex == schedulerWindow.inputClockIndex else {
       throw TissueError.transaction("interactive regional and scheduler generations diverged")
     }
+    writeFastCPGUniforms(
+      timestamp: accepted.acceptedTimestamp,
+      consumeInterruptEvents: true
+    )
     let feedback = try submit(label: "NumiBrain accepted fast regional prefix") { encoder in
       encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     }
@@ -2826,6 +3012,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         targetTime: token.targetTimestamp,
         events: schedulerEvents + acceptedEvents
       )
+      writeFastCPGUniforms(
+        timestamp: token.targetTimestamp,
+        consumeInterruptEvents: true
+      )
       let feedback = try submit(label: "NumiBrain interactive joint root finalization") {
         encoder in
         encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
@@ -2878,6 +3068,32 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       hasCommittedSchedulerResult = false
     }
     interactiveJointRoot = nil
+  }
+
+  /// Lends the accepted-only CPG phase generation after fast-root
+  /// finalization and before joint publication. The cognitive transaction
+  /// copies it into its own shadow generation, so neither runtime can publish
+  /// a different oscillator history.
+  func borrowPreparedAcceptedCPGState(
+    for transaction: BrainJointTransactionToken
+  ) throws -> AcceptedCPGStateLease {
+    guard let pendingJointTransaction,
+      pendingJointTransaction.token == transaction,
+      pendingSchedulerTargetTime == transaction.targetTimestamp,
+      stagedFastCPGTransactionFingerprint == transaction.fingerprint,
+      stagedFastCPGOscillatorCount <= Self.maximumFastCPGOscillatorCount
+    else {
+      throw TissueError.transaction(
+        "accepted fast CPG state is not prepared for this joint root"
+      )
+    }
+    return AcceptedCPGStateLease(
+      transactionFingerprint: transaction.fingerprint,
+      acceptedTimestamp: transaction.targetTimestamp,
+      oscillatorCount: stagedFastCPGOscillatorCount,
+      byteCount: stagedFastCPGOscillatorCount * Self.fastCPGStateStride,
+      buffer: stagedFastCPGStateBuffer
+    )
   }
 
   /// Encodes a Metal root from the exact accepted/rejected NumanX ledger.
@@ -3051,6 +3267,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("root target time overflows UInt64")
     }
     let targetTime = BrainTimestamp(microseconds: targetValue)
+    descendingSomaticTransactionFingerprint = nil
+    stagedFastCPGTransactionFingerprint = nil
+    stagedFastCPGOscillatorCount = 0
+    stagedFastCPGSynergyCount = 0
+    writeFastCPGUniforms(timestamp: targetTime)
     try writeProtectiveSourceInhibitionMask(
       observations: localizedMuscleLoadObservations,
       targetTimestamp: targetTime
@@ -3325,6 +3546,50 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       observations: observations,
       targetTimestamp: targetTimestamp
     )
+  }
+
+  private func writeFastCPGUniforms(
+    timestamp: BrainTimestamp,
+    oscillatorCount: Int? = nil,
+    synergyCount: Int? = nil,
+    consumeInterruptEvents: Bool = false
+  ) {
+    let resolvedOscillatorCount = oscillatorCount ?? stagedFastCPGOscillatorCount
+    let resolvedSynergyCount = synergyCount ?? stagedFastCPGSynergyCount
+    var uniforms = FastCPGUniforms(
+      sampleTimestampMicroseconds: timestamp.rawValue,
+      oscillatorCount: UInt32(resolvedOscillatorCount),
+      synergyCount: UInt32(resolvedSynergyCount),
+      flags: resolvedOscillatorCount > 0
+        ? 1 | (consumeInterruptEvents ? 1 << 1 : 0)
+        : 0,
+      reserved: 0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      fastCPGUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<FastCPGUniforms>.stride
+      )
+    }
+  }
+
+  private func writeProtectiveCommandUniforms(brainGeneration: UInt64) {
+    var uniforms = ProtectiveCommandUniforms(
+      brainGeneration: brainGeneration,
+      motorProfileFingerprint: protectiveMotorProfile.fingerprint,
+      moduleCount: UInt32(brainSchedule.modules.count),
+      muscleCount: UInt32(protectiveMotorProfile.channels.count),
+      environmentIdentifier: schedulerEnvironmentIdentifier,
+      reserved: 0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      protectiveCommandUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<ProtectiveCommandUniforms>.stride
+      )
+    }
   }
 
   private func writeBodyLoadFieldUpdates(
@@ -4765,6 +5030,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ? descendingSomaticBuffer
       : zeroDescendingSomaticBuffer
     protectiveMotorArgumentTable.setAddress(descendingBuffer.gpuAddress, index: 10)
+    protectiveMotorArgumentTable.setAddress(fastCPGUniformBuffer.gpuAddress, index: 11)
+    protectiveMotorArgumentTable.setAddress(stagedFastCPGStateBuffer.gpuAddress, index: 12)
+    protectiveMotorArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress,
+      index: 13
+    )
+    protectiveMotorArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress,
+      index: 14
+    )
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)
     encoder.dispatchThreads(
@@ -4898,21 +5173,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard !protectiveGenerationOverflow else {
       throw TissueError.transaction("protective command generation overflows UInt64")
     }
-    var protectiveUniforms = ProtectiveCommandUniforms(
-      brainGeneration: protectiveGeneration,
-      motorProfileFingerprint: protectiveMotorProfile.fingerprint,
-      moduleCount: UInt32(brainSchedule.modules.count),
-      muscleCount: UInt32(protectiveMotorProfile.channels.count),
-      environmentIdentifier: schedulerEnvironmentIdentifier,
-      reserved: 0
-    )
-    withUnsafeBytes(of: &protectiveUniforms) { bytes in
-      guard let source = bytes.baseAddress else { return }
-      protectiveCommandUniformBuffer.contents().copyMemory(
-        from: source,
-        byteCount: MemoryLayout<ProtectiveCommandUniforms>.stride
-      )
-    }
+    writeProtectiveCommandUniforms(brainGeneration: protectiveGeneration)
     let outputClockIndex = 1 - committedSchedulerClockIndex
     return PreparedSchedulerWindow(
       targetTime: targetTime,

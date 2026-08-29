@@ -20,6 +20,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let somaticOutputGPUAddress: UInt64
     public let somaticOutputByteCount: Int
     public let somaticOutputCount: Int
+    public let descendingSomaticBaselineGPUAddress: UInt64
+    public let descendingSomaticBaselineByteCount: Int
     public let autonomicCommandGPUAddress: UInt64
     public let autonomicCommandCount: Int
     public let activeSensingCommandGPUAddress: UInt64
@@ -38,6 +40,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let regionalPlasticModulationGPUAddress: UInt64
     public let regionalPlasticModulationByteCount: Int
     public let regionalPlasticModulationCount: Int
+    public let cpgStateGPUAddress: UInt64
+    public let cpgStateByteCount: Int
+    public let cpgStateCount: Int
+    public let cpgSynergyCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -73,32 +79,38 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
     let buffer: any MTLBuffer
     let sourceOffset: Int
+    let descendingBaselineSourceOffset: Int
     let autonomicSourceOffset: Int
     let activeSensingSourceOffset: Int
     let internalActionSourceOffset: Int
     let maturationSourceOffset: Int
     let plasticModulationSourceOffset: Int
+    let cpgStateSourceOffset: Int
 
     fileprivate init(
       decision: DecisionBufferView,
       speciesTemplateFingerprint: UInt64,
       buffer: any MTLBuffer,
       sourceOffset: Int,
+      descendingBaselineSourceOffset: Int,
       autonomicSourceOffset: Int,
       activeSensingSourceOffset: Int,
       internalActionSourceOffset: Int,
       maturationSourceOffset: Int,
-      plasticModulationSourceOffset: Int
+      plasticModulationSourceOffset: Int,
+      cpgStateSourceOffset: Int
     ) {
       self.decision = decision
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
       self.buffer = buffer
       self.sourceOffset = sourceOffset
+      self.descendingBaselineSourceOffset = descendingBaselineSourceOffset
       self.autonomicSourceOffset = autonomicSourceOffset
       self.activeSensingSourceOffset = activeSensingSourceOffset
       self.internalActionSourceOffset = internalActionSourceOffset
       self.maturationSourceOffset = maturationSourceOffset
       self.plasticModulationSourceOffset = plasticModulationSourceOffset
+      self.cpgStateSourceOffset = cpgStateSourceOffset
     }
 
     public var metalBufferObject: UnsafeMutableRawPointer {
@@ -106,9 +118,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
 
     public var somaticByteOffset: Int { sourceOffset }
+    public var descendingSomaticBaselineByteOffset: Int {
+      descendingBaselineSourceOffset
+    }
     public var autonomicByteOffset: Int { autonomicSourceOffset }
     public var activeSensingByteOffset: Int { activeSensingSourceOffset }
     public var internalActionByteOffset: Int { internalActionSourceOffset }
+    public var cpgStateByteOffset: Int { cpgStateSourceOffset }
     public static let structuredCommandStride = 16
   }
 
@@ -517,6 +533,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       let plasticModulation = agentStateRuntime.arena.layout.section(
         .regionalPlasticModulation
       )
+      let cpgState = agentStateRuntime.arena.layout.section(.cpgState)
+      let descendingBaseline = agentStateRuntime.arena.layout.section(
+        .descendingSomaticBaseline
+      )
       return DecisionBufferView(
         transactionFingerprint: transaction.jointToken.fingerprint,
         shadowGeneration: transaction.agentStateToken.shadowGeneration,
@@ -530,6 +550,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         somaticOutputByteCount:
           decision.somaticOutputCount * MemoryLayout<Float>.stride,
         somaticOutputCount: decision.somaticOutputCount,
+        descendingSomaticBaselineGPUAddress:
+          hot.outputGPUAddress + UInt64(descendingBaseline.byteOffset),
+        descendingSomaticBaselineByteCount:
+          descendingBaseline.elementCount * descendingBaseline.elementStride,
         autonomicCommandGPUAddress: decision.autonomicCommandGPUAddress,
         autonomicCommandCount: decision.autonomicCommandCount,
         activeSensingCommandGPUAddress:
@@ -553,6 +577,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         regionalPlasticModulationByteCount:
           plasticModulation.elementCount * plasticModulation.elementStride,
         regionalPlasticModulationCount: plasticModulation.elementCount,
+        cpgStateGPUAddress: hot.outputGPUAddress + UInt64(cpgState.byteOffset),
+        cpgStateByteCount: species.cpg.oscillators.count
+          * cpgState.elementStride,
+        cpgStateCount: species.cpg.oscillators.count,
+        cpgSynergyCount: Int(species.motor.synergyCount),
         gpuStartSeconds: feedback.gpuStartTime,
         gpuEndSeconds: feedback.gpuEndTime
       )
@@ -760,6 +789,65 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Imports the accepted fast-substep oscillator phase into the same shadow
+  /// generation that will receive accepted sensory consequences and memory
+  /// journals. A later abort discards this copy with the rest of the mind.
+  func importAcceptedFastCPGState(
+    _ lease: MetalTissueRuntime.AcceptedCPGStateLease,
+    transaction: MetalJointAgentStateTransaction
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    let section = agentStateRuntime.arena.layout.section(.cpgState)
+    guard transaction.status == .open,
+      lease.transactionFingerprint == transaction.jointToken.fingerprint,
+      lease.acceptedTimestamp == transaction.jointToken.targetTimestamp,
+      lease.oscillatorCount == species.cpg.oscillators.count,
+      lease.byteCount == lease.oscillatorCount * section.elementStride,
+      lease.byteCount <= section.byteCount
+    else {
+      throw TissueError.transaction(
+        "accepted fast CPG state does not match the cognitive shadow"
+      )
+    }
+    guard lease.byteCount > 0 else { return }
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "NumiBrain accepted fast CPG residency"
+    descriptor.initialCapacity = 1
+    let borrowedResidency: any MTLResidencySet
+    do {
+      borrowedResidency = try device.makeResidencySet(descriptor: descriptor)
+    } catch {
+      throw TissueError.metal("failed to retain accepted fast CPG state: \(error)")
+    }
+    borrowedResidency.addAllocation(lease.buffer)
+    borrowedResidency.commit()
+    borrowedResidency.requestResidency()
+    defer { borrowedResidency.endResidency() }
+    let destination = try agentStateRuntime.arena.borrowShadowHotBuffer(
+      transaction: transaction.agentStateToken
+    )
+    commandAllocator.reset()
+    commandBuffer.beginCommandBuffer(allocator: commandAllocator)
+    commandBuffer.useResidencySet(residencySet)
+    commandBuffer.useResidencySet(borrowedResidency)
+    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+      commandBuffer.endCommandBuffer()
+      throw TissueError.metal("failed to encode accepted fast CPG import")
+    }
+    encoder.label = "NumiBrain accepted fast CPG import"
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: 0,
+      destinationBuffer: destination,
+      destinationOffset: section.byteOffset,
+      size: lease.byteCount
+    )
+    encoder.endEncoding()
+    commandBuffer.endCommandBuffer()
+    _ = try commitCommandBuffer(label: "NumiBrain accepted fast CPG import")
+  }
+
   public func borrowNumanXSomaticBuffer(
     for decision: DecisionBufferView,
     transaction: MetalJointAgentStateTransaction
@@ -787,6 +875,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let plasticModulation = agentStateRuntime.arena.layout.section(
       .regionalPlasticModulation
     )
+    let cpgState = agentStateRuntime.arena.layout.section(.cpgState)
+    let descendingBaseline = agentStateRuntime.arena.layout.section(
+      .descendingSomaticBaseline
+    )
     let buffer = try agentStateRuntime.arena.borrowShadowHotBuffer(
       transaction: transaction.agentStateToken
     )
@@ -795,6 +887,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.somaticOutputByteCount <= buffer.length - section.byteOffset,
       decision.somaticOutputGPUAddress
         == buffer.gpuAddress + UInt64(section.byteOffset),
+      decision.descendingSomaticBaselineByteCount
+        == decision.somaticOutputByteCount,
+      descendingBaseline.byteOffset <= buffer.length,
+      decision.descendingSomaticBaselineByteCount
+        <= buffer.length - descendingBaseline.byteOffset,
+      decision.descendingSomaticBaselineGPUAddress
+        == buffer.gpuAddress + UInt64(descendingBaseline.byteOffset),
       decision.autonomicCommandCount == autonomic.elementCount,
       autonomic.byteOffset <= buffer.length,
       autonomic.byteCount <= buffer.length - autonomic.byteOffset,
@@ -826,7 +925,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.regionalPlasticModulationByteCount
         <= buffer.length - plasticModulation.byteOffset,
       decision.regionalPlasticModulationGPUAddress
-        == buffer.gpuAddress + UInt64(plasticModulation.byteOffset)
+        == buffer.gpuAddress + UInt64(plasticModulation.byteOffset),
+      decision.cpgStateCount == species.cpg.oscillators.count,
+      decision.cpgStateByteCount
+        == decision.cpgStateCount * cpgState.elementStride,
+      decision.cpgSynergyCount == Int(species.motor.synergyCount),
+      cpgState.byteOffset <= buffer.length,
+      decision.cpgStateByteCount <= buffer.length - cpgState.byteOffset,
+      decision.cpgStateGPUAddress
+        == buffer.gpuAddress + UInt64(cpgState.byteOffset)
     else {
       throw TissueError.transaction(
         "embodied somatic command does not identify its resident shadow buffer"
@@ -837,11 +944,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       buffer: buffer,
       sourceOffset: section.byteOffset,
+      descendingBaselineSourceOffset: descendingBaseline.byteOffset,
       autonomicSourceOffset: autonomic.byteOffset,
       activeSensingSourceOffset: activeSensing.byteOffset,
       internalActionSourceOffset: internalActions.byteOffset,
       maturationSourceOffset: maturation.byteOffset,
-      plasticModulationSourceOffset: plasticModulation.byteOffset
+      plasticModulationSourceOffset: plasticModulation.byteOffset,
+      cpgStateSourceOffset: cpgState.byteOffset
     )
   }
 

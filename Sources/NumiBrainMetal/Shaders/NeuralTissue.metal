@@ -422,6 +422,31 @@ struct NBProtectiveCommandUniformsABI {
     uint reserved;
 };
 
+struct NBFastCPGUniformsABI {
+    ulong sample_timestamp_microseconds;
+    uint oscillator_count;
+    uint synergy_count;
+    uint flags;
+    uint reserved;
+};
+
+struct NBFastCPGStateABI {
+    float phase;
+    float output;
+    float effective_frequency_hertz;
+    float duty_factor;
+    ulong timestamp_microseconds;
+    ulong sensory_reset_mask;
+    float reset_magnitude;
+    float output_gain;
+    float decision_output;
+    float reserved_float;
+    uint output_synergy_identifier;
+    uint oscillator_identifier;
+    uint flags;
+    uint reserved;
+};
+
 struct NBProtectiveCommandABI {
     uint format_version;
     uint flags;
@@ -622,6 +647,8 @@ static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift"
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
 static_assert(sizeof(NBProtectiveCommandUniformsABI) == 32, "protective uniforms drift");
+static_assert(sizeof(NBFastCPGUniformsABI) == 24, "fast CPG uniforms drift");
+static_assert(sizeof(NBFastCPGStateABI) == 64, "fast CPG state drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
@@ -2853,12 +2880,67 @@ kernel void map_protective_motor_output(
     device const NBMuscleAttachmentRecordABI *attachments [[buffer(8)]],
     device const NBBodySchemaRecordABI *bodySchema [[buffer(9)]],
     device const float *descendingSomaticExcitations [[buffer(10)]],
+    constant NBFastCPGUniformsABI *cpgUniforms [[buffer(11)]],
+    device NBFastCPGStateABI *cpgStates [[buffer(12)]],
+    device const NBInterruptEventABI *interruptEvents [[buffer(13)]],
+    device const NBReceptorEventTransductionResultABI *interruptResult
+        [[buffer(14)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
         return;
     }
     const NBProtectiveCommandABI command = commandBuffer[0];
+    const uint oscillatorCount = (cpgUniforms->flags & 1u) != 0u
+        ? min(cpgUniforms->oscillator_count, 64u)
+        : 0u;
+    const uint interruptEventCount = (cpgUniforms->flags & (1u << 1u)) != 0u
+        ? interruptResult->event_count
+        : 0u;
+    constexpr float twoPi = 6.28318530717958647692f;
+    for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
+        NBFastCPGStateABI state = cpgStates[oscillator];
+        const bool valid = (state.flags & 1u) != 0u;
+        const bool active = (state.flags & (1u << 1u)) != 0u;
+        bool reset = false;
+        if (valid && active) {
+            for (uint eventIndex = 0u; eventIndex < interruptEventCount;
+                 ++eventIndex) {
+                const NBInterruptEventABI event = interruptEvents[eventIndex];
+                reset = reset || (
+                    event.timestamp_microseconds > state.timestamp_microseconds &&
+                    event.timestamp_microseconds
+                        <= cpgUniforms->sample_timestamp_microseconds &&
+                    (event.interrupt_mask & state.sensory_reset_mask) != 0ul
+                );
+            }
+        }
+        const float elapsedSeconds = valid && active
+                && cpgUniforms->sample_timestamp_microseconds
+                    > state.timestamp_microseconds
+            ? float(cpgUniforms->sample_timestamp_microseconds
+                - state.timestamp_microseconds) * 1.0e-6f
+            : 0.0f;
+        if (reset) {
+            state.phase = 0.0f;
+        } else if (valid && active && elapsedSeconds > 0.0f) {
+            state.phase = fract(
+                state.phase + elapsedSeconds * state.effective_frequency_hertz
+            );
+        }
+        const float normalizedActivePhase = state.phase
+            / max(state.duty_factor, 1.0e-6f);
+        const float rawOutput = valid && active
+                && state.phase < state.duty_factor
+            ? 0.5f - 0.5f * cos(twoPi * normalizedActivePhase)
+            : 0.0f;
+        state.output = clamp(rawOutput * state.output_gain, 0.0f, 1.0f);
+        state.reset_magnitude = reset ? 1.0f : 0.0f;
+        state.timestamp_microseconds = cpgUniforms->sample_timestamp_microseconds;
+        state.flags = (state.flags & ~(1u << 2u))
+            | (reset ? (1u << 2u) : 0u);
+        cpgStates[oscillator] = state;
+    }
     const ulong unlocalizedWithdrawalCauses =
         NBInterruptPain | NBInterruptDamagingContact | NBInterruptJointLimit;
     bool hasLocalizedWithdrawalSource = false;
@@ -2933,8 +3015,17 @@ kernel void map_protective_motor_output(
             channel.brace_gain,
             withdrawalExcitation
         );
+        float sampledCPGOutput = 0.0f;
+        const uint actuatorSynergy = index % max(cpgUniforms->synergy_count, 1u);
+        for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
+            const NBFastCPGStateABI state = cpgStates[oscillator];
+            if ((state.flags & 1u) != 0u &&
+                state.output_synergy_identifier == actuatorSynergy) {
+                sampledCPGOutput += state.output;
+            }
+        }
         const float descendingExcitation = clamp(
-            descendingSomaticExcitations[index],
+            descendingSomaticExcitations[index] + sampledCPGOutput,
             0.0f,
             channel.maximum_excitation
         ) * (1.0f - clamp(command.motor_inhibition, 0.0f, 1.0f));
@@ -2972,7 +3063,7 @@ kernel void map_protective_motor_output(
         header.flags |= NBMotorOutputFlagLocalizedWithdrawal;
     }
     header.timestamp_microseconds = command.timestamp_microseconds;
-    header.brain_generation = command.brain_generation;
+    header.brain_generation = uniforms->brain_generation;
     header.profile_fingerprint = uniforms->motor_profile_fingerprint;
     header.protective_command_fingerprint = command.command_fingerprint;
     header.muscle_count = uniforms->muscle_count;
