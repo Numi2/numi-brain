@@ -28,6 +28,8 @@ private struct CognitiveUniforms {
   var spatialTransformOffset: UInt64 = 0
   var physiologyBeliefOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var jointBeliefOffset: UInt64 = 0
+  var muscleBeliefOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
   var acceptedAutonomicOutputOffset: UInt64 = 0
@@ -62,6 +64,8 @@ private struct CognitiveUniforms {
   var spatialTransformCount: UInt32 = 0
   var physiologyBeliefCount: UInt32 = 0
   var bodyBeliefCount: UInt32 = 0
+  var jointBeliefCount: UInt32 = 0
+  var muscleBeliefCount: UInt32 = 0
   var olfactionObservationOffset: UInt32 = 0
   var olfactionObservationCount: UInt32 = 0
   var gustationObservationOffset: UInt32 = 0
@@ -176,7 +180,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 400,
+    guard MemoryLayout<CognitiveUniforms>.stride == 424,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       MemoryLayout<PlasticityRegionRangeRecord>.stride == 24,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -748,6 +752,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       spatialTransformOffset: offset(.spatialTransforms),
       physiologyBeliefOffset: offset(.physiologyBelief),
       bodyBeliefOffset: offset(.bodyBelief),
+      jointBeliefOffset: offset(.jointBelief),
+      muscleBeliefOffset: offset(.muscleBelief),
       activeSensingEfficacyOffset: offset(.activeSensingEfficacy),
       somaticOutputOffset: offset(.somaticOutput),
       acceptedAutonomicOutputOffset: offset(.acceptedAutonomicOutput),
@@ -782,6 +788,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       spatialTransformCount: count(.spatialTransforms),
       physiologyBeliefCount: count(.physiologyBelief),
       bodyBeliefCount: count(.bodyBelief),
+      jointBeliefCount: count(.jointBelief),
+      muscleBeliefCount: count(.muscleBelief),
       olfactionObservationOffset: olfactionObservationOffset,
       olfactionObservationCount: olfactionObservationCount,
       gustationObservationOffset: gustationObservationOffset,

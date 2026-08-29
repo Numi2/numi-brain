@@ -51,6 +51,14 @@ constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 31u;
 constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
 constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
+constant uint NB_JOINT_POSITION_VARIANCE = 12u;
+constant uint NB_JOINT_VELOCITY_VARIANCE = 18u;
+constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
+constant uint NB_JOINT_OWNERSHIP = 30u;
+constant uint NB_JOINT_PREDICTION_ERROR = 31u;
+constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
+constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
+constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -979,6 +987,180 @@ inline float nb_body_sensorimotor_projection(
   return has_evidence ? clamp(
     total * rsqrt(float(finite_count)), -1.0f, 1.0f
   ) : 0.0f;
+}
+
+inline float nb_joint_sensorimotor_feature(
+  device const float *joint,
+  uint feature)
+{
+  const float value = joint[feature];
+  if (!isfinite(value)) return 0.0f;
+  if ((feature >= NB_JOINT_POSITION_VARIANCE
+        && feature < NB_JOINT_POSITION_VARIANCE + 6u)
+      || (feature >= NB_JOINT_VELOCITY_VARIANCE
+        && feature < NB_JOINT_VELOCITY_VARIANCE + 6u)) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if ((feature >= NB_JOINT_LIMIT_ACTIVATION
+        && feature < NB_JOINT_LIMIT_ACTIVATION + 6u)
+      || feature == NB_JOINT_OWNERSHIP) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == NB_JOINT_PREDICTION_ERROR) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline bool nb_joint_feature_is_active(uint feature, uint coordinate_count) {
+  if (feature < 6u) return feature < coordinate_count;
+  if (feature < 12u) return feature - 6u < coordinate_count;
+  if (feature < 18u) return feature - 12u < coordinate_count;
+  if (feature < 24u) return feature - 18u < coordinate_count;
+  if (feature < 30u) return feature - 24u < coordinate_count;
+  return feature < 32u;
+}
+
+inline float nb_joint_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
+  if (uniforms.joint_count == 0u) return 0.0f;
+  const uint lane_count = min(
+    uniforms.joint_count, NB_WORLD_SENSORIMOTOR_DIMENSION
+  );
+  const uint first_joint = component % lane_count;
+  float projection_total = 0.0f;
+  uint projection_count = 0u;
+  for (uint joint_index = first_joint; joint_index < uniforms.joint_count;
+      joint_index += lane_count) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    float total = 0.0f;
+    uint finite_count = 0u;
+    for (uint feature = 0u; feature < 32u; ++feature) {
+      if (!nb_joint_feature_is_active(feature, coordinate_count)
+          || !isfinite(joint[feature])) continue;
+      uint hash = (feature + 1u) * 0x27d4eb2du
+        ^ (component + 1u) * 0x165667b1u
+        ^ (joint_index + 1u) * 0x9e3779b9u;
+      hash ^= hash >> 15u;
+      const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+      total += sign * nb_joint_sensorimotor_feature(joint, feature);
+      finite_count += 1u;
+    }
+    if (finite_count == 0u) continue;
+    projection_total += clamp(
+      total * rsqrt(float(finite_count)), -1.0f, 1.0f
+    );
+    projection_count += 1u;
+  }
+  has_evidence = projection_count > 0u;
+  return has_evidence
+    ? clamp(projection_total / float(projection_count), -1.0f, 1.0f)
+    : 0.0f;
+}
+
+inline float nb_muscle_sensorimotor_feature(
+  device const float *muscle,
+  uint feature)
+{
+  const float value = muscle[feature];
+  if (!isfinite(value)) return 0.0f;
+  if (feature == 0u || feature == 4u || feature == 8u || feature == 9u) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == 3u || feature == 5u) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline float nb_muscle_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
+  if (uniforms.muscle_count == 0u) return 0.0f;
+  const uint lane_count = min(
+    uniforms.muscle_count, NB_WORLD_SENSORIMOTOR_DIMENSION
+  );
+  const uint first_muscle = component % lane_count;
+  float projection_total = 0.0f;
+  uint projection_count = 0u;
+  for (uint muscle_index = first_muscle; muscle_index < uniforms.muscle_count;
+      muscle_index += lane_count) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul) continue;
+    float total = 0.0f;
+    uint finite_count = 0u;
+    for (uint feature = 0u;
+        feature < NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT; ++feature) {
+      if (!isfinite(muscle[feature])) continue;
+      uint hash = (feature + 1u) * 0x85ebca6bu
+        ^ (component + 1u) * 0xc2b2ae35u
+        ^ (muscle_index + 1u) * 0x27d4eb2du;
+      hash ^= hash >> 16u;
+      const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+      total += sign * nb_muscle_sensorimotor_feature(muscle, feature);
+      finite_count += 1u;
+    }
+    if (finite_count == 0u) continue;
+    projection_total += clamp(
+      total * rsqrt(float(finite_count)), -1.0f, 1.0f
+    );
+    projection_count += 1u;
+  }
+  has_evidence = projection_count > 0u;
+  return has_evidence
+    ? clamp(projection_total / float(projection_count), -1.0f, 1.0f)
+    : 0.0f;
+}
+
+inline float nb_embodied_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  bool has_body = false;
+  bool has_joint = false;
+  bool has_muscle = false;
+  const float body = nb_body_sensorimotor_projection(
+    hot_state, uniforms, component, has_body
+  );
+  const float joint = nb_joint_sensorimotor_projection(
+    hot_state, uniforms, component, has_joint
+  );
+  const float muscle = nb_muscle_sensorimotor_projection(
+    hot_state, uniforms, component, has_muscle
+  );
+  float total = 0.0f;
+  float weight = 0.0f;
+  if (has_body) { total += 0.5f * body; weight += 0.5f; }
+  if (has_joint) { total += 0.25f * joint; weight += 0.25f; }
+  if (has_muscle) { total += 0.25f * muscle; weight += 0.25f; }
+  has_evidence = weight > 0.0f;
+  return has_evidence ? clamp(total / weight, -1.0f, 1.0f) : 0.0f;
 }
 
 kernel void assimilate_accepted_body_and_physiology(
@@ -2124,9 +2306,9 @@ kernel void reconcile_accepted_world_model(
   );
 }
 
-/// Reconciles the level-1 prediction against the accepted full body posterior.
-/// This runs only after body assimilation and the accepted agency update, so a
-/// rejected physical candidate cannot alter sensorimotor dynamics or error.
+/// Reconciles the level-1 prediction against accepted body, articulated-joint,
+/// and muscle/actuator posteriors. This runs only after accepted assimilation,
+/// so a rejected physical candidate cannot alter sensorimotor dynamics.
 kernel void reconcile_accepted_sensorimotor_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
@@ -2138,7 +2320,7 @@ kernel void reconcile_accepted_sensorimotor_world_model(
   if (gid >= NB_WORLD_SENSORIMOTOR_DIMENSION
       || uniforms.world_model_count < required_count) return;
   bool has_evidence = false;
-  const float observed = nb_body_sensorimotor_projection(
+  const float observed = nb_embodied_sensorimotor_projection(
     hot_state, uniforms, gid, has_evidence
   );
   if (!has_evidence) return;

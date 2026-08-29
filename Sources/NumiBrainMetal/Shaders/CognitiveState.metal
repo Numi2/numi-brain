@@ -16,6 +16,14 @@ constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_EXTERNAL_DISTURBANCE = 32u;
 constant uint NB_BODY_SENSORIMOTOR_FEATURE_COUNT = 33u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
+constant uint NB_JOINT_POSITION_VARIANCE = 12u;
+constant uint NB_JOINT_VELOCITY_VARIANCE = 18u;
+constant uint NB_JOINT_LIMIT_ACTIVATION = 24u;
+constant uint NB_JOINT_OWNERSHIP = 30u;
+constant uint NB_JOINT_PREDICTION_ERROR = 31u;
+constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
+constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 13u;
+constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
 constant uint NB_WORLD_SENSORIMOTOR_DIMENSION = 256u;
 
 struct NBCognitiveUniforms {
@@ -44,6 +52,8 @@ struct NBCognitiveUniforms {
   ulong spatial_transform_offset;
   ulong physiology_belief_offset;
   ulong body_belief_offset;
+  ulong joint_belief_offset;
+  ulong muscle_belief_offset;
   ulong active_sensing_efficacy_offset;
   ulong somatic_output_offset;
   ulong accepted_autonomic_output_offset;
@@ -78,6 +88,8 @@ struct NBCognitiveUniforms {
   uint spatial_transform_count;
   uint physiology_belief_count;
   uint body_belief_count;
+  uint joint_belief_count;
+  uint muscle_belief_count;
   uint olfaction_observation_offset;
   uint olfaction_observation_count;
   uint gustation_observation_offset;
@@ -327,7 +339,7 @@ struct NBPlasticityRegionRangeRecord {
   uint reserved;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 400);
+static_assert(sizeof(NBCognitiveUniforms) == 424);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -837,8 +849,10 @@ inline float nb_body_sensorimotor_feature(
 inline float nb_body_sensorimotor_projection(
   device const uchar *hot_state,
   constant NBCognitiveUniforms &uniforms,
-  uint component)
+  uint component,
+  thread bool &has_evidence)
 {
+  has_evidence = false;
   if (uniforms.body_belief_count == 0u) return 0.0f;
   const uint body_index = min(
     uint((ulong(component) * ulong(uniforms.body_belief_count))
@@ -866,9 +880,189 @@ inline float nb_body_sensorimotor_projection(
     total += sign * nb_body_sensorimotor_feature(body, feature);
     finite_count += 1u;
   }
-  return finite_count == 0u ? 0.0f : clamp(
+  has_evidence = finite_count > 0u;
+  return has_evidence ? clamp(
     total * rsqrt(float(finite_count)), -1.0f, 1.0f
+  ) : 0.0f;
+}
+
+inline float nb_joint_sensorimotor_feature(
+  device const float *joint,
+  uint feature)
+{
+  const float value = joint[feature];
+  if (!isfinite(value)) return 0.0f;
+  if ((feature >= NB_JOINT_POSITION_VARIANCE
+        && feature < NB_JOINT_POSITION_VARIANCE + 6u)
+      || (feature >= NB_JOINT_VELOCITY_VARIANCE
+        && feature < NB_JOINT_VELOCITY_VARIANCE + 6u)) {
+    const float standard_deviation = sqrt(max(value, 0.0f));
+    return standard_deviation / (1.0f + standard_deviation);
+  }
+  if ((feature >= NB_JOINT_LIMIT_ACTIVATION
+        && feature < NB_JOINT_LIMIT_ACTIVATION + 6u)
+      || feature == NB_JOINT_OWNERSHIP) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == NB_JOINT_PREDICTION_ERROR) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
+  }
+  return value / (1.0f + abs(value));
+}
+
+inline bool nb_joint_feature_is_active(uint feature, uint coordinate_count) {
+  if (feature < 6u) return feature < coordinate_count;
+  if (feature < 12u) return feature - 6u < coordinate_count;
+  if (feature < 18u) return feature - 12u < coordinate_count;
+  if (feature < 24u) return feature - 18u < coordinate_count;
+  if (feature < 30u) return feature - 24u < coordinate_count;
+  return feature < 32u;
+}
+
+/// Projects exact articulated coordinate posteriors into the level-1 latent.
+/// Each component owns a deterministic strided subset, so joints beyond the
+/// 256-dimensional latent still contribute without a host-side reduction.
+inline float nb_joint_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
+  if (uniforms.joint_belief_count == 0u) return 0.0f;
+  const uint lane_count = min(
+    uniforms.joint_belief_count, NB_WORLD_SENSORIMOTOR_DIMENSION
   );
+  const uint first_joint = component % lane_count;
+  float projection_total = 0.0f;
+  uint projection_count = 0u;
+  for (uint joint_index = first_joint;
+      joint_index < uniforms.joint_belief_count;
+      joint_index += lane_count) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    float total = 0.0f;
+    uint finite_count = 0u;
+    for (uint feature = 0u; feature < 32u; ++feature) {
+      if (!nb_joint_feature_is_active(feature, coordinate_count)
+          || !isfinite(joint[feature])) continue;
+      uint hash = (feature + 1u) * 0x27d4eb2du
+        ^ (component + 1u) * 0x165667b1u
+        ^ (joint_index + 1u) * 0x9e3779b9u;
+      hash ^= hash >> 15u;
+      const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+      total += sign * nb_joint_sensorimotor_feature(joint, feature);
+      finite_count += 1u;
+    }
+    if (finite_count == 0u) continue;
+    projection_total += clamp(
+      total * rsqrt(float(finite_count)), -1.0f, 1.0f
+    );
+    projection_count += 1u;
+  }
+  has_evidence = projection_count > 0u;
+  return has_evidence
+    ? clamp(projection_total / float(projection_count), -1.0f, 1.0f)
+    : 0.0f;
+}
+
+inline float nb_muscle_sensorimotor_feature(
+  device const float *muscle,
+  uint feature)
+{
+  const float value = muscle[feature];
+  if (!isfinite(value)) return 0.0f;
+  if (feature == 0u || feature == 4u || feature == 8u || feature == 9u) {
+    return clamp(value, 0.0f, 1.0f);
+  }
+  if (feature == 3u || feature == 5u) {
+    const float magnitude = abs(value);
+    return magnitude / (1.0f + magnitude);
+  }
+  return value / (1.0f + abs(value));
+}
+
+/// Projects muscle or actuator belief without assuming its record count fits
+/// inside the latent width. Validity remains owned by accepted consequences.
+inline float nb_muscle_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  uint component,
+  thread bool &has_evidence)
+{
+  has_evidence = false;
+  if (uniforms.muscle_belief_count == 0u) return 0.0f;
+  const uint lane_count = min(
+    uniforms.muscle_belief_count, NB_WORLD_SENSORIMOTOR_DIMENSION
+  );
+  const uint first_muscle = component % lane_count;
+  float projection_total = 0.0f;
+  uint projection_count = 0u;
+  for (uint muscle_index = first_muscle;
+      muscle_index < uniforms.muscle_belief_count;
+      muscle_index += lane_count) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    float total = 0.0f;
+    uint finite_count = 0u;
+    for (uint feature = 0u;
+        feature < NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT; ++feature) {
+      if (!isfinite(muscle[feature])) continue;
+      uint hash = (feature + 1u) * 0x85ebca6bu
+        ^ (component + 1u) * 0xc2b2ae35u
+        ^ (muscle_index + 1u) * 0x27d4eb2du;
+      hash ^= hash >> 16u;
+      const float sign = (hash & 1u) == 0u ? -1.0f : 1.0f;
+      total += sign * nb_muscle_sensorimotor_feature(muscle, feature);
+      finite_count += 1u;
+    }
+    if (finite_count == 0u) continue;
+    projection_total += clamp(
+      total * rsqrt(float(finite_count)), -1.0f, 1.0f
+    );
+    projection_count += 1u;
+  }
+  has_evidence = projection_count > 0u;
+  return has_evidence
+    ? clamp(projection_total / float(projection_count), -1.0f, 1.0f)
+    : 0.0f;
+}
+
+inline float nb_embodied_sensorimotor_projection(
+  device const uchar *hot_state,
+  constant NBCognitiveUniforms &uniforms,
+  uint component)
+{
+  bool has_body = false;
+  bool has_joint = false;
+  bool has_muscle = false;
+  const float body = nb_body_sensorimotor_projection(
+    hot_state, uniforms, component, has_body
+  );
+  const float joint = nb_joint_sensorimotor_projection(
+    hot_state, uniforms, component, has_joint
+  );
+  const float muscle = nb_muscle_sensorimotor_projection(
+    hot_state, uniforms, component, has_muscle
+  );
+  float total = 0.0f;
+  float weight = 0.0f;
+  if (has_body) { total += 0.5f * body; weight += 0.5f; }
+  if (has_joint) { total += 0.25f * joint; weight += 0.25f; }
+  if (has_muscle) { total += 0.25f * muscle; weight += 0.25f; }
+  return weight > 0.0f ? clamp(total / weight, -1.0f, 1.0f) : 0.0f;
 }
 
 /// Projects the explicit compatible belief factors into the matching world
@@ -898,8 +1092,8 @@ inline float nb_world_structured_belief_context(
       count += 1u;
     }
   } else if (level == 1u || level == 2u) {
-    const float body_context = level == 1u
-      ? nb_body_sensorimotor_projection(hot_state, uniforms, component)
+    const float embodied_context = level == 1u
+      ? nb_embodied_sensorimotor_projection(hot_state, uniforms, component)
       : 0.0f;
     device const NBObjectSlotRecord *objects =
       reinterpret_cast<device const NBObjectSlotRecord *>(
@@ -929,7 +1123,9 @@ inline float nb_world_structured_belief_context(
     }
     if (level == 1u) {
       const float object_context = count == 0u ? 0.0f : total / float(count);
-      return clamp(0.75f * body_context + 0.25f * object_context, -1.0f, 1.0f);
+      return clamp(
+        0.75f * embodied_context + 0.25f * object_context, -1.0f, 1.0f
+      );
     }
   } else if (level == 3u) {
     device const NBRelationSlotRecord *relations =
@@ -1165,6 +1361,49 @@ kernel void update_curiosity_drive_from_world_model(
     body_model_uncertainty = max(
       body_model_uncertainty,
       standard_deviation / (1.0f + standard_deviation)
+    );
+  }
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      const float joint_variance = max(
+        max(joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f),
+        max(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f)
+      );
+      const float standard_deviation = sqrt(joint_variance);
+      body_model_uncertainty = max(
+        body_model_uncertainty,
+        standard_deviation / (1.0f + standard_deviation)
+      );
+    }
+    const float prediction_error = abs(joint[NB_JOINT_PREDICTION_ERROR]);
+    body_model_uncertainty = max(
+      body_model_uncertainty,
+      prediction_error / (1.0f + prediction_error)
+    );
+  }
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    const float prediction_error = abs(muscle[5]);
+    const float low_agency = 1.0f - clamp(muscle[8], 0.0f, 1.0f);
+    body_model_uncertainty = max(
+      body_model_uncertainty,
+      max(prediction_error / (1.0f + prediction_error), low_agency)
     );
   }
   float structured_belief_uncertainty = 0.0f;
