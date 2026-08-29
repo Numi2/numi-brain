@@ -1247,47 +1247,49 @@ kernel void broadcast_accepted_prediction_error(
       && uint(control->reserved0) < uniforms.option_candidate_capacity
       && uniforms.world_model_count >= NB_WORLD_EVENT_OPTION_BASE
         + 9u * NB_WORLD_EVENT_OPTION_DIMENSION) {
-    const uint selected_candidate = uint(control->reserved0);
-    const uint component = (
-      selected_candidate * uniforms.maximum_planning_horizon
-    ) % NB_WORLD_EVENT_OPTION_DIMENSION;
     device float *mutable_world = reinterpret_cast<device float *>(
       hot_state + uniforms.world_model_offset
     );
     const float accepted_risk = max(embodied_risk.x, embodied_risk.y);
-    float predicted_mean = 0.0f;
-    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-      predicted_mean += mutable_world[NB_WORLD_EVENT_OPTION_BASE
-        + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component]
-        / float(NB_WORLD_HEAD_COUNT);
-    }
-    const float residual = accepted_risk - predicted_mean;
     const float gain = clamp(
       min(uniforms.world_correction_gain, max(world_parameters[150], 0.0f)),
       0.0f,
       1.0f
     );
-    mutable_world[NB_WORLD_EVENT_OPTION_BASE + component] = mix(
-      mutable_world[NB_WORLD_EVENT_OPTION_BASE + component],
-      accepted_risk,
-      gain
-    );
-    mutable_world[NB_WORLD_EVENT_OPTION_BASE
-      + NB_WORLD_EVENT_OPTION_DIMENSION + component] = residual;
-    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-      const uint head_index = NB_WORLD_EVENT_OPTION_BASE
-        + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component;
-      mutable_world[head_index] = mix(
-        mutable_world[head_index], accepted_risk, gain
+    // Counterfactual branches now share the first sixteen event features and
+    // diverge through action context. Correct those same features after the
+    // accepted outcome; candidate-array position is never a learned cause.
+    for (uint feature = 0u; feature < 16u; ++feature) {
+      const uint component = feature % NB_WORLD_EVENT_OPTION_DIMENSION;
+      float predicted_mean = 0.0f;
+      for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+        predicted_mean += mutable_world[NB_WORLD_EVENT_OPTION_BASE
+          + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component]
+          / float(NB_WORLD_HEAD_COUNT);
+      }
+      const float residual = accepted_risk - predicted_mean;
+      mutable_world[NB_WORLD_EVENT_OPTION_BASE + component] = mix(
+        mutable_world[NB_WORLD_EVENT_OPTION_BASE + component],
+        accepted_risk,
+        gain
+      );
+      mutable_world[NB_WORLD_EVENT_OPTION_BASE
+        + NB_WORLD_EVENT_OPTION_DIMENSION + component] = residual;
+      for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+        const uint head_index = NB_WORLD_EVENT_OPTION_BASE
+          + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + component;
+        mutable_world[head_index] = mix(
+          mutable_world[head_index], accepted_risk, gain
+        );
+      }
+      const uint aleatoric_index = NB_WORLD_EVENT_OPTION_BASE
+        + 8u * NB_WORLD_EVENT_OPTION_DIMENSION + component;
+      mutable_world[aleatoric_index] = mix(
+        max(mutable_world[aleatoric_index], 0.0f),
+        residual * residual,
+        gain * clamp(world_parameters[152], 0.0f, 1.0f)
       );
     }
-    const uint aleatoric_index = NB_WORLD_EVENT_OPTION_BASE
-      + 8u * NB_WORLD_EVENT_OPTION_DIMENSION + component;
-    mutable_world[aleatoric_index] = mix(
-      max(mutable_world[aleatoric_index], 0.0f),
-      residual * residual,
-      gain * clamp(world_parameters[152], 0.0f, 1.0f)
-    );
   }
   if (uniforms.neuromodulator_count > 2u) {
     device const NBActiveSensingEfficacyRecord *sensing_states =
