@@ -347,6 +347,10 @@ struct NBMuscleReceptorBindingTableHeader {
   ulong attachment_fingerprint;
 };
 
+struct NBMuscleTopologyRecord {
+  uint4 identifiers;
+};
+
 struct NBMuscleReceptorBindingRecord {
   uint muscle_index;
   uint signal;
@@ -502,6 +506,7 @@ static_assert(sizeof(NBJointReceptorBindingTableHeader) == 24);
 static_assert(sizeof(NBJointTopologyRecord) == 256);
 static_assert(sizeof(NBJointReceptorBindingRecord) == 32);
 static_assert(sizeof(NBMuscleReceptorBindingTableHeader) == 24);
+static_assert(sizeof(NBMuscleTopologyRecord) == 16);
 static_assert(sizeof(NBMuscleReceptorBindingRecord) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
@@ -1616,7 +1621,9 @@ kernel void assimilate_accepted_body_and_physiology(
     muscle[9] = external_disturbance;
     muscle[10] = predicted_delta;
     muscle[11] = command;
-    effector_identity[0] = ulong(actuator.actuator_identifier);
+    if (!anatomical_muscle) {
+      effector_identity[0] = ulong(actuator.actuator_identifier);
+    }
     effector_identity[1] = uniforms.target_timestamp_microseconds;
     if (!anatomical_muscle) {
       effector_identity[2] = 0ul;
@@ -1659,9 +1666,17 @@ kernel void assimilate_accepted_muscle_schema(
   device const uint *validity = reinterpret_cast<device const uint *>(
     hot_state + uniforms.observation_validity_offset
   );
+  device const NBMuscleTopologyRecord *topologies =
+    reinterpret_cast<device const NBMuscleTopologyRecord *>(
+      muscle_receptor_table + 1
+    );
+  const NBMuscleTopologyRecord topology = topologies[gid];
+  if (topology.identifiers.y == topology.identifiers.z
+      || topology.identifiers.y >= uniforms.body_count
+      || topology.identifiers.z >= uniforms.body_count) return;
   device const NBBodyReceptorBindingRange *ranges =
     reinterpret_cast<device const NBBodyReceptorBindingRange *>(
-      muscle_receptor_table + 1
+      topologies + muscle_receptor_table->muscle_count
     );
   device const NBMuscleReceptorBindingRecord *bindings =
     reinterpret_cast<device const NBMuscleReceptorBindingRecord *>(
@@ -1742,10 +1757,13 @@ kernel void assimilate_accepted_muscle_schema(
       gain
     ), 0.0f, 1.0f);
   }
+  identity[0] = ulong(topology.identifiers.x);
   identity[1] = uniforms.target_timestamp_microseconds;
   identity[2] = muscle_receptor_table->attachment_fingerprint;
   identity[3] = ulong(flags);
   identity[4] = uniforms.physics_state_fingerprint;
+  identity[7] = (ulong(topology.identifiers.z) << 32u)
+    | ulong(topology.identifiers.y);
 }
 
 /// Fuses only valid causal proprioceptors into the articulated joint
@@ -3049,7 +3067,13 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
         device const ulong *identity = reinterpret_cast<device const ulong *>(
           muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
         );
+        const uint first_body_identifier = uint(identity[7]);
+        const uint terminal_body_identifier = uint(identity[7] >> 32u);
+        const bool source_matches_body = identity[2] == 0ul
+          || first_body_identifier == body_identifier
+          || terminal_body_identifier == body_identifier;
         if ((identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul
+            && source_matches_body
             && isfinite(muscle[muscle_feature])) {
           accepted_feature = nb_muscle_sensorimotor_feature(
             muscle, muscle_feature

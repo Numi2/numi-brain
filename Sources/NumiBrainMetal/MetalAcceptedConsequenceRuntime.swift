@@ -159,6 +159,10 @@ private struct AcceptedMuscleReceptorBindingTableHeader {
   var attachmentFingerprint: UInt64 = 0
 }
 
+private struct AcceptedMuscleTopologyRecord {
+  var identifiers = SIMD4<UInt32>(repeating: 0)
+}
+
 private struct AcceptedMuscleReceptorBindingRecord {
   var muscleIndex: UInt32 = 0
   var signal: UInt32 = 0
@@ -219,6 +223,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       MemoryLayout<AcceptedJointTopologyRecord>.stride == 256,
       MemoryLayout<AcceptedJointReceptorBindingRecord>.stride == 32,
       MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride == 24,
+      MemoryLayout<AcceptedMuscleTopologyRecord>.stride == 16,
       MemoryLayout<AcceptedMuscleReceptorBindingRecord>.stride == 32,
       sensorimotorWorldDimension == 256,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -435,6 +440,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       )
     }
     let muscleAttachments = muscleAttachmentCatalog?.attachments ?? []
+    let muscleTopologyRecords = muscleAttachments.map { attachment in
+      AcceptedMuscleTopologyRecord(
+        identifiers: SIMD4<UInt32>(
+          attachment.muscleIdentifier,
+          attachment.firstBodyIdentifier,
+          attachment.terminalBodyIdentifier,
+          0
+        )
+      )
+    }
     let muscleIndexByIdentifier = Dictionary(
       uniqueKeysWithValues: muscleAttachments.enumerated().map {
         ($0.element.muscleIdentifier, $0.offset)
@@ -539,6 +554,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       let muscleReceptorBindingBuffer = device.makeBuffer(
         length: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
+          + muscleTopologyRecords.count
+            * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
           + muscleReceptorRanges.count
             * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
           + max(muscleReceptorBindings.count, 1)
@@ -650,6 +667,14 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let muscleRangeOffset = MemoryLayout<
       AcceptedMuscleReceptorBindingTableHeader
     >.stride
+      + muscleTopologyRecords.count
+        * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
+    muscleTopologyRecords.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      muscleReceptorBindingBuffer.contents().advanced(
+        by: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
+      ).copyMemory(from: source, byteCount: bytes.count)
+    }
     muscleReceptorRanges.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       muscleReceptorBindingBuffer.contents().advanced(by: muscleRangeOffset)

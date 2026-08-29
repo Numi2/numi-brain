@@ -2683,7 +2683,12 @@ inline float nb_cerebellar_embodied_context(
     device const ulong *identity = reinterpret_cast<device const ulong *>(
       muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
     );
-    if ((identity[3] & 1ul) == 0ul) continue;
+    const uint first_body_identifier = uint(identity[7]);
+    const uint terminal_body_identifier = uint(identity[7] >> 32u);
+    if ((identity[3] & 1ul) == 0ul
+        || (identity[2] != 0ul
+          && first_body_identifier != target_body_identifier
+          && terminal_body_identifier != target_body_identifier)) continue;
     const uint features[7] = {0u, 1u, 2u, 3u, 4u, 8u, 9u};
     for (uint index = 0u; index < 7u; ++index) {
       muscle_total += nb_normalized_muscle_feature_value(
@@ -3761,7 +3766,14 @@ kernel void predict_delayed_cerebellar_consequences(
         device const ulong *identity = reinterpret_cast<device const ulong *>(
           muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
         );
-        if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul) continue;
+        const uint first_body_identifier = uint(identity[7]);
+        const uint terminal_body_identifier = uint(identity[7] >> 32u);
+        if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+            || (identity[2] != 0ul
+              && first_body_identifier
+                != motor_goal->target_body_identifier
+              && terminal_body_identifier
+                != motor_goal->target_body_identifier)) continue;
         const uint muscle_feature = sample == 6u
           ? 1u + (expert.expert_identifier & 1u)
           : (expert.expert_identifier % 3u == 0u ? 4u
