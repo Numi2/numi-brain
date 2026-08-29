@@ -22,9 +22,17 @@ constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
 constant uint NB_WORLD_CVAR_TAIL_COUNT = 2u;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
+constant uint NB_BODY_POSITION = 0u;
+constant uint NB_BODY_ORIENTATION = 3u;
+constant uint NB_BODY_LINEAR_VELOCITY = 7u;
+constant uint NB_BODY_POSITION_VARIANCE = 13u;
+constant uint NB_BODY_ORIENTATION_VARIANCE = 16u;
 constant uint NB_BODY_SUPPORT = 20u;
+constant uint NB_BODY_LOCAL_FORCE = 21u;
 constant uint NB_BODY_PAIN = 24u;
 constant uint NB_BODY_VULNERABILITY = 25u;
+constant uint NB_BODY_REACHABILITY = 26u;
+constant uint NB_BODY_OWNERSHIP = 27u;
 constant uint NB_BODY_LOAD_VARIANCE = 29u;
 constant uint NB_BODY_DAMAGE_RISK = 30u;
 constant uint NB_BODY_IDENTITY_FLOAT_OFFSET = 40u;
@@ -40,6 +48,7 @@ struct NBDecisionUniforms {
   ulong control_header_offset;
   ulong candidate_offset;
   ulong plan_offset;
+  ulong motor_goal_offset;
   ulong motor_offset;
   ulong synergy_offset;
   ulong cerebellar_offset;
@@ -275,6 +284,29 @@ struct NBMotorCommandRecord {
   uint flags;
 };
 
+struct NBMotorGoalRecord {
+  ulong option_identifier;
+  ulong goal_identifier;
+  ulong timestamp_microseconds;
+  ulong movement_duration_microseconds;
+  float task_space_target[4];
+  float velocity_target[4];
+  float force_target[4];
+  float stiffness_target[4];
+  float damping_target[4];
+  float orientation_target[4];
+  float confidence;
+  float risk;
+  float support;
+  float uncertainty;
+  uint target_body_identifier;
+  uint flags;
+  uint synergy_count;
+  uint parameter_count;
+  float synergy_coefficients[16];
+  float reserved[8];
+};
+
 struct NBCerebellarExpertRecord {
   uint expert_identifier;
   uint flags;
@@ -472,7 +504,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 424);
+static_assert(sizeof(NBDecisionUniforms) == 432);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
@@ -481,6 +513,7 @@ static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);
 static_assert(sizeof(NBMotorCommandRecord) == 32);
+static_assert(sizeof(NBMotorGoalRecord) == 256);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
@@ -2219,6 +2252,190 @@ kernel void generate_internal_action_state(
   actions[gid] = action;
 }
 
+/// Materializes the selected option into one structured task-space motor goal.
+/// The record is shadow-generation state: physical rejection cannot publish a
+/// target, duration, impedance request, or synergy basis that was not lived.
+kernel void generate_structured_motor_goal_state(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBDecisionUniforms &uniforms [[buffer(1)]],
+  device const float *policy_parameters [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u) return;
+  device NBMotorGoalRecord *goal =
+    reinterpret_cast<device NBMotorGoalRecord *>(
+      hot_state + uniforms.motor_goal_offset
+    );
+  NBMotorGoalRecord next = {};
+  device const NBControlHeader *header =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  if (uniforms.candidate_capacity == 0u || uniforms.body_belief_count == 0u) {
+    *goal = next;
+    return;
+  }
+  const uint selected = min(
+    uint(header->reserved0), uniforms.candidate_capacity - 1u
+  );
+  device const NBOptionCandidateRecord *candidates =
+    reinterpret_cast<device const NBOptionCandidateRecord *>(
+      hot_state + uniforms.candidate_offset
+    );
+  const NBOptionCandidateRecord candidate = candidates[selected];
+  if ((candidate.flags & NB_CONTROL_FLAG_VALID) == 0u) {
+    *goal = next;
+    return;
+  }
+  device const NBPlanStepRecord *plans =
+    reinterpret_cast<device const NBPlanStepRecord *>(
+      hot_state + uniforms.plan_offset
+    );
+  const uint plan_index = selected * uniforms.maximum_planning_horizon;
+  const bool plan_valid = plan_index < uniforms.plan_capacity
+    && (plans[plan_index].flags & NB_CONTROL_FLAG_VALID) != 0u;
+  const float duration_seconds = plan_valid
+    ? max(plans[plan_index].duration_seconds, 1.0e-3f) : 0.1f;
+
+  device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+  uint selected_body_index = 0u;
+  float selected_body_score = -INFINITY;
+  bool body_found = false;
+  float selected_body_uncertainty = 1.0f;
+  for (uint body_index = 0u; body_index < uniforms.body_belief_count;
+      ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      body_belief + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & NB_CONTROL_FLAG_VALID) == 0ul) continue;
+    float variance = max(body[NB_BODY_LOAD_VARIANCE], 0.0f);
+    for (uint axis = 0u; axis < 3u; ++axis) {
+      variance += max(body[NB_BODY_POSITION_VARIANCE + axis], 0.0f);
+      variance += max(body[NB_BODY_ORIENTATION_VARIANCE + axis], 0.0f);
+    }
+    const float uncertainty = sqrt(variance / 7.0f);
+    const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+    const float risk = max(
+      clamp(body[NB_BODY_PAIN], 0.0f, 1.0f),
+      max(
+        clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f),
+        clamp(body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f)
+      )
+    );
+    const float score = clamp(body[NB_BODY_REACHABILITY], 0.0f, 1.0f)
+      * clamp(body[NB_BODY_OWNERSHIP], 0.0f, 1.0f)
+      * (1.0f - risk)
+      + 0.1f * clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f)
+      - 0.1f * normalized_uncertainty;
+    if (!body_found || score > selected_body_score) {
+      body_found = true;
+      selected_body_index = body_index;
+      selected_body_score = score;
+      selected_body_uncertainty = normalized_uncertainty;
+    }
+  }
+  if (!body_found) {
+    *goal = next;
+    return;
+  }
+  device const float *body = reinterpret_cast<device const float *>(
+    body_belief + ulong(selected_body_index) * 256ul
+  );
+  device const ulong *body_identity = reinterpret_cast<device const ulong *>(
+    body + NB_BODY_IDENTITY_FLOAT_OFFSET
+  );
+  const bool absolute_task_target = candidate.source_module == 71u
+    || candidate.source_module == 60u || candidate.source_module == 51u;
+  const uint parameter_count = min(max(candidate.parameter_count, 1u), 16u);
+  for (uint axis = 0u; axis < 3u; ++axis) {
+    const float parameter = candidate.parameters[axis % parameter_count];
+    next.task_space_target[axis] = absolute_task_target
+      ? parameter
+      : body[NB_BODY_POSITION + axis] + 0.25f * tanh(parameter);
+    next.velocity_target[axis] = tanh(
+      candidate.parameters[(4u + axis) % parameter_count]
+    );
+    next.force_target[axis] = tanh(
+      candidate.parameters[(8u + axis) % parameter_count]
+    );
+    next.stiffness_target[axis] = clamp(
+      max(header->selected_damage_cvar, 1.0f - body[NB_BODY_SUPPORT])
+        + 0.25f * abs(candidate.parameters[(12u + axis) % parameter_count]),
+      0.0f,
+      1.0f
+    );
+    next.damping_target[axis] = clamp(
+      0.5f * next.stiffness_target[axis]
+        + 0.5f * selected_body_uncertainty,
+      0.0f,
+      1.0f
+    );
+  }
+  next.task_space_target[3] = candidate.parameters[3u % parameter_count];
+  next.velocity_target[3] = duration_seconds;
+  next.force_target[3] = length(float3(
+    next.force_target[0], next.force_target[1], next.force_target[2]
+  ));
+  next.stiffness_target[3] = max(
+    next.stiffness_target[0],
+    max(next.stiffness_target[1], next.stiffness_target[2])
+  );
+  next.damping_target[3] = max(
+    next.damping_target[0],
+    max(next.damping_target[1], next.damping_target[2])
+  );
+  float4 orientation = float4(
+    body[NB_BODY_ORIENTATION], body[NB_BODY_ORIENTATION + 1u],
+    body[NB_BODY_ORIENTATION + 2u], body[NB_BODY_ORIENTATION + 3u]
+  );
+  if (candidate.source_module == 60u) {
+    const float4 requested = float4(
+      candidate.parameters[12u % parameter_count],
+      candidate.parameters[13u % parameter_count],
+      candidate.parameters[14u % parameter_count],
+      candidate.parameters[15u % parameter_count]
+    );
+    if (length_squared(requested) > 1.0e-8f) orientation = requested;
+  }
+  orientation = length_squared(orientation) > 1.0e-8f
+    ? normalize(orientation) : float4(0.0f, 0.0f, 0.0f, 1.0f);
+  for (uint component = 0u; component < 4u; ++component) {
+    next.orientation_target[component] = orientation[component];
+  }
+  next.option_identifier = candidate.option_identifier;
+  next.goal_identifier = candidate.goal_identifier;
+  next.timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  next.movement_duration_microseconds = ulong(
+    max(duration_seconds * 1.0e6f, 1.0f)
+  );
+  next.confidence = clamp(
+    header->confidence * (1.0f - selected_body_uncertainty), 0.0f, 1.0f
+  );
+  next.risk = clamp(header->selected_damage_cvar, 0.0f, 1.0f);
+  next.support = clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f);
+  next.uncertainty = max(
+    selected_body_uncertainty,
+    clamp(header->unsupported_uncertainty, 0.0f, 1.0f)
+  );
+  next.target_body_identifier = uint(body_identity[0]);
+  next.flags = NB_CONTROL_FLAG_VALID
+    | (absolute_task_target ? (1u << 1u) : 0u)
+    | (candidate.source_module == 60u ? (1u << 2u) : 0u);
+  next.synergy_count = min(uniforms.synergy_count, 16u);
+  next.parameter_count = candidate.parameter_count;
+  const bool rest_selected = candidate.option_identifier
+    == NB_REST_OPTION_IDENTIFIER;
+  for (uint index = 0u; index < 16u; ++index) {
+    next.synergy_coefficients[index] = rest_selected ? 0.0f
+      : tanh(candidate.parameters[index % parameter_count])
+        * policy_parameters[7];
+  }
+  *goal = next;
+}
+
 kernel void select_cerebellar_context_experts(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -2229,6 +2446,10 @@ kernel void select_cerebellar_context_experts(
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
+  device const NBMotorGoalRecord *motor_goal =
+    reinterpret_cast<device const NBMotorGoalRecord *>(
+      hot_state + uniforms.motor_goal_offset
+    );
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
@@ -2246,6 +2467,27 @@ kernel void select_cerebellar_context_experts(
   const float option_context = float(
     uint(header->active_option_identifier ^ (header->active_option_identifier >> 32))
   ) * 2.3283064365386963e-10f;
+  const bool motor_goal_valid =
+    (motor_goal->flags & NB_CONTROL_FLAG_VALID) != 0u
+      && motor_goal->option_identifier == header->active_option_identifier;
+  const float motor_goal_context = motor_goal_valid
+    ? clamp(
+        0.25f * tanh(
+          motor_goal->task_space_target[0]
+            + motor_goal->task_space_target[1]
+            + motor_goal->task_space_target[2]
+        )
+          + 0.25f * tanh(
+            motor_goal->velocity_target[0]
+              + motor_goal->velocity_target[1]
+              + motor_goal->velocity_target[2]
+          )
+          + 0.25f * motor_goal->confidence
+          - 0.25f * motor_goal->risk,
+        -1.0f,
+        1.0f
+      )
+    : 0.0f;
   for (uint expert_identifier = 0u;
       expert_identifier < uniforms.cerebellar_expert_capacity;
       ++expert_identifier) {
@@ -2264,7 +2506,8 @@ kernel void select_cerebellar_context_experts(
       / float(max(uniforms.cerebellar_expert_capacity - 1u, 1u));
     const float adaptation_bonus = clamp(abs(memory.state[2]), 0.0f, 0.25f);
     const float score = cerebellar_parameters[3]
-      - abs(tanh(cerebellar_parameters[7] * neural_context + option_context)
+      - abs(tanh(cerebellar_parameters[7] * neural_context + option_context
+        + motor_goal_context)
         - expert_context) + adaptation_bonus;
     for (uint rank = 0u; rank < active_count; ++rank) {
       if (score > selected_scores[rank]
@@ -2505,7 +2748,14 @@ kernel void generate_motor_spinal_autonomic_state(
     uint(header->reserved0), max(uniforms.candidate_capacity, 1u) - 1u
   );
   const NBOptionCandidateRecord candidate = candidates[selected];
-  const uint parameter_count = max(candidate.parameter_count, 1u);
+  const uint parameter_count = min(max(candidate.parameter_count, 1u), 16u);
+  device const NBMotorGoalRecord *motor_goal =
+    reinterpret_cast<device const NBMotorGoalRecord *>(
+      hot_state + uniforms.motor_goal_offset
+    );
+  const bool motor_goal_valid =
+    (motor_goal->flags & NB_CONTROL_FLAG_VALID) != 0u
+      && motor_goal->option_identifier == header->active_option_identifier;
   const bool communication_selected = development->stage >= 10u
     && candidate.source_module == 51u;
   const bool rest_selected = header->active_option_identifier
@@ -2553,6 +2803,8 @@ kernel void generate_motor_spinal_autonomic_state(
     float body_risk = 0.0f;
     float support_confidence = 0.0f;
     uint body_evidence_count = 0u;
+    uint target_body_index = 0u;
+    bool target_body_found = false;
     for (uint body_index = 0u;
         body_index < uniforms.body_belief_count; ++body_index) {
       device const float *body = reinterpret_cast<device const float *>(
@@ -2572,6 +2824,11 @@ kernel void generate_motor_spinal_autonomic_state(
       support_confidence = max(
         support_confidence, clamp(body[NB_BODY_SUPPORT], 0.0f, 1.0f)
       );
+      if (motor_goal_valid
+          && uint(identity[0]) == motor_goal->target_body_identifier) {
+        target_body_index = body_index;
+        target_body_found = true;
+      }
       body_evidence_count += 1u;
     }
     const uint effector_index = gid % max(
@@ -2603,8 +2860,34 @@ kernel void generate_motor_spinal_autonomic_state(
     const float motor_neutral = nb_motor_neutral(
       uniforms.actuator_command_kind
     );
-    const float motor_logit = candidate.parameters[gid % parameter_count]
-      * uniforms.motor_gain * motor_parameters[0];
+    const uint task_axis = gid % 3u;
+    float task_correction = 0.0f;
+    if (motor_goal_valid && target_body_found) {
+      device const float *target_body = reinterpret_cast<device const float *>(
+        body_belief + ulong(target_body_index) * 256ul
+      );
+      const float position_error = motor_goal->task_space_target[task_axis]
+        - target_body[NB_BODY_POSITION + task_axis];
+      const float velocity_error = motor_goal->velocity_target[task_axis]
+        - target_body[NB_BODY_LINEAR_VELOCITY + task_axis];
+      const float force_error = motor_goal->force_target[task_axis]
+        - target_body[NB_BODY_LOCAL_FORCE + task_axis];
+      task_correction = motor_goal->confidence * (
+        motor_parameters[3] * tanh(position_error)
+          + motor_parameters[4] * tanh(velocity_error)
+          + motor_parameters[5] * tanh(force_error)
+      );
+    }
+    const float goal_synergy = motor_goal_valid
+        && motor_goal->synergy_count > 0u
+      ? motor_goal->synergy_coefficients[
+          gid % min(motor_goal->synergy_count, 16u)
+        ]
+      : 0.0f;
+    const float motor_logit =
+      candidate.parameters[gid % parameter_count]
+        * uniforms.motor_gain * motor_parameters[0]
+      + task_correction + goal_synergy * motor_parameters[6];
     const float ordinary_descending = rest_selected
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
@@ -2655,20 +2938,29 @@ kernel void generate_motor_spinal_autonomic_state(
     );
     NBMotorCommandRecord command;
     command.excitation = clamp(developed_descending, 0.0f, 1.0f);
-    command.force_target = nb_motor_feature(
-      descending, uniforms.actuator_command_kind
-    );
+    command.force_target = motor_goal_valid
+      ? (muscle_excitation
+        ? clamp(abs(motor_goal->force_target[task_axis]), 0.0f, 1.0f)
+        : clamp(motor_goal->force_target[task_axis], -1.0f, 1.0f))
+      : nb_motor_feature(descending, uniforms.actuator_command_kind);
+    const float goal_stiffness = motor_goal_valid
+      ? motor_goal->stiffness_target[task_axis] * motor_goal->confidence
+      : abs(candidate.parameters[(gid + 1u) % parameter_count]);
     command.stiffness_target = clamp(
       uniforms.stiffness_gain * motor_parameters[1]
         * (max(safety, body_risk)
           + (body_evidence_count > 0u ? 1.0f - support_confidence : 0.0f)
             * max(motor_parameters[13], 0.0f)
-          + abs(candidate.parameters[(gid + 1u) % 16u])),
+          + goal_stiffness),
       0.0f,
       1.0f
     );
     command.damping_target = clamp(
-      uniforms.damping_gain * motor_parameters[2] * command.stiffness_target,
+      uniforms.damping_gain * motor_parameters[2]
+        * max(
+          command.stiffness_target,
+          motor_goal_valid ? motor_goal->damping_target[task_axis] : 0.0f
+        ),
       0.0f,
       1.0f
     );
@@ -2742,9 +3034,15 @@ kernel void generate_motor_spinal_autonomic_state(
         ? communication_descriptor.gain
         : clamp(motor_parameters[8], 0.0f, 1.0f))
       : policy_parameters[7];
-    synergies[gid] = rest_selected
-      ? 0.0f
-      : candidate.parameters[parameter_index] * gain
+    const bool use_structured_synergy = motor_goal_valid
+      && motor_goal->synergy_count > 0u && !communication_selected;
+    const float structured_synergy = use_structured_synergy
+      ? motor_goal->synergy_coefficients[
+          gid % min(motor_goal->synergy_count, 16u)
+        ]
+      : candidate.parameters[parameter_index];
+    synergies[gid] = rest_selected ? 0.0f
+      : structured_synergy * (use_structured_synergy ? 1.0f : gain)
         * (1.0f - deliberate_inhibition);
   }
   if (gid < uniforms.autonomic_dimension) {

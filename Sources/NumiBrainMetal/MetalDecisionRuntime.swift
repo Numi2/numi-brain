@@ -13,6 +13,7 @@ private struct DecisionUniforms {
   var controlHeaderOffset: UInt64 = 0
   var candidateOffset: UInt64 = 0
   var planOffset: UInt64 = 0
+  var motorGoalOffset: UInt64 = 0
   var motorOffset: UInt64 = 0
   var synergyOffset: UInt64 = 0
   var cerebellarOffset: UInt64 = 0
@@ -187,6 +188,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   @frozen
   public struct OutputView: Equatable, Sendable {
     public let headerGPUAddress: UInt64
+    public let motorGoalGPUAddress: UInt64
+    public let motorGoalByteCount: Int
     public let motorCommandGPUAddress: UInt64
     public let motorCommandCount: Int
     public let spinalStateGPUAddress: UInt64
@@ -216,6 +219,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let cpgPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let cerebellarPredictionPipeline: any MTLComputePipelineState
+  private let motorGoalPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let communicationDescriptorBuffer: any MTLBuffer
@@ -242,7 +246,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 424,
+    guard MemoryLayout<DecisionUniforms>.stride == 432,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -288,6 +292,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "advance_cpg_state",
       "generate_motor_spinal_autonomic_state",
       "predict_delayed_cerebellar_consequences",
+      "generate_structured_motor_goal_state",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -507,6 +512,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.cpgPipeline = pipelines[7]
     self.motorPipeline = pipelines[8]
     self.cerebellarPredictionPipeline = pipelines[9]
+    self.motorGoalPipeline = pipelines[10]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
@@ -651,6 +657,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       count: InternalActionKind.allCases.count
     )
     barrier(encoder)
+    dispatch(encoder, pipeline: motorGoalPipeline, count: 1)
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: cerebellarPipeline,
@@ -680,6 +688,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       count: Int(species.capacities.activeCerebellarExpertCapacity)
     )
     let header = controlLayout.section(.header)
+    let motorGoal = controlLayout.section(.motorGoal)
     let motor = controlLayout.section(.motorCommands)
     let spinal = controlLayout.section(.spinalState)
     let somatic = arena.layout.section(.somaticOutput)
@@ -688,6 +697,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let internalActions = controlLayout.section(.internalActions)
     return OutputView(
       headerGPUAddress: hot.outputGPUAddress + UInt64(header.byteOffset),
+      motorGoalGPUAddress: hot.outputGPUAddress + UInt64(motorGoal.byteOffset),
+      motorGoalByteCount: motorGoal.byteCount,
       motorCommandGPUAddress: hot.outputGPUAddress + UInt64(motor.byteOffset),
       motorCommandCount: motor.elementCount,
       spinalStateGPUAddress: hot.outputGPUAddress + UInt64(spinal.byteOffset),
@@ -715,6 +726,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let header = controlLayout.section(.header)
     let candidates = controlLayout.section(.optionCandidates)
     let plans = controlLayout.section(.planSteps)
+    let motorGoal = controlLayout.section(.motorGoal)
     let motor = controlLayout.section(.motorCommands)
     let synergies = controlLayout.section(.synergyCoefficients)
     let cerebellar = controlLayout.section(.cerebellarExperts)
@@ -748,6 +760,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       controlHeaderOffset: UInt64(header.byteOffset),
       candidateOffset: UInt64(candidates.byteOffset),
       planOffset: UInt64(plans.byteOffset),
+      motorGoalOffset: UInt64(motorGoal.byteOffset),
       motorOffset: UInt64(motor.byteOffset),
       synergyOffset: UInt64(synergies.byteOffset),
       cerebellarOffset: UInt64(cerebellar.byteOffset),

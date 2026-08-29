@@ -101,6 +101,7 @@ public enum MetalActiveControlSection: UInt16, Codable, CaseIterable, Sendable {
   case autonomicCommands = 8
   case activeSensingCommands = 9
   case internalActions = 10
+  case motorGoal = 11
 }
 
 @frozen
@@ -301,6 +302,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     controlScalarCount = try Self.checkedAdd(
       controlScalarCount, candidateControlScalars
     )
+    controlScalarCount = try Self.checkedAdd(controlScalarCount, 64)
     controlScalarCount = try Self.checkedAdd(
       controlScalarCount, cerebellarControlScalars
     )
@@ -665,6 +667,7 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
       ),
       stride: 128
     )
+    try builder.append(.motorGoal, count: 1, stride: 256)
     try builder.append(
       .motorCommands,
       count: Int(species.motor.actuatorCount),

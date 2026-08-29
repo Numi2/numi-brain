@@ -14,6 +14,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let decisionTimestamp: BrainTimestamp
     public let activeControlGPUAddress: UInt64
     public let activeControlByteCount: Int
+    public let motorGoalGPUAddress: UInt64
+    public let motorGoalByteCount: Int
     public let motorCommandGPUAddress: UInt64
     public let motorCommandCount: Int
     public let spinalStateGPUAddress: UInt64
@@ -639,6 +641,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         decisionTimestamp: transaction.jointToken.committedTimestamp,
         activeControlGPUAddress: hot.outputGPUAddress + UInt64(control.byteOffset),
         activeControlByteCount: control.byteCount,
+        motorGoalGPUAddress: decision.motorGoalGPUAddress,
+        motorGoalByteCount: decision.motorGoalByteCount,
         motorCommandGPUAddress: decision.motorCommandGPUAddress,
         motorCommandCount: decision.motorCommandCount,
         spinalStateGPUAddress: decision.spinalStateGPUAddress,
@@ -1164,6 +1168,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       species: species
     )
     let autonomic = controlLayout.section(.autonomicCommands)
+    let motorGoal = controlLayout.section(.motorGoal)
     let motorCommands = controlLayout.section(.motorCommands)
     let activeSensing = controlLayout.section(.activeSensingCommands)
     let internalActions = controlLayout.section(.internalActions)
@@ -1257,6 +1262,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.reflexStateGPUAddress
         == buffer.gpuAddress + UInt64(reflexState.byteOffset),
       decision.motorCommandCount == motorCommands.elementCount,
+      decision.motorGoalByteCount == motorGoal.byteCount,
+      motorGoal.byteOffset <= buffer.length,
+      motorGoal.byteCount <= buffer.length - motorGoal.byteOffset,
+      decision.motorGoalGPUAddress
+        == buffer.gpuAddress + UInt64(motorGoal.byteOffset),
       motorCommands.byteOffset <= buffer.length,
       motorCommands.byteCount <= buffer.length - motorCommands.byteOffset,
       decision.motorCommandGPUAddress
