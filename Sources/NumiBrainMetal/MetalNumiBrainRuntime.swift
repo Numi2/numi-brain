@@ -4,10 +4,9 @@ import NumiBrainCore
 /// One authoritative Apple-GPU brain runtime spanning cortical cognition,
 /// fast tissue, spinal protection, memory journals, and joint rollback.
 ///
-/// The component runtimes remain independently inspectable, but all mutable
-/// control operations pass through this coordinator. It prevents a caller from
-/// advancing cognition under one root token while fast tissue or NumanX uses
-/// another, and it publishes both brain generations from one commit receipt.
+/// Component runtimes are deliberately not public. All mutable control and
+/// committed-state observation passes through this coordinator so a caller
+/// cannot observe or advance one half of a joint publication independently.
 @available(macOS 26.0, *)
 public final class MetalNumiBrainRuntime: @unchecked Sendable {
   public final class ControlTransaction: @unchecked Sendable {
@@ -45,8 +44,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     public let fastSubmission: MetalTissueRuntime.Submission
   }
 
-  public let cognitive: MetalEmbodiedBrainRuntime
-  public let fastTissue: MetalTissueRuntime
+  let cognitive: MetalEmbodiedBrainRuntime
+  let fastTissue: MetalTissueRuntime
   public let parameterVersionFingerprint: UInt64
   public let compiledSpeciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
@@ -56,8 +55,9 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
 
   private let lock = NSLock()
   private var activeTransaction: ControlTransaction?
+  private var publishedGeneration: UInt64
 
-  public init(
+  init(
     cognitive: MetalEmbodiedBrainRuntime,
     fastTissue: MetalTissueRuntime
   ) throws {
@@ -74,6 +74,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         == fastTissue.numanXMuscleAttachmentCatalog,
       compiledSpeciesTemplate.somaticSynergyCatalog
         == fastTissue.somaticSynergyCatalog,
+      cognitive.agentStateRuntime.arena.committedGeneration
+        == fastTissue.schedulerCommittedGeneration,
       cognitive.sharedParameterBank.artifactFingerprint
         == fastTissue.sharedParameterBank.artifactFingerprint,
       cognitive.sensoryRuntime.maximumEventCount <= fastTissue.maxSchedulerEvents
@@ -92,6 +94,15 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     self.scheduleFingerprint = cognitive.scheduleFingerprint
     self.somaticSynergyCatalogFingerprint = cognitive.somaticSynergyCatalogFingerprint
     self.deviceRegistryID = cognitive.deviceRegistryID
+    self.publishedGeneration = cognitive.agentStateRuntime.arena.committedGeneration
+  }
+
+  /// The only externally observable neural generation. It advances after both
+  /// cognitive and fast pointer generations have published under this lock.
+  public var committedGeneration: UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    return publishedGeneration
   }
 
   public var hasOpenControl: Bool {
@@ -279,6 +290,14 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         "finish active control and provide the owning physical checkpoint"
       )
     }
+    guard cognitive.agentStateRuntime.arena.committedGeneration
+        == publishedGeneration,
+      fastTissue.schedulerCommittedGeneration == publishedGeneration
+    else {
+      throw TissueError.transaction(
+        "complete brain components diverged from the joint publication"
+      )
+    }
     let fast = try fastTissue.saveCheckpoint()
     let timestamp =
       fast.committedSchedulerTime
@@ -322,6 +341,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       physicalCheckpointFingerprint: physicalCheckpointFingerprint
     )
     try fastTissue.loadCheckpoint(checkpoint.fastTissueState)
+    publishedGeneration = checkpoint.committedGeneration
   }
 
   /// Opens one root in both complete-agent state and fast tissue. The cached
@@ -339,6 +359,14 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     guard activeTransaction == nil, cachedDecisionFingerprint > 0 else {
       throw TissueError.transaction(
         "finish or abort the active brain control before beginning another"
+      )
+    }
+    guard cognitive.agentStateRuntime.arena.committedGeneration
+        == publishedGeneration,
+      fastTissue.schedulerCommittedGeneration == publishedGeneration
+    else {
+      throw TissueError.transaction(
+        "joint control cannot begin from divergent component generations"
       )
     }
     let token = try fastTissue.beginInteractiveJointControl(
@@ -546,6 +574,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       cognitive.publishPreparedCommit(
         transaction: transaction.cognitiveTransaction
       )
+      publishedGeneration = preparedFastCommit.receipt.brainGeneration
       transaction.status = .committed
       activeTransaction = nil
       return CommitResult(
