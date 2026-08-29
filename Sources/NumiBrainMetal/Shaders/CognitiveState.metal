@@ -3,6 +3,7 @@ using namespace metal;
 
 constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
 constant uint NB_BODY_ORIENTATION = 3u;
+constant uint NB_BODY_LINEAR_VELOCITY = 7u;
 constant uint NB_BODY_POSITION_VARIANCE = 13u;
 constant uint NB_BODY_ORIENTATION_VARIANCE = 16u;
 constant uint NB_BODY_CONTACT = 19u;
@@ -1719,7 +1720,9 @@ kernel void advance_entity_and_social_slots(
           correction_gain * observed_presence
         );
       }
-      for (uint component = 0u; component < 102u; ++component) {
+      // The last seven object-latent channels belong to the causal tool/body
+      // extension posterior. Generic visual appearance must not overwrite it.
+      for (uint component = 0u; component < 95u; ++component) {
         const float sensed = nb_observation_feature(
           observations,
           validity,
@@ -1749,6 +1752,96 @@ kernel void advance_entity_and_social_slots(
           ]),
           correction_gain * observed_presence
         );
+      }
+      // A nearby visible object is not part of the body schema. Tool
+      // incorporation requires accepted self-contact, body ownership, low
+      // external disturbance, and movement coherent with an owned body part.
+      // This path reads only committed receptor-derived belief state.
+      float contact_agency = 0.0f;
+      float3 contacted_body_velocity = float3(0.0f);
+      for (uint body_index = 0u;
+          body_index < uniforms.body_belief_count; ++body_index) {
+        device const float *body = reinterpret_cast<device const float *>(
+          hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+        );
+        device const ulong *body_identity =
+          reinterpret_cast<device const ulong *>(
+            body + NB_BODY_IDENTITY_FLOAT_OFFSET
+          );
+        if ((body_identity[3] & 1ul) == 0ul) continue;
+        const float candidate_agency = clamp(
+          body[NB_BODY_CONTACT] * body[NB_BODY_OWNERSHIP]
+            * (1.0f - body[NB_BODY_EXTERNAL_DISTURBANCE]),
+          0.0f,
+          1.0f
+        );
+        if (candidate_agency > contact_agency) {
+          contact_agency = candidate_agency;
+          contacted_body_velocity = float3(
+            body[NB_BODY_LINEAR_VELOCITY],
+            body[NB_BODY_LINEAR_VELOCITY + 1u],
+            body[NB_BODY_LINEAR_VELOCITY + 2u]
+          );
+        }
+      }
+      const float3 object_velocity = float3(
+        slot.velocity[0], slot.velocity[1], slot.velocity[2]
+      );
+      const float object_speed = length(object_velocity);
+      const float body_speed = length(contacted_body_velocity);
+      const float movement_evidence = clamp(
+        min(object_speed, body_speed), 0.0f, 1.0f
+      );
+      const float movement_coherence = object_speed > 1.0e-4f
+          && body_speed > 1.0e-4f
+        ? clamp(dot(
+            object_velocity / object_speed,
+            contacted_body_velocity / body_speed
+          ), 0.0f, 1.0f)
+        : 0.0f;
+      const float3 tool_vector = float3(
+        slot.pose[0], slot.pose[1], slot.pose[2]
+      );
+      const float tool_extension = length(tool_vector);
+      const float proximity_evidence = exp(-0.5f * tool_extension);
+      const float attachment_evidence = clamp(
+        observed_presence * contact_agency * movement_evidence
+          * movement_coherence * proximity_evidence,
+        0.0f,
+        1.0f
+      );
+      const float prior_attachment = clamp(slot.latent[95], 0.0f, 1.0f);
+      float attachment = retention * prior_attachment;
+      if (contact_agency > 0.05f && movement_evidence > 0.01f) {
+        attachment = mix(
+          attachment,
+          attachment_evidence,
+          correction_gain * observed_presence
+        );
+      } else if (contact_agency <= 0.01f) {
+        attachment *= retention;
+      }
+      attachment = clamp(attachment, 0.0f, 1.0f);
+      float coherence_trace = retention
+        * clamp(slot.latent[96], 0.0f, 1.0f);
+      if (movement_evidence > 0.01f) {
+        coherence_trace = mix(
+          coherence_trace,
+          movement_coherence,
+          correction_gain * observed_presence
+        );
+      }
+      const float3 tool_direction = tool_extension > 1.0e-4f
+        ? tool_vector / tool_extension : float3(0.0f);
+      slot.latent[95] = attachment;
+      slot.latent[96] = clamp(coherence_trace, 0.0f, 1.0f);
+      slot.latent[97] = contact_agency;
+      slot.latent[98] = tool_extension;
+      slot.latent[99] = tool_direction.x;
+      slot.latent[100] = tool_direction.y;
+      slot.latent[101] = tool_direction.z;
+      if (attachment > max(belief_parameters[4], 0.05f)) {
+        slot.flags |= 1u << 5u;
       }
       if (slot.existence_probability <= 0.01f) {
         NBObjectSlotRecord inactive = {};
@@ -1990,8 +2083,9 @@ kernel void advance_entity_and_social_slots(
 }
 
 /// Materializes the compatible relation factor from the current entity slots.
-/// Kind 6 is self-to-object reachability, kind 10 is communication with self,
-/// and kind 11 is an explicit attention edge used for joint attention.
+/// Kind 2 is causal tool attachment, kind 6 is self-to-object reachability,
+/// kind 10 is communication with self, and kind 11 is an explicit attention
+/// edge used for joint attention.
 kernel void advance_entity_relation_graph(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
@@ -2018,8 +2112,10 @@ kernel void advance_entity_relation_graph(
   const uint attention_base = uniforms.object_slot_count;
   const uint communication_base = attention_base
     + uniforms.object_slot_count * uniforms.other_agent_slot_count;
-  const uint active_relation_count = communication_base
+  const uint attachment_base = communication_base
     + uniforms.other_agent_slot_count;
+  const uint active_relation_count = attachment_base
+    + uniforms.object_slot_count;
   if (development->stage < 6u || gid >= active_relation_count) {
     NBRelationSlotRecord inactive = {};
     relations[gid] = inactive;
@@ -2086,7 +2182,7 @@ kernel void advance_entity_relation_graph(
         relation.latent[component + 3u] = object.pose[component];
       }
     }
-  } else if (gid < active_relation_count && development->stage >= 9u) {
+  } else if (gid < attachment_base && development->stage >= 9u) {
     const uint agent_index = gid - communication_base;
     const NBOtherAgentSlotRecord agent = agent_slots[agent_index];
     if (agent.identifier != 0ul
@@ -2107,6 +2203,31 @@ kernel void advance_entity_relation_graph(
       relation.latent[3] = agent.goal_confidence;
       relation.latent[4] = agent.identity_confidence;
       relation.latent[5] = agent.gaze_confidence;
+    }
+  } else if (gid >= attachment_base && gid < active_relation_count) {
+    const uint object_index = gid - attachment_base;
+    const NBObjectSlotRecord object = object_slots[object_index];
+    const float attachment = clamp(object.latent[95], 0.0f, 1.0f);
+    if (object.identifier != 0ul && object.existence_probability > 0.0f
+        && attachment > max(belief_parameters[4], 0.01f)) {
+      relation.subject_identifier = self_identifier;
+      relation.object_identifier = object.identifier;
+      relation.last_evidence_timestamp_microseconds =
+        object.last_seen_timestamp_microseconds;
+      relation.relation_kind = 2u;
+      relation.flags = 1u | (1u << 2u);
+      relation.probability = clamp(
+        object.existence_probability * attachment, 0.0f, 1.0f
+      );
+      relation.uncertainty = clamp(
+        max(object.uncertainty, 1.0f - object.latent[96]), 0.0f, 1.0f
+      );
+      relation.latent[0] = object.latent[98];
+      relation.latent[1] = object.latent[99];
+      relation.latent[2] = object.latent[100];
+      relation.latent[3] = object.latent[101];
+      relation.latent[4] = object.latent[96];
+      relation.latent[5] = object.latent[97];
     }
   }
   relations[gid] = relation;

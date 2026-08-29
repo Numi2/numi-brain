@@ -1778,6 +1778,32 @@ kernel void propose_dynamic_options(
     const float distance = length(float3(
       object.pose[0], object.pose[1], object.pose[2]
     ));
+    const float3 target_direction = distance > 1.0e-4f
+      ? float3(object.pose[0], object.pose[1], object.pose[2]) / distance
+      : float3(0.0f);
+    float tool_reach_extension = 0.0f;
+    float tool_reach_confidence = 0.0f;
+    for (uint tool_index = 0u;
+        tool_index < uniforms.object_slot_count; ++tool_index) {
+      if (tool_index == object_index) continue;
+      const NBObjectSlotRecord tool = object_slots[tool_index];
+      const float attachment = clamp(tool.latent[95], 0.0f, 1.0f);
+      if (tool.identifier == 0ul || attachment <= 0.01f) continue;
+      const float direction_alignment = clamp(dot(
+        target_direction,
+        float3(tool.latent[99], tool.latent[100], tool.latent[101])
+      ), 0.0f, 1.0f);
+      const float extension = max(tool.latent[98], 0.0f)
+        * attachment * direction_alignment;
+      if (extension > tool_reach_extension) {
+        tool_reach_extension = extension;
+        tool_reach_confidence = attachment
+          * clamp(tool.latent[96], 0.0f, 1.0f);
+      }
+    }
+    const float effective_distance = max(
+      distance - tool_reach_extension, 0.0f
+    );
     NBOptionCandidateRecord affordance_option = {};
     affordance_option.option_identifier = 0x4000000000000000ul
       | (object.identifier & 0x0fffffffffffff00ul)
@@ -1796,17 +1822,23 @@ kernel void propose_dynamic_options(
       0.0f,
       1.0f
     );
-    affordance_option.effort_cost = clamp(0.02f * distance, 0.0f, 1.0f);
+    affordance_option.effort_cost = clamp(
+      0.02f * effective_distance, 0.0f, 1.0f
+    );
     affordance_option.switching_cost = 0.025f;
     affordance_option.competence = clamp(
       object.existence_probability * object.identity_confidence
-        * (1.0f - object.uncertainty),
+        * (1.0f - object.uncertainty)
+        * (1.0f + 0.5f * tool_reach_confidence),
       0.0f,
       1.0f
     );
     affordance_option.proposal_kind = 20u + strongest_affordance;
     affordance_option.source_module = 71u;
     affordance_option.flags = NB_CONTROL_FLAG_VALID;
+    if (tool_reach_extension > 0.01f) {
+      affordance_option.flags |= 1u << 5u;
+    }
     affordance_option.parameter_count = 16u;
     for (uint component = 0u; component < 4u; ++component) {
       affordance_option.parameters[component] = object.pose[component];
@@ -1815,6 +1847,8 @@ kernel void propose_dynamic_options(
     for (uint component = 0u; component < 8u; ++component) {
       affordance_option.parameters[8u + component] = object.affordances[component];
     }
+    affordance_option.parameters[14] = tool_reach_extension;
+    affordance_option.parameters[15] = tool_reach_confidence;
     candidates[gid] = affordance_option;
     return;
   }
