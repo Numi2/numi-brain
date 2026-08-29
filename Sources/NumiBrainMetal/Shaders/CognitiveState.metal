@@ -1215,7 +1215,7 @@ kernel void advance_entity_and_social_slots(
           * max(4.0f * belief_parameters[3], 0.25f)
           + 0.25f * visual_transient
       );
-      const float observed_presence = nb_saturate(max(
+      const float candidate_presence = nb_saturate(max(
         max(visual_presence, 0.5f * communication),
         olfactory_energy - max(0.5f * belief_parameters[4], 0.0f)
       ));
@@ -1238,18 +1238,42 @@ kernel void advance_entity_and_social_slots(
         slot.format_version = 1u;
         slot.uncertainty = 1.0f;
       }
-      if (slot.identifier == 0ul && observed_presence > 0.05f) {
+
+      const bool had_identity = slot.identifier != 0ul;
+      float body_change = 0.0f;
+      for (uint component = 0u; component < 8u; ++component) {
+        body_change += abs(observed_body[component] - slot.body_pose[component])
+          * 0.125f;
+      }
+      const float identity_cue = max(visual_presence, olfactory_energy);
+      const float association_precision = max(
+        0.5f,
+        development->sensor_precision_multiplier
+          * (1.0f - 0.75f * slot.uncertainty)
+      );
+      const float association_likelihood = had_identity
+        ? mix(
+            1.0f,
+            exp(-association_precision * body_change),
+            identity_cue
+          )
+        : 1.0f;
+      const float observed_presence = candidate_presence
+        * association_likelihood;
+
+      if (!had_identity && observed_presence > 0.05f) {
         slot.identifier = nb_latent_slot_identifier(
           0x2000000000000000ul,
           observed_body[0],
           observed_body[1] + communication,
           gid
         );
+        for (uint component = 0u; component < 8u; ++component) {
+          slot.body_pose[component] = observed_body[component];
+        }
+        body_change = 0.0f;
       }
-      float body_change = 0.0f;
       for (uint component = 0u; component < 8u; ++component) {
-        body_change += abs(observed_body[component] - slot.body_pose[component])
-          * 0.125f;
         slot.body_pose[component] = mix(
           slot.body_pose[component],
           observed_body[component],
@@ -1275,13 +1299,13 @@ kernel void advance_entity_and_social_slots(
       );
       slot.identity_confidence = nb_saturate(mix(
         retention * slot.identity_confidence,
-        1.0f - nb_saturate(body_change),
+        association_likelihood,
         correction_gain * observed_presence
       ));
       slot.gaze_confidence = nb_saturate(mix(
         retention * slot.gaze_confidence,
         0.5f * observed_presence + 0.5f * visual_transient,
-        correction_gain
+        correction_gain * visual_presence * association_likelihood
       ));
       slot.goal_confidence = nb_saturate(mix(
         retention * slot.goal_confidence,
@@ -1296,12 +1320,12 @@ kernel void advance_entity_and_social_slots(
       slot.social_relation = mix(
         retention * slot.social_relation,
         tanh(communication + slot.gaze_confidence - slot.uncertainty),
-        correction_gain
+        correction_gain * observed_presence
       );
       slot.communication_evidence = mix(
         retention * slot.communication_evidence,
         communication,
-        correction_gain
+        correction_gain * observed_presence
       );
       slot.uncertainty = nb_saturate(mix(
         min(1.0f, slot.uncertainty + (1.0f - retention)),
@@ -1314,6 +1338,7 @@ kernel void advance_entity_and_social_slots(
       }
       slot.flags = slot.existence_probability > 0.01f ? 1u : 0u;
       if (observed_presence > 0.05f) slot.flags |= 2u;
+      if (slot.existence_probability > observed_presence + 0.05f) slot.flags |= 4u;
       if (communication > 0.05f) slot.flags |= 8u;
       if (olfactory_energy > 0.05f) slot.flags |= 16u;
       for (uint component = 0u; component < 102u; ++component) {
@@ -1343,6 +1368,12 @@ kernel void advance_entity_and_social_slots(
             ]),
           correction_gain * observed_presence
         );
+      }
+      if (slot.existence_probability <= 0.01f) {
+        NBOtherAgentSlotRecord inactive = {};
+        inactive.format_version = 1u;
+        inactive.uncertainty = 1.0f;
+        slot = inactive;
       }
       agent_slots[gid] = slot;
     }
