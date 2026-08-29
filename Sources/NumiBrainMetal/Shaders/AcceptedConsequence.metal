@@ -1060,6 +1060,33 @@ inline ulong nb_trace_hash(ulong value) {
   return value ^ (value >> 31);
 }
 
+inline float nb_accepted_embodied_damage(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  float planned_damage)
+{
+  float damage = clamp(planned_damage, 0.0f, 1.0f);
+  for (uint body_index = 0u; body_index < uniforms.body_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    if (isfinite(body[5])) {
+      damage = max(damage, clamp(body[5], 0.0f, 1.0f));
+    }
+    if (isfinite(body[7])) {
+      damage = max(damage, clamp(body[7], 0.0f, 1.0f));
+    }
+    if (isfinite(body[11])) {
+      damage = max(damage, clamp(body[11], 0.0f, 1.0f));
+    }
+  }
+  return damage;
+}
+
 /// Records only the option phases whose physical consequences were accepted.
 /// Completed traces remain in the transactional hot arena until rest-time
 /// procedural consolidation consumes them.
@@ -1102,6 +1129,9 @@ kernel void update_accepted_procedural_trace(
   const NBOptionCandidateRecord candidate = candidates[selected_index];
   if ((candidate.flags & NB_ACCEPTED_STATE_VALID) == 0u
       || candidate.option_identifier != control->active_option_identifier) return;
+  const float accepted_damage = nb_accepted_embodied_damage(
+    hot_state, uniforms, control->selected_damage_cvar
+  );
 
   uint trace_index = uniforms.procedural_trace_record_capacity;
   uint reusable_index = uniforms.procedural_trace_record_capacity;
@@ -1180,7 +1210,7 @@ kernel void update_accepted_procedural_trace(
     phase->mean_value, control->selected_score, phase_rate
   );
   phase->maximum_damage = max(
-    phase->maximum_damage, control->selected_damage_cvar
+    phase->maximum_damage, accepted_damage
   );
   phase->mean_uncertainty = mix(
     phase->mean_uncertainty, control->unsupported_uncertainty, phase_rate
@@ -1200,7 +1230,7 @@ kernel void update_accepted_procedural_trace(
     ? control->active_plan_identifier : trace->plan_identifier;
   trace->cumulative_value += control->selected_score;
   trace->maximum_damage = max(
-    trace->maximum_damage, control->selected_damage_cvar
+    trace->maximum_damage, accepted_damage
   );
   trace->cumulative_effort += max(control->predicted_effort, 0.0f);
   trace->mean_uncertainty = mix(
