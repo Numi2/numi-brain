@@ -244,6 +244,9 @@ struct NBMemoryRetrievalUniforms {
   ulong control_header_offset;
   ulong internal_action_offset;
   ulong developmental_state_offset;
+  ulong body_belief_offset;
+  ulong joint_belief_offset;
+  ulong muscle_belief_offset;
   ulong archive_page_residency_offset;
   ulong archive_page_request_offset;
   ulong parameter_version_fingerprint;
@@ -268,6 +271,9 @@ struct NBMemoryRetrievalUniforms {
   uint procedural_stride;
   uint prospective_capacity;
   uint prospective_stride;
+  uint body_belief_count;
+  uint joint_belief_count;
+  uint muscle_belief_count;
   uint candidate_count;
   uint retrieval_pass;
   uint maximum_results;
@@ -1055,7 +1061,7 @@ static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 304);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
@@ -1639,7 +1645,8 @@ inline bool journal_accumulated_episode(
   }
   if (uniforms.replay_capacity > 0u) {
     const bool threat_or_failure = record.event_kind == 3u
-      || record.event_kind == 5u || record.event_kind == 7u
+      || record.event_kind == 5u || record.event_kind == 6u
+      || record.event_kind == 7u
       || record.event_kind == 8u || record.event_kind == 9u
       || record.event_kind == 12u || record.damage_severity > 0.20f;
     const uint queue_kind = threat_or_failure
@@ -1737,6 +1744,121 @@ inline bool is_memory_workspace_source(const uint source_module) {
     || source_module == 61u;
 }
 
+/// Finds the strongest currently accepted articulated context once per
+/// retrieval cycle. Candidate kernels consume the compact result from scratch
+/// rather than rescanning the body graph for every memory record.
+inline void current_embodied_retrieval_context(
+  device const uchar *hot_state,
+  constant NBMemoryRetrievalUniforms &uniforms,
+  thread uint &event_kind,
+  thread uint &source_identifier,
+  thread float &salience)
+{
+  event_kind = 0u;
+  source_identifier = 0u;
+  salience = 0.0f;
+  for (uint body_index = 0u;
+      body_index < uniforms.body_belief_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    const float load = isfinite(body[NB_BODY_LOAD])
+      ? max(body[NB_BODY_LOAD], 0.0f) : 0.0f;
+    const float body_salience = max(
+      isfinite(body[NB_BODY_DAMAGE_RISK])
+        ? clamp(body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f) : 0.0f,
+      max(
+        isfinite(body[NB_BODY_VULNERABILITY])
+          ? clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f) : 0.0f,
+        0.5f * load / (1.0f + load)
+      )
+    );
+    if (body_salience > salience) {
+      salience = body_salience;
+      event_kind = 9u;
+      source_identifier = uint(identity[0]);
+    }
+  }
+  for (uint joint_index = 0u;
+      joint_index < uniforms.joint_belief_count; ++joint_index) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    float maximum_limit = 0.0f;
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      if (!isfinite(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate])) continue;
+      maximum_limit = max(
+        maximum_limit,
+        clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f)
+      );
+    }
+    const float raw_error = isfinite(joint[NB_JOINT_PREDICTION_ERROR])
+      ? abs(joint[NB_JOINT_PREDICTION_ERROR]) : 0.0f;
+    const float joint_salience = max(
+      maximum_limit, raw_error / (1.0f + raw_error)
+    );
+    if (joint_salience > salience) {
+      salience = joint_salience;
+      event_kind = 6u;
+      source_identifier = uint(identity[0]);
+    }
+  }
+  for (uint muscle_index = 0u;
+      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[3] & 1ul) == 0ul) continue;
+    const float fatigue = isfinite(muscle[NB_MUSCLE_FATIGUE])
+      ? clamp(muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f) : 0.0f;
+    const float disturbance = isfinite(
+      muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE]
+    ) ? clamp(muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f) : 0.0f;
+    const float raw_error = isfinite(muscle[NB_MUSCLE_PREDICTION_ERROR])
+      ? abs(muscle[NB_MUSCLE_PREDICTION_ERROR]) : 0.0f;
+    const float muscle_salience = max(
+      fatigue, max(disturbance, raw_error / (1.0f + raw_error))
+    );
+    if (muscle_salience > salience) {
+      salience = muscle_salience;
+      event_kind = 7u;
+      const ulong physical_identifier = identity[0] != 0ul
+        ? identity[0] : identity[5];
+      source_identifier = uint(
+        physical_identifier ^ (physical_identifier >> 32u)
+      );
+    }
+  }
+}
+
+inline float embodied_retrieval_bonus(
+  device const NBMemoryRetrievalScratch *scratch,
+  uint event_kind,
+  uint source_identifier)
+{
+  const uint current_kind = scratch->reserved[0];
+  const uint current_source = scratch->reserved[1];
+  const float current_salience = clamp(
+    as_type<float>(scratch->reserved[2]), 0.0f, 1.0f
+  );
+  if (current_kind == 0u || current_salience <= 0.0f
+      || event_kind != current_kind) return 0.0f;
+  return (source_identifier == current_source ? 0.5f : 0.15f)
+    * current_salience;
+}
+
 kernel void begin_memory_retrieval(
   device uchar *hot_state [[buffer(0)]],
   device const uchar *persistent_memory [[buffer(1)]],
@@ -1754,7 +1876,19 @@ kernel void begin_memory_retrieval(
   scratch->winner_kinds[gid] = 0u;
   scratch->winner_indices[gid] = 0u;
   scratch->winner_scores[gid] = 0.0f;
-  if (gid == 0u) scratch->flags = 0u;
+  if (gid == 0u) {
+    scratch->flags = 0u;
+    uint embodied_event_kind = 0u;
+    uint embodied_source_identifier = 0u;
+    float embodied_salience = 0.0f;
+    current_embodied_retrieval_context(
+      hot_state, uniforms, embodied_event_kind,
+      embodied_source_identifier, embodied_salience
+    );
+    scratch->reserved[0] = embodied_event_kind;
+    scratch->reserved[1] = embodied_source_identifier;
+    scratch->reserved[2] = as_type<uint>(embodied_salience);
+  }
 
   const uint slot = 3u + gid;
   if (slot >= uniforms.workspace_capacity || uniforms.workspace_dimension == 0u) {
@@ -1885,6 +2019,9 @@ kernel void score_archive_retrieval_shortlist(
   ) + 0.25f * record->salience
     - 0.10f * max(memory_parameters[6], 0.0f)
       * record->epistemic_uncertainty
+    + embodied_retrieval_bonus(
+        scratch, record->event_kind, record->source_identifier
+      )
     + (((internal_actions[0].target_identifier & 0xf000000000000000ul)
           == 0x1000000000000000ul
         && (record->flags & (1u << 8u)) != 0u
@@ -1951,6 +2088,9 @@ kernel void rerank_archive_retrieval_shortlist(
       ) + record->salience
         - max(memory_parameters[6], 0.0f) * record->epistemic_uncertainty
     );
+  score += embodied_retrieval_bonus(
+    scratch, record->event_kind, record->source_identifier
+  );
   if ((retrieval_request.target_identifier & 0xf000000000000000ul)
         == 0x1000000000000000ul
       && (record->flags & (1u << 8u)) != 0u
@@ -2032,6 +2172,9 @@ kernel void score_memory_retrieval_candidates(
         ) + record->salience
           - max(memory_parameters[6], 0.0f) * record->epistemic_uncertainty
       );
+      score += embodied_retrieval_bonus(
+        scratch, record->event_kind, record->source_identifier
+      );
     }
   } else {
     local_index -= uniforms.active_episode_capacity;
@@ -2055,6 +2198,9 @@ kernel void score_memory_retrieval_candidates(
               - max(memory_parameters[6], 0.0f)
                 * record->epistemic_uncertainty
           );
+        score += embodied_retrieval_bonus(
+          scratch, record->event_kind, record->source_identifier
+        );
       }
     } else {
       local_index -= uniforms.compressed_episode_capacity;

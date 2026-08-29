@@ -71,6 +71,9 @@ private struct MemoryRetrievalUniforms {
   var controlHeaderOffset: UInt64 = 0
   var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
+  var jointBeliefOffset: UInt64 = 0
+  var muscleBeliefOffset: UInt64 = 0
   var archivePageResidencyOffset: UInt64 = 0
   var archivePageRequestOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
@@ -95,6 +98,9 @@ private struct MemoryRetrievalUniforms {
   var proceduralStride: UInt32 = 0
   var prospectiveCapacity: UInt32 = 0
   var prospectiveStride: UInt32 = 0
+  var bodyBeliefCount: UInt32 = 0
+  var jointBeliefCount: UInt32 = 0
+  var muscleBeliefCount: UInt32 = 0
   var candidateCount: UInt32 = 0
   var retrievalPass: UInt32 = 0
   var maximumResults: UInt32 = 0
@@ -369,7 +375,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 296,
-      MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
+      MemoryLayout<MemoryRetrievalUniforms>.stride == 304,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
@@ -1129,6 +1135,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       candidateCount <= Int(UInt32.max),
       maximumResults <= retrievalUniformBuffers.count,
       3 + maximumResults <= arena.layout.section(.workspaceMetadata).elementCount,
+      [.bodyBelief, .jointBelief, .muscleBelief].allSatisfy({
+        arena.layout.section($0).elementCount <= Int(UInt32.max)
+      }),
       [active, compressed, archive, semantic, semanticRelations, procedural,
        prospective].allSatisfy({
         $0.elementCount <= Int(UInt32.max) && $0.elementStride <= Int(UInt32.max)
@@ -1161,6 +1170,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         developmentalStateOffset: UInt64(
           sections.section(.developmentalState).byteOffset
         ),
+        bodyBeliefOffset: UInt64(sections.section(.bodyBelief).byteOffset),
+        jointBeliefOffset: UInt64(sections.section(.jointBelief).byteOffset),
+        muscleBeliefOffset: UInt64(sections.section(.muscleBelief).byteOffset),
         archivePageResidencyOffset: UInt64(
           sections.section(.archivePageResidency).byteOffset
         ),
@@ -1198,6 +1210,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         proceduralStride: UInt32(procedural.elementStride),
         prospectiveCapacity: UInt32(prospective.elementCount),
         prospectiveStride: UInt32(prospective.elementStride),
+        bodyBeliefCount: UInt32(sections.section(.bodyBelief).elementCount),
+        jointBeliefCount: UInt32(sections.section(.jointBelief).elementCount),
+        muscleBeliefCount: UInt32(sections.section(.muscleBelief).elementCount),
         candidateCount: UInt32(candidateCount),
         retrievalPass: UInt32(pass),
         maximumResults: UInt32(maximumResults),
