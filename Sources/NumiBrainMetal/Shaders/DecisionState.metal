@@ -1882,6 +1882,7 @@ kernel void propose_dynamic_options(
   float social_token_confidence = 0.0f;
   uint social_token_source = 0u;
   uint social_workspace_base = 0u;
+  ulong social_bound_token_identifier = 0ul;
   if (uniforms.workspace_capacity > 11u) {
     const NBWorkspaceMetadataRecord social_token = workspace_metadata[11];
     social_token_source = social_token.kind_and_source >> 16;
@@ -1892,6 +1893,7 @@ kernel void propose_dynamic_options(
         && social_token.entity_identifier != 0ul) {
       social_token_confidence = clamp(social_token.confidence, 0.0f, 1.0f);
       social_workspace_base = 11u * uniforms.workspace_dimension;
+      social_bound_token_identifier = social_token.bound_token_identifier;
     }
   }
   candidate.social_value = gid == 8u && uniforms.drive_count > 9u
@@ -1936,14 +1938,18 @@ kernel void propose_dynamic_options(
     candidate.source_module = social_token_source;
     candidate.competence = max(candidate.competence, social_token_confidence);
     if (social_token_source == 44u && uniforms.workspace_dimension > 116u) {
+      const bool sensor_to_body_valid = uniforms.spatial_transform_count > 4u
+        && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u;
+      NBSpatialTransformRecord sensor_to_body = {};
+      if (sensor_to_body_valid) {
+        sensor_to_body = spatial_transforms[4];
+      }
       float3 body_relative_velocity = float3(
         workspace[social_workspace_base + 114u],
         workspace[social_workspace_base + 115u],
         workspace[social_workspace_base + 116u]
       );
-      if (uniforms.spatial_transform_count > 4u
-          && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u) {
-        const NBSpatialTransformRecord sensor_to_body = spatial_transforms[4];
+      if (sensor_to_body_valid) {
         body_relative_velocity = nb_rotate_vector(
           body_relative_velocity,
           float4(
@@ -1965,32 +1971,81 @@ kernel void propose_dynamic_options(
       const float observation_uncertainty = clamp(
         workspace[social_workspace_base + 6u], 0.0f, 1.0f
       );
+      float3 inferred_goal_offset = body_relative_velocity
+        * max(predicted_action, movement_magnitude);
+      float referent_confidence = 0.0f;
+      float referent_uncertainty = 1.0f;
+      if (sensor_to_body_valid && social_bound_token_identifier != 0ul
+          && uniforms.workspace_capacity > 12u
+          && uniforms.workspace_dimension > 6u) {
+        const NBWorkspaceMetadataRecord referent_token =
+          workspace_metadata[12];
+        const uint referent_kind = referent_token.kind_and_source & 0xffffu;
+        const uint referent_source = referent_token.kind_and_source >> 16u;
+        if ((referent_token.flags & NB_CONTROL_FLAG_VALID) != 0u
+            && referent_token.identifier == social_bound_token_identifier
+            && referent_kind == 3u && referent_source == 39u
+            && referent_token.entity_identifier != 0ul) {
+          const uint referent_base = 12u * uniforms.workspace_dimension;
+          const float3 sensor_relative_goal = float3(
+            workspace[referent_base + 4u] - sensor_to_body.translation[0],
+            workspace[referent_base + 5u] - sensor_to_body.translation[1],
+            workspace[referent_base + 6u] - sensor_to_body.translation[2]
+          );
+          const float3 body_relative_goal = nb_rotate_vector(
+            sensor_relative_goal,
+            float4(
+              sensor_to_body.rotation[0], sensor_to_body.rotation[1],
+              sensor_to_body.rotation[2], sensor_to_body.rotation[3]
+            )
+          );
+          referent_uncertainty = clamp(
+            workspace[referent_base + 3u], 0.0f, 1.0f
+          );
+          referent_confidence = clamp(
+            referent_token.confidence * goal_confidence
+              * sensor_to_body.confidence * (1.0f - referent_uncertainty),
+            0.0f,
+            1.0f
+          );
+          inferred_goal_offset = mix(
+            inferred_goal_offset,
+            body_relative_goal,
+            referent_confidence
+          );
+        }
+      }
       for (uint index = 0u; index < 16u; ++index) {
         candidate.parameters[index] = 0.0f;
       }
       for (uint axis = 0u; axis < 3u; ++axis) {
         const float movement = body_relative_velocity[axis]
           * max(predicted_action, movement_magnitude);
-        candidate.parameters[axis] = movement;
+        candidate.parameters[axis] = inferred_goal_offset[axis];
         candidate.parameters[4u + axis] = body_relative_velocity[axis];
         candidate.parameters[8u + axis] = movement;
       }
-      candidate.parameters[3] = goal_confidence;
+      candidate.parameters[3] = max(goal_confidence, referent_confidence);
       candidate.parameters[7] = observation_uncertainty;
       candidate.parameters[11] = predicted_action;
       candidate.proposal_kind = NB_OPTION_PROPOSAL_IMITATION;
       candidate.task_value += movement_magnitude * goal_confidence
         * social_token_confidence * value_parameters[0];
+      candidate.task_value += referent_confidence * value_parameters[0];
       candidate.social_value += movement_magnitude
         * social_token_confidence * value_parameters[2];
       candidate.damage_cvar = clamp(
-        candidate.damage_cvar + 0.25f * observation_uncertainty,
+        candidate.damage_cvar + 0.25f * max(
+          observation_uncertainty,
+          referent_confidence > 0.0f ? referent_uncertainty : 0.0f
+        ),
         0.0f,
         1.0f
       );
       candidate.competence = clamp(
         candidate.competence * goal_confidence
-          * (1.0f - observation_uncertainty),
+          * (1.0f - observation_uncertainty)
+          * (0.5f + 0.5f * referent_confidence),
         0.0f,
         1.0f
       );
@@ -2014,6 +2069,9 @@ kernel void propose_dynamic_options(
               ulong(movement_signature) ^ 0x494d49544154494ful
             ) & 0x0ffffffffffffffful);
         candidate.flags |= 1u << 4u;
+        if (referent_confidence > 0.01f) {
+          candidate.flags |= 1u << 6u;
+        }
       }
     } else if (uniforms.spatial_transform_count > 4u
         && (spatial_transforms[4].flags & NB_CONTROL_FLAG_VALID) != 0u) {

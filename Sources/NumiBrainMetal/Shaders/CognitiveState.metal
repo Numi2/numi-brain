@@ -3587,7 +3587,12 @@ kernel void broadcast_social_context(
     token.last_refresh_timestamp_microseconds =
       uniforms.target_timestamp_microseconds;
     token.entity_identifier = selected_agent.identifier;
+    // Bind a referent only when the agent-to-object attention edge actually
+    // exists. The most visually salient object is not automatically the
+    // demonstrator's goal or the referent of a communication event.
     token.bound_token_identifier = rank == 0u
+        && attended_object_identifier != 0ul
+        && best_attention_probability > max(belief_parameters[4], 0.01f)
       ? object_token_identifier : 0ul;
     token.kind_and_source = token_kind | (source_module << 16u);
     token.confidence = nb_saturate(selected_score);
