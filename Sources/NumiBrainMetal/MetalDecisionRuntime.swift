@@ -91,6 +91,21 @@ private struct CPGCouplingDescriptor {
   var gain: Float = 0
 }
 
+private struct DecisionAutonomicChannelDescriptor {
+  var channelIdentifier: UInt32 = 0
+  var kind: UInt32 = 0
+  var flags: UInt32 = 0
+  var criticalReceptorCount: UInt32 = 0
+  var criticalReceptor0: UInt32 = 0
+  var criticalReceptor1: UInt32 = 0
+  var criticalReceptor2: UInt32 = 0
+  var criticalReceptor3: UInt32 = 0
+  var emergencyTarget: Float = 0
+  var emergencyGain: Float = 0
+  var cpgGain: Float = 0
+  var reserved: Float = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalDecisionRuntime: @unchecked Sendable {
   @frozen
@@ -130,6 +145,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let communicationDescriptorBuffer: any MTLBuffer
   private let cpgOscillatorDescriptorBuffer: any MTLBuffer
   private let cpgCouplingDescriptorBuffer: any MTLBuffer
+  private let autonomicChannelDescriptorBuffer: any MTLBuffer
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
@@ -151,6 +167,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
+      MemoryLayout<DecisionAutonomicChannelDescriptor>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -205,7 +222,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 9
+    descriptor.maxBufferBindCount = 10
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -283,6 +300,25 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     if cpgCouplingDescriptors.isEmpty {
       cpgCouplingDescriptors = [CPGCouplingDescriptor()]
     }
+    let autonomicChannelDescriptors = species.physiology.autonomicChannels.map {
+      channel in
+      let identifiers = channel.criticalReceptorIdentifiers
+        + Array(repeating: 0, count: 4 - channel.criticalReceptorIdentifiers.count)
+      return DecisionAutonomicChannelDescriptor(
+        channelIdentifier: UInt32(channel.identifier),
+        kind: UInt32(channel.kind.rawValue),
+        flags: 1 | (channel.respondsToAnyPhysiologicalCritical ? 1 << 1 : 0),
+        criticalReceptorCount: UInt32(channel.criticalReceptorIdentifiers.count),
+        criticalReceptor0: identifiers[0],
+        criticalReceptor1: identifiers[1],
+        criticalReceptor2: identifiers[2],
+        criticalReceptor3: identifiers[3],
+        emergencyTarget: channel.emergencyTarget,
+        emergencyGain: channel.emergencyGain,
+        cpgGain: channel.cpgGain,
+        reserved: 0
+      )
+    }
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<DecisionUniforms>.stride,
@@ -302,6 +338,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         length: cpgCouplingDescriptors.count
           * MemoryLayout<CPGCouplingDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let autonomicChannelDescriptorBuffer = device.makeBuffer(
+        length: autonomicChannelDescriptors.count
+          * MemoryLayout<DecisionAutonomicChannelDescriptor>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -313,6 +354,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "NumiBrain immutable species CPG oscillators"
     cpgCouplingDescriptorBuffer.label =
       "NumiBrain immutable species CPG couplings"
+    autonomicChannelDescriptorBuffer.label =
+      "NumiBrain immutable decision autonomic channels"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
@@ -328,6 +371,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     cpgCouplingDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       cpgCouplingDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    autonomicChannelDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      autonomicChannelDescriptorBuffer.contents().copyMemory(
         from: source, byteCount: bytes.count
       )
     }
@@ -352,6 +401,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
     self.cpgOscillatorDescriptorBuffer = cpgOscillatorDescriptorBuffer
     self.cpgCouplingDescriptorBuffer = cpgCouplingDescriptorBuffer
+    self.autonomicChannelDescriptorBuffer = autonomicChannelDescriptorBuffer
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -373,6 +423,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     [
       uniformBuffer, communicationDescriptorBuffer,
       cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
+      autonomicChannelDescriptorBuffer,
     ]
   }
 
@@ -396,6 +447,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(communicationDescriptorBuffer.gpuAddress, index: 6)
     argumentTable.setAddress(cpgOscillatorDescriptorBuffer.gpuAddress, index: 7)
     argumentTable.setAddress(cpgCouplingDescriptorBuffer.gpuAddress, index: 8)
+    argumentTable.setAddress(autonomicChannelDescriptorBuffer.gpuAddress, index: 9)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)

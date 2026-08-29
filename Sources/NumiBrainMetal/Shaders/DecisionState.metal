@@ -219,6 +219,18 @@ struct NBCommunicationChannelDescriptor {
   uint flags;
 };
 
+struct NBAutonomicChannelDescriptor {
+  uint channel_identifier;
+  uint kind;
+  uint flags;
+  uint critical_receptor_count;
+  uint critical_receptors[4];
+  float emergency_target;
+  float emergency_gain;
+  float cpg_gain;
+  float reserved;
+};
+
 struct NBCPGOscillatorDescriptor {
   uint identifier;
   uint output_synergy_identifier;
@@ -366,6 +378,7 @@ static_assert(sizeof(NBCerebellarExpertRecord) == 256);
 static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
+static_assert(sizeof(NBAutonomicChannelDescriptor) == 48);
 static_assert(sizeof(NBCPGOscillatorDescriptor) == 32);
 static_assert(sizeof(NBCPGCouplingDescriptor) == 16);
 static_assert(sizeof(NBCPGStateRecord) == 64);
@@ -1570,6 +1583,8 @@ kernel void generate_motor_spinal_autonomic_state(
   device const float *motor_parameters [[buffer(4)]],
   device const NBCommunicationChannelDescriptor *communication_descriptors
     [[buffer(6)]],
+  device const NBAutonomicChannelDescriptor *autonomic_descriptors
+    [[buffer(9)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
@@ -1767,11 +1782,98 @@ kernel void generate_motor_spinal_autonomic_state(
       reinterpret_cast<device NBAutonomicCommandRecord *>(
         hot_state + uniforms.autonomic_offset
       );
+    const NBAutonomicChannelDescriptor descriptor = autonomic_descriptors[gid];
+    const float energy = uniforms.drive_count > 0u
+      ? clamp(drives[0].level, 0.0f, 1.0f) : 0.0f;
+    const float oxygen = uniforms.drive_count > 2u
+      ? clamp(drives[2].level, 0.0f, 1.0f) : 0.0f;
+    const float temperature = uniforms.drive_count > 3u
+      ? clamp(drives[3].level, 0.0f, 1.0f) : 0.0f;
+    const float fatigue = uniforms.drive_count > 4u
+      ? clamp(drives[4].level, 0.0f, 1.0f) : 0.0f;
+    const float sleep = uniforms.drive_count > 7u
+      ? clamp(drives[7].level, 0.0f, 1.0f) : 0.0f;
+    float target = 0.0f;
+    switch (descriptor.kind) {
+      case 1u:
+        target = max(oxygen, max(0.75f * safety, 0.25f * fatigue));
+        break;
+      case 2u:
+        target = max(oxygen, max(safety, 0.25f * fatigue));
+        break;
+      case 3u:
+        target = max(oxygen, max(safety, header->vigor));
+        break;
+      case 4u:
+        target = max(safety, oxygen);
+        break;
+      case 5u:
+        target = temperature;
+        break;
+      case 6u:
+        target = max(safety, 0.5f * header->vigor);
+        break;
+      case 7u:
+        target = energy * (1.0f - safety) * (rest_selected ? 1.0f : 0.5f);
+        break;
+      case 8u:
+        target = safety;
+        break;
+      case 9u:
+        target = max(sleep, fatigue) * (1.0f - safety);
+        break;
+      default:
+        target = clamp(
+          candidate.parameters[(gid + 8u) % parameter_count]
+            * max(policy_parameters[10], 0.0f),
+          0.0f,
+          1.0f
+        );
+        break;
+    }
+    device NBEventQueueHeader *event_header =
+      reinterpret_cast<device NBEventQueueHeader *>(
+        hot_state + uniforms.event_queue_offset
+      );
+    const uint event_count = min(
+      min(
+        atomic_load_explicit(&event_header->count, memory_order_relaxed),
+        event_header->capacity
+      ),
+      uniforms.event_capacity
+    );
+    device const NBReceptorEventRecord *events =
+      reinterpret_cast<device const NBReceptorEventRecord *>(event_header + 1);
+    float critical_strength = 0.0f;
+    for (uint event_index = 0u; event_index < event_count; ++event_index) {
+      const NBReceptorEventRecord event = events[event_index];
+      if (event.kind != 12u) continue;
+      bool receptor_match = (descriptor.flags & (1u << 1u)) != 0u;
+      for (uint receptor_index = 0u;
+          receptor_index < min(descriptor.critical_receptor_count, 4u);
+          ++receptor_index) {
+        receptor_match = receptor_match
+          || descriptor.critical_receptors[receptor_index]
+            == event.source_identifier;
+      }
+      if (receptor_match) {
+        critical_strength = max(
+          critical_strength,
+          clamp(event.magnitude * descriptor.emergency_gain, 0.0f, 1.0f)
+        );
+      }
+    }
+    target = mix(
+      clamp(target, 0.0f, 1.0f),
+      clamp(descriptor.emergency_target, 0.0f, 1.0f),
+      critical_strength
+    );
     NBAutonomicCommandRecord command;
-    command.command = clamp(safety + (gid == 0u ? header->vigor : 0.0f), 0.0f, 1.0f);
+    command.command = target;
     command.target = command.command;
-    command.confidence = header->confidence;
-    command.flags = NB_CONTROL_FLAG_VALID;
+    command.confidence = max(header->confidence, critical_strength);
+    command.flags = NB_CONTROL_FLAG_VALID
+      | (critical_strength > 0.0f ? (1u << 1u) : 0u);
     autonomic[gid] = command;
   }
   if (gid < uniforms.active_sensing_dimension) {
