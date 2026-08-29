@@ -65,8 +65,9 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   public static let plasticityHyperparameterCount = 8
   public static let plasticityBasisChannelCount = 5
   /// Learning plus recurrent, local, route, drive, gate, update-gain,
-  /// timescale, route-threshold, inhibition, and plasticity-decay effects.
-  public static let plasticityReceptorEffectCount = 11
+  /// timescale, route-threshold, inhibition, plasticity-decay, memory-write,
+  /// vigor, and exploration-temperature effects.
+  public static let plasticityReceptorEffectCount = 14
   public static let defaultPlasticityBasisCapacityPerRegion = 128
   public static let requiredKinds: [BrainParameterComponentKind] = [
     .sensory, .belief, .world, .route, .memory, .value, .policy,

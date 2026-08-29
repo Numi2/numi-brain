@@ -343,7 +343,9 @@ struct NBRegionalPlasticModulationRecordABI {
     float route_threshold_delta;
     float inhibition_delta;
     float plasticity_decay_multiplier;
-    uint reserved[3];
+    float memory_write_multiplier;
+    float vigor_multiplier;
+    float exploration_temperature_multiplier;
 };
 
 struct NBParameterVersionBindingABI {

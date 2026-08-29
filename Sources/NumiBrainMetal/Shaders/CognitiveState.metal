@@ -290,7 +290,9 @@ struct NBRegionalPlasticModulationRecord {
   float route_threshold_delta;
   float inhibition_delta;
   float plasticity_decay_multiplier;
-  uint reserved[3];
+  float memory_write_multiplier;
+  float vigor_multiplier;
+  float exploration_temperature_multiplier;
 };
 
 struct NBPlasticityRegionRangeRecord {
@@ -347,7 +349,7 @@ inline float nb_regional_neuromodulator_effect(
 {
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
-  constexpr uint receptor_effect_count = 11u;
+  constexpr uint receptor_effect_count = 14u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
   if (uniforms.plasticity_parameter_count
@@ -2098,7 +2100,7 @@ kernel void reduce_fast_plasticity_by_region(
   const uint module_identifier = maturation[gid].module_identifier;
   constexpr uint hyperparameter_count = 8u;
   constexpr uint basis_channel_count = 5u;
-  constexpr uint receptor_effect_count = 11u;
+  constexpr uint receptor_effect_count = 14u;
   const uint receptor_scalar_count = uniforms.module_count
     * uniforms.neuromodulator_count * receptor_effect_count;
   const uint basis_scalar_count = uniforms.plasticity_parameter_count
@@ -2179,9 +2181,27 @@ kernel void reduce_fast_plasticity_by_region(
     -1.0f,
     1.0f
   ));
-  record.reserved[0] = 0u;
-  record.reserved[1] = 0u;
-  record.reserved[2] = 0u;
+  record.memory_write_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 11u
+    ),
+    -1.0f,
+    1.0f
+  ));
+  record.vigor_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 12u
+    ),
+    -1.0f,
+    1.0f
+  ));
+  record.exploration_temperature_multiplier = exp(clamp(
+    nb_regional_neuromodulator_effect(
+      plasticity_parameters, uniforms, neuromodulators, gid, 13u
+    ),
+    -1.0f,
+    1.0f
+  ));
   record.flags = coefficient_count > 0u ? 1u : 0u;
   regional[gid] = record;
 }

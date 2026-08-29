@@ -27,6 +27,7 @@ private struct MemoryUniforms {
   var archivePageEpochOffset: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
+  var regionalPlasticModulationOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceScalarCount: UInt32 = 0
   var activeEpisodeCapacity: UInt32 = 0
@@ -44,6 +45,8 @@ private struct MemoryUniforms {
   var bodyBeliefCount: UInt32 = 0
   var activeSensingCount: UInt32 = 0
   var objectSlotCount: UInt32 = 0
+  var regionalPlasticModulationCount: UInt32 = 0
+  var reservedRegionalModulation: UInt32 = 0
   var boundaryThreshold: Float = 0
   var eventSalienceWeight: Float = 0
 }
@@ -356,7 +359,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 264,
+    guard MemoryLayout<MemoryUniforms>.stride == 280,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 288,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1297,6 +1300,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       journalByteCount: UInt64(memory.journalByteCount),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      regionalPlasticModulationOffset: UInt64(
+        arena.layout.section(.regionalPlasticModulation).byteOffset
+      ),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceScalarCount: UInt32(workspace.elementCount),
       activeEpisodeCapacity: UInt32(activeEpisodes.elementCount),
@@ -1318,6 +1324,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       bodyBeliefCount: UInt32(bodyBelief.elementCount),
       activeSensingCount: UInt32(activeSensingCount),
       objectSlotCount: UInt32(objectSlots.elementCount),
+      regionalPlasticModulationCount: UInt32(
+        arena.layout.section(.regionalPlasticModulation).elementCount
+      ),
       boundaryThreshold: segmentation.boundaryThreshold,
       eventSalienceWeight: segmentation.eventSalienceWeight
     )

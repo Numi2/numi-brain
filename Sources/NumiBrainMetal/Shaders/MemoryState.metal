@@ -69,6 +69,7 @@ struct NBMemoryUniforms {
   ulong archive_page_epoch_offset;
   ulong journal_byte_count;
   ulong persistent_memory_byte_count;
+  ulong regional_plastic_modulation_offset;
   uint recurrent_scalar_count;
   uint workspace_scalar_count;
   uint active_episode_capacity;
@@ -86,6 +87,8 @@ struct NBMemoryUniforms {
   uint body_belief_count;
   uint active_sensing_count;
   uint object_slot_count;
+  uint regional_plastic_modulation_count;
+  uint reserved_regional_modulation;
   float boundary_threshold;
   float event_salience_weight;
 };
@@ -721,7 +724,9 @@ struct NBRegionalPlasticModulationRecord {
   float route_threshold_delta;
   float inhibition_delta;
   float plasticity_decay_multiplier;
-  uint reserved[3];
+  float memory_write_multiplier;
+  float vigor_multiplier;
+  float exploration_temperature_multiplier;
 };
 
 struct NBCerebellarExpertRecord {
@@ -1006,7 +1011,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 264);
+static_assert(sizeof(NBMemoryUniforms) == 280);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -1053,6 +1058,31 @@ static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
 static_assert(sizeof(NBRegionalTransitionRecord) == 1104);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
+
+inline float episodic_memory_write_multiplier(
+  device const uchar *hot_state,
+  constant NBMemoryUniforms &uniforms)
+{
+  device const NBRegionalPlasticModulationRecord *regional =
+    reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  float multiplier = 0.0f;
+  uint count = 0u;
+  for (uint index = 0u;
+      index < uniforms.regional_plastic_modulation_count; ++index) {
+    const NBRegionalPlasticModulationRecord record = regional[index];
+    if (record.module_identifier < 53u || record.module_identifier > 62u
+        || record.coefficient_count == 0u || (record.flags & 1u) == 0u) {
+      continue;
+    }
+    multiplier += record.memory_write_multiplier;
+    count += 1u;
+  }
+  return count > 0u
+    ? clamp(multiplier / float(count), 0.25f, 4.0f)
+    : 1.0f;
+}
 
 inline ulong consolidation_hash(ulong value) {
   value ^= value >> 30;
@@ -4534,7 +4564,10 @@ kernel void journal_committed_learning_transition(
       + log(max(regional.update_gain_multiplier, 1.0e-4f))
       + log(max(regional.timescale_multiplier, 1.0e-4f))
       + log(max(regional.plasticity_decay_multiplier, 1.0e-4f))
-    ) / 7.0f;
+      + log(max(regional.memory_write_multiplier, 1.0e-4f))
+      + log(max(regional.vigor_multiplier, 1.0e-4f))
+      + log(max(regional.exploration_temperature_multiplier, 1.0e-4f))
+    ) / 10.0f;
     valid_regional_count += 1u;
   }
   if (valid_regional_count > 0u) {
@@ -4918,11 +4951,13 @@ kernel void segment_and_journal_episode(
     );
     strongest_flags = 1u << 8u;
   }
-  const float boundary_score = max(memory_parameters[0], 0.0f) * surprise
+  const float raw_boundary_score = max(memory_parameters[0], 0.0f) * surprise
     + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
       * max(max(event_salience, embodied_salience), control_interrupt_salience)
     + 0.25f * embodied_uncertainty
     + 0.25f * information_salience;
+  const float boundary_score = raw_boundary_score
+    * episodic_memory_write_multiplier(hot_state, uniforms);
   device NBActiveEpisodeAccumulator *accumulator =
     reinterpret_cast<device NBActiveEpisodeAccumulator *>(
       hot_state + uniforms.active_episode_accumulator_offset

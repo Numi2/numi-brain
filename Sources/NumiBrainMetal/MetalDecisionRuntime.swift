@@ -28,6 +28,7 @@ private struct DecisionUniforms {
   var eventQueueOffset: UInt64 = 0
   var cpgStateOffset: UInt64 = 0
   var descendingSomaticBaselineOffset: UInt64 = 0
+  var regionalPlasticModulationOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var reservedIdentity: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -54,6 +55,8 @@ private struct DecisionUniforms {
   var cpgOscillatorCount: UInt32 = 0
   var cpgCouplingCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
+  var regionalPlasticModulationCount: UInt32 = 0
+  var reservedRegionalModulation: UInt32 = 0
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
   var switchingMargin: Float = 0
@@ -239,7 +242,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 408,
+    guard MemoryLayout<DecisionUniforms>.stride == 424,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -770,6 +773,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       descendingSomaticBaselineOffset: UInt64(
         arena.layout.section(.descendingSomaticBaseline).byteOffset
       ),
+      regionalPlasticModulationOffset: UInt64(
+        arena.layout.section(.regionalPlasticModulation).byteOffset
+      ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
       reservedIdentity: species.fingerprint,
       recurrentScalarCount: UInt32(recurrent.elementCount),
@@ -806,6 +812,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       cpgCouplingCount: UInt32(species.cpg.couplings.count),
       eventCapacity: UInt32(
         max(arena.layout.section(.eventQueue).elementCount - 1, 0)
+      ),
+      regionalPlasticModulationCount: UInt32(
+        arena.layout.section(.regionalPlasticModulation).elementCount
       ),
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,

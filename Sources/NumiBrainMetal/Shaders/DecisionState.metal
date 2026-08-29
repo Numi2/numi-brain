@@ -49,6 +49,7 @@ struct NBDecisionUniforms {
   ulong event_queue_offset;
   ulong cpg_state_offset;
   ulong descending_somatic_baseline_offset;
+  ulong regional_plastic_modulation_offset;
   ulong parameter_version_fingerprint;
   ulong reserved_identity;
   uint recurrent_scalar_count;
@@ -75,6 +76,8 @@ struct NBDecisionUniforms {
   uint cpg_oscillator_count;
   uint cpg_coupling_count;
   uint event_capacity;
+  uint regional_plastic_modulation_count;
+  uint reserved_regional_modulation;
   float risk_weight;
   float damage_risk_budget;
   float switching_margin;
@@ -112,6 +115,25 @@ struct NBNeuromodulatorRecord {
   float decay_time_constant_seconds;
   uint kind;
   uint flags;
+};
+
+struct NBRegionalPlasticModulationRecord {
+  uint module_identifier;
+  uint coefficient_count;
+  float recurrent_delta;
+  float local_delta;
+  float route_delta;
+  float drive_delta;
+  float gate_delta;
+  uint flags;
+  float update_gain_multiplier;
+  float timescale_multiplier;
+  float route_threshold_delta;
+  float inhibition_delta;
+  float plasticity_decay_multiplier;
+  float memory_write_multiplier;
+  float vigor_multiplier;
+  float exploration_temperature_multiplier;
 };
 
 struct NBExternalGoalDirectiveRecord {
@@ -438,9 +460,10 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 408);
+static_assert(sizeof(NBDecisionUniforms) == 424);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
+static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
@@ -468,6 +491,32 @@ static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline bool nb_uses_muscle_excitation(const uint actuator_command_kind) {
   return actuator_command_kind == NB_ACTUATOR_COMMAND_MUSCLE_EXCITATION;
+}
+
+inline float2 nb_decision_regional_modulation(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms)
+{
+  device const NBRegionalPlasticModulationRecord *regional =
+    reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
+      hot_state + uniforms.regional_plastic_modulation_offset
+    );
+  float2 effects = float2(0.0f);
+  uint count = 0u;
+  for (uint index = 0u;
+      index < uniforms.regional_plastic_modulation_count; ++index) {
+    const NBRegionalPlasticModulationRecord record = regional[index];
+    if (record.module_identifier < 71u || record.module_identifier > 78u
+        || record.coefficient_count == 0u || (record.flags & 1u) == 0u) {
+      continue;
+    }
+    effects += float2(
+      record.vigor_multiplier,
+      record.exploration_temperature_multiplier
+    );
+    count += 1u;
+  }
+  return count > 0u ? effects / float(count) : float2(1.0f);
 }
 
 /// Converts an unconstrained policy logit into the species' normalized neural
@@ -1884,15 +1933,23 @@ kernel void select_option_and_control_mode(
   const ulong previous_option_identifier = header->active_option_identifier;
   const ulong previous_selected_timestamp = header->selected_timestamp_microseconds;
   const float previous_controller_phase = header->controller_phase;
+  const float2 regional_modulation = nb_decision_regional_modulation(
+    hot_state,
+    uniforms
+  );
   uint selected = 0u;
   float selected_score = -INFINITY;
   for (uint index = 0u; index < candidate_limit; ++index) {
     const uint terminal_index = index * uniforms.maximum_planning_horizon
       + active_horizon - 1u;
     const NBPlanStepRecord plan = plans[terminal_index];
-    if (plan.admissibility > 0.5f && plan.objective_value > selected_score) {
+    const float exploration_adjustment = 0.25f
+      * (regional_modulation.y - 1.0f)
+      * plan.predicted_information_gain;
+    const float modulated_score = plan.objective_value + exploration_adjustment;
+    if (plan.admissibility > 0.5f && modulated_score > selected_score) {
       selected = index;
-      selected_score = plan.objective_value;
+      selected_score = modulated_score;
     }
   }
   uint previous_candidate = uniforms.candidate_capacity;
@@ -1904,7 +1961,9 @@ kernel void select_option_and_control_mode(
     ];
     if (previous_plan.admissibility > 0.5f) {
       previous_candidate = index;
-      previous_score = previous_plan.objective_value;
+      previous_score = previous_plan.objective_value
+        + 0.25f * (regional_modulation.y - 1.0f)
+          * previous_plan.predicted_information_gain;
     }
     break;
   }
@@ -1950,8 +2009,16 @@ kernel void select_option_and_control_mode(
   header->selected_score = selected_score;
   header->selected_damage_cvar = plan.damage_cvar;
   header->confidence = clamp(candidate.competence * (1.0f - plan.epistemic_uncertainty), 0.0f, 1.0f);
-  header->vigor = clamp(1.0f - candidate.effort_cost - safety, 0.0f, 1.0f);
-  header->exploration_temperature = clamp(plan.epistemic_uncertainty, 0.0f, 1.0f);
+  header->vigor = clamp(
+    (1.0f - candidate.effort_cost - safety) * regional_modulation.x,
+    0.0f,
+    1.0f
+  );
+  header->exploration_temperature = clamp(
+    plan.epistemic_uncertainty * regional_modulation.y,
+    0.0f,
+    1.0f
+  );
   header->controller_phase = option_changed
     ? 0.0f
     : previous_controller_phase + 1.0f;

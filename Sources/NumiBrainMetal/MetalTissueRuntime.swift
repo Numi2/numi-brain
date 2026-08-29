@@ -219,9 +219,9 @@ private struct TissueRegionalPlasticModulationRecord {
   var routeThresholdDelta: Float = 0
   var inhibitionDelta: Float = 0
   var plasticityDecayMultiplier: Float = 1
-  var reserved0: UInt32 = 0
-  var reserved1: UInt32 = 0
-  var reserved2: UInt32 = 0
+  var memoryWriteMultiplier: Float = 1
+  var vigorMultiplier: Float = 1
+  var explorationTemperatureMultiplier: Float = 1
 }
 
 @available(macOS 26.0, *)
