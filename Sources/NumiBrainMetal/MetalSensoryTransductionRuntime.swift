@@ -123,9 +123,11 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     public let observationScalarCount: Int
     public let eventQueueGPUAddress: UInt64
     public let eventCapacity: Int
+    public let maximumEventCount: Int
   }
 
   public let profileFingerprint: UInt64
+  public let maximumEventCount: Int
 
   private let arena: MetalAgentStateArena
   private let species: SpeciesTemplate
@@ -301,6 +303,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       index: 11
     )
     self.profileFingerprint = profile.fingerprint
+    self.maximumEventCount = profile.eventRules.count
     self.arena = arena
     self.species = species
     self.profile = profile
@@ -440,7 +443,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       observationGPUAddress: hot.outputGPUAddress + UInt64(observation.byteOffset),
       observationScalarCount: totalObservationScalars,
       eventQueueGPUAddress: hot.outputGPUAddress + UInt64(eventQueue.byteOffset),
-      eventCapacity: eventCapacity
+      eventCapacity: eventCapacity,
+      maximumEventCount: profile.eventRules.count
     )
   }
 

@@ -274,6 +274,25 @@ struct NBReceptorEventTransductionResultABI {
     uint reserved;
 };
 
+struct NBCognitiveEventQueueHeaderABI {
+    atomic_uint count;
+    uint capacity;
+    atomic_uint overflow_count;
+    uint flags;
+    ulong target_timestamp_microseconds;
+    ulong generation;
+};
+
+struct NBCognitiveReceptorEventABI {
+    uint environment_identifier;
+    uint kind;
+    uint source_identifier;
+    uint flags;
+    ulong timestamp_microseconds;
+    float magnitude;
+    float auxiliary_value;
+};
+
 struct NBDueInvocationABI {
     ulong timestamp_microseconds;
     ulong interrupt_mask;
@@ -722,6 +741,10 @@ static_assert(
     sizeof(NBReceptorEventTransductionResultABI) == 16,
     "receptor transduction result ABI drift"
 );
+static_assert(sizeof(NBCognitiveEventQueueHeaderABI) == 32,
+              "cognitive event queue header drift");
+static_assert(sizeof(NBCognitiveReceptorEventABI) == 32,
+              "cognitive receptor event drift");
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
 static_assert(sizeof(NBRegionalMaturationRecordABI) == 32,
@@ -809,6 +832,22 @@ constant ulong NBInterruptMuscleOverload = 1ul << 6;
 constant ulong NBInterruptRescue = 1ul << 9;
 constant uint NBCPGOutputSomaticSynergy = 1u;
 constant uint NBCPGOutputAutonomicChannel = 2u;
+
+inline ulong cognitive_interrupt_mask_for_event_kind(uint kind) {
+    switch (kind) {
+        case 3u: return NBInterruptImpact;
+        case 5u: return NBInterruptLossOfSupport;
+        case 6u: return NBInterruptJointLimit;
+        case 7u: return NBInterruptMuscleOverload;
+        case 8u: return NBInterruptPain;
+        case 9u: return NBInterruptDamagingContact;
+        case 10u: return 1ul << 7u;
+        case 11u: return 1ul << 8u;
+        case 12u: return NBInterruptPhysiologicalCritical;
+        case 13u: return NBInterruptRescue;
+        default: return 0ul;
+    }
+}
 
 inline void protective_mix_byte(thread ulong &hash, uchar byte) {
     hash ^= ulong(byte);
@@ -1337,6 +1376,8 @@ kernel void transduce_receptor_interrupts(
     device const NBInterruptEventABI *hostEvents [[buffer(2)]],
     device NBInterruptEventABI *outputEvents [[buffer(3)]],
     device NBReceptorEventTransductionResultABI *result [[buffer(4)]],
+    device NBCognitiveEventQueueHeaderABI *cognitiveEventQueue
+        [[buffer(5)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -1348,6 +1389,7 @@ kernel void transduce_receptor_interrupts(
     result->reserved = 0u;
 
     uint outputCount = 0u;
+    uint receptorCount = 0u;
     for (uint index = 0u; index < uniforms->host_event_count; ++index) {
         if (outputCount >= uniforms->event_capacity) {
             result->status = NBReceptorTransductionStatusEventCapacity;
@@ -1356,9 +1398,61 @@ kernel void transduce_receptor_interrupts(
         outputEvents[outputCount++] = hostEvents[index];
     }
 
+    const uint cognitiveMaximumCount = uniforms->reserved_0;
+    if (cognitiveMaximumCount > 0u) {
+        const uint cognitiveCount = atomic_load_explicit(
+            &cognitiveEventQueue->count,
+            memory_order_relaxed
+        );
+        const uint overflowCount = atomic_load_explicit(
+            &cognitiveEventQueue->overflow_count,
+            memory_order_relaxed
+        );
+        if ((cognitiveEventQueue->flags & 1u) == 0u
+            || cognitiveEventQueue->target_timestamp_microseconds
+                != uniforms->committed_time_microseconds
+            || cognitiveEventQueue->capacity < cognitiveMaximumCount
+            || cognitiveCount > cognitiveMaximumCount
+            || overflowCount != 0u) {
+            result->status = NBReceptorTransductionStatusEventCapacity;
+            return;
+        }
+        device const NBCognitiveReceptorEventABI *cognitiveEvents =
+            reinterpret_cast<device const NBCognitiveReceptorEventABI *>(
+                cognitiveEventQueue + 1
+            );
+        for (uint index = 0u; index < cognitiveCount; ++index) {
+            const NBCognitiveReceptorEventABI receptor = cognitiveEvents[index];
+            if (receptor.timestamp_microseconds
+                    < uniforms->committed_time_microseconds
+                || receptor.timestamp_microseconds
+                    > uniforms->target_time_microseconds
+                || !isfinite(receptor.magnitude)
+                || receptor.magnitude < 0.0f
+                || !isfinite(receptor.auxiliary_value)) {
+                result->status = NBReceptorTransductionStatusTimeOverflow;
+                return;
+            }
+            if (outputCount >= uniforms->event_capacity) {
+                result->status = NBReceptorTransductionStatusEventCapacity;
+                return;
+            }
+            NBInterruptEventABI event;
+            event.timestamp_microseconds = receptor.timestamp_microseconds;
+            event.interrupt_mask = cognitive_interrupt_mask_for_event_kind(
+                receptor.kind
+            );
+            event.identifier = receptor.source_identifier;
+            event.flags = receptor.flags | NBInterruptEventFlagReceptorDerived;
+            event.magnitude = receptor.magnitude;
+            event.auxiliary_value = receptor.auxiliary_value;
+            outputEvents[outputCount++] = event;
+            receptorCount += 1u;
+        }
+    }
+
     const bool includeCommittedBoundary =
         (uniforms->flags & NBSchedulerFlagInitialize) != 0u;
-    uint receptorCount = 0u;
     for (uint index = 0u; index < uniforms->receptor_event_count; ++index) {
         const NBReceptorEventABI receptor = receptorEvents[index];
         if (receptor.interrupt_mask == 0ul

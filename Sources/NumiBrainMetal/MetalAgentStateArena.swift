@@ -135,6 +135,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let contextScalarCapacity = 512
   public static let fastPlasticityStride = 32
   public static let eventTokenStride = 32
+  public static let defaultEventTokenCapacity = 4_096
   public static let delayMessageStride = 320
   public static let archiveRecordsPerPage = 256
   public static let archivePageRequestCapacity = 64
@@ -152,7 +153,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     regionalProgram: RegionalTokenProgram,
     maximumRelationSlots: Int = 1_024,
     maximumSpatialTransforms: Int = 32,
-    maximumEventTokens: Int = 4_096,
+    maximumEventTokens: Int = Self.defaultEventTokenCapacity,
     maximumDelayMessages: Int = 4_096
   ) throws {
     guard species.fingerprint > 0, regionalProgram.fingerprint > 0,

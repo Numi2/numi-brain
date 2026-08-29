@@ -220,6 +220,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   static let fastAutonomicChannelDescriptorStride = 48
   static let activeSensingCommandStride = 16
   static let maximumActiveSensingChannelCount = 64
+  static let cognitiveEventRecordStride = 32
+  static let cognitiveEventQueueHeaderStride = 32
+  static let maximumCognitiveEventCount =
+    MetalAgentStateLayout.defaultEventTokenCapacity
 
   final class AcceptedFastMotorStateLease: @unchecked Sendable {
     let transactionFingerprint: UInt64
@@ -324,6 +328,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     public let protectiveMotorDispatches: Int
     public let schedulerHostInputEventCount: Int
     public let schedulerReceptorInputEventCount: Int
+    public let schedulerCognitiveInputEventMaximumCount: Int
     public let schedulerInputEventCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
@@ -521,6 +526,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedFastAutonomicOutputBuffer: any MTLBuffer
   private let fastAutonomicChannelDescriptorBuffer: any MTLBuffer
   private let stagedActiveSensingCommandBuffer: any MTLBuffer
+  private let stagedCognitiveEventQueueBuffer: any MTLBuffer
   private let defaultRegionalMaturationBuffer: any MTLBuffer
   private let stagedRegionalMaturationBuffer: any MTLBuffer
   private let defaultRegionalPlasticModulationBuffer: any MTLBuffer
@@ -580,6 +586,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let fastAutonomicCommandByteCount: Int
   public let fastAutonomicChannelDescriptorByteCount: Int
   public let activeSensingCommandByteCount: Int
+  public let stagedCognitiveEventQueueByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
   public let bodySchemaStateByteCount: Int
@@ -615,6 +622,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var boundFastAutonomicVitalGain: Float = 0
   private var boundFastAutonomicChannelCount: Int = 0
   private var boundActiveSensingChannelCount: Int = 0
+  private var stagedCognitiveEventTransactionFingerprint: UInt64?
+  private var stagedCognitiveEventMaximumCount: Int = 0
 
   private struct InteractiveCandidate {
     let substep: BrainJointSubstepToken
@@ -982,7 +991,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let receptorInterruptArgumentDescriptor = MTL4ArgumentTableDescriptor()
     receptorInterruptArgumentDescriptor.label = "NumiBrain receptor-interrupt arguments"
-    receptorInterruptArgumentDescriptor.maxBufferBindCount = 5
+    receptorInterruptArgumentDescriptor.maxBufferBindCount = 6
     receptorInterruptArgumentDescriptor.initializeBindings = true
     guard
       let receptorInterruptArgumentTable = try? device.makeArgumentTable(
@@ -1300,6 +1309,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         * Self.fastAutonomicChannelDescriptorStride
     let activeSensingCommandByteCount = Self.maximumActiveSensingChannelCount
       * Self.activeSensingCommandStride
+    let stagedCognitiveEventQueueByteCount =
+      Self.cognitiveEventQueueHeaderStride
+        + Self.maximumCognitiveEventCount * Self.cognitiveEventRecordStride
     guard !protectiveProfileByteOverflow, !protectiveExcitationByteOverflow,
       !developmentalMaturationOverflow, !plasticModulationOverflow,
       !fastCerebellarStateByteOverflow, !stagedMotorCommandByteOverflow,
@@ -1309,6 +1321,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       MemoryLayout<FastAutonomicUniforms>.stride == 40,
       MemoryLayout<FastAutonomicChannelDescriptor>.stride
         == Self.fastAutonomicChannelDescriptorStride,
+      MetalAgentStateLayout.eventTokenStride == Self.cognitiveEventRecordStride,
       MemoryLayout<FastReflexRule>.stride == Self.fastReflexRuleStride
     else {
       throw TissueError.metal("protective motor profile byte count overflows Int")
@@ -1569,6 +1582,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: activeSensingCommandByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let stagedCognitiveEventQueueBuffer = device.makeBuffer(
+        length: stagedCognitiveEventQueueByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let defaultRegionalMaturationBuffer = device.makeBuffer(
         length: developmentalMaturationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1751,6 +1768,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain immutable autonomic channel descriptors"
     stagedActiveSensingCommandBuffer.label =
       "NumiBrain transaction active sensing commands"
+    stagedCognitiveEventQueueBuffer.label =
+      "NumiBrain transaction cognitive receptor events"
     defaultRegionalMaturationBuffer.label =
       "NumiBrain default all-unlocked regional maturation"
     stagedRegionalMaturationBuffer.label =
@@ -1835,7 +1854,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                                     fastAutonomicCommandByteCount,
                                     max(
                                       activeSensingCommandByteCount,
-                                      fastAutonomicChannelDescriptorByteCount
+                                      max(
+                                        fastAutonomicChannelDescriptorByteCount,
+                                        stagedCognitiveEventQueueByteCount
+                                      )
                                     )
                                   )
                                 )
@@ -1951,6 +1973,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     residencySet.addAllocation(stagedFastAutonomicOutputBuffer)
     residencySet.addAllocation(fastAutonomicChannelDescriptorBuffer)
     residencySet.addAllocation(stagedActiveSensingCommandBuffer)
+    residencySet.addAllocation(stagedCognitiveEventQueueBuffer)
     residencySet.addAllocation(defaultRegionalMaturationBuffer)
     residencySet.addAllocation(stagedRegionalMaturationBuffer)
     residencySet.addAllocation(defaultRegionalPlasticModulationBuffer)
@@ -2083,6 +2106,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.stagedFastAutonomicOutputBuffer = stagedFastAutonomicOutputBuffer
     self.fastAutonomicChannelDescriptorBuffer = fastAutonomicChannelDescriptorBuffer
     self.stagedActiveSensingCommandBuffer = stagedActiveSensingCommandBuffer
+    self.stagedCognitiveEventQueueBuffer = stagedCognitiveEventQueueBuffer
     self.defaultRegionalMaturationBuffer = defaultRegionalMaturationBuffer
     self.stagedRegionalMaturationBuffer = stagedRegionalMaturationBuffer
     self.defaultRegionalPlasticModulationBuffer =
@@ -2139,6 +2163,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.fastAutonomicChannelDescriptorByteCount =
       fastAutonomicChannelDescriptorByteCount
     self.activeSensingCommandByteCount = activeSensingCommandByteCount
+    self.stagedCognitiveEventQueueByteCount =
+      stagedCognitiveEventQueueByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
     self.bodySchemaStateByteCount = bodySchemaStateByteCount
@@ -2507,7 +2533,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                   fastAutonomicCommandByteCount,
                   max(
                     activeSensingCommandByteCount,
-                    fastAutonomicChannelDescriptorByteCount
+                    max(
+                      fastAutonomicChannelDescriptorByteCount,
+                      stagedCognitiveEventQueueByteCount
+                    )
                   )
                 )
               )
@@ -2581,6 +2610,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       destination: fastAutonomicChannelDescriptorBuffer,
       size: fastAutonomicChannelDescriptorByteCount,
       label: "NumiBrain initial autonomic channel descriptor upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: stagedCognitiveEventQueueBuffer,
+      size: stagedCognitiveEventQueueByteCount,
+      label: "NumiBrain initial cognitive receptor-event queue upload"
     )
     let initialMaturationRecords = brainSchedule.modules.map {
       TissueRegionalMaturationRecord(moduleIdentifier: UInt32($0.moduleIdentifier))
@@ -3032,6 +3067,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     _ lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
     for transaction: BrainJointTransactionToken
   ) throws {
+    let (cognitiveEventRecordBytes, cognitiveEventRecordOverflow) =
+      lease.decision.receptorEventMaximumCount.multipliedReportingOverflow(
+        by: Self.cognitiveEventRecordStride
+      )
+    let (cognitiveEventQueueBytes, cognitiveEventQueueOverflow) =
+      Self.cognitiveEventQueueHeaderStride.addingReportingOverflow(
+        cognitiveEventRecordBytes
+      )
     guard let root = interactiveJointRoot,
       root.transaction.token == transaction,
       root.candidate == nil,
@@ -3065,6 +3108,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.fastAutonomicStateByteCount
         == boundFastAutonomicChannelCount * Self.fastAutonomicStateStride,
       lease.decision.activeSensingCommandCount == boundActiveSensingChannelCount,
+      !cognitiveEventRecordOverflow, !cognitiveEventQueueOverflow,
+      lease.decision.receptorEventMaximumCount <= maxSchedulerEvents,
+      lease.decision.receptorEventMaximumCount
+        <= Self.maximumCognitiveEventCount,
+      cognitiveEventQueueBytes <= stagedCognitiveEventQueueByteCount,
       lease.descendingBaselineSourceOffset <= lease.buffer.length,
       protectiveMuscleExcitationByteCount
         <= lease.buffer.length - lease.descendingBaselineSourceOffset,
@@ -3094,7 +3142,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         <= lease.buffer.length - lease.fastAutonomicStateSourceOffset,
       lease.activeSensingSourceOffset <= lease.buffer.length,
       boundActiveSensingChannelCount * Self.activeSensingCommandStride
-        <= lease.buffer.length - lease.activeSensingSourceOffset
+        <= lease.buffer.length - lease.activeSensingSourceOffset,
+      lease.receptorEventQueueSourceOffset <= lease.buffer.length,
+      cognitiveEventQueueBytes
+        <= lease.buffer.length - lease.receptorEventQueueSourceOffset
     else {
       throw TissueError.transaction(
         "descending somatic command is stale or incompatible with the NumanX motor profile"
@@ -3113,16 +3164,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
+    writeCognitiveEventTransductionUniforms(
+      timestamp: lease.decision.decisionTimestamp,
+      maximumEventCount: lease.decision.receptorEventMaximumCount
+    )
     writeFastCPGUniforms(
       timestamp: lease.decision.decisionTimestamp,
       oscillatorCount: lease.decision.cpgStateCount,
-      synergyCount: lease.decision.cpgSynergyCount
+      synergyCount: lease.decision.cpgSynergyCount,
+      consumeInterruptEvents: true
     )
     writeFastAutonomicUniforms(
       timestamp: lease.decision.decisionTimestamp,
       baselineTimestamp: lease.decision.decisionTimestamp,
       oscillatorCount: lease.decision.cpgStateCount,
-      consumeInterruptEvents: false
+      consumeInterruptEvents: true
     )
     writeProtectiveCommandUniforms(
       brainGeneration: transaction.shadowGeneration
@@ -3217,6 +3273,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       }
       encoder.copy(
         sourceBuffer: lease.buffer,
+        sourceOffset: lease.receptorEventQueueSourceOffset,
+        destinationBuffer: stagedCognitiveEventQueueBuffer,
+        destinationOffset: 0,
+        size: cognitiveEventQueueBytes
+      )
+      encoder.copy(
+        sourceBuffer: lease.buffer,
         sourceOffset: lease.fastAutonomicStateSourceOffset,
         destinationBuffer: stagedFastAutonomicStateBuffer,
         destinationOffset: 0,
@@ -3231,6 +3294,38 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
       encoder.barrier(
         afterEncoderStages: .blit,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      receptorInterruptArgumentTable.setAddress(
+        receptorEventTransductionUniformBuffer.gpuAddress,
+        index: 0
+      )
+      receptorInterruptArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+      receptorInterruptArgumentTable.setAddress(
+        schedulerEventUploadBuffer.gpuAddress,
+        index: 2
+      )
+      receptorInterruptArgumentTable.setAddress(
+        transducedSchedulerEventBuffer.gpuAddress,
+        index: 3
+      )
+      receptorInterruptArgumentTable.setAddress(
+        receptorEventTransductionResultBuffer.gpuAddress,
+        index: 4
+      )
+      receptorInterruptArgumentTable.setAddress(
+        stagedCognitiveEventQueueBuffer.gpuAddress,
+        index: 5
+      )
+      encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
+      encoder.setArgumentTable(receptorInterruptArgumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
@@ -3348,6 +3443,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     stagedFastCPGTransactionFingerprint = transaction.fingerprint
     stagedFastCPGOscillatorCount = lease.decision.cpgStateCount
     stagedFastCPGSynergyCount = lease.decision.cpgSynergyCount
+    stagedCognitiveEventTransactionFingerprint = transaction.fingerprint
+    stagedCognitiveEventMaximumCount =
+      lease.decision.receptorEventMaximumCount
   }
 
   /// Advances one neural tissue candidate without publishing it. Corrected
@@ -3786,6 +3884,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         + finalizationDispatches,
       schedulerHostInputEventCount: schedulerWindow.hostEventCount,
       schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
+      schedulerCognitiveInputEventMaximumCount:
+        schedulerWindow.cognitiveEventMaximumCount,
       schedulerInputEventCount: schedulerWindow.eventCount,
       gpuStartSeconds: finalGPUStart,
       gpuEndSeconds: finalGPUEnd
@@ -4183,6 +4283,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveMotorDispatches: 1,
       schedulerHostInputEventCount: schedulerWindow.hostEventCount,
       schedulerReceptorInputEventCount: schedulerWindow.receptorEventCount,
+      schedulerCognitiveInputEventMaximumCount:
+        schedulerWindow.cognitiveEventMaximumCount,
       schedulerInputEventCount: schedulerWindow.eventCount,
       gpuStartSeconds: feedback.gpuStartTime,
       gpuEndSeconds: feedback.gpuEndTime
@@ -5565,6 +5667,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       receptorEventTransductionResultBuffer.gpuAddress,
       index: 4
     )
+    receptorInterruptArgumentTable.setAddress(
+      stagedCognitiveEventQueueBuffer.gpuAddress,
+      index: 5
+    )
     encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
     encoder.setArgumentTable(receptorInterruptArgumentTable)
     encoder.dispatchThreads(
@@ -5913,8 +6019,35 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let outputClockIndex: Int
     let hostEventCount: Int
     let receptorEventCount: Int
+    let cognitiveEventMaximumCount: Int
     let eventCount: Int
     let initialize: Bool
+  }
+
+  /// Translates receptor events already present in the committed cognitive
+  /// observation at the root boundary. Physical time does not advance here;
+  /// the translated queue only seeds immediate reflex, CPG, and autonomic
+  /// overlays for the first physical candidate.
+  private func writeCognitiveEventTransductionUniforms(
+    timestamp: BrainTimestamp,
+    maximumEventCount: Int
+  ) {
+    var uniforms = NBReceptorEventTransductionUniforms()
+    uniforms.committed_time_microseconds = timestamp.rawValue
+    uniforms.target_time_microseconds = timestamp.rawValue
+    uniforms.receptor_event_count = 0
+    uniforms.host_event_count = 0
+    uniforms.event_capacity = UInt32(maxSchedulerEvents)
+    uniforms.flags = 0
+    uniforms.reserved_0 = UInt32(maximumEventCount)
+    uniforms.reserved_1 = 0
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      receptorEventTransductionUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: MemoryLayout<NBReceptorEventTransductionUniforms>.stride
+      )
+    }
   }
 
   private func prepareSchedulerWindow(
@@ -5957,7 +6090,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       targetTime: targetTime,
       includeCommittedBoundary: initialize
     )
+    let cognitiveEventMaximumCount =
+      stagedCognitiveEventTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? stagedCognitiveEventMaximumCount
+      : 0
     let totalEventCount = canonicalEvents.count + receptorEvents.count
+      + cognitiveEventMaximumCount
     guard totalEventCount <= maxSchedulerEvents else {
       throw TissueError.transaction(
         "\(totalEventCount) host and receptor scheduler events exceed capacity \(maxSchedulerEvents)"
@@ -6004,7 +6143,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     transductionUniforms.host_event_count = UInt32(eventRecords.count)
     transductionUniforms.event_capacity = UInt32(maxSchedulerEvents)
     transductionUniforms.flags = initialize ? 1 : 0
-    transductionUniforms.reserved_0 = 0
+    transductionUniforms.reserved_0 = UInt32(cognitiveEventMaximumCount)
     transductionUniforms.reserved_1 = 0
     withUnsafeBytes(of: &transductionUniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -6044,6 +6183,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       outputClockIndex: outputClockIndex,
       hostEventCount: canonicalEvents.count,
       receptorEventCount: receptorEvents.count,
+      cognitiveEventMaximumCount: cognitiveEventMaximumCount,
       eventCount: totalEventCount,
       initialize: initialize
     )

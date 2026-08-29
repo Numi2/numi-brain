@@ -34,6 +34,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let sensoryObservationScalarCount: Int
     public let receptorEventQueueGPUAddress: UInt64
     public let receptorEventCapacity: Int
+    public let receptorEventMaximumCount: Int
     public let regionalMaturationGPUAddress: UInt64
     public let regionalMaturationByteCount: Int
     public let regionalMaturationCount: Int
@@ -99,6 +100,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let motorCommandSourceOffset: Int
     let fastCerebellarStateSourceOffset: Int
     let fastAutonomicStateSourceOffset: Int
+    let receptorEventQueueSourceOffset: Int
 
     fileprivate init(
       decision: DecisionBufferView,
@@ -115,7 +117,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       reflexStateSourceOffset: Int,
       motorCommandSourceOffset: Int,
       fastCerebellarStateSourceOffset: Int,
-      fastAutonomicStateSourceOffset: Int
+      fastAutonomicStateSourceOffset: Int,
+      receptorEventQueueSourceOffset: Int
     ) {
       self.decision = decision
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
@@ -132,6 +135,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.motorCommandSourceOffset = motorCommandSourceOffset
       self.fastCerebellarStateSourceOffset = fastCerebellarStateSourceOffset
       self.fastAutonomicStateSourceOffset = fastAutonomicStateSourceOffset
+      self.receptorEventQueueSourceOffset = receptorEventQueueSourceOffset
     }
 
     public var metalBufferObject: UnsafeMutableRawPointer {
@@ -153,6 +157,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     public var fastAutonomicStateByteOffset: Int {
       fastAutonomicStateSourceOffset
+    }
+    public var receptorEventQueueByteOffset: Int {
+      receptorEventQueueSourceOffset
     }
     public static let structuredCommandStride = 16
   }
@@ -608,6 +615,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         sensoryObservationScalarCount: sensory.observationScalarCount,
         receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
         receptorEventCapacity: sensory.eventCapacity,
+        receptorEventMaximumCount: sensory.maximumEventCount,
         regionalMaturationGPUAddress:
           hot.outputGPUAddress + UInt64(maturation.byteOffset),
         regionalMaturationByteCount:
@@ -995,6 +1003,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let fastAutonomicState = agentStateRuntime.arena.layout.section(
       .fastAutonomicState
     )
+    let eventQueue = agentStateRuntime.arena.layout.section(.eventQueue)
     let reflexStateCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
     }
@@ -1078,7 +1087,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       fastAutonomicState.byteCount
         <= buffer.length - fastAutonomicState.byteOffset,
       decision.fastAutonomicStateGPUAddress
-        == buffer.gpuAddress + UInt64(fastAutonomicState.byteOffset)
+        == buffer.gpuAddress + UInt64(fastAutonomicState.byteOffset),
+      decision.receptorEventCapacity == eventQueue.elementCount - 1,
+      decision.receptorEventMaximumCount <= decision.receptorEventCapacity,
+      eventQueue.byteOffset <= buffer.length,
+      eventQueue.byteCount <= buffer.length - eventQueue.byteOffset,
+      decision.receptorEventQueueGPUAddress
+        == buffer.gpuAddress + UInt64(eventQueue.byteOffset)
     else {
       throw TissueError.transaction(
         "embodied somatic command does not identify its resident shadow buffer"
@@ -1099,7 +1114,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       reflexStateSourceOffset: reflexState.byteOffset,
       motorCommandSourceOffset: motorCommands.byteOffset,
       fastCerebellarStateSourceOffset: fastCerebellarState.byteOffset,
-      fastAutonomicStateSourceOffset: fastAutonomicState.byteOffset
+      fastAutonomicStateSourceOffset: fastAutonomicState.byteOffset,
+      receptorEventQueueSourceOffset: eventQueue.byteOffset
     )
   }
 

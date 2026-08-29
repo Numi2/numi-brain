@@ -64,7 +64,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       cognitive.regionalProgramFingerprint == fastTissue.regionalTokenProgram.fingerprint,
       cognitive.scheduleFingerprint == fastTissue.brainSchedule.fingerprint,
       cognitive.sharedParameterBank.artifactFingerprint
-        == fastTissue.sharedParameterBank.artifactFingerprint
+        == fastTissue.sharedParameterBank.artifactFingerprint,
+      cognitive.sensoryRuntime.maximumEventCount <= fastTissue.maxSchedulerEvents
     else {
       throw TissueError.transaction(
         "cognitive and fast runtimes do not share one device and immutable brain version"
