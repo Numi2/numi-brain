@@ -56,12 +56,12 @@ public struct MetalNumiBrainConfiguration: Sendable {
 @available(macOS 26.0, *)
 extension MetalNumiBrainRuntime {
   /// Creates the authoritative complete runtime from one compiled species and
-  /// one immutable publication. Omitting the publication creates a content-
-  /// addressed foundation generation for the full species graph, never the
-  /// reduced scheduler qualification fixture.
+  /// one explicit immutable publication. A new developmental agent may use
+  /// `BrainParameterPublication.developmentalSeedV1`; trained cohorts supply
+  /// their exact learner publication instead.
   public static func create(
     configuration: MetalNumiBrainConfiguration,
-    publication requestedPublication: BrainParameterPublication? = nil,
+    publication: BrainParameterPublication,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws -> MetalNumiBrainRuntime {
     guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
@@ -70,27 +70,6 @@ extension MetalNumiBrainRuntime {
     let compiledSpeciesTemplate = configuration.compiledSpeciesTemplate
     let species = compiledSpeciesTemplate.species
     let regionalProgram = try species.regionalProgram()
-    let publication: BrainParameterPublication
-    if let requestedPublication {
-      publication = requestedPublication
-    } else {
-      let regionCount = species.enabledModuleIdentifiers.count
-      let plasticityBasisCapacity =
-        (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
-        / regionCount
-      let version = try BrainParameterVersion.runtimeFoundationV0(
-        schedule: species.regionGraph.schedule,
-        regionalProgram: regionalProgram,
-        tissueParameters: configuration.tissueParameters,
-        plasticityBasisCapacityPerRegion: plasticityBasisCapacity
-      )
-      publication = try BrainParameterPublication(
-        version: version,
-        sharedArtifact: BrainSharedParameterArtifact.foundation(
-          parameterVersion: version
-        )
-      )
-    }
     let version = publication.version
     guard
       compiledSpeciesTemplate.sensoryProfile.speciesTemplateFingerprint

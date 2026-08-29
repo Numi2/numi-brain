@@ -345,6 +345,32 @@ public struct BrainParameterPublication: Equatable, Sendable {
       sourceGeneration: learnerUpdate.sourceGeneration
     )
   }
+
+  /// Explicit untrained publication for a newly created developmental cohort.
+  /// Production runtime creation never selects this implicitly: callers must
+  /// deliberately choose a seed or provide a learner-published successor.
+  public static func developmentalSeedV1(
+    species: SpeciesTemplate,
+    tissueParameters: TissueParameters
+  ) throws -> Self {
+    let regionalProgram = try species.regionalProgram()
+    let regionCount = species.enabledModuleIdentifiers.count
+    let plasticityBasisCapacity =
+      (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
+      / regionCount
+    let version = try BrainParameterVersion.runtimeFoundationV0(
+      schedule: species.regionGraph.schedule,
+      regionalProgram: regionalProgram,
+      tissueParameters: tissueParameters,
+      plasticityBasisCapacityPerRegion: plasticityBasisCapacity
+    )
+    return try Self(
+      version: version,
+      sharedArtifact: BrainSharedParameterArtifact.foundation(
+        parameterVersion: version
+      )
+    )
+  }
 }
 
 /// One immutable parameter publication and the exact registry lease that owns
