@@ -188,6 +188,13 @@ struct NBPlanStepRecord {
   float predicted_state[16];
 };
 
+struct NBCounterfactualWorldOutcome {
+  float mean_prediction;
+  float epistemic_uncertainty;
+  float damage_cvar;
+  float aleatoric_variance;
+};
+
 struct NBMotorCommandRecord {
   float excitation;
   float force_target;
@@ -594,6 +601,70 @@ inline float nb_counterfactual_option_context(
       + 0.25f * candidate.parameters[paired]
       + 0.25f * rollout_state[component % 16u]
   );
+}
+
+inline NBCounterfactualWorldOutcome nb_counterfactual_world_outcome(
+  device const float *world,
+  device const float *world_parameters,
+  constant NBDecisionUniforms &uniforms,
+  const NBOptionCandidateRecord candidate,
+  thread const float *rollout_state,
+  const uint step,
+  const bool structured_world_available)
+{
+  NBCounterfactualWorldOutcome outcome = {};
+  float head_values[NB_WORLD_HEAD_COUNT];
+  const uint planning_level = step == 0u ? 3u : 4u;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    float prediction = 0.0f;
+    for (uint feature = 0u; feature < 16u; ++feature) {
+      const uint world_component = (step * 16u + feature)
+        % NB_WORLD_EVENT_OPTION_DIMENSION;
+      const float baseline = structured_world_available
+        ? world[NB_WORLD_EVENT_OPTION_BASE
+            + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + world_component]
+        : world[(world_component * NB_WORLD_HEAD_COUNT + head)
+            % uniforms.world_model_scalar_count];
+      const float base_logit = atanh(clamp(baseline, -0.999f, 0.999f));
+      const float option_context = nb_counterfactual_option_context(
+        candidate, rollout_state, world_component
+      );
+      prediction += tanh(
+        base_logit
+          + world_parameters[
+            160u + planning_level * NB_WORLD_HEAD_COUNT + head
+          ] * option_context
+      ) / 16.0f;
+    }
+    head_values[head] = prediction;
+    outcome.mean_prediction += prediction / float(NB_WORLD_HEAD_COUNT);
+  }
+  float epistemic_variance = 0.0f;
+  float largest_head_damage = 0.0f;
+  float second_largest_head_damage = 0.0f;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    const float difference = head_values[head] - outcome.mean_prediction;
+    epistemic_variance += difference * difference / float(NB_WORLD_HEAD_COUNT);
+    const float head_damage = clamp(head_values[head], 0.0f, 1.0f);
+    if (head_damage >= largest_head_damage) {
+      second_largest_head_damage = largest_head_damage;
+      largest_head_damage = head_damage;
+    } else if (head_damage > second_largest_head_damage) {
+      second_largest_head_damage = head_damage;
+    }
+  }
+  outcome.epistemic_uncertainty = sqrt(max(epistemic_variance, 0.0f));
+  // Five heads make the exact upper 40 percent tail the two worst learned
+  // outcomes. Aleatoric observation variance remains a separate risk input.
+  outcome.damage_cvar =
+    (largest_head_damage + second_largest_head_damage)
+      / float(NB_WORLD_CVAR_TAIL_COUNT);
+  outcome.aleatoric_variance = structured_world_available
+    ? max(world[NB_WORLD_EVENT_OPTION_BASE
+        + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
+        + (step * 16u) % NB_WORLD_EVENT_OPTION_DIMENSION], 0.0f)
+    : 0.0f;
+  return outcome;
 }
 
 kernel void generate_active_goal_state(
@@ -1180,17 +1251,27 @@ kernel void simulate_candidate_option_outcomes(
           compatibility += rollout_state[component]
             * followup.parameters[component] * 0.05f;
         }
+        const NBCounterfactualWorldOutcome followup_world =
+          nb_counterfactual_world_outcome(
+            world, world_parameters, uniforms, followup, rollout_state,
+            step, structured_world_available
+          );
+        const float followup_risk = clamp(
+          max(followup.damage_cvar, followup_world.damage_cvar)
+            + 0.05f * sqrt(followup_world.aleatoric_variance)
+            + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
+          0.0f, 1.0f
+        );
         const float followup_score = value_parameters[0] * followup.task_value
           + value_parameters[1] * followup.homeostatic_value
           + value_parameters[2] * followup.social_value
           + value_parameters[3] * uniforms.curiosity_weight
             * followup.information_gain
           + compatibility - value_parameters[4] * uniforms.risk_weight
-            * followup.damage_cvar
+            * followup_risk
           - value_parameters[5] * followup.effort_cost
           - value_parameters[6] * followup.switching_cost;
-        if (max(followup.damage_cvar, embodied_self_risk)
-              <= uniforms.damage_risk_budget
+        if (followup_risk <= uniforms.damage_risk_budget
             && (followup_score > best_followup_score
               || (followup_score == best_followup_score
                 && candidate_index < best_followup))) {
@@ -1222,68 +1303,22 @@ kernel void simulate_candidate_option_outcomes(
         workspace[memory_base + 13u], -1.0f, 1.0f
       );
     }
-    float ensemble_mean = 0.0f;
-    float head_values[NB_WORLD_HEAD_COUNT];
-    const uint planning_level = step == 0u ? 3u : 4u;
-    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-      float prediction = 0.0f;
-      for (uint feature = 0u; feature < 16u; ++feature) {
-        const uint world_component = (step * 16u + feature)
-          % NB_WORLD_EVENT_OPTION_DIMENSION;
-        const float baseline = structured_world_available
-          ? world[NB_WORLD_EVENT_OPTION_BASE
-              + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + world_component]
-          : world[(world_component * NB_WORLD_HEAD_COUNT + head)
-              % uniforms.world_model_scalar_count];
-        const float base_logit = atanh(clamp(baseline, -0.999f, 0.999f));
-        const float option_context = nb_counterfactual_option_context(
-          candidate, rollout_state, world_component
-        );
-        prediction += tanh(
-          base_logit
-            + world_parameters[
-              160u + planning_level * NB_WORLD_HEAD_COUNT + head
-            ] * option_context
-        ) / 16.0f;
-      }
-      head_values[head] = prediction;
-      ensemble_mean += prediction / float(NB_WORLD_HEAD_COUNT);
-    }
-    float epistemic_variance = 0.0f;
-    float largest_head_damage = 0.0f;
-    float second_largest_head_damage = 0.0f;
-    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-      const float difference = head_values[head] - ensemble_mean;
-      epistemic_variance += difference * difference / float(NB_WORLD_HEAD_COUNT);
-      const float head_damage = clamp(head_values[head], 0.0f, 1.0f);
-      if (head_damage >= largest_head_damage) {
-        second_largest_head_damage = largest_head_damage;
-        largest_head_damage = head_damage;
-      } else if (head_damage > second_largest_head_damage) {
-        second_largest_head_damage = head_damage;
-      }
-    }
+    const NBCounterfactualWorldOutcome world_outcome =
+      nb_counterfactual_world_outcome(
+        world, world_parameters, uniforms, candidate, rollout_state,
+        step, structured_world_available
+      );
+    const float ensemble_mean = world_outcome.mean_prediction;
     const float epistemic = max(
-      sqrt(max(epistemic_variance, 0.0f)),
+      world_outcome.epistemic_uncertainty,
       episodic_support * episodic_uncertainty
     );
-    const float aleatoric_variance = structured_world_available
-      ? max(world[NB_WORLD_EVENT_OPTION_BASE
-          + 8u * NB_WORLD_EVENT_OPTION_DIMENSION
-          + (step * 16u) % NB_WORLD_EVENT_OPTION_DIMENSION], 0.0f)
-      : 0.0f;
-    // Five heads make the exact upper 40 percent tail the two worst learned
-    // outcomes. This is the bounded deployment CVaR used for plan admission;
-    // aleatoric observation variance remains a separate risk increment.
-    const float predicted_world_damage =
-      (largest_head_damage + second_largest_head_damage)
-        / float(NB_WORLD_CVAR_TAIL_COUNT);
     const float step_damage = clamp(
       max(
-        max(candidate.damage_cvar, predicted_world_damage),
+        max(candidate.damage_cvar, world_outcome.damage_cvar),
         episodic_support * episodic_damage
       )
-        + 0.05f * sqrt(aleatoric_variance)
+        + 0.05f * sqrt(world_outcome.aleatoric_variance)
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
       0.0f, 1.0f
     );
