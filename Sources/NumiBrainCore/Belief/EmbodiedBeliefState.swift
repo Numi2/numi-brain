@@ -63,6 +63,70 @@ public struct BodyNodeBelief: Codable, Equatable, Hashable, Sendable {
 }
 
 @frozen
+public struct JointCoordinateBelief: Codable, Equatable, Hashable, Sendable {
+  public let coordinateIdentifier: UInt16
+  public let kind: NumanXJointCoordinateKind
+  public let position: BeliefScalar
+  public let velocity: BeliefScalar
+  public let limitActivation: Float
+
+  public init(
+    coordinateIdentifier: UInt16,
+    kind: NumanXJointCoordinateKind,
+    position: BeliefScalar,
+    velocity: BeliefScalar,
+    limitActivation: Float
+  ) throws {
+    guard limitActivation.isFinite, (0...1).contains(limitActivation) else {
+      throw BrainRuntimeError.transaction(
+        "joint-coordinate limit activation is invalid"
+      )
+    }
+    self.coordinateIdentifier = coordinateIdentifier
+    self.kind = kind
+    self.position = position
+    self.velocity = velocity
+    self.limitActivation = limitActivation
+  }
+}
+
+/// Posterior state for one immutable articulation edge in the learned body
+/// graph. Coordinate order is stable and follows the NumanX topology catalog.
+@frozen
+public struct JointEdgeBelief: Codable, Equatable, Hashable, Sendable {
+  public let jointIdentifier: UInt32
+  public let parentBodyIdentifier: UInt32
+  public let childBodyIdentifier: UInt32
+  public let coordinates: [JointCoordinateBelief]
+  public let ownershipConfidence: Float
+  public let observationTimestamp: BrainTimestamp?
+
+  public init(
+    jointIdentifier: UInt32,
+    parentBodyIdentifier: UInt32,
+    childBodyIdentifier: UInt32,
+    coordinates: [JointCoordinateBelief],
+    ownershipConfidence: Float,
+    observationTimestamp: BrainTimestamp?
+  ) throws {
+    guard parentBodyIdentifier != childBodyIdentifier, !coordinates.isEmpty,
+      Set(coordinates.map(\.coordinateIdentifier)).count == coordinates.count,
+      ownershipConfidence.isFinite, (0...1).contains(ownershipConfidence)
+    else {
+      throw BrainRuntimeError.transaction("joint-edge belief is invalid")
+    }
+    self.jointIdentifier = jointIdentifier
+    self.parentBodyIdentifier = parentBodyIdentifier
+    self.childBodyIdentifier = childBodyIdentifier
+    self.coordinates = coordinates.sorted {
+      $0.coordinateIdentifier < $1.coordinateIdentifier
+    }
+    self.ownershipConfidence = ownershipConfidence
+    self.observationTimestamp = observationTimestamp
+  }
+}
+
+@frozen
 public struct MuscleEdgeBelief: Codable, Equatable, Hashable, Sendable {
   public let muscleIdentifier: UInt32
   public let firstBodyIdentifier: UInt32
@@ -417,6 +481,7 @@ public struct BeliefContextState: Codable, Equatable, Hashable, Sendable {
 public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
   public let timestamp: BrainTimestamp
   public let bodyNodes: [BodyNodeBelief]
+  public let jointEdges: [JointEdgeBelief]
   public let muscleEdges: [MuscleEdgeBelief]
   public let actuatorEffects: [SomaticActuatorBelief]
   public let bodyLoadPosterior: [BodySchemaPosteriorCell]
@@ -433,6 +498,7 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
   public init(
     timestamp: BrainTimestamp,
     bodyNodes: [BodyNodeBelief],
+    jointEdges: [JointEdgeBelief],
     muscleEdges: [MuscleEdgeBelief],
     actuatorEffects: [SomaticActuatorBelief],
     bodyLoadPosterior: [BodySchemaPosteriorCell],
@@ -451,6 +517,7 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
     guard maximumObjectSlots >= 0, maximumAgentSlots >= 0,
       objects.count <= maximumObjectSlots, otherAgents.count <= maximumAgentSlots,
       Set(bodyNodes.map(\.bodyIdentifier)).count == bodyNodes.count,
+      Set(jointEdges.map(\.jointIdentifier)).count == jointEdges.count,
       Set(muscleEdges.map(\.muscleIdentifier)).count == muscleEdges.count,
       Set(actuatorEffects.map(\.actuatorIdentifier)).count
         == actuatorEffects.count,
@@ -463,15 +530,21 @@ public struct EmbodiedBeliefState: Codable, Equatable, Sendable {
       throw BrainRuntimeError.transaction("unified embodied belief state is invalid")
     }
     let bodyIdentifiers = Set(bodyNodes.map(\.bodyIdentifier))
-    guard muscleEdges.allSatisfy({
-      bodyIdentifiers.contains($0.firstBodyIdentifier)
-        && bodyIdentifiers.contains($0.terminalBodyIdentifier)
-    }), bodyLoadPosterior.allSatisfy({ bodyIdentifiers.contains($0.bodyIdentifier) })
+    guard
+      jointEdges.allSatisfy({
+        bodyIdentifiers.contains($0.parentBodyIdentifier)
+          && bodyIdentifiers.contains($0.childBodyIdentifier)
+      }),
+      muscleEdges.allSatisfy({
+        bodyIdentifiers.contains($0.firstBodyIdentifier)
+          && bodyIdentifiers.contains($0.terminalBodyIdentifier)
+      }), bodyLoadPosterior.allSatisfy({ bodyIdentifiers.contains($0.bodyIdentifier) })
     else {
       throw BrainRuntimeError.transaction("embodied belief graph has unknown body endpoints")
     }
     self.timestamp = timestamp
     self.bodyNodes = bodyNodes.sorted { $0.bodyIdentifier < $1.bodyIdentifier }
+    self.jointEdges = jointEdges.sorted { $0.jointIdentifier < $1.jointIdentifier }
     self.muscleEdges = muscleEdges.sorted { $0.muscleIdentifier < $1.muscleIdentifier }
     self.actuatorEffects = actuatorEffects.sorted {
       $0.actuatorIdentifier < $1.actuatorIdentifier

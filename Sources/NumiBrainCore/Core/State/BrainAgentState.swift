@@ -4,7 +4,7 @@ import Foundation
 /// are referenced by fingerprint and never embedded here.
 @frozen
 public struct BrainAgentState: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let environmentIdentifier: UInt32
   public let speciesTemplateFingerprint: UInt64

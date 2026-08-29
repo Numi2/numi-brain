@@ -204,6 +204,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     parameterVersion: BrainParameterVersion,
     sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
     sensoryProfile: SensoryTransductionProfile,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
     acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
       AcceptedConsequenceDynamics? = nil,
@@ -280,6 +281,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       dynamics: requestedAcceptedConsequenceDynamics
         ?? AcceptedConsequenceDynamics.foundationV1,
       sensoryProfile: sensoryProfile,
+      jointTopologyCatalog: jointTopologyCatalog,
       sharedParameters: sharedParameterBank
     )
     let residencyDescriptor = MTLResidencySetDescriptor()
@@ -536,7 +538,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     else {
       throw TissueError.transaction("embodied control transaction is not open")
     }
-    let duration = transaction.jointToken.targetTimestamp.rawValue
+    let duration =
+      transaction.jointToken.targetTimestamp.rawValue
       - transaction.jointToken.committedTimestamp.rawValue
     guard duration > 0, duration <= UInt64(UInt32.max) else {
       throw TissueError.transaction("embodied control interval exceeds sensory ABI")
@@ -788,7 +791,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         "accepted consequence does not finish the open embodied control root"
       )
     }
-    let duration = transaction.jointToken.targetTimestamp.rawValue
+    let duration =
+      transaction.jointToken.targetTimestamp.rawValue
       - transaction.jointToken.committedTimestamp.rawValue
     guard duration > 0, duration <= UInt64(UInt32.max) else {
       throw TissueError.transaction("accepted control interval exceeds sensory ABI")
@@ -1028,24 +1032,23 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       lease.acceptedActiveSensingOutputBuffer.length
         >= lease.acceptedActiveSensingOutputByteCount,
       (lease.bodySchemaCount == 0 && lease.bodySchemaByteCount == 0)
-        || (
-          lease.bodySchemaCount == Int(species.body.bodyCount)
-            && lease.bodySchemaByteCount == lease.bodySchemaCount * 48
-            && lease.bodySchemaBuffer.length >= lease.bodySchemaByteCount
-        ),
+        || (lease.bodySchemaCount == Int(species.body.bodyCount)
+          && lease.bodySchemaByteCount == lease.bodySchemaCount * 48
+          && lease.bodySchemaBuffer.length >= lease.bodySchemaByteCount),
       lease.actuatorCommandKind == species.motor.actuatorCommandKind
     else {
       throw TissueError.transaction(
         "accepted fast motor state does not match the cognitive shadow"
       )
     }
-    guard lease.byteCount > 0 || lease.reflexStateByteCount > 0
-      || lease.fastCerebellarStateByteCount > 0
-      || lease.fastAutonomicStateByteCount > 0
-      || lease.acceptedSomaticOutputByteCount > 0
-      || lease.acceptedAutonomicOutputByteCount > 0
-      || lease.acceptedActiveSensingOutputByteCount > 0
-      || lease.bodySchemaByteCount > 0
+    guard
+      lease.byteCount > 0 || lease.reflexStateByteCount > 0
+        || lease.fastCerebellarStateByteCount > 0
+        || lease.fastAutonomicStateByteCount > 0
+        || lease.acceptedSomaticOutputByteCount > 0
+        || lease.acceptedAutonomicOutputByteCount > 0
+        || lease.acceptedActiveSensingOutputByteCount > 0
+        || lease.bodySchemaByteCount > 0
     else { return }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
@@ -1379,14 +1382,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     teacherState: MetalTeacherStateBufferLease?,
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
   ) throws -> (any MTLResidencySet)? {
-    guard !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
-      || acceptedFastMotorState != nil
+    guard
+      !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
+        || acceptedFastMotorState != nil
     else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
-    descriptor.initialCapacity = sensors.reduce(0) {
-      $0 + 1 + ($1.validityBuffer == nil ? 0 : 1)
-    }
+    descriptor.initialCapacity =
+      sensors.reduce(0) {
+        $0 + 1 + ($1.validityBuffer == nil ? 0 : 1)
+      }
       + (developmentalEvidence == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
       + (acceptedFastMotorState == nil ? 0 : 1)

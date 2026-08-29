@@ -13,6 +13,7 @@ public enum SpeciesFamily: UInt16, Codable, CaseIterable, Sendable {
 public struct SpeciesBodyTopology: Codable, Equatable, Hashable, Sendable {
   public let bodyCount: UInt32
   public let jointCount: UInt32
+  public let jointTopologyFingerprint: UInt64
   public let muscleCount: UInt32
   public let muscleAttachmentFingerprint: UInt64
   public let skinSurfaceCount: UInt32
@@ -22,13 +23,14 @@ public struct SpeciesBodyTopology: Codable, Equatable, Hashable, Sendable {
   public init(
     bodyCount: UInt32,
     jointCount: UInt32,
+    jointTopologyFingerprint: UInt64,
     muscleCount: UInt32,
     muscleAttachmentFingerprint: UInt64,
     skinSurfaceCount: UInt32,
     actuatorCount: UInt32,
     morphologyCode: UInt64
   ) throws {
-    guard bodyCount > 0, jointCount > 0,
+    guard bodyCount > 1, jointCount > 0, jointTopologyFingerprint > 0,
       (muscleCount == 0) == (muscleAttachmentFingerprint == 0),
       skinSurfaceCount > 0,
       actuatorCount > 0, morphologyCode > 0
@@ -37,6 +39,7 @@ public struct SpeciesBodyTopology: Codable, Equatable, Hashable, Sendable {
     }
     self.bodyCount = bodyCount
     self.jointCount = jointCount
+    self.jointTopologyFingerprint = jointTopologyFingerprint
     self.muscleCount = muscleCount
     self.muscleAttachmentFingerprint = muscleAttachmentFingerprint
     self.skinSurfaceCount = skinSurfaceCount
@@ -679,8 +682,8 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  /// Version 5 maps physiological state to stable interoceptive receptor IDs.
-  public static let formatVersion: UInt32 = 7
+  /// Version 8 binds the body graph to immutable NumanX joint topology.
+  public static let formatVersion: UInt32 = 8
 
   public let family: SpeciesFamily
   public let name: String
@@ -715,10 +718,12 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     capacities: BrainCapacityProfile
   ) throws {
     let enabled = enabledModuleIdentifiers.sorted()
-    let regionGraph = try requestedRegionGraph ?? SpeciesRegionGraph.referenceSubset(
-      referenceGraph: referenceGraph,
-      enabledModuleIdentifiers: enabled
-    )
+    let regionGraph =
+      try requestedRegionGraph
+      ?? SpeciesRegionGraph.referenceSubset(
+        referenceGraph: referenceGraph,
+        enabledModuleIdentifiers: enabled
+      )
     let regionalIdentifiers = regionGraph.modules.map(\.identifier)
     var reflexRuleCount = 0
     var reflexRuleCountOverflow = false
@@ -728,7 +733,8 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       )
       let total = reflexRuleCount.addingReportingOverflow(product.partialValue)
       reflexRuleCount = total.partialValue
-      reflexRuleCountOverflow = reflexRuleCountOverflow || product.overflow
+      reflexRuleCountOverflow =
+        reflexRuleCountOverflow || product.overflow
         || total.overflow
     }
     let hasVitalAutonomicCPG = cpg.oscillators.contains {
@@ -744,7 +750,8 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     let physiologicalReceptorIdentifiers = Set(
       physiology.receptorMappings.map(\.receptorIdentifier)
     )
-    let biologicalFamily = family == .human || family == .quadruped
+    let biologicalFamily =
+      family == .human || family == .quadruped
       || family == .bird
     guard let interoception, interoception.enabled else {
       throw BrainRuntimeError.invalidDescriptor(
@@ -767,11 +774,10 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
           .isSubset(of: physiologicalReceptorIdentifiers)
       }),
       motor.actuatorCount == body.actuatorCount,
-      !biologicalFamily || (
-        body.muscleCount == motor.actuatorCount
+      !biologicalFamily
+        || (body.muscleCount == motor.actuatorCount
           && body.muscleAttachmentFingerprint > 0
-          && motor.actuatorCommandKind == .muscleExcitation
-      ),
+          && motor.actuatorCommandKind == .muscleExcitation),
       motor.autonomicActionDimension == physiology.autonomicActionDimension,
       activeSensingDimension == Int(motor.activeSensingActionDimension),
       Set(reflexes.map(\.identifier)).count == reflexes.count,
@@ -807,6 +813,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     Self.mix(regionGraph.fingerprint, into: &hash)
     Self.mix(body.bodyCount, into: &hash)
     Self.mix(body.jointCount, into: &hash)
+    Self.mix(body.jointTopologyFingerprint, into: &hash)
     Self.mix(body.muscleCount, into: &hash)
     Self.mix(body.muscleAttachmentFingerprint, into: &hash)
     Self.mix(body.skinSurfaceCount, into: &hash)

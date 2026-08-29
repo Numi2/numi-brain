@@ -9,6 +9,7 @@ private struct AcceptedConsequenceUniforms {
   var observationValidityOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
   var bodyBeliefOffset: UInt64 = 0
+  var jointBeliefOffset: UInt64 = 0
   var muscleBeliefOffset: UInt64 = 0
   var physiologyOffset: UInt64 = 0
   var objectSlotOffset: UInt64 = 0
@@ -35,6 +36,7 @@ private struct AcceptedConsequenceUniforms {
   var regionalMaturationOffset: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
+  var jointCount: UInt32 = 0
   var muscleCount: UInt32 = 0
   var physiologyCount: UInt32 = 0
   var objectSlotCount: UInt32 = 0
@@ -112,6 +114,49 @@ private struct AcceptedBodyReceptorBindingRecord {
   var reserved: Float = 0
 }
 
+private struct AcceptedJointReceptorBindingTableHeader {
+  var bindingCount: UInt32 = 0
+  var jointCount: UInt32 = 0
+  var profileFingerprint: UInt64 = 0
+  var topologyFingerprint: UInt64 = 0
+}
+
+private struct AcceptedJointTopologyRecord {
+  var jointIdentifier: UInt32 = 0
+  var parentBodyIdentifier: UInt32 = 0
+  var childBodyIdentifier: UInt32 = 0
+  var coordinateCount: UInt32 = 0
+  var minimum0: Float = 0
+  var minimum1: Float = 0
+  var minimum2: Float = 0
+  var minimum3: Float = 0
+  var minimum4: Float = 0
+  var minimum5: Float = 0
+  var maximum0: Float = 0
+  var maximum1: Float = 0
+  var maximum2: Float = 0
+  var maximum3: Float = 0
+  var maximum4: Float = 0
+  var maximum5: Float = 0
+  var rest0: Float = 0
+  var rest1: Float = 0
+  var rest2: Float = 0
+  var rest3: Float = 0
+  var rest4: Float = 0
+  var rest5: Float = 0
+}
+
+private struct AcceptedJointReceptorBindingRecord {
+  var jointIndex: UInt32 = 0
+  var coordinateSlot: UInt32 = 0
+  var signal: UInt32 = 0
+  var observationScalarIndex: UInt32 = 0
+  var scale: Float = 0
+  var bias: Float = 0
+  var weight: Float = 0
+  var flags: UInt32 = 0
+}
+
 private struct ObservationRange: Sendable {
   let offset: UInt32
   let count: UInt32
@@ -132,6 +177,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let actuatorDescriptorBuffer: any MTLBuffer
   private let bodyReceptorBindingBuffer: any MTLBuffer
+  private let jointReceptorBindingBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
   private let plasticityParameterCount: UInt32
   private let sensorimotorWorldDimension: Int
@@ -142,28 +188,34 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     dynamics: AcceptedConsequenceDynamics,
     sensoryProfile: SensoryTransductionProfile,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     sharedParameters: MetalSharedParameterBank
   ) throws {
     let sensorimotorWorldDimension = Int(
       try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
         .latentDimension
     )
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 416,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 432,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
       MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride == 32,
+      MemoryLayout<AcceptedJointReceptorBindingTableHeader>.stride == 24,
+      MemoryLayout<AcceptedJointTopologyRecord>.stride == 88,
+      MemoryLayout<AcceptedJointReceptorBindingRecord>.stride == 32,
       sensorimotorWorldDimension == 256,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       sensoryProfile.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
     }
+    try jointTopologyCatalog.validate(species: species)
     var offset: UInt32 = 0
     var ranges: [SensoryModality: ObservationRange] = [:]
     for topology in species.senses.sorted(by: { $0.modality.rawValue < $1.modality.rawValue })
     where topology.enabled {
-      let count64 = UInt64(topology.receptorCount)
+      let count64 =
+        UInt64(topology.receptorCount)
         * UInt64(topology.observationDimension)
       guard count64 <= UInt64(UInt32.max),
         UInt64(offset) + count64 <= UInt64(UInt32.max)
@@ -199,9 +251,10 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       else {
         throw TissueError.metal("accepted body receptor topology is unavailable")
       }
-      let scalarIndex = UInt64(range.offset)
+      let scalarIndex =
+        UInt64(range.offset)
         + UInt64(binding.receptorIndex)
-          * UInt64(topology.observationDimension)
+        * UInt64(topology.observationDimension)
         + UInt64(binding.featureIndex)
       guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
       else {
@@ -236,6 +289,97 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         bindingCount: UInt32(bindingCursor - begin)
       )
     }
+    let jointIndexByIdentifier = Dictionary(
+      uniqueKeysWithValues: jointTopologyCatalog.joints.enumerated().map {
+        ($0.element.jointIdentifier, $0.offset)
+      }
+    )
+    let indexedJointBindings = try sensoryProfile.jointReceptorBindings.map {
+      binding -> (binding: JointReceptorBinding, jointIndex: Int, coordinateSlot: Int) in
+      guard let jointIndex = jointIndexByIdentifier[binding.jointIdentifier],
+        let coordinateSlot = jointTopologyCatalog.joints[jointIndex].coordinates
+          .firstIndex(where: { $0.identifier == binding.coordinateIdentifier })
+      else {
+        throw TissueError.metal("accepted joint receptor endpoint is unavailable")
+      }
+      return (binding, jointIndex, coordinateSlot)
+    }.sorted {
+      if $0.jointIndex != $1.jointIndex { return $0.jointIndex < $1.jointIndex }
+      if $0.coordinateSlot != $1.coordinateSlot {
+        return $0.coordinateSlot < $1.coordinateSlot
+      }
+      if $0.binding.signal.rawValue != $1.binding.signal.rawValue {
+        return $0.binding.signal.rawValue < $1.binding.signal.rawValue
+      }
+      return $0.binding.identifier < $1.binding.identifier
+    }
+    let jointReceptorBindings = try indexedJointBindings.map {
+      entry -> AcceptedJointReceptorBindingRecord in
+      let binding = entry.binding
+      guard let range = ranges[binding.modality],
+        let topology = topologyByModality[binding.modality]
+      else {
+        throw TissueError.metal("accepted joint receptor modality is unavailable")
+      }
+      let scalarIndex =
+        UInt64(range.offset)
+        + UInt64(binding.receptorIndex) * UInt64(topology.observationDimension)
+        + UInt64(binding.featureIndex)
+      guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
+      else {
+        throw TissueError.metal("accepted joint receptor scalar exceeds its arena")
+      }
+      return AcceptedJointReceptorBindingRecord(
+        jointIndex: UInt32(entry.jointIndex),
+        coordinateSlot: UInt32(entry.coordinateSlot),
+        signal: UInt32(binding.signal.rawValue),
+        observationScalarIndex: UInt32(scalarIndex),
+        scale: binding.scale,
+        bias: binding.bias,
+        weight: binding.weight,
+        flags: 1
+      )
+    }
+    var jointReceptorRanges = [AcceptedBodyReceptorBindingRange](
+      repeating: AcceptedBodyReceptorBindingRange(),
+      count: jointTopologyCatalog.joints.count
+    )
+    var jointBindingCursor = 0
+    for jointIndex in jointTopologyCatalog.joints.indices {
+      let begin = jointBindingCursor
+      while jointBindingCursor < indexedJointBindings.count,
+        indexedJointBindings[jointBindingCursor].jointIndex == jointIndex
+      {
+        jointBindingCursor += 1
+      }
+      jointReceptorRanges[jointIndex] = AcceptedBodyReceptorBindingRange(
+        bindingOffset: UInt32(begin),
+        bindingCount: UInt32(jointBindingCursor - begin)
+      )
+    }
+    let jointTopologyRecords = jointTopologyCatalog.joints.map { joint in
+      let minimums =
+        joint.coordinates.map(\.minimumPosition)
+        + Array(repeating: 0, count: 6 - joint.coordinates.count)
+      let maximums =
+        joint.coordinates.map(\.maximumPosition)
+        + Array(repeating: 0, count: 6 - joint.coordinates.count)
+      let rests =
+        joint.coordinates.map(\.restPosition)
+        + Array(repeating: 0, count: 6 - joint.coordinates.count)
+      return AcceptedJointTopologyRecord(
+        jointIdentifier: joint.jointIdentifier,
+        parentBodyIdentifier: joint.parentBodyIdentifier,
+        childBodyIdentifier: joint.childBodyIdentifier,
+        coordinateCount: UInt32(joint.coordinates.count),
+        minimum0: minimums[0], minimum1: minimums[1], minimum2: minimums[2],
+        minimum3: minimums[3], minimum4: minimums[4], minimum5: minimums[5],
+        maximum0: maximums[0], maximum1: maximums[1], maximum2: maximums[2],
+        maximum3: maximums[3], maximum4: maximums[4], maximum5: maximums[5],
+        rest0: rests[0], rest1: rests[1], rest2: rests[2],
+        rest3: rests[3], rest4: rests[4], rest5: rests[5]
+      )
+    }
     let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
       AcceptedActuatorDescriptor(
         actuatorIdentifier: channel.identifier,
@@ -257,11 +401,21 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       let bodyReceptorBindingBuffer = device.makeBuffer(
         length: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
           + bodyReceptorRanges.count
-            * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
           + max(
             bodyReceptorBindings.count,
             1
           ) * MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let jointReceptorBindingBuffer = device.makeBuffer(
+        length: MemoryLayout<AcceptedJointReceptorBindingTableHeader>.stride
+          + jointTopologyRecords.count
+          * MemoryLayout<AcceptedJointTopologyRecord>.stride
+          + jointReceptorRanges.count
+          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+          + max(jointReceptorBindings.count, 1)
+          * MemoryLayout<AcceptedJointReceptorBindingRecord>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
       let neutralProtectiveCommandBuffer = device.makeBuffer(
@@ -275,6 +429,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "NumiBrain immutable accepted actuator descriptors"
     bodyReceptorBindingBuffer.label =
       "NumiBrain immutable anatomical body receptor bindings"
+    jointReceptorBindingBuffer.label =
+      "NumiBrain immutable anatomical joint receptor bindings"
     neutralProtectiveCommandBuffer.label =
       "NumiBrain neutral accepted protective command"
     neutralProtectiveCommandBuffer.contents().initializeMemory(
@@ -310,8 +466,45 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       bodyReceptorBindingBuffer.contents().advanced(
         by: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
           + bodyReceptorRanges.count
-            * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
       ).copyMemory(from: source, byteCount: bytes.count)
+    }
+    var jointReceptorHeader = AcceptedJointReceptorBindingTableHeader(
+      bindingCount: UInt32(jointReceptorBindings.count),
+      jointCount: UInt32(jointTopologyRecords.count),
+      profileFingerprint: sensoryProfile.fingerprint,
+      topologyFingerprint: jointTopologyCatalog.fingerprint
+    )
+    withUnsafeBytes(of: &jointReceptorHeader) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      jointReceptorBindingBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    let jointTopologyOffset = MemoryLayout<
+      AcceptedJointReceptorBindingTableHeader
+    >.stride
+    jointTopologyRecords.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      jointReceptorBindingBuffer.contents().advanced(by: jointTopologyOffset)
+        .copyMemory(from: source, byteCount: bytes.count)
+    }
+    let jointRangeOffset =
+      jointTopologyOffset
+      + jointTopologyRecords.count * MemoryLayout<AcceptedJointTopologyRecord>.stride
+    jointReceptorRanges.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      jointReceptorBindingBuffer.contents().advanced(by: jointRangeOffset)
+        .copyMemory(from: source, byteCount: bytes.count)
+    }
+    let jointBindingOffset =
+      jointRangeOffset
+      + jointReceptorRanges.count
+      * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+    jointReceptorBindings.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      jointReceptorBindingBuffer.contents().advanced(by: jointBindingOffset)
+        .copyMemory(from: source, byteCount: bytes.count)
     }
     let sourceURL =
       Bundle.module.url(
@@ -344,6 +537,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "assimilate_accepted_fast_body_schema",
       "update_accepted_embodied_self_model",
       "reconcile_accepted_sensorimotor_world_model",
+      "assimilate_accepted_joint_schema",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -359,7 +553,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 10
+    descriptor.maxBufferBindCount = 11
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -386,7 +580,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let basisCapacity =
       (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
       / regionCount
-    let minimumPlasticityScalarCount = try BrainSharedParameterArtifact
+    let minimumPlasticityScalarCount =
+      try BrainSharedParameterArtifact
       .plasticityElementCount(
         regionCount: regionCount,
         basisCapacityPerRegion: basisCapacity
@@ -409,6 +604,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
     argumentTable.setAddress(neutralProtectiveCommandBuffer.gpuAddress, index: 8)
     argumentTable.setAddress(bodyReceptorBindingBuffer.gpuAddress, index: 9)
+    argumentTable.setAddress(jointReceptorBindingBuffer.gpuAddress, index: 10)
     self.arena = arena
     self.species = species
     self.dynamics = dynamics
@@ -422,6 +618,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
     self.bodyReceptorBindingBuffer = bodyReceptorBindingBuffer
+    self.jointReceptorBindingBuffer = jointReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
     self.plasticityParameterCount = UInt32(plasticityScalarCount)
     self.sensorimotorWorldDimension = sensorimotorWorldDimension
@@ -430,7 +627,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   public var residencyAllocations: [any MTLAllocation] {
     [
       uniformBuffer, actuatorDescriptorBuffer, bodyReceptorBindingBuffer,
-      neutralProtectiveCommandBuffer,
+      jointReceptorBindingBuffer, neutralProtectiveCommandBuffer,
     ]
   }
 
@@ -463,22 +660,20 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       receptorEventCapacity >= 0,
       receptorEventCapacity <= Int(UInt32.max),
       acceptedFastMotorState == nil
-        || (
-          acceptedFastMotorState?.transactionFingerprint
-            == acceptedPhysicsState.transactionFingerprint
-            && acceptedFastMotorState?.acceptedTimestamp
-              == acceptedPhysicsState.acceptedTimestamp
-            && acceptedFastMotorState?.protectiveCommandByteCount
-              == ProtectiveMotorCommand.byteCount
-            && (acceptedFastMotorState?.protectiveCommandBuffer.length ?? 0)
-              >= ProtectiveMotorCommand.byteCount
-            && (((acceptedFastMotorState?.bodySchemaCount ?? 0) == 0
-                  && (acceptedFastMotorState?.bodySchemaByteCount ?? 0) == 0)
-              || (acceptedFastMotorState?.bodySchemaCount
-                    == Int(species.body.bodyCount)
-                && acceptedFastMotorState?.bodySchemaByteCount
-                    == Int(species.body.bodyCount) * 48))
-        )
+        || (acceptedFastMotorState?.transactionFingerprint
+          == acceptedPhysicsState.transactionFingerprint
+          && acceptedFastMotorState?.acceptedTimestamp
+            == acceptedPhysicsState.acceptedTimestamp
+          && acceptedFastMotorState?.protectiveCommandByteCount
+            == ProtectiveMotorCommand.byteCount
+          && (acceptedFastMotorState?.protectiveCommandBuffer.length ?? 0)
+            >= ProtectiveMotorCommand.byteCount
+          && (((acceptedFastMotorState?.bodySchemaCount ?? 0) == 0
+            && (acceptedFastMotorState?.bodySchemaByteCount ?? 0) == 0)
+            || (acceptedFastMotorState?.bodySchemaCount
+              == Int(species.body.bodyCount)
+              && acceptedFastMotorState?.bodySchemaByteCount
+                == Int(species.body.bodyCount) * 48)))
     else {
       throw TissueError.transaction("accepted consequence timing or capacity is invalid")
     }
@@ -509,6 +704,12 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
           Int(species.physiology.stateDimension)
         )
       )
+    )
+    barrier(encoder)
+    dispatch(
+      encoder,
+      pipeline: pipelines[10],
+      count: Int(species.body.jointCount)
     )
     barrier(encoder)
     if let acceptedFastMotorState,
@@ -602,7 +803,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       planSteps.elementCount,
       hot(.fastPlasticity).elementCount,
     ]
-    guard hot(.sensoryValidity).elementCount
+    guard
+      hot(.sensoryValidity).elementCount
         == hot(.sensoryObservations).elementCount,
       integerCounts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       planSteps.elementCount % optionCandidates.elementCount == 0
@@ -626,6 +828,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       observationValidityOffset: UInt64(hot(.sensoryValidity).byteOffset),
       eventQueueOffset: UInt64(hot(.eventQueue).byteOffset),
       bodyBeliefOffset: UInt64(hot(.bodyBelief).byteOffset),
+      jointBeliefOffset: UInt64(hot(.jointBelief).byteOffset),
       muscleBeliefOffset: UInt64(hot(.muscleBelief).byteOffset),
       physiologyOffset: UInt64(hot(.physiologyBelief).byteOffset),
       objectSlotOffset: UInt64(hot(.objectSlots).byteOffset),
@@ -662,6 +865,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       regionalMaturationOffset: UInt64(hot(.regionalMaturation).byteOffset),
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,
+      jointCount: species.body.jointCount,
       muscleCount: UInt32(hot(.muscleBelief).elementCount),
       physiologyCount: UInt32(species.physiology.stateDimension),
       objectSlotCount: UInt32(hot(.objectSlots).elementCount),

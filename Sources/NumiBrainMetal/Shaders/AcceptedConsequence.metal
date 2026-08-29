@@ -54,6 +54,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong observation_validity_offset;
   ulong event_queue_offset;
   ulong body_belief_offset;
+  ulong joint_belief_offset;
   ulong muscle_belief_offset;
   ulong physiology_offset;
   ulong object_slot_offset;
@@ -80,6 +81,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong regional_maturation_offset;
   uint observation_count;
   uint body_count;
+  uint joint_count;
   uint muscle_count;
   uint physiology_count;
   uint object_slot_count;
@@ -295,6 +297,34 @@ struct NBBodyReceptorBindingRecord {
   float reserved;
 };
 
+struct NBJointReceptorBindingTableHeader {
+  uint binding_count;
+  uint joint_count;
+  ulong profile_fingerprint;
+  ulong topology_fingerprint;
+};
+
+struct NBJointTopologyRecord {
+  uint joint_identifier;
+  uint parent_body_identifier;
+  uint child_body_identifier;
+  uint coordinate_count;
+  float minimum_position[6];
+  float maximum_position[6];
+  float rest_position[6];
+};
+
+struct NBJointReceptorBindingRecord {
+  uint joint_index;
+  uint coordinate_slot;
+  uint signal;
+  uint observation_scalar_index;
+  float scale;
+  float bias;
+  float weight;
+  uint flags;
+};
+
 struct NBFastBodySchemaRecord {
   uint body_identifier;
   uint flags;
@@ -420,7 +450,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 416);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 432);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -435,6 +465,9 @@ static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBBodyReceptorBindingTableHeader) == 16);
 static_assert(sizeof(NBBodyReceptorBindingRange) == 8);
 static_assert(sizeof(NBBodyReceptorBindingRecord) == 32);
+static_assert(sizeof(NBJointReceptorBindingTableHeader) == 24);
+static_assert(sizeof(NBJointTopologyRecord) == 88);
+static_assert(sizeof(NBJointReceptorBindingRecord) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
 static_assert(sizeof(NBFastAutonomicStateRecord) == 64);
@@ -1382,6 +1415,160 @@ kernel void assimilate_accepted_body_and_physiology(
       physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
     }
   }
+}
+
+/// Fuses only valid causal proprioceptors into the articulated joint
+/// posterior. The topology table is immutable and content addressed; the
+/// posterior remains inside the current shadow generation until root commit.
+kernel void assimilate_accepted_joint_schema(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  device const NBJointReceptorBindingTableHeader *joint_receptor_table
+    [[buffer(10)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.joint_count
+      || gid >= joint_receptor_table->joint_count) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
+  device const NBJointTopologyRecord *topologies =
+    reinterpret_cast<device const NBJointTopologyRecord *>(
+      joint_receptor_table + 1
+    );
+  device const NBBodyReceptorBindingRange *ranges =
+    reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+      topologies + joint_receptor_table->joint_count
+    );
+  device const NBJointReceptorBindingRecord *bindings =
+    reinterpret_cast<device const NBJointReceptorBindingRecord *>(
+      ranges + joint_receptor_table->joint_count
+    );
+  const NBJointTopologyRecord topology = topologies[gid];
+  const NBBodyReceptorBindingRange range = ranges[gid];
+  const uint binding_end = min(
+    range.binding_offset + range.binding_count,
+    joint_receptor_table->binding_count
+  );
+  device float *joint = reinterpret_cast<device float *>(
+    hot_state + uniforms.joint_belief_offset + ulong(gid) * 256ul
+  );
+  device ulong *identity = reinterpret_cast<device ulong *>(joint + 32u);
+  const bool prior_valid = (identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul;
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float gain = clamp(min(
+    uniforms.belief_gain,
+    nb_physical_alpha(elapsed_seconds, max(belief_parameters[8], 1.0e-4f))
+  ), 0.0f, 1.0f);
+  float maximum_error = 0.0f;
+  uint evidence_channels = 0u;
+  const uint coordinate_count = min(topology.coordinate_count, 6u);
+  for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+    float position_total = 0.0f;
+    float position_weight = 0.0f;
+    float velocity_total = 0.0f;
+    float velocity_weight = 0.0f;
+    float limit_total = 0.0f;
+    float limit_weight = 0.0f;
+    for (uint binding_index = range.binding_offset;
+        binding_index < binding_end; ++binding_index) {
+      const NBJointReceptorBindingRecord binding = bindings[binding_index];
+      if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+          || binding.joint_index != gid
+          || binding.coordinate_slot != coordinate
+          || binding.observation_scalar_index >= uniforms.observation_count
+          || validity[binding.observation_scalar_index] == 0u
+          || !isfinite(binding.scale) || !isfinite(binding.bias)
+          || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+      const float evidence = fma(
+        observations[binding.observation_scalar_index],
+        binding.scale,
+        binding.bias
+      );
+      if (!isfinite(evidence)) continue;
+      switch (binding.signal) {
+        case 1u:
+          position_total += evidence * binding.weight;
+          position_weight += binding.weight;
+          break;
+        case 2u:
+          velocity_total += evidence * binding.weight;
+          velocity_weight += binding.weight;
+          break;
+        case 3u:
+          limit_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
+          limit_weight += binding.weight;
+          break;
+        default:
+          break;
+      }
+    }
+    const float prior_position = prior_valid
+      ? joint[coordinate] : topology.rest_position[coordinate];
+    const float prior_velocity = prior_valid ? joint[6u + coordinate] : 0.0f;
+    const bool has_position = position_weight > 0.0f;
+    const bool has_velocity = velocity_weight > 0.0f;
+    const bool has_limit = limit_weight > 0.0f;
+    const float observed_position = has_position
+      ? position_total / position_weight : prior_position;
+    const float observed_velocity = has_velocity
+      ? velocity_total / velocity_weight : prior_velocity;
+    const float corrected_position = mix(
+      prior_position, observed_position, has_position ? gain : 0.0f
+    );
+    const float corrected_velocity = mix(
+      prior_velocity, observed_velocity, has_velocity ? gain : 0.0f
+    );
+    joint[coordinate] = corrected_position;
+    joint[6u + coordinate] = corrected_velocity;
+    const float position_residual = observed_position - corrected_position;
+    const float velocity_residual = observed_velocity - corrected_velocity;
+    joint[12u + coordinate] = max(mix(
+      prior_valid ? max(joint[12u + coordinate], 0.0f) : 1.0f,
+      position_residual * position_residual,
+      has_position ? gain : 0.0f
+    ), 0.0f);
+    joint[18u + coordinate] = max(mix(
+      prior_valid ? max(joint[18u + coordinate], 0.0f) : 1.0f,
+      velocity_residual * velocity_residual,
+      has_velocity ? gain : 0.0f
+    ), 0.0f);
+    if (has_limit) {
+      joint[24u + coordinate] = mix(
+        prior_valid ? joint[24u + coordinate] : 0.0f,
+        limit_total / limit_weight,
+        gain
+      );
+    }
+    evidence_channels += uint(has_position) + uint(has_velocity) + uint(has_limit);
+    maximum_error = max(
+      maximum_error,
+      max(abs(position_residual), abs(velocity_residual))
+    );
+  }
+  if (evidence_channels == 0u) return;
+  const float evidence_fraction = float(evidence_channels)
+    / max(float(coordinate_count * 3u), 1.0f);
+  joint[30] = clamp(mix(
+    prior_valid ? joint[30] : 0.0f,
+    evidence_fraction,
+    gain
+  ), 0.0f, 1.0f);
+  joint[31] = maximum_error;
+  identity[0] = ulong(topology.joint_identifier);
+  identity[1] = ulong(topology.parent_body_identifier);
+  identity[2] = ulong(topology.child_body_identifier);
+  identity[3] = ulong(coordinate_count);
+  identity[4] = uniforms.target_timestamp_microseconds;
+  identity[5] = uniforms.physics_state_fingerprint;
+  identity[6] = joint_receptor_table->topology_fingerprint;
+  identity[7] = ulong(NB_ACCEPTED_STATE_VALID);
 }
 
 /// Joins the accepted fast load posterior into the compatible cognitive body

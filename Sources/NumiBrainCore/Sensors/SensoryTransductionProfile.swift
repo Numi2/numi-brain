@@ -170,6 +170,67 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+@frozen
+public enum JointReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
+  case position = 1
+  case velocity = 2
+  case limitActivation = 3
+}
+
+/// Causal proprioceptive evidence attributed to one coordinate in the
+/// immutable NumanX articulation graph.
+@frozen
+public struct JointReceptorBinding: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let sourceModelFingerprint: UInt64
+  public let sourceEndpointIdentifier: UInt64
+  public let jointIdentifier: UInt32
+  public let coordinateIdentifier: UInt16
+  public let modality: SensoryModality
+  public let receptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let signal: JointReceptorSignal
+  public let scale: Float
+  public let bias: Float
+  public let weight: Float
+
+  public init(
+    identifier: UInt32,
+    sourceModelFingerprint: UInt64,
+    sourceEndpointIdentifier: UInt64,
+    jointIdentifier: UInt32,
+    coordinateIdentifier: UInt16,
+    modality: SensoryModality,
+    receptorIndex: UInt32,
+    featureIndex: UInt32,
+    signal: JointReceptorSignal,
+    scale: Float = 1,
+    bias: Float = 0,
+    weight: Float = 1
+  ) throws {
+    guard identifier > 0, sourceModelFingerprint > 0,
+      sourceEndpointIdentifier > 0, scale.isFinite, bias.isFinite,
+      weight.isFinite, weight > 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "joint receptor binding calibration is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.sourceModelFingerprint = sourceModelFingerprint
+    self.sourceEndpointIdentifier = sourceEndpointIdentifier
+    self.jointIdentifier = jointIdentifier
+    self.coordinateIdentifier = coordinateIdentifier
+    self.modality = modality
+    self.receptorIndex = receptorIndex
+    self.featureIndex = featureIndex
+    self.signal = signal
+    self.scale = scale
+    self.bias = bias
+    self.weight = weight
+  }
+}
+
 /// Immutable receptor calibration and explicit event thresholds for one
 /// species/morphology generation. Event meaning is supplied by the template;
 /// the GPU runtime never invents anatomical thresholds.
@@ -178,12 +239,15 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
   public let speciesTemplateFingerprint: UInt64
   public let eventRules: [ReceptorEventRule]
   public let bodyReceptorBindings: [BodyReceptorBinding]
+  public let jointReceptorBindings: [JointReceptorBinding]
   public let fingerprint: UInt64
 
   public init(
     species: SpeciesTemplate,
     eventRules: [ReceptorEventRule],
     bodyReceptorBindings: [BodyReceptorBinding] = [],
+    jointTopologyCatalog: NumanXJointTopologyCatalog? = nil,
+    jointReceptorBindings: [JointReceptorBinding] = [],
     includePhysiologicalCriticalRules: Bool = true
   ) throws {
     var compiledRules = eventRules
@@ -193,12 +257,25 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     guard Set(compiledRules.map(\.identifier)).count == compiledRules.count else {
       throw BrainRuntimeError.invalidEvent("receptor event-rule identifiers are duplicated")
     }
-    guard Set(bodyReceptorBindings.map(\.identifier)).count
-      == bodyReceptorBindings.count
+    guard
+      Set(bodyReceptorBindings.map(\.identifier)).count
+        == bodyReceptorBindings.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "body receptor binding identifiers are duplicated"
       )
+    }
+    guard
+      Set(jointReceptorBindings.map(\.identifier)).count
+        == jointReceptorBindings.count,
+      jointReceptorBindings.isEmpty == (jointTopologyCatalog == nil)
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "joint receptor bindings require one topology and unique identifiers"
+      )
+    }
+    if let jointTopologyCatalog {
+      try jointTopologyCatalog.validate(species: species)
     }
     let topologyByModality = Dictionary(
       uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
@@ -215,12 +292,14 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       }
     }
     for binding in bodyReceptorBindings {
-      let componentCount: UInt16 = switch binding.signal {
-      case .orientation: 4
-      case .position, .velocity, .localForce, .angularVelocity,
-        .positionVariance, .orientationVariance: 3
-      case .contact, .support, .nociception, .vestibularStability: 1
-      }
+      let componentCount: UInt16 =
+        switch binding.signal {
+        case .orientation: 4
+        case .position, .velocity, .localForce, .angularVelocity,
+          .positionVariance, .orientationVariance:
+          3
+        case .contact, .support, .nociception, .vestibularStability: 1
+        }
       guard binding.bodyIdentifier < species.body.bodyCount,
         let topology = topologyByModality[binding.modality], topology.enabled,
         binding.receptorIndex < topology.receptorCount,
@@ -229,6 +308,20 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       else {
         throw BrainRuntimeError.invalidDescriptor(
           "body receptor binding exceeds species anatomy"
+        )
+      }
+    }
+    for binding in jointReceptorBindings {
+      guard let joint = jointTopologyCatalog?.joint(for: binding.jointIdentifier),
+        joint.coordinates.contains(where: {
+          $0.identifier == binding.coordinateIdentifier
+        }),
+        let topology = topologyByModality[binding.modality], topology.enabled,
+        binding.receptorIndex < topology.receptorCount,
+        binding.featureIndex < topology.observationDimension
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "joint receptor binding exceeds species articulation anatomy"
         )
       }
     }
@@ -265,9 +358,27 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
       Self.mix(UInt64(binding.weight.bitPattern), into: &hash)
     }
+    let canonicalJointBindings = jointReceptorBindings.sorted {
+      $0.identifier < $1.identifier
+    }
+    for binding in canonicalJointBindings {
+      Self.mix(UInt64(binding.identifier), into: &hash)
+      Self.mix(binding.sourceModelFingerprint, into: &hash)
+      Self.mix(binding.sourceEndpointIdentifier, into: &hash)
+      Self.mix(UInt64(binding.jointIdentifier), into: &hash)
+      Self.mix(UInt64(binding.coordinateIdentifier), into: &hash)
+      Self.mix(UInt64(binding.modality.rawValue), into: &hash)
+      Self.mix(UInt64(binding.receptorIndex), into: &hash)
+      Self.mix(UInt64(binding.featureIndex), into: &hash)
+      Self.mix(UInt64(binding.signal.rawValue), into: &hash)
+      Self.mix(UInt64(binding.scale.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.bias.bitPattern), into: &hash)
+      Self.mix(UInt64(binding.weight.bitPattern), into: &hash)
+    }
     self.speciesTemplateFingerprint = species.fingerprint
     self.eventRules = compiledRules.sorted { $0.identifier < $1.identifier }
     self.bodyReceptorBindings = canonicalBindings
+    self.jointReceptorBindings = canonicalJointBindings
     self.fingerprint = hash
   }
 
@@ -281,7 +392,8 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     rules.reserveCapacity(species.physiology.receptorMappings.count * 2)
     for mapping in species.physiology.receptorMappings {
       let stateIndex = Int(mapping.stateIdentifier)
-      let baseIdentifier = UInt32(0x8000_0000)
+      let baseIdentifier =
+        UInt32(0x8000_0000)
         | (UInt32(mapping.stateIdentifier) << 1)
       rules.append(
         try ReceptorEventRule(

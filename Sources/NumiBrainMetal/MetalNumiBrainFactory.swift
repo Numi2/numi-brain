@@ -17,7 +17,8 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let tissueEventSchedule: TissueEventSchedule?
   public let randomContext: TissueRandomContext
   public let sensoryProfile: SensoryTransductionProfile
-  public let numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog?
+  public let numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog
+  public let jointTopologyCatalog: NumanXJointTopologyCatalog
   public let protectiveMotorProfile: ProtectiveMotorProfile?
   public let muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
   public let schedulerEnvironmentIdentifier: UInt32
@@ -30,7 +31,8 @@ public struct MetalNumiBrainConfiguration: Sendable {
     tissueParameters: TissueParameters,
     tissueStimulus: TissueStimulus,
     sensoryProfile: SensoryTransductionProfile,
-    numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog? = nil,
+    numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     tissueStructure: TissueStructure? = nil,
     tissueDelayField: TissueDelayField? = nil,
     tissueConnectome: TissueConnectome? = nil,
@@ -53,6 +55,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.randomContext = randomContext
     self.sensoryProfile = sensoryProfile
     self.numanXReceptorAnatomyCatalog = numanXReceptorAnatomyCatalog
+    self.jointTopologyCatalog = jointTopologyCatalog
     self.protectiveMotorProfile = protectiveMotorProfile
     self.muscleAttachmentCatalog = muscleAttachmentCatalog
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
@@ -100,7 +103,8 @@ extension MetalNumiBrainRuntime {
       )
     }
     let version = publication.version
-    guard configuration.sensoryProfile.speciesTemplateFingerprint
+    guard
+      configuration.sensoryProfile.speciesTemplateFingerprint
         == species.fingerprint,
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
       version.scheduleFingerprint == regionalProgram.scheduleFingerprint,
@@ -115,15 +119,23 @@ extension MetalNumiBrainRuntime {
         "complete brain configuration does not share one species and parameter identity"
       )
     }
-    if let anatomyCatalog = configuration.numanXReceptorAnatomyCatalog {
-      let compiledBindings = try anatomyCatalog.compiledBindings(for: species)
-      guard compiledBindings == configuration.sensoryProfile.bodyReceptorBindings else {
-        throw TissueError.metal(
-          "NumanX receptor anatomy catalog does not own the sensory profile bindings"
-        )
-      }
+    let compiledBindings = try configuration.numanXReceptorAnatomyCatalog
+      .compiledBindings(for: species)
+    try configuration.jointTopologyCatalog.validate(species: species)
+    let compiledJointBindings = try configuration.numanXReceptorAnatomyCatalog
+      .compiledJointBindings(
+        for: species,
+        jointTopologyCatalog: configuration.jointTopologyCatalog
+      )
+    guard compiledBindings == configuration.sensoryProfile.bodyReceptorBindings,
+      compiledJointBindings == configuration.sensoryProfile.jointReceptorBindings
+    else {
+      throw TissueError.metal(
+        "NumanX receptor anatomy catalog does not own all sensory profile bindings"
+      )
     }
-    let protectiveProfile = try configuration.protectiveMotorProfile
+    let protectiveProfile =
+      try configuration.protectiveMotorProfile
       ?? ProtectiveMotorProfile.compiled(species: species)
     guard protectiveProfile.channels.count == Int(species.motor.actuatorCount),
       protectiveProfile.channels.map(\.muscleIdentifier)
@@ -139,7 +151,8 @@ extension MetalNumiBrainRuntime {
       regionalProgram: regionalProgram,
       parameterVersion: version,
       sharedParameterArtifact: publication.sharedArtifact,
-      sensoryProfile: configuration.sensoryProfile
+      sensoryProfile: configuration.sensoryProfile,
+      jointTopologyCatalog: configuration.jointTopologyCatalog
     )
     let fastTissue = try MetalTissueRuntime(
       initialState: configuration.initialTissueState,

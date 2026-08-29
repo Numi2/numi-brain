@@ -72,6 +72,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case acceptedActiveSensingOutput = 45
   /// Per-observation scalar receptor validity expanded from NumanX masks.
   case sensoryValidity = 46
+  /// Articulated parent/child coordinate posterior, one record per joint.
+  case jointBelief = 47
 }
 
 @frozen
@@ -108,8 +110,8 @@ public enum MetalActiveControlSection: UInt16, Codable, CaseIterable, Sendable {
 
 @frozen
 public struct MetalArenaSectionLayout<Section: RawRepresentable & Codable & Equatable & Sendable>:
-  Codable, Equatable, Sendable where Section.RawValue == UInt16
-{
+  Codable, Equatable, Sendable
+where Section.RawValue == UInt16 {
   public let section: Section
   public let byteOffset: Int
   public let byteCount: Int
@@ -142,6 +144,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let workspaceMetadataStride = 96
   public static let bodyBeliefStride = 256
   public static let bodyBeliefLayoutVersion: UInt64 = 2
+  public static let jointBeliefStride = 256
+  public static let jointBeliefLayoutVersion: UInt64 = 1
   public static let worldModelLayoutVersion: UInt64 = 2
   public static let cerebellarExpertLayoutVersion: UInt64 = 2
   public static let muscleBeliefStride = 192
@@ -232,7 +236,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Self.contextScalarCapacity,
       stride: MemoryLayout<Float>.stride
     )
-    let workspaceScalarCount = Int(species.capacities.workspaceTokenCapacity)
+    let workspaceScalarCount =
+      Int(species.capacities.workspaceTokenCapacity)
       * Int(species.capacities.workspaceTokenDimension)
     try builder.append(
       .workspaceContent,
@@ -470,10 +475,16 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: max(sensoryObservationScalars, 1),
       stride: MemoryLayout<UInt32>.stride
     )
+    try builder.append(
+      .jointBelief,
+      count: Int(species.body.jointCount),
+      stride: Self.jointBeliefStride
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
     Self.mix(Self.bodyBeliefLayoutVersion, into: &hash)
+    Self.mix(Self.jointBeliefLayoutVersion, into: &hash)
     Self.mix(Self.worldModelLayoutVersion, into: &hash)
     Self.mix(Self.cerebellarExpertLayoutVersion, into: &hash)
     for section in builder.sections {
@@ -793,9 +804,10 @@ public struct MetalAgentStateTransactionToken: Equatable, Hashable, Sendable {
     self.outputBufferIndex = outputBufferIndex
     self.layoutFingerprint = layoutFingerprint
     var hash: UInt64 = 14_695_981_039_346_656_037
-    for value in [baseGeneration, shadowGeneration, UInt64(inputBufferIndex),
-      UInt64(outputBufferIndex), layoutFingerprint]
-    {
+    for value in [
+      baseGeneration, shadowGeneration, UInt64(inputBufferIndex),
+      UInt64(outputBufferIndex), layoutFingerprint,
+    ] {
       MetalAgentStateLayout.mix(value, into: &hash)
     }
     fingerprint = hash
@@ -906,12 +918,14 @@ public final class MetalAgentStateArena: @unchecked Sendable {
 
   /// Addresses for the one-time GPU initialization pass. The caller writes
   /// complete state and persistent-memory headers, then calls markInitialized.
-  public var initializationView: (
-    hot: UInt64,
-    memory: UInt64,
-    journalZero: UInt64,
-    journalOne: UInt64
-  ) {
+  public var initializationView:
+    (
+      hot: UInt64,
+      memory: UInt64,
+      journalZero: UInt64,
+      journalOne: UInt64
+    )
+  {
     (
       hotBuffers[committedIndex].gpuAddress,
       persistentMemoryBuffer.gpuAddress,

@@ -7,6 +7,7 @@ public enum BrainAgentStateFactory {
     environmentIdentifier: UInt32,
     episodeIdentifier: UInt64,
     species: SpeciesTemplate,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     attachmentCatalog: NumanXMuscleAttachmentCatalog? = nil,
     graph: ReferenceBrainGraph,
     regionalProgram: RegionalTokenProgram,
@@ -15,16 +16,15 @@ public enum BrainAgentStateFactory {
     physicalGeneration: UInt64 = 0,
     maximumResidentMemoryBytes: UInt64 = 512 * 1_024 * 1_024
   ) throws -> BrainAgentState {
+    try jointTopologyCatalog.validate(species: species)
     guard species.referenceGraphFingerprint == graph.fingerprint,
       (species.body.muscleCount == 0 && attachmentCatalog == nil)
-        || (
-          species.body.muscleCount > 0
-            && species.body.bodyCount == attachmentCatalog?.bodyCount
-            && species.body.muscleCount
-              == UInt32(attachmentCatalog?.attachments.count ?? 0)
-            && species.body.muscleAttachmentFingerprint
-              == attachmentCatalog?.fingerprint
-        ),
+        || (species.body.muscleCount > 0
+          && species.body.bodyCount == attachmentCatalog?.bodyCount
+          && species.body.muscleCount
+            == UInt32(attachmentCatalog?.attachments.count ?? 0)
+          && species.body.muscleAttachmentFingerprint
+            == attachmentCatalog?.fingerprint),
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
       Set(regionalProgram.layouts.map(\.moduleIdentifier))
         == Set(species.enabledModuleIdentifiers),
@@ -53,6 +53,24 @@ public enum BrainAgentStateFactory {
       )
     }
     let unknownScalar = try BeliefScalar(mean: 0, logVariance: 0)
+    let jointEdges = try jointTopologyCatalog.joints.map { joint in
+      try JointEdgeBelief(
+        jointIdentifier: joint.jointIdentifier,
+        parentBodyIdentifier: joint.parentBodyIdentifier,
+        childBodyIdentifier: joint.childBodyIdentifier,
+        coordinates: joint.coordinates.map { coordinate in
+          try JointCoordinateBelief(
+            coordinateIdentifier: coordinate.identifier,
+            kind: coordinate.kind,
+            position: BeliefScalar(mean: coordinate.restPosition, logVariance: 0),
+            velocity: unknownScalar,
+            limitActivation: 0
+          )
+        },
+        ownershipConfidence: 0,
+        observationTimestamp: nil
+      )
+    }
     let muscleEdges = try (attachmentCatalog?.attachments ?? []).map { attachment in
       try MuscleEdgeBelief(
         muscleIdentifier: attachment.muscleIdentifier,
@@ -107,6 +125,7 @@ public enum BrainAgentStateFactory {
     let belief = try EmbodiedBeliefState(
       timestamp: initialTimestamp,
       bodyNodes: bodyNodes,
+      jointEdges: jointEdges,
       muscleEdges: muscleEdges,
       actuatorEffects: actuatorEffects,
       bodyLoadPosterior: bodyPosterior,

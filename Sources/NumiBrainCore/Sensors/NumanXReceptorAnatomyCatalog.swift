@@ -74,7 +74,8 @@ public struct NumanXReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
     switch signal {
     case .orientation: 4
     case .position, .velocity, .localForce, .angularVelocity,
-      .positionVariance, .orientationVariance: 3
+      .positionVariance, .orientationVariance:
+      3
     case .contact, .support, .nociception, .vestibularStability: 1
     }
   }
@@ -113,40 +114,129 @@ public struct NumanXReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+/// One immutable NumanX proprioceptor attributed to an exact joint
+/// coordinate and physical producer endpoint.
+@frozen
+public struct NumanXJointReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
+  public let identifier: UInt32
+  public let sourceEndpointIdentifier: UInt64
+  public let jointIdentifier: UInt32
+  public let coordinateIdentifier: UInt16
+  public let modality: SensoryModality
+  public let receptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let signal: JointReceptorSignal
+  public let scale: Float
+  public let bias: Float
+  public let weight: Float
+
+  public init(
+    identifier: UInt32,
+    sourceEndpointIdentifier: UInt64,
+    jointIdentifier: UInt32,
+    coordinateIdentifier: UInt16,
+    modality: SensoryModality = .proprioception,
+    receptorIndex: UInt32,
+    featureIndex: UInt32,
+    signal: JointReceptorSignal,
+    scale: Float = 1,
+    bias: Float = 0,
+    weight: Float = 1
+  ) throws {
+    guard identifier > 0, sourceEndpointIdentifier > 0,
+      scale.isFinite, bias.isFinite, weight.isFinite, weight > 0
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX joint receptor endpoint calibration is invalid"
+      )
+    }
+    self.identifier = identifier
+    self.sourceEndpointIdentifier = sourceEndpointIdentifier
+    self.jointIdentifier = jointIdentifier
+    self.coordinateIdentifier = coordinateIdentifier
+    self.modality = modality
+    self.receptorIndex = receptorIndex
+    self.featureIndex = featureIndex
+    self.signal = signal
+    self.scale = scale
+    self.bias = bias
+    self.weight = weight
+  }
+
+  public func compiledBinding(
+    sourceModelFingerprint: UInt64
+  ) throws -> JointReceptorBinding {
+    try JointReceptorBinding(
+      identifier: identifier,
+      sourceModelFingerprint: sourceModelFingerprint,
+      sourceEndpointIdentifier: sourceEndpointIdentifier,
+      jointIdentifier: jointIdentifier,
+      coordinateIdentifier: coordinateIdentifier,
+      modality: modality,
+      receptorIndex: receptorIndex,
+      featureIndex: featureIndex,
+      signal: signal,
+      scale: scale,
+      bias: bias,
+      weight: weight
+    )
+  }
+}
+
 /// Content-addressed bridge between one NumanX physical model and the
 /// receptor topology declared by one species template. The catalog is kept on
 /// the orchestration side; only its compiled scalar binding table enters the
 /// GPU hot path.
 @frozen
 public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let numanXModelFingerprint: UInt64
   public let speciesTemplateFingerprint: UInt64
+  public let jointTopologyFingerprint: UInt64
   public let endpoints: [NumanXReceptorEndpoint]
+  public let jointEndpoints: [NumanXJointReceptorEndpoint]
   public let fingerprint: UInt64
 
   public init(
     species: SpeciesTemplate,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     numanXModelFingerprint: UInt64,
-    endpoints: [NumanXReceptorEndpoint]
+    endpoints: [NumanXReceptorEndpoint],
+    jointEndpoints: [NumanXJointReceptorEndpoint]
   ) throws {
     guard numanXModelFingerprint > 0, species.fingerprint > 0,
-      !endpoints.isEmpty
+      !endpoints.isEmpty, !jointEndpoints.isEmpty,
+      jointTopologyCatalog.numanXModelFingerprint == numanXModelFingerprint,
+      Set(endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)).count
+        == endpoints.count + jointEndpoints.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX receptor anatomy catalog identity is incomplete"
       )
     }
+    try jointTopologyCatalog.validate(species: species)
     try Self.validate(endpoints: endpoints, species: species)
+    try Self.validate(
+      jointEndpoints: jointEndpoints,
+      species: species,
+      jointTopologyCatalog: jointTopologyCatalog
+    )
     let canonicalEndpoints = endpoints.sorted { $0.identifier < $1.identifier }
+    let canonicalJointEndpoints = jointEndpoints.sorted {
+      $0.identifier < $1.identifier
+    }
     self.numanXModelFingerprint = numanXModelFingerprint
     self.speciesTemplateFingerprint = species.fingerprint
+    self.jointTopologyFingerprint = jointTopologyCatalog.fingerprint
     self.endpoints = canonicalEndpoints
+    self.jointEndpoints = canonicalJointEndpoints
     self.fingerprint = Self.computeFingerprint(
       numanXModelFingerprint: numanXModelFingerprint,
       speciesTemplateFingerprint: species.fingerprint,
-      endpoints: canonicalEndpoints
+      jointTopologyFingerprint: jointTopologyCatalog.fingerprint,
+      endpoints: canonicalEndpoints,
+      jointEndpoints: canonicalJointEndpoints
     )
   }
 
@@ -162,6 +252,29 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     }
     try Self.validate(endpoints: endpoints, species: species)
     return try endpoints.map {
+      try $0.compiledBinding(sourceModelFingerprint: numanXModelFingerprint)
+    }
+  }
+
+  public func compiledJointBindings(
+    for species: SpeciesTemplate,
+    jointTopologyCatalog: NumanXJointTopologyCatalog
+  ) throws -> [JointReceptorBinding] {
+    guard speciesTemplateFingerprint == species.fingerprint,
+      jointTopologyFingerprint == jointTopologyCatalog.fingerprint,
+      numanXModelFingerprint == jointTopologyCatalog.numanXModelFingerprint
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX joint receptor anatomy identity drift"
+      )
+    }
+    try jointTopologyCatalog.validate(species: species)
+    try Self.validate(
+      jointEndpoints: jointEndpoints,
+      species: species,
+      jointTopologyCatalog: jointTopologyCatalog
+    )
+    return try jointEndpoints.map {
       try $0.compiledBinding(sourceModelFingerprint: numanXModelFingerprint)
     }
   }
@@ -195,11 +308,59 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     }
   }
 
+  private static func validate(
+    jointEndpoints: [NumanXJointReceptorEndpoint],
+    species: SpeciesTemplate,
+    jointTopologyCatalog: NumanXJointTopologyCatalog
+  ) throws {
+    guard Set(jointEndpoints.map(\.identifier)).count == jointEndpoints.count else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "NumanX joint receptor endpoint identifiers are duplicated"
+      )
+    }
+    let topologyByModality = Dictionary(
+      uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+    )
+    var suppliedSignals: [UInt64: Set<JointReceptorSignal>] = [:]
+    for endpoint in jointEndpoints {
+      guard let joint = jointTopologyCatalog.joint(for: endpoint.jointIdentifier),
+        joint.coordinates.contains(where: {
+          $0.identifier == endpoint.coordinateIdentifier
+        }),
+        let topology = topologyByModality[endpoint.modality], topology.enabled,
+        endpoint.receptorIndex < topology.receptorCount,
+        endpoint.featureIndex < topology.observationDimension
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "NumanX joint receptor endpoint exceeds species articulation anatomy"
+        )
+      }
+      let key =
+        UInt64(endpoint.jointIdentifier) << 16
+        | UInt64(endpoint.coordinateIdentifier)
+      suppliedSignals[key, default: []].insert(endpoint.signal)
+    }
+    for joint in jointTopologyCatalog.joints {
+      for coordinate in joint.coordinates {
+        let key =
+          UInt64(joint.jointIdentifier) << 16
+          | UInt64(coordinate.identifier)
+        guard suppliedSignals[key] == Set(JointReceptorSignal.allCases) else {
+          throw BrainRuntimeError.invalidDescriptor(
+            "every joint coordinate requires position, velocity, and limit receptors"
+          )
+        }
+      }
+    }
+  }
+
   private enum CodingKeys: String, CodingKey {
     case formatVersion
     case numanXModelFingerprint
     case speciesTemplateFingerprint
+    case jointTopologyFingerprint
     case endpoints
+    case jointEndpoints
     case fingerprint
   }
 
@@ -208,14 +369,17 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     try values.encode(Self.formatVersion, forKey: .formatVersion)
     try values.encode(numanXModelFingerprint, forKey: .numanXModelFingerprint)
     try values.encode(speciesTemplateFingerprint, forKey: .speciesTemplateFingerprint)
+    try values.encode(jointTopologyFingerprint, forKey: .jointTopologyFingerprint)
     try values.encode(endpoints, forKey: .endpoints)
+    try values.encode(jointEndpoints, forKey: .jointEndpoints)
     try values.encode(fingerprint, forKey: .fingerprint)
   }
 
   public init(from decoder: any Decoder) throws {
     let values = try decoder.container(keyedBy: CodingKeys.self)
-    guard try values.decode(UInt32.self, forKey: .formatVersion)
-      == Self.formatVersion
+    guard
+      try values.decode(UInt32.self, forKey: .formatVersion)
+        == Self.formatVersion
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX receptor anatomy catalog format is unsupported"
@@ -227,12 +391,21 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     let speciesTemplateFingerprint = try values.decode(
       UInt64.self, forKey: .speciesTemplateFingerprint
     )
+    let jointTopologyFingerprint = try values.decode(
+      UInt64.self, forKey: .jointTopologyFingerprint
+    )
     let endpoints = try values.decode(
       [NumanXReceptorEndpoint].self, forKey: .endpoints
     ).sorted { $0.identifier < $1.identifier }
+    let jointEndpoints = try values.decode(
+      [NumanXJointReceptorEndpoint].self, forKey: .jointEndpoints
+    ).sorted { $0.identifier < $1.identifier }
     guard numanXModelFingerprint > 0, speciesTemplateFingerprint > 0,
-      !endpoints.isEmpty,
-      Set(endpoints.map(\.identifier)).count == endpoints.count
+      jointTopologyFingerprint > 0, !endpoints.isEmpty, !jointEndpoints.isEmpty,
+      Set(endpoints.map(\.identifier)).count == endpoints.count,
+      Set(jointEndpoints.map(\.identifier)).count == jointEndpoints.count,
+      Set(endpoints.map(\.identifier) + jointEndpoints.map(\.identifier)).count
+        == endpoints.count + jointEndpoints.count
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "decoded NumanX receptor anatomy catalog is incomplete"
@@ -241,7 +414,9 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     let fingerprint = Self.computeFingerprint(
       numanXModelFingerprint: numanXModelFingerprint,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
-      endpoints: endpoints
+      jointTopologyFingerprint: jointTopologyFingerprint,
+      endpoints: endpoints,
+      jointEndpoints: jointEndpoints
     )
     guard fingerprint == (try values.decode(UInt64.self, forKey: .fingerprint))
     else {
@@ -251,19 +426,24 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     }
     self.numanXModelFingerprint = numanXModelFingerprint
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
+    self.jointTopologyFingerprint = jointTopologyFingerprint
     self.endpoints = endpoints
+    self.jointEndpoints = jointEndpoints
     self.fingerprint = fingerprint
   }
 
   private static func computeFingerprint(
     numanXModelFingerprint: UInt64,
     speciesTemplateFingerprint: UInt64,
-    endpoints: [NumanXReceptorEndpoint]
+    jointTopologyFingerprint: UInt64,
+    endpoints: [NumanXReceptorEndpoint],
+    jointEndpoints: [NumanXJointReceptorEndpoint]
   ) -> UInt64 {
     var hash: UInt64 = 14_695_981_039_346_656_037
     mix(UInt64(formatVersion), into: &hash)
     mix(numanXModelFingerprint, into: &hash)
     mix(speciesTemplateFingerprint, into: &hash)
+    mix(jointTopologyFingerprint, into: &hash)
     mix(UInt64(endpoints.count), into: &hash)
     for endpoint in endpoints {
       mix(UInt64(endpoint.identifier), into: &hash)
@@ -274,6 +454,20 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       mix(UInt64(endpoint.featureIndex), into: &hash)
       mix(UInt64(endpoint.signal.rawValue), into: &hash)
       mix(UInt64(endpoint.component), into: &hash)
+      mix(UInt64(endpoint.scale.bitPattern), into: &hash)
+      mix(UInt64(endpoint.bias.bitPattern), into: &hash)
+      mix(UInt64(endpoint.weight.bitPattern), into: &hash)
+    }
+    mix(UInt64(jointEndpoints.count), into: &hash)
+    for endpoint in jointEndpoints {
+      mix(UInt64(endpoint.identifier), into: &hash)
+      mix(endpoint.sourceEndpointIdentifier, into: &hash)
+      mix(UInt64(endpoint.jointIdentifier), into: &hash)
+      mix(UInt64(endpoint.coordinateIdentifier), into: &hash)
+      mix(UInt64(endpoint.modality.rawValue), into: &hash)
+      mix(UInt64(endpoint.receptorIndex), into: &hash)
+      mix(UInt64(endpoint.featureIndex), into: &hash)
+      mix(UInt64(endpoint.signal.rawValue), into: &hash)
       mix(UInt64(endpoint.scale.bitPattern), into: &hash)
       mix(UInt64(endpoint.bias.bitPattern), into: &hash)
       mix(UInt64(endpoint.weight.bitPattern), into: &hash)
@@ -300,12 +494,18 @@ extension SensoryTransductionProfile {
     species: SpeciesTemplate,
     eventRules: [ReceptorEventRule],
     numanXReceptorAnatomy: NumanXReceptorAnatomyCatalog,
+    jointTopologyCatalog: NumanXJointTopologyCatalog,
     includePhysiologicalCriticalRules: Bool = true
   ) throws {
     try self.init(
       species: species,
       eventRules: eventRules,
       bodyReceptorBindings: numanXReceptorAnatomy.compiledBindings(for: species),
+      jointTopologyCatalog: jointTopologyCatalog,
+      jointReceptorBindings: numanXReceptorAnatomy.compiledJointBindings(
+        for: species,
+        jointTopologyCatalog: jointTopologyCatalog
+      ),
       includePhysiologicalCriticalRules: includePhysiologicalCriticalRules
     )
   }
