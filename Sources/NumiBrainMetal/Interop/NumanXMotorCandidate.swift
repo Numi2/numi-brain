@@ -2,8 +2,8 @@ import Foundation
 import NumiBrainABI
 import NumiBrainCore
 
-/// Transaction-local NumanX handoff for the protective motor buffers used by
-/// one physical candidate. GPU addresses are valid only while the owning
+/// Transaction-local NumanX handoff for the somatic and autonomic buffers used
+/// by one physical candidate. GPU addresses are valid only while the owning
 /// `MetalTissueRuntime` and its residency set remain alive; this value must not
 /// be serialized as replay identity.
 @frozen
@@ -18,10 +18,13 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   public let motorProfileFingerprint: UInt64
   public let motorOutputHeaderGPUAddress: UInt64
   public let muscleExcitationGPUAddress: UInt64
+  public let autonomicCommandGPUAddress: UInt64
   public let randomCounterGeneration: UInt64
   public let motorOutputHeaderByteCount: UInt32
   public let muscleExcitationByteCount: UInt32
   public let muscleCount: UInt32
+  public let autonomicCommandByteCount: UInt32
+  public let autonomicCommandCount: UInt32
   public let environmentIdentifier: UInt32
   public let fingerprint: UInt64
 
@@ -30,11 +33,16 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     fastSystems: MetalTissueRuntime.FastSystemResult
   ) throws {
     let output = fastSystems.protectiveMotorOutput
+    let autonomic = fastSystems.fastAutonomicOutput
     guard output.headerByteCount <= Int(UInt32.max),
       output.muscleExcitationByteCount <= Int(UInt32.max),
-      output.muscleCount <= Int(UInt32.max)
+      output.muscleCount <= Int(UInt32.max),
+      autonomic.byteCount <= Int(UInt32.max),
+      autonomic.channelCount <= Int(UInt32.max),
+      autonomic.timestamp == output.timestamp,
+      autonomic.brainGeneration == output.brainGeneration
     else {
-      throw TissueError.transaction("NumanX protective motor view exceeds compiled capacity")
+      throw TissueError.transaction("NumanX control view exceeds compiled capacity")
     }
     var root = transaction.abiRecord
     var substep = fastSystems.substep.abiRecord
@@ -53,6 +61,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.muscle_excitation_byte_count = UInt32(output.muscleExcitationByteCount)
     record.muscle_count = UInt32(output.muscleCount)
     record.environment_identifier = transaction.environmentIdentifier
+    record.autonomic_command_gpu_address = autonomic.gpuAddress
+    record.autonomic_command_byte_count = UInt32(autonomic.byteCount)
+    record.autonomic_command_count = UInt32(autonomic.channelCount)
     record.candidate_fingerprint = withUnsafePointer(to: &record) {
       nb_brain_abi_numanx_motor_candidate_fingerprint($0)
     }
@@ -104,10 +115,13 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     motorProfileFingerprint = record.motor_profile_fingerprint
     motorOutputHeaderGPUAddress = record.motor_output_header_gpu_address
     muscleExcitationGPUAddress = record.muscle_excitation_gpu_address
+    autonomicCommandGPUAddress = record.autonomic_command_gpu_address
     randomCounterGeneration = record.random_counter_generation
     motorOutputHeaderByteCount = record.motor_output_header_byte_count
     muscleExcitationByteCount = record.muscle_excitation_byte_count
     muscleCount = record.muscle_count
+    autonomicCommandByteCount = record.autonomic_command_byte_count
+    autonomicCommandCount = record.autonomic_command_count
     environmentIdentifier = record.environment_identifier
     fingerprint = record.candidate_fingerprint
   }
@@ -128,6 +142,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     record.muscle_excitation_byte_count = muscleExcitationByteCount
     record.muscle_count = muscleCount
     record.environment_identifier = environmentIdentifier
+    record.autonomic_command_gpu_address = autonomicCommandGPUAddress
+    record.autonomic_command_byte_count = autonomicCommandByteCount
+    record.autonomic_command_count = autonomicCommandCount
     record.candidate_fingerprint = fingerprint
     return record
   }

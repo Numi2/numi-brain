@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 enum {
-  NB_BRAIN_ABI_VERSION = 2,
+  NB_BRAIN_ABI_VERSION = 3,
   NB_MODULE_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MODULE_CLOCK_STATE_BYTE_COUNT = 16,
   NB_RECEPTOR_EVENT_BYTE_COUNT = 64,
@@ -44,13 +44,14 @@ enum {
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 64,
-  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 96,
+  NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
+  NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 112,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 2,
-  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 1,
+  NB_NUMANX_MOTOR_CANDIDATE_VERSION = 2,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
   NB_REGIONAL_PROGRAM_VERSION = 2,
@@ -70,6 +71,8 @@ enum {
   NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP = 1 << 1,
   NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION = 1 << 2,
   NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL = 1 << 3,
+  NB_AUTONOMIC_COMMAND_FLAG_VALID = 1 << 0,
+  NB_AUTONOMIC_COMMAND_FLAG_PHYSIOLOGICAL_CRITICAL = 1 << 1,
   NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID = 1 << 0,
 };
 
@@ -460,6 +463,15 @@ typedef struct NBMotorOutputHeader {
   uint64_t output_fingerprint;
 } NBMotorOutputHeader;
 
+/// One GPU-resident autonomic actuator command. The channel meaning is owned
+/// by the immutable species physiology template associated with the root.
+typedef struct NBAutonomicCommand {
+  float command;
+  float target;
+  float confidence;
+  uint32_t flags;
+} NBAutonomicCommand;
+
 /// Transaction-local GPU handoff for one NumanX physical candidate. GPU
 /// addresses are ephemeral process state and are deliberately not persistent
 /// checkpoint identity.
@@ -478,6 +490,9 @@ typedef struct NBNumanXMotorCandidate {
   uint32_t muscle_excitation_byte_count;
   uint32_t muscle_count;
   uint32_t environment_identifier;
+  uint64_t autonomic_command_gpu_address;
+  uint32_t autonomic_command_byte_count;
+  uint32_t autonomic_command_count;
   uint64_t candidate_fingerprint;
 } NBNumanXMotorCandidate;
 

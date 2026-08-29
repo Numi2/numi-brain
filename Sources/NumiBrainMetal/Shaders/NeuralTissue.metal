@@ -487,6 +487,36 @@ struct NBFastCerebellarStateABI {
     float reserved[4];
 };
 
+struct NBFastAutonomicUniformsABI {
+    ulong sample_timestamp_microseconds;
+    ulong baseline_timestamp_microseconds;
+    uint channel_count;
+    uint flags;
+    float vital_gain;
+    uint response_time_microseconds;
+    uint critical_decay_microseconds;
+    uint reserved;
+};
+
+struct NBFastAutonomicStateABI {
+    ulong last_event_timestamp_microseconds;
+    ulong state_timestamp_microseconds;
+    float command;
+    float target;
+    float critical_drive;
+    float integration;
+    uint update_count;
+    uint flags;
+    float reserved[6];
+};
+
+struct NBAutonomicCommandRecordABI {
+    float command;
+    float target;
+    float confidence;
+    uint flags;
+};
+
 struct NBMotorCommandRecordABI {
     float excitation;
     float force_target;
@@ -703,6 +733,12 @@ static_assert(sizeof(NBFastCPGStateABI) == 64, "fast CPG state drift");
 static_assert(sizeof(NBFastReflexRuleABI) == 32, "fast reflex rule drift");
 static_assert(sizeof(NBFastReflexStateABI) == 128, "fast reflex state drift");
 static_assert(sizeof(NBFastCerebellarStateABI) == 64, "fast cerebellar state drift");
+static_assert(sizeof(NBFastAutonomicUniformsABI) == 40,
+              "fast autonomic uniforms drift");
+static_assert(sizeof(NBFastAutonomicStateABI) == 64,
+              "fast autonomic state drift");
+static_assert(sizeof(NBAutonomicCommandRecordABI) == 16,
+              "autonomic command record drift");
 static_assert(sizeof(NBMotorCommandRecordABI) == 32, "motor command record drift");
 static_assert(sizeof(NBProtectiveCommandABI) == 64, "protective command ABI drift");
 static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drift");
@@ -3467,6 +3503,147 @@ kernel void adapt_fast_cerebellar_load_correction(
     state.flags = (state.flags | 1u) & ~(1u << 2u);
     state.flags |= observed ? (1u << 2u) : 0u;
     outputStates[actuatorIndex] = state;
+}
+
+inline void fast_autonomic_advance_to(
+    thread NBFastAutonomicStateABI &state,
+    float highLevelTarget,
+    ulong targetTimestamp,
+    constant NBFastAutonomicUniformsABI *uniforms)
+{
+    if (targetTimestamp <= state.state_timestamp_microseconds) {
+        return;
+    }
+    const ulong elapsedMicroseconds =
+        targetTimestamp - state.state_timestamp_microseconds;
+    const float elapsed = float(elapsedMicroseconds);
+    const float decayTime = float(max(
+        uniforms->critical_decay_microseconds,
+        1u
+    ));
+    state.critical_drive *= exp(-elapsed / decayTime);
+    const float effectiveTarget = clamp(
+        max(highLevelTarget, state.critical_drive),
+        0.0f,
+        1.0f
+    );
+    const float responseTime = float(max(uniforms->response_time_microseconds, 1u));
+    const float alpha = 1.0f - exp(-elapsed / responseTime);
+    state.command = clamp(
+        state.command + alpha * (effectiveTarget - state.command),
+        0.0f,
+        1.0f
+    );
+    state.target = effectiveTarget;
+    state.integration += state.command * elapsed * 1.0e-6f;
+    state.state_timestamp_microseconds = targetTimestamp;
+}
+
+/// Recomputes fast brainstem/autonomic output from the committed state and
+/// the cumulative accepted event prefix. Intermediate accepted prefixes may
+/// overwrite this shadow repeatedly, but no prefix can integrate twice and a
+/// rejected physical candidate never reaches the state or output buffers.
+kernel void advance_fast_autonomic_output(
+    constant NBFastAutonomicUniformsABI *uniforms [[buffer(0)]],
+    device const NBAutonomicCommandRecordABI *baselineCommands [[buffer(1)]],
+    device const NBInterruptEventABI *interruptEvents [[buffer(2)]],
+    device const NBReceptorEventTransductionResultABI *interruptResult
+        [[buffer(3)]],
+    device const NBFastAutonomicStateABI *baselineStates [[buffer(4)]],
+    device NBFastAutonomicStateABI *outputStates [[buffer(5)]],
+    device NBAutonomicCommandRecordABI *outputCommands [[buffer(6)]],
+    uint channelIndex [[thread_position_in_grid]])
+{
+    if (channelIndex >= uniforms->channel_count) {
+        return;
+    }
+    const NBAutonomicCommandRecordABI baselineCommand =
+        baselineCommands[channelIndex];
+    const float highLevelCommand = isfinite(baselineCommand.command)
+        ? clamp(baselineCommand.command, 0.0f, 1.0f)
+        : 0.0f;
+    const float highLevelTarget = isfinite(baselineCommand.target)
+        ? clamp(baselineCommand.target, 0.0f, 1.0f)
+        : highLevelCommand;
+    NBFastAutonomicStateABI state = baselineStates[channelIndex];
+    const bool valid = (state.flags & 1u) != 0u;
+    bool hasSeenEvent = valid && (state.flags & (1u << 2u)) != 0u;
+    if (!valid) {
+        state.last_event_timestamp_microseconds = 0ul;
+        state.state_timestamp_microseconds =
+            uniforms->baseline_timestamp_microseconds;
+        state.command = highLevelCommand;
+        state.target = highLevelTarget;
+        state.critical_drive = 0.0f;
+        state.integration = 0.0f;
+        state.update_count = 0u;
+        state.flags = 1u;
+        for (uint index = 0u; index < 6u; ++index) {
+            state.reserved[index] = 0.0f;
+        }
+    } else if (state.state_timestamp_microseconds
+               < uniforms->baseline_timestamp_microseconds) {
+        fast_autonomic_advance_to(
+            state,
+            highLevelTarget,
+            uniforms->baseline_timestamp_microseconds,
+            uniforms
+        );
+    }
+    const uint eventCount = (uniforms->flags & 1u) != 0u
+        ? interruptResult->event_count
+        : 0u;
+    for (uint eventIndex = 0u; eventIndex < eventCount; ++eventIndex) {
+        const NBInterruptEventABI event = interruptEvents[eventIndex];
+        if ((event.interrupt_mask & NBInterruptPhysiologicalCritical) == 0ul
+            || event.timestamp_microseconds
+                < uniforms->baseline_timestamp_microseconds
+            || event.timestamp_microseconds
+                > uniforms->sample_timestamp_microseconds
+            || (hasSeenEvent && event.timestamp_microseconds
+                <= state.last_event_timestamp_microseconds)) {
+            continue;
+        }
+        fast_autonomic_advance_to(
+            state,
+            highLevelTarget,
+            event.timestamp_microseconds,
+            uniforms
+        );
+        state.critical_drive = max(
+            state.critical_drive,
+            clamp(max(event.magnitude, 0.0f) * uniforms->vital_gain, 0.0f, 1.0f)
+        );
+        // A physiological emergency bypasses the normal response time on its
+        // rising edge; subsequent recovery still follows the decay dynamics.
+        state.command = max(state.command, state.critical_drive);
+        state.target = max(highLevelTarget, state.critical_drive);
+        state.last_event_timestamp_microseconds = event.timestamp_microseconds;
+        state.update_count = state.update_count == 0xffffffffu
+            ? 0xffffffffu
+            : state.update_count + 1u;
+        hasSeenEvent = true;
+    }
+    fast_autonomic_advance_to(
+        state,
+        highLevelTarget,
+        uniforms->sample_timestamp_microseconds,
+        uniforms
+    );
+    const bool critical = state.critical_drive > 1.0e-6f;
+    state.flags = 1u
+        | (critical ? (1u << 1u) : 0u)
+        | (hasSeenEvent ? (1u << 2u) : 0u);
+    outputStates[channelIndex] = state;
+
+    NBAutonomicCommandRecordABI output;
+    output.command = state.command;
+    output.target = state.target;
+    output.confidence = critical
+        ? 1.0f
+        : clamp(baselineCommand.confidence, 0.0f, 1.0f);
+    output.flags = 1u | (critical ? (1u << 1u) : 0u);
+    outputCommands[channelIndex] = output;
 }
 
 /// Advances the dense brain-owned body posterior from causal load evidence.

@@ -58,6 +58,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case reflexState = 39
   /// Per-actuator accepted fast cerebellar load model and inverse correction.
   case fastCerebellarState = 40
+  /// Accepted fast brainstem/autonomic integration state per output channel.
+  case fastAutonomicState = 41
 }
 
 @frozen
@@ -413,6 +415,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Int(species.motor.actuatorCount),
       stride: 64
     )
+    try builder.append(
+      .fastAutonomicState,
+      count: Int(species.physiology.autonomicActionDimension),
+      stride: 64
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
@@ -459,7 +466,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 7
+  public static let recordLayoutVersion: UInt32 = 8
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536

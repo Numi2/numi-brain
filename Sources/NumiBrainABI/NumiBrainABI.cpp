@@ -50,6 +50,9 @@ static_assert(
     sizeof(NBMotorChannelDescriptor) == NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT
 );
 static_assert(sizeof(NBMotorOutputHeader) == NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT);
+static_assert(sizeof(NBAutonomicCommand) == NB_AUTONOMIC_COMMAND_BYTE_COUNT);
+static_assert(offsetof(NBAutonomicCommand, command) == 0);
+static_assert(offsetof(NBAutonomicCommand, flags) == 12);
 static_assert(
     sizeof(NBNumanXMotorCandidate) == NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT
 );
@@ -79,7 +82,10 @@ static_assert(
 static_assert(offsetof(NBNumanXMotorCandidate, muscle_excitation_gpu_address) == 56);
 static_assert(offsetof(NBNumanXMotorCandidate, random_counter_generation) == 64);
 static_assert(offsetof(NBNumanXMotorCandidate, motor_output_header_byte_count) == 72);
-static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 88);
+static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_gpu_address) == 88);
+static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_byte_count) == 96);
+static_assert(offsetof(NBNumanXMotorCandidate, autonomic_command_count) == 100);
+static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 104);
 static_assert(offsetof(NBModuleDescriptor, module_id) == 0);
 static_assert(offsetof(NBModuleDescriptor, interrupt_mask) == 16);
 static_assert(offsetof(NBModuleDescriptor, flags) == 28);
@@ -1617,6 +1623,9 @@ uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
   mix_little_endian(hash, candidate->muscle_excitation_byte_count);
   mix_little_endian(hash, candidate->muscle_count);
   mix_little_endian(hash, candidate->environment_identifier);
+  mix_little_endian(hash, candidate->autonomic_command_gpu_address);
+  mix_little_endian(hash, candidate->autonomic_command_byte_count);
+  mix_little_endian(hash, candidate->autonomic_command_count);
   return hash;
 }
 
@@ -1657,17 +1666,25 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
   }
   if (candidate->motor_output_header_gpu_address == 0
       || candidate->muscle_excitation_gpu_address == 0
+      || candidate->autonomic_command_gpu_address == 0
       || candidate->motor_output_header_gpu_address % 8 != 0
-      || candidate->muscle_excitation_gpu_address % 4 != 0) {
+      || candidate->muscle_excitation_gpu_address % 4 != 0
+      || candidate->autonomic_command_gpu_address % 4 != 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_ADDRESS;
   }
   const uint64_t expected_excitation_bytes =
       static_cast<uint64_t>(candidate->muscle_count) * sizeof(float);
+  const uint64_t expected_autonomic_bytes =
+      static_cast<uint64_t>(candidate->autonomic_command_count)
+        * sizeof(NBAutonomicCommand);
   if (candidate->motor_output_header_byte_count
           != NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT
       || candidate->muscle_count == 0
       || expected_excitation_bytes > UINT32_MAX
-      || candidate->muscle_excitation_byte_count != expected_excitation_bytes) {
+      || candidate->muscle_excitation_byte_count != expected_excitation_bytes
+      || candidate->autonomic_command_count == 0
+      || expected_autonomic_bytes > UINT32_MAX
+      || candidate->autonomic_command_byte_count != expected_autonomic_bytes) {
     return NB_NUMANX_MOTOR_CANDIDATE_SIZE;
   }
   if (candidate->candidate_fingerprint == 0
