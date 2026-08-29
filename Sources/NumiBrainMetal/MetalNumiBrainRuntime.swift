@@ -84,6 +84,64 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     return activeTransaction != nil
   }
 
+  /// Captures one causally complete brain checkpoint. The caller supplies the
+  /// fingerprint returned by the simultaneously saved NumanX body checkpoint;
+  /// the envelope refuses to exist if cognitive and fast generations diverge.
+  public func saveCheckpoint(
+    controlStepIdentifier: UInt64,
+    physicalCheckpointFingerprint: UInt64
+  ) throws -> MetalNumiBrainCheckpoint {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil, physicalCheckpointFingerprint > 0 else {
+      throw TissueError.transaction(
+        "finish active control and provide the owning physical checkpoint"
+      )
+    }
+    let fast = try fastTissue.saveCheckpoint()
+    let timestamp = fast.committedSchedulerTime
+      ?? BrainTimestamp(microseconds: 0)
+    let cognitiveState = try cognitive.saveCheckpoint(
+      environmentIdentifier: fast.environmentIdentifier,
+      episodeIdentifier: UInt64(fast.randomContext.episodeIdentifier),
+      controlStepIdentifier: controlStepIdentifier,
+      committedTimestamp: timestamp,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    return try MetalNumiBrainCheckpoint(
+      cognitiveState: cognitiveState,
+      fastTissueState: fast
+    )
+  }
+
+  /// Validates the complete envelope before mutating either runtime, then
+  /// restores cognitive and fast generations to their shared root boundary.
+  public func loadCheckpoint(
+    _ checkpoint: MetalNumiBrainCheckpoint,
+    physicalCheckpointFingerprint: UInt64
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil,
+      physicalCheckpointFingerprint == checkpoint.physicalCheckpointFingerprint
+    else {
+      throw TissueError.transaction(
+        "finish active control and restore the checkpoint's owning physical body"
+      )
+    }
+    try checkpoint.validate()
+    try cognitive.validateCheckpointCompatibility(
+      checkpoint.cognitiveState,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    try fastTissue.validateCheckpointCompatibility(checkpoint.fastTissueState)
+    try cognitive.loadCheckpoint(
+      checkpoint.cognitiveState,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    try fastTissue.loadCheckpoint(checkpoint.fastTissueState)
+  }
+
   /// Opens one root in both complete-agent state and fast tissue. The cached
   /// decision fingerprint identifies deterministic stochastic choices for the
   /// root and therefore must remain unchanged across physical retries.

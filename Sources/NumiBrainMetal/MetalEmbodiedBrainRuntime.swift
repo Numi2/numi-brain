@@ -317,6 +317,35 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   ) throws {
     lock.lock()
     defer { lock.unlock() }
+    try validateCheckpointCompatibilityLocked(
+      checkpoint,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+    try agentStateRuntime.restoreCommittedState(
+      from: .init(
+        generation: checkpoint.committedGeneration,
+        hotState: checkpoint.hotState,
+        persistentMemory: checkpoint.persistentMemory
+      )
+    )
+  }
+
+  public func validateCheckpointCompatibility(
+    _ checkpoint: MetalBrainCheckpoint,
+    physicalCheckpointFingerprint: UInt64
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try validateCheckpointCompatibilityLocked(
+      checkpoint,
+      physicalCheckpointFingerprint: physicalCheckpointFingerprint
+    )
+  }
+
+  private func validateCheckpointCompatibilityLocked(
+    _ checkpoint: MetalBrainCheckpoint,
+    physicalCheckpointFingerprint: UInt64
+  ) throws {
     try checkpoint.validate()
     guard checkpoint.speciesTemplateFingerprint == speciesTemplateFingerprint,
       checkpoint.regionalProgramFingerprint == regionalProgramFingerprint,
@@ -334,13 +363,6 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         "brain checkpoint is incompatible with runtime or physical checkpoint"
       )
     }
-    try agentStateRuntime.restoreCommittedState(
-      from: .init(
-        generation: checkpoint.committedGeneration,
-        hotState: checkpoint.hotState,
-        persistentMemory: checkpoint.persistentMemory
-      )
-    )
   }
 
   public func makeLearningBatch() throws -> MetalLearningBatch {

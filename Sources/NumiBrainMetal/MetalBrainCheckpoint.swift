@@ -1,9 +1,9 @@
 import Foundation
 import NumiBrainCore
 
-/// Complete GPU-resident individual brain state at one committed root boundary.
-/// Saving and loading are exceptional orchestration paths; neither participates
-/// in the physics-brain hot loop.
+/// GPU-resident cognitive, memory, drive, and developmental state at one
+/// committed root boundary. `MetalNumiBrainCheckpoint` binds this payload to
+/// the corresponding fast-tissue state for complete nervous-system recovery.
 @frozen
 public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
