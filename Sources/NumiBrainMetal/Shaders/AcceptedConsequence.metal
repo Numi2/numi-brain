@@ -1019,10 +1019,39 @@ kernel void assimilate_accepted_body_and_physiology(
       effect_limit
     );
     const float agency_error_scale = max(belief_parameters[5], 1.0f);
-    const float agency_confidence = 1.0f
+    const float agency_measurement = 1.0f
       / (1.0f + agency_error_scale * abs(effect_error));
-    const float external_disturbance = abs(effect_error)
-      * (1.0f - agency_confidence);
+    const float causal_evidence = clamp(
+      abs(command)
+        + abs(observed_delta) * max(belief_parameters[14], 0.0f),
+      0.0f,
+      1.0f
+    );
+    const float state_retained_per_second = clamp(
+      belief_parameters[7], 0.0f, 1.0f
+    );
+    const float state_retention = state_retained_per_second <= 0.0f ? 0.0f
+      : (state_retained_per_second >= 1.0f ? 1.0f
+        : pow(state_retained_per_second, elapsed_seconds));
+    const float agency_update_gain = clamp(
+      effect_learning_rate * causal_evidence, 0.0f, 1.0f
+    );
+    const float agency_confidence = clamp(mix(
+      clamp(muscle[8], 0.0f, 1.0f) * state_retention,
+      agency_measurement,
+      agency_update_gain
+    ), 0.0f, 1.0f);
+    const float disturbance_measurement = clamp(
+      abs(effect_error) * (1.0f - agency_measurement)
+        * max(belief_parameters[14], 0.0f),
+      0.0f,
+      1.0f
+    );
+    const float external_disturbance = clamp(mix(
+      clamp(muscle[9], 0.0f, 1.0f) * state_retention,
+      disturbance_measurement,
+      agency_update_gain
+    ), 0.0f, 1.0f);
     muscle[0] = mix(muscle[0], command, gain);
     muscle[1] = mix(muscle[1], proprioception, gain);
     muscle[2] = observed_delta;
@@ -1129,24 +1158,42 @@ kernel void update_accepted_embodied_self_model(
   float external_disturbance = 0.0f;
   if (uniforms.muscle_count > 0u) {
     uint effector_index = gid % uniforms.muscle_count;
+    bool effector_found = true;
     if ((identity[3] & (1ul << 4u)) != 0ul) {
       const uint source_muscle_identifier = uint(identity[6] >> 32u);
       if (source_muscle_identifier != 0xffffffffu) {
-        effector_index = source_muscle_identifier % uniforms.muscle_count;
+        effector_found = false;
+        for (uint candidate_index = 0u;
+            candidate_index < uniforms.muscle_count; ++candidate_index) {
+          device const float *candidate = reinterpret_cast<device const float *>(
+            hot_state + uniforms.muscle_belief_offset
+              + ulong(candidate_index) * 192ul
+          );
+          device const ulong *candidate_identity =
+            reinterpret_cast<device const ulong *>(candidate + 16);
+          if ((candidate_identity[3] & NB_ACCEPTED_STATE_VALID) != 0ul
+              && uint(candidate_identity[0]) == source_muscle_identifier) {
+            effector_index = candidate_index;
+            effector_found = true;
+            break;
+          }
+        }
       }
     }
-    device const float *effector = reinterpret_cast<device const float *>(
-      hot_state + uniforms.muscle_belief_offset
-        + ulong(effector_index) * 192ul
-    );
-    const float agency = clamp(effector[8], 0.0f, 1.0f);
-    external_disturbance = max(effector[9], 0.0f);
-    proprioceptive_error = max(proprioceptive_error, abs(effector[5]));
-    const float learned_effect_evidence = clamp(
-      abs(effector[6]) * max(belief_parameters[14], 0.0f), 0.0f, 1.0f
-    );
-    reachability_target = learned_effect_evidence * agency;
-    ownership_target = agency / (1.0f + external_disturbance);
+    if (effector_found) {
+      device const float *effector = reinterpret_cast<device const float *>(
+        hot_state + uniforms.muscle_belief_offset
+          + ulong(effector_index) * 192ul
+      );
+      const float agency = clamp(effector[8], 0.0f, 1.0f);
+      external_disturbance = clamp(effector[9], 0.0f, 1.0f);
+      proprioceptive_error = max(proprioceptive_error, abs(effector[5]));
+      const float learned_effect_evidence = clamp(
+        abs(effector[6]) * max(belief_parameters[14], 0.0f), 0.0f, 1.0f
+      );
+      reachability_target = learned_effect_evidence * agency;
+      ownership_target = agency / (1.0f + external_disturbance);
+    }
   }
   const float reachability_gain = nb_physical_alpha(
     elapsed_seconds, max(belief_parameters[9], 1.0e-4f)
