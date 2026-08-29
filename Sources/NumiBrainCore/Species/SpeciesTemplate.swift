@@ -423,10 +423,13 @@ public struct AutonomicChannelTemplate: Codable, Equatable, Hashable, Sendable {
     cpgGain: Float
   ) throws {
     guard criticalReceptorIdentifiers.count <= 4,
+      criticalReceptorIdentifiers.allSatisfy({ $0 > 0 }),
       Set(criticalReceptorIdentifiers).count == criticalReceptorIdentifiers.count,
       emergencyTarget.isFinite, (0...1).contains(emergencyTarget),
       emergencyGain.isFinite, emergencyGain >= 0,
-      cpgGain.isFinite, cpgGain >= 0
+      cpgGain.isFinite, cpgGain >= 0,
+      emergencyGain == 0 || respondsToAnyPhysiologicalCritical
+        || !criticalReceptorIdentifiers.isEmpty
     else {
       throw BrainRuntimeError.invalidDescriptor("autonomic channel is invalid")
     }
@@ -440,6 +443,38 @@ public struct AutonomicChannelTemplate: Codable, Equatable, Hashable, Sendable {
   }
 }
 
+/// Stable mapping from one species physiology state component to a physically
+/// realizable interoceptive receptor feature. The receptor identifier is the
+/// source identity carried by critical event tokens; it is deliberately
+/// independent of the modality-local buffer index.
+@frozen
+public struct PhysiologicalReceptorTemplate: Codable, Equatable, Hashable, Sendable {
+  public let stateIdentifier: UInt16
+  public let receptorIdentifier: UInt32
+  public let interoceptiveReceptorIndex: UInt32
+  public let featureIndex: UInt32
+  public let magnitudeScale: Float
+
+  public init(
+    stateIdentifier: UInt16,
+    receptorIdentifier: UInt32,
+    interoceptiveReceptorIndex: UInt32,
+    featureIndex: UInt32,
+    magnitudeScale: Float
+  ) throws {
+    guard receptorIdentifier > 0, magnitudeScale.isFinite, magnitudeScale > 0 else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "physiological receptor mapping is invalid"
+      )
+    }
+    self.stateIdentifier = stateIdentifier
+    self.receptorIdentifier = receptorIdentifier
+    self.interoceptiveReceptorIndex = interoceptiveReceptorIndex
+    self.featureIndex = featureIndex
+    self.magnitudeScale = magnitudeScale
+  }
+}
+
 @frozen
 public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
   public let modelClass: PhysiologyModelClass
@@ -449,6 +484,7 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
   public let viableMaximums: [Float]
   public let criticalMinimums: [Float]
   public let criticalMaximums: [Float]
+  public let receptorMappings: [PhysiologicalReceptorTemplate]
   public let autonomicChannels: [AutonomicChannelTemplate]
 
   public init(
@@ -459,11 +495,15 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
     viableMaximums: [Float],
     criticalMinimums: [Float],
     criticalMaximums: [Float],
+    receptorMappings: [PhysiologicalReceptorTemplate],
     autonomicChannels: [AutonomicChannelTemplate]
   ) throws {
     let count = Int(stateDimension)
+    let receptorMappings = receptorMappings.sorted {
+      $0.stateIdentifier < $1.stateIdentifier
+    }
     let autonomicChannels = autonomicChannels.sorted { $0.identifier < $1.identifier }
-    guard stateDimension > 0, autonomicActionDimension > 0,
+    guard stateDimension > 0, stateDimension <= 64, autonomicActionDimension > 0,
       [viableMinimums, viableMaximums, criticalMinimums, criticalMaximums]
         .allSatisfy({ $0.count == count && $0.allSatisfy(\.isFinite) }),
       (0..<count).allSatisfy({ index in
@@ -471,6 +511,12 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
           && viableMinimums[index] <= viableMaximums[index]
           && viableMaximums[index] <= criticalMaximums[index]
       }),
+      receptorMappings.count == count,
+      receptorMappings.enumerated().allSatisfy({ index, mapping in
+        mapping.stateIdentifier == UInt16(index)
+      }),
+      Set(receptorMappings.map(\.receptorIdentifier)).count
+        == receptorMappings.count,
       autonomicChannels.count == Int(autonomicActionDimension),
       autonomicChannels.enumerated().allSatisfy({ index, channel in
         channel.identifier == UInt16(index)
@@ -485,6 +531,7 @@ public struct PhysiologyTemplate: Codable, Equatable, Hashable, Sendable {
     self.viableMaximums = viableMaximums
     self.criticalMinimums = criticalMinimums
     self.criticalMaximums = criticalMaximums
+    self.receptorMappings = receptorMappings
     self.autonomicChannels = autonomicChannels
   }
 }
@@ -568,8 +615,8 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  /// Version 4 adds explicit species-owned autonomic channel routing.
-  public static let formatVersion: UInt32 = 4
+  /// Version 5 maps physiological state to stable interoceptive receptor IDs.
+  public static let formatVersion: UInt32 = 5
 
   public let family: SpeciesFamily
   public let name: String
@@ -629,6 +676,15 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     let activeSensingDimension = senses.lazy
       .filter(\.enabled)
       .reduce(0) { $0 + Int($1.activeSensingActionDimension) }
+    let interoception = senses.first { $0.modality == .interoception }
+    let physiologicalReceptorIdentifiers = Set(
+      physiology.receptorMappings.map(\.receptorIdentifier)
+    )
+    guard let interoception, interoception.enabled else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "species physiology requires an enabled interoceptive topology"
+      )
+    }
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !enabled.isEmpty, Set(enabled).count == enabled.count,
       regionGraph.referenceGraphFingerprint == referenceGraph.fingerprint,
@@ -636,6 +692,14 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       senses.count == SensoryModality.allCases.count,
       Set(senses.map(\.modality)).count == senses.count,
       senses.contains(where: \.enabled),
+      physiology.receptorMappings.allSatisfy({ mapping in
+        mapping.interoceptiveReceptorIndex < interoception.receptorCount
+          && mapping.featureIndex < interoception.observationDimension
+      }),
+      physiology.autonomicChannels.allSatisfy({ channel in
+        Set(channel.criticalReceptorIdentifiers)
+          .isSubset(of: physiologicalReceptorIdentifiers)
+      }),
       motor.actuatorCount == body.actuatorCount,
       motor.autonomicActionDimension == physiology.autonomicActionDimension,
       activeSensingDimension == Int(motor.activeSensingActionDimension),
@@ -762,6 +826,14 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     ] {
       Self.mix(UInt32(values.count), into: &hash)
       for value in values { Self.mix(value.bitPattern, into: &hash) }
+    }
+    Self.mix(UInt32(physiology.receptorMappings.count), into: &hash)
+    for mapping in physiology.receptorMappings {
+      Self.mix(UInt32(mapping.stateIdentifier), into: &hash)
+      Self.mix(mapping.receptorIdentifier, into: &hash)
+      Self.mix(mapping.interoceptiveReceptorIndex, into: &hash)
+      Self.mix(mapping.featureIndex, into: &hash)
+      Self.mix(mapping.magnitudeScale.bitPattern, into: &hash)
     }
     Self.mix(UInt32(physiology.autonomicChannels.count), into: &hash)
     for channel in physiology.autonomicChannels {

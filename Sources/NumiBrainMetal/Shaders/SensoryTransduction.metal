@@ -51,8 +51,8 @@ struct NBReceptorEventRule {
   uint event_flags;
   float threshold;
   float magnitude_scale;
-  uint reserved0;
-  uint reserved1;
+  uint source_identifier;
+  uint rule_flags;
 };
 
 struct NBSensoryFrameMetadata {
@@ -353,16 +353,16 @@ kernel void extract_receptor_events(
     const float value = observations[scalar_index];
     bool active = false;
     float magnitude = 0.0f;
+    const float threshold = (rule.rule_flags & 1u) != 0u
+      ? rule.threshold
+      : max(rule.threshold, sensory_parameters[6]);
     if (rule.comparison == 1u) {
-      const float threshold = max(rule.threshold, sensory_parameters[6]);
       active = value > threshold;
       magnitude = value - threshold;
     } else if (rule.comparison == 2u) {
-      const float threshold = max(rule.threshold, sensory_parameters[6]);
       active = value < threshold;
       magnitude = threshold - value;
     } else {
-      const float threshold = max(rule.threshold, sensory_parameters[6]);
       active = abs(value) > threshold;
       magnitude = abs(value) - threshold;
     }
@@ -394,7 +394,9 @@ kernel void extract_receptor_events(
   NBReceptorEventRecord event;
   event.environment_identifier = uniforms.environment_identifier;
   event.kind = rule.event_kind;
-  event.source_identifier = strongest_receptor;
+  event.source_identifier = rule.source_identifier != 0u
+    ? rule.source_identifier
+    : strongest_receptor;
   event.flags = rule.event_flags | NB_RECEPTOR_EVENT_DERIVED;
   event.timestamp_microseconds = uniforms.target_timestamp_microseconds;
   event.magnitude = strongest;

@@ -19,6 +19,12 @@ public struct ReceptorEventRule: Codable, Equatable, Hashable, Sendable {
   public let magnitudeScale: Float
   public let eventKind: ReceptorEventKind
   public let eventFlags: UInt32
+  /// Stable species receptor identity. Zero preserves the legacy behavior of
+  /// using the strongest modality-local receptor index as event source.
+  public let sourceIdentifier: UInt32
+  /// Species-critical boundaries bypass the trainable generic event floor.
+  /// Other learned or calibrated event rules retain the floor by default.
+  public let usesAbsoluteThreshold: Bool
 
   public init(
     identifier: UInt32,
@@ -30,7 +36,9 @@ public struct ReceptorEventRule: Codable, Equatable, Hashable, Sendable {
     threshold: Float,
     magnitudeScale: Float,
     eventKind: ReceptorEventKind,
-    eventFlags: UInt32 = 0
+    eventFlags: UInt32 = 0,
+    sourceIdentifier: UInt32 = 0,
+    usesAbsoluteThreshold: Bool = false
   ) throws {
     guard identifier > 0, receptorCount > 0, threshold.isFinite,
       magnitudeScale.isFinite, magnitudeScale > 0
@@ -47,6 +55,8 @@ public struct ReceptorEventRule: Codable, Equatable, Hashable, Sendable {
     self.magnitudeScale = magnitudeScale
     self.eventKind = eventKind
     self.eventFlags = eventFlags
+    self.sourceIdentifier = sourceIdentifier
+    self.usesAbsoluteThreshold = usesAbsoluteThreshold
   }
 }
 
@@ -61,15 +71,20 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
 
   public init(
     species: SpeciesTemplate,
-    eventRules: [ReceptorEventRule]
+    eventRules: [ReceptorEventRule],
+    includePhysiologicalCriticalRules: Bool = true
   ) throws {
-    guard Set(eventRules.map(\.identifier)).count == eventRules.count else {
+    var compiledRules = eventRules
+    if includePhysiologicalCriticalRules {
+      compiledRules.append(contentsOf: try Self.physiologicalCriticalRules(species))
+    }
+    guard Set(compiledRules.map(\.identifier)).count == compiledRules.count else {
       throw BrainRuntimeError.invalidEvent("receptor event-rule identifiers are duplicated")
     }
     let topologyByModality = Dictionary(
       uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
     )
-    for rule in eventRules {
+    for rule in compiledRules {
       guard let topology = topologyByModality[rule.modality], topology.enabled,
         rule.featureIndex < topology.observationDimension
       else {
@@ -82,7 +97,7 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     }
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
-    for rule in eventRules.sorted(by: { $0.identifier < $1.identifier }) {
+    for rule in compiledRules.sorted(by: { $0.identifier < $1.identifier }) {
       Self.mix(UInt64(rule.identifier), into: &hash)
       Self.mix(UInt64(rule.modality.rawValue), into: &hash)
       Self.mix(UInt64(rule.receptorStart), into: &hash)
@@ -93,10 +108,58 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
       Self.mix(UInt64(rule.magnitudeScale.bitPattern), into: &hash)
       Self.mix(UInt64(rule.eventKind.rawValue), into: &hash)
       Self.mix(UInt64(rule.eventFlags), into: &hash)
+      Self.mix(UInt64(rule.sourceIdentifier), into: &hash)
+      Self.mix(UInt64(rule.usesAbsoluteThreshold ? 1 : 0), into: &hash)
     }
     self.speciesTemplateFingerprint = species.fingerprint
-    self.eventRules = eventRules.sorted { $0.identifier < $1.identifier }
+    self.eventRules = compiledRules.sorted { $0.identifier < $1.identifier }
     self.fingerprint = hash
+  }
+
+  /// Critical physiology is emitted from causal interoceptive observations,
+  /// never from authoritative NumanX state. Two immutable rules cover the low
+  /// and high critical boundary for every species physiology component.
+  private static func physiologicalCriticalRules(
+    _ species: SpeciesTemplate
+  ) throws -> [ReceptorEventRule] {
+    var rules: [ReceptorEventRule] = []
+    rules.reserveCapacity(species.physiology.receptorMappings.count * 2)
+    for mapping in species.physiology.receptorMappings {
+      let stateIndex = Int(mapping.stateIdentifier)
+      let baseIdentifier = UInt32(0x8000_0000)
+        | (UInt32(mapping.stateIdentifier) << 1)
+      rules.append(
+        try ReceptorEventRule(
+          identifier: baseIdentifier,
+          modality: .interoception,
+          receptorStart: mapping.interoceptiveReceptorIndex,
+          receptorCount: 1,
+          featureIndex: mapping.featureIndex,
+          comparison: .lessThan,
+          threshold: species.physiology.criticalMinimums[stateIndex],
+          magnitudeScale: mapping.magnitudeScale,
+          eventKind: .physiologicalCritical,
+          sourceIdentifier: mapping.receptorIdentifier,
+          usesAbsoluteThreshold: true
+        )
+      )
+      rules.append(
+        try ReceptorEventRule(
+          identifier: baseIdentifier | 1,
+          modality: .interoception,
+          receptorStart: mapping.interoceptiveReceptorIndex,
+          receptorCount: 1,
+          featureIndex: mapping.featureIndex,
+          comparison: .greaterThan,
+          threshold: species.physiology.criticalMaximums[stateIndex],
+          magnitudeScale: mapping.magnitudeScale,
+          eventKind: .physiologicalCritical,
+          sourceIdentifier: mapping.receptorIdentifier,
+          usesAbsoluteThreshold: true
+        )
+      )
+    }
+    return rules
   }
 
   private static func mix(_ value: UInt64, into hash: inout UInt64) {

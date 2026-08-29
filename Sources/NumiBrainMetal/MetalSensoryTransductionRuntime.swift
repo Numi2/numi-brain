@@ -49,8 +49,8 @@ private struct ReceptorEventRuleRecord {
   var eventFlags: UInt32 = 0
   var threshold: Float = 0
   var magnitudeScale: Float = 0
-  var reserved0: UInt32 = 0
-  var reserved1: UInt32 = 0
+  var sourceIdentifier: UInt32 = 0
+  var ruleFlags: UInt32 = 0
 }
 
 @frozen
@@ -211,8 +211,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
         eventFlags: $0.eventFlags,
         threshold: $0.threshold,
         magnitudeScale: $0.magnitudeScale,
-        reserved0: 0,
-        reserved1: 0
+        sourceIdentifier: $0.sourceIdentifier,
+        ruleFlags: $0.usesAbsoluteThreshold ? 1 : 0
       )
     }
     let sourceURL =
