@@ -1081,9 +1081,9 @@ kernel void broadcast_accepted_prediction_error(
   const bool protective_reflex = nb_has_accepted_protective_reflex(
     hot_state, uniforms
   );
-  const bool accepted_stop = protective_reflex
+  const bool fast_protective_stop = protective_reflex
     || physiological_critical > 0.0f || protective_risk > 0.0f;
-  if (accepted_stop) {
+  if (fast_protective_stop) {
     // Preserve the cached option identifier as causal provenance while
     // recording that accepted fast protection interrupted its execution.
     control->flags |= NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP;
@@ -1092,6 +1092,8 @@ kernel void broadcast_accepted_prediction_error(
     control->plan_step_count = 0u;
     control->vigor = 0.0f;
   }
+  const bool accepted_stop = fast_protective_stop
+    || (control->flags & NB_ACCEPTED_CONTROL_HYPERDIRECT_STOP) != 0u;
   const float3 embodied_risk = nb_accepted_embodied_risk(
     hot_state, uniforms, max(physiological_critical, protective_risk)
   );
