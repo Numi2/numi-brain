@@ -38,6 +38,7 @@ struct NBMemoryUniforms {
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
   ulong archive_episode_memory_offset;
+  ulong replay_memory_offset;
   ulong journal_byte_count;
   ulong persistent_memory_byte_count;
   uint recurrent_scalar_count;
@@ -48,6 +49,8 @@ struct NBMemoryUniforms {
   uint compressed_episode_stride;
   uint archive_episode_capacity;
   uint archive_episode_stride;
+  uint replay_capacity;
+  uint replay_stride;
   uint journal_entry_capacity;
   uint surprise_sample_count;
   float boundary_threshold;
@@ -522,7 +525,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 176);
+static_assert(sizeof(NBMemoryUniforms) == 192);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -836,6 +839,47 @@ inline bool journal_accumulated_episode(
       append_memory_record(
         journal, uniforms, archived, archive_destination,
         NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE, archived.identifier
+      );
+    }
+  }
+  if (uniforms.replay_capacity > 0u) {
+    const bool threat_or_failure = record.event_kind == 3u
+      || record.event_kind == 5u || record.event_kind == 7u
+      || record.event_kind == 8u || record.event_kind == 9u
+      || record.event_kind == 12u || record.damage_severity > 0.20f;
+    const uint queue_kind = threat_or_failure
+      ? 3u : (record.salience >= 0.80f ? 6u : 1u);
+    NBReplayQueueSummaryRecord replay = {};
+    replay.queue_kind = queue_kind;
+    replay.record_kind = 1u;
+    replay.record_identifier = record.identifier;
+    replay.priority = clamp(
+      record.salience + 0.5f * record.epistemic_uncertainty
+        + record.damage_severity + 0.25f * abs(record.factored_reinforcement),
+      0.0f,
+      2.0f
+    );
+    replay.replay_count = 0u;
+    replay.enqueued_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    const uint replay_slot = uint(
+      consolidation_hash(
+        record.identifier ^ (ulong(queue_kind) << 56)
+          ^ 0x455049534f444943ul
+      ) % ulong(uniforms.replay_capacity)
+    );
+    const ulong replay_destination = uniforms.replay_memory_offset
+      + ulong(replay_slot) * ulong(uniforms.replay_stride);
+    device const NBReplayQueueSummaryRecord *existing_replay =
+      reinterpret_cast<device const NBReplayQueueSummaryRecord *>(
+        persistent_memory + replay_destination
+      );
+    if (existing_replay->record_identifier == 0ul
+        || existing_replay->record_identifier == replay.record_identifier
+        || existing_replay->priority <= replay.priority) {
+      append_memory_record(
+        journal, uniforms, replay, replay_destination,
+        NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, replay.record_identifier
       );
     }
   }
@@ -1603,6 +1647,53 @@ kernel void consolidate_lived_memory_during_rest(
       || (replay_request.flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u
       || !rest_selected || max(max(pain, injury), immediate_risk) > 0.35f) return;
 
+  device const NBReplayQueueSummaryRecord *selected_replay = nullptr;
+  uint selected_replay_index = 0u;
+  float selected_replay_score = -INFINITY;
+  for (uint index = 0u; index < uniforms.replay_capacity; ++index) {
+    device const NBReplayQueueSummaryRecord *candidate =
+      reinterpret_cast<device const NBReplayQueueSummaryRecord *>(
+        persistent_memory + uniforms.replay_memory_offset
+          + ulong(index) * ulong(uniforms.replay_stride)
+      );
+    if (candidate->record_identifier == 0ul
+        || (candidate->record_kind != 1u && candidate->record_kind != 2u)
+        || !isfinite(candidate->priority) || candidate->priority <= 0.0f) continue;
+    const float score = candidate->priority
+      / (1.0f + 0.25f * float(candidate->replay_count));
+    if (selected_replay == nullptr || score > selected_replay_score
+        || (score == selected_replay_score
+          && candidate->enqueued_timestamp_microseconds
+            < selected_replay->enqueued_timestamp_microseconds)
+        || (score == selected_replay_score
+          && candidate->enqueued_timestamp_microseconds
+            == selected_replay->enqueued_timestamp_microseconds
+          && candidate->record_identifier < selected_replay->record_identifier)) {
+      selected_replay = candidate;
+      selected_replay_index = index;
+      selected_replay_score = score;
+    }
+  }
+
+  ulong target_episode_identifier = selected_replay != nullptr
+      && selected_replay->record_kind == 1u
+    ? selected_replay->record_identifier : 0ul;
+  ulong target_option_identifier = 0ul;
+  if (selected_replay != nullptr && selected_replay->record_kind == 2u) {
+    for (uint index = 0u; index < uniforms.procedural_capacity; ++index) {
+      device const NBProceduralSkillSummaryRecord *skill =
+        reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+          persistent_memory + uniforms.procedural_memory_offset
+            + ulong(index) * ulong(uniforms.procedural_stride)
+        );
+      if (skill->format_version == NB_MEMORY_RECORD_VERSION
+          && skill->identifier == selected_replay->record_identifier) {
+        target_option_identifier = skill->parent_skill_identifier;
+        break;
+      }
+    }
+  }
+
   device const NBEpisodicSummaryRecord *latest = nullptr;
   uint latest_index = 0u;
   for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
@@ -1617,7 +1708,12 @@ kernel void consolidate_lived_memory_during_rest(
       && candidate->source_generation <= uniforms.base_generation
       && candidate->end_timestamp_microseconds <= uniforms.target_timestamp_microseconds
       && candidate->salience >= uniforms.minimum_salience;
-    if (committed_lived_record && (latest == nullptr
+    const bool matches_replay = selected_replay == nullptr
+      || (target_episode_identifier != 0ul
+        && candidate->identifier == target_episode_identifier)
+      || (target_option_identifier != 0ul
+        && candidate->active_option_identifier == target_option_identifier);
+    if (committed_lived_record && matches_replay && (latest == nullptr
         || candidate->end_timestamp_microseconds
           > latest->end_timestamp_microseconds
         || (candidate->end_timestamp_microseconds
@@ -1625,6 +1721,34 @@ kernel void consolidate_lived_memory_during_rest(
             && candidate->identifier > latest->identifier))) {
       latest = candidate;
       latest_index = index;
+    }
+  }
+  // A queue entry can outlive the active exact episode it references. Fall
+  // back to the newest lived record rather than blocking consolidation; the
+  // stale queue entry is decayed below and naturally loses priority.
+  if (latest == nullptr && selected_replay != nullptr) {
+    for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
+      device const NBEpisodicSummaryRecord *candidate =
+        reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+          persistent_memory + uniforms.active_episode_memory_offset
+            + ulong(index) * ulong(uniforms.active_episode_stride)
+        );
+      const bool committed_lived_record = candidate->format_version
+          == NB_MEMORY_EPISODE_RECORD_VERSION
+        && candidate->identifier != 0ul
+        && candidate->source_generation <= uniforms.base_generation
+        && candidate->end_timestamp_microseconds
+          <= uniforms.target_timestamp_microseconds
+        && candidate->salience >= uniforms.minimum_salience;
+      if (committed_lived_record && (latest == nullptr
+          || candidate->end_timestamp_microseconds
+            > latest->end_timestamp_microseconds
+          || (candidate->end_timestamp_microseconds
+                == latest->end_timestamp_microseconds
+              && candidate->identifier > latest->identifier))) {
+        latest = candidate;
+        latest_index = index;
+      }
     }
   }
   if (latest == nullptr) return;
@@ -1894,6 +2018,25 @@ kernel void consolidate_lived_memory_during_rest(
         );
       }
     }
+  }
+
+  if (selected_replay != nullptr) {
+    NBReplayQueueSummaryRecord serviced = *selected_replay;
+    serviced.replay_count = serviced.replay_count == 0xffffffffu
+      ? serviced.replay_count : serviced.replay_count + 1u;
+    const bool serviced_exact_target =
+      (serviced.record_kind == 1u
+        && latest->identifier == serviced.record_identifier)
+      || (serviced.record_kind == 2u && target_option_identifier != 0ul
+        && latest->active_option_identifier == target_option_identifier);
+    const float decay = serviced_exact_target ? 0.70f : 0.35f;
+    serviced.priority = max(serviced.priority * decay, 0.0f);
+    const ulong replay_destination = uniforms.replay_memory_offset
+      + ulong(selected_replay_index) * ulong(uniforms.replay_stride);
+    append_memory_record(
+      journal, uniforms, serviced, replay_destination,
+      NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, serviced.record_identifier
+    );
   }
 }
 

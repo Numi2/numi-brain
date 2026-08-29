@@ -17,6 +17,7 @@ private struct MemoryUniforms {
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
   var archiveEpisodeMemoryOffset: UInt64 = 0
+  var replayMemoryOffset: UInt64 = 0
   var journalByteCount: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
@@ -27,6 +28,8 @@ private struct MemoryUniforms {
   var compressedEpisodeStride: UInt32 = 0
   var archiveEpisodeCapacity: UInt32 = 0
   var archiveEpisodeStride: UInt32 = 0
+  var replayCapacity: UInt32 = 0
+  var replayStride: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
   var boundaryThreshold: Float = 0
@@ -202,7 +205,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 176,
+    guard MemoryLayout<MemoryUniforms>.stride == 192,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 232,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
@@ -739,6 +742,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let activeEpisodes = arena.memoryLayout.section(.activeEpisodes)
     let compressedEpisodes = arena.memoryLayout.section(.compressedEpisodeMetadata)
     let archiveEpisodes = arena.memoryLayout.section(.archiveIndex)
+    let replayQueue = arena.memoryLayout.section(.replayQueue)
     let recurrent = arena.layout.section(.regionalRecurrent)
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
@@ -752,6 +756,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       compressedEpisodes.elementStride <= Int(UInt32.max),
       archiveEpisodes.elementCount <= Int(UInt32.max),
       archiveEpisodes.elementStride <= Int(UInt32.max),
+      replayQueue.elementCount <= Int(UInt32.max),
+      replayQueue.elementStride <= Int(UInt32.max),
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max)
     else {
       throw TissueError.transaction("episodic segmentation exceeds memory capacity")
@@ -773,6 +779,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       activeEpisodeMemoryOffset: UInt64(activeEpisodes.byteOffset),
       compressedEpisodeMemoryOffset: UInt64(compressedEpisodes.byteOffset),
       archiveEpisodeMemoryOffset: UInt64(archiveEpisodes.byteOffset),
+      replayMemoryOffset: UInt64(replayQueue.byteOffset),
       journalByteCount: UInt64(memory.journalByteCount),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
@@ -783,6 +790,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       compressedEpisodeStride: UInt32(compressedEpisodes.elementStride),
       archiveEpisodeCapacity: UInt32(archiveEpisodes.elementCount),
       archiveEpisodeStride: UInt32(archiveEpisodes.elementStride),
+      replayCapacity: UInt32(replayQueue.elementCount),
+      replayStride: UInt32(replayQueue.elementStride),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
       boundaryThreshold: segmentation.boundaryThreshold,
