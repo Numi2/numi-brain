@@ -14,8 +14,12 @@ struct NBAgentArenaUniforms {
   ulong hot_byte_count;
   ulong memory_byte_count;
   ulong journal_byte_count;
+  ulong archive_page_residency_offset;
+  ulong archive_page_request_offset;
   uint journal_entry_capacity;
   uint apply_mutations;
+  uint archive_page_count;
+  uint archive_page_request_capacity;
 };
 
 struct NBCheckpointCopyUniforms {
@@ -26,6 +30,22 @@ struct NBCheckpointCopyUniforms {
 
 struct NBMemoryRangeCopyUniforms {
   ulong byte_count;
+};
+
+struct NBArchivePageResidencyUniforms {
+  uint page_count;
+  uint update_count;
+  uint resident_state;
+  uint clear_requests;
+};
+
+struct NBArchivePageRequestQueueHeader {
+  atomic_uint request_count;
+  uint request_capacity;
+  atomic_uint overflow_count;
+  uint flags;
+  ulong latest_request_timestamp_microseconds;
+  ulong shadow_generation;
 };
 
 struct NBAgentMemoryJournalHeader {
@@ -54,9 +74,11 @@ struct NBAgentMemoryMutation {
   ulong reserved;
 };
 
-static_assert(sizeof(NBAgentArenaUniforms) == 48);
+static_assert(sizeof(NBAgentArenaUniforms) == 72);
 static_assert(sizeof(NBCheckpointCopyUniforms) == 24);
 static_assert(sizeof(NBMemoryRangeCopyUniforms) == 8);
+static_assert(sizeof(NBArchivePageResidencyUniforms) == 16);
+static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
 static_assert(sizeof(NBAgentMemoryJournalHeader) == 48);
 static_assert(sizeof(NBAgentMemoryMutation) == 64);
 
@@ -115,6 +137,31 @@ kernel void snapshot_agent_memory_range(
   }
 }
 
+kernel void update_archive_page_residency(
+  device atomic_uint *page_states [[buffer(0)]],
+  device const uint *page_identifiers [[buffer(1)]],
+  device NBArchivePageRequestQueueHeader *requests [[buffer(2)]],
+  constant NBArchivePageResidencyUniforms &uniforms [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid < uniforms.update_count) {
+    const uint page_identifier = page_identifiers[gid];
+    if (page_identifier < uniforms.page_count) {
+      atomic_store_explicit(
+        &page_states[page_identifier], uniforms.resident_state,
+        memory_order_relaxed
+      );
+    }
+  }
+  if (gid == 0u && uniforms.clear_requests != 0u) {
+    atomic_store_explicit(&requests->request_count, 0u, memory_order_relaxed);
+    atomic_store_explicit(&requests->overflow_count, 0u, memory_order_relaxed);
+    requests->flags = 0u;
+    requests->latest_request_timestamp_microseconds = 0ul;
+    requests->shadow_generation = 0ul;
+  }
+}
+
 kernel void initialize_agent_state_arena(
   device uint *hot_state [[buffer(0)]],
   device uint *persistent_memory [[buffer(1)]],
@@ -125,7 +172,17 @@ kernel void initialize_agent_state_arena(
 {
   const ulong byte_offset = ulong(gid) * sizeof(uint);
   if (byte_offset < uniforms.hot_byte_count) {
-    hot_state[gid] = 0u;
+    uint initial_value = 0u;
+    const ulong residency_end = uniforms.archive_page_residency_offset
+      + ulong(uniforms.archive_page_count) * sizeof(uint);
+    if (byte_offset >= uniforms.archive_page_residency_offset
+        && byte_offset < residency_end) {
+      initial_value = 1u;
+    }
+    if (byte_offset == uniforms.archive_page_request_offset + sizeof(uint)) {
+      initial_value = uniforms.archive_page_request_capacity;
+    }
+    hot_state[gid] = initial_value;
   }
   if (byte_offset < uniforms.memory_byte_count) {
     persistent_memory[gid] = 0u;

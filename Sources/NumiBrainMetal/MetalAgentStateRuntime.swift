@@ -8,8 +8,12 @@ private struct AgentArenaUniforms {
   var hotByteCount: UInt64 = 0
   var memoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
+  var archivePageResidencyOffset: UInt64 = 0
+  var archivePageRequestOffset: UInt64 = 0
   var journalEntryCapacity: UInt32 = 0
   var applyMutations: UInt32 = 0
+  var archivePageCount: UInt32 = 0
+  var archivePageRequestCapacity: UInt32 = 0
 }
 
 private struct CheckpointCopyUniforms {
@@ -20,6 +24,13 @@ private struct CheckpointCopyUniforms {
 
 private struct MemoryRangeCopyUniforms {
   var byteCount: UInt64 = 0
+}
+
+private struct ArchivePageResidencyUniforms {
+  var pageCount: UInt32 = 0
+  var updateCount: UInt32 = 0
+  var residentState: UInt32 = 0
+  var clearRequests: UInt32 = 0
 }
 
 /// Executes generation seeding and persistent-memory journal application for
@@ -56,15 +67,18 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   private let checkpointSnapshotPipeline: any MTLComputePipelineState
   private let checkpointRestorePipeline: any MTLComputePipelineState
   private let memoryRangeSnapshotPipeline: any MTLComputePipelineState
+  private let archivePageResidencyPipeline: any MTLComputePipelineState
   private let initializeArguments: any MTL4ArgumentTable
   private let beginArguments: any MTL4ArgumentTable
   private let applyJournalArguments: any MTL4ArgumentTable
   private let checkpointSnapshotArguments: any MTL4ArgumentTable
   private let checkpointRestoreArguments: any MTL4ArgumentTable
   private let memoryRangeSnapshotArguments: any MTL4ArgumentTable
+  private let archivePageResidencyArguments: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let checkpointCopyUniformBuffer: any MTLBuffer
   private let memoryRangeCopyUniformBuffer: any MTLBuffer
+  private let archivePageResidencyUniformBuffer: any MTLBuffer
   private let residencySet: any MTLResidencySet
   private let lock = NSLock()
 
@@ -74,9 +88,10 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     initialGeneration: UInt64 = 0
   ) throws {
-    guard MemoryLayout<AgentArenaUniforms>.stride == 48,
+    guard MemoryLayout<AgentArenaUniforms>.stride == 72,
       MemoryLayout<CheckpointCopyUniforms>.stride == 24
         && MemoryLayout<MemoryRangeCopyUniforms>.stride == 8
+        && MemoryLayout<ArchivePageResidencyUniforms>.stride == 16
     else {
       throw TissueError.metal("agent-state arena uniform ABI drift")
     }
@@ -100,6 +115,10 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       let memoryRangeCopyUniformBuffer = device.makeBuffer(
         length: MemoryLayout<MemoryRangeCopyUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let archivePageResidencyUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<ArchivePageResidencyUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to create agent-state Metal 4 execution objects")
@@ -107,6 +126,8 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     uniformBuffer.label = "NumiBrain complete agent-state arena uniforms"
     checkpointCopyUniformBuffer.label = "NumiBrain checkpoint copy uniforms"
     memoryRangeCopyUniformBuffer.label = "NumiBrain learner range-copy uniforms"
+    archivePageResidencyUniformBuffer.label =
+      "NumiBrain archive page-residency uniforms"
 
     let sourceURL =
       Bundle.module.url(
@@ -142,6 +163,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       ),
       let memoryRangeSnapshotFunction = library.makeFunction(
         name: "snapshot_agent_memory_range"
+      ),
+      let archivePageResidencyFunction = library.makeFunction(
+        name: "update_archive_page_residency"
       )
     else {
       throw TissueError.metal("agent-state arena kernels are incomplete")
@@ -152,6 +176,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     let checkpointSnapshotPipeline: any MTLComputePipelineState
     let checkpointRestorePipeline: any MTLComputePipelineState
     let memoryRangeSnapshotPipeline: any MTLComputePipelineState
+    let archivePageResidencyPipeline: any MTLComputePipelineState
     do {
       initializePipeline = try device.makeComputePipelineState(function: initializeFunction)
       beginPipeline = try device.makeComputePipelineState(function: beginFunction)
@@ -164,6 +189,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
       memoryRangeSnapshotPipeline = try device.makeComputePipelineState(
         function: memoryRangeSnapshotFunction
+      )
+      archivePageResidencyPipeline = try device.makeComputePipelineState(
+        function: archivePageResidencyFunction
       )
     } catch {
       throw TissueError.metal("agent-state arena pipeline creation failed: \(error)")
@@ -199,9 +227,14 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       label: "NumiBrain learner range snapshot arguments",
       count: 3
     )
+    let archivePageResidencyArguments = try Self.makeArgumentTable(
+      device: device,
+      label: "NumiBrain archive page-residency arguments",
+      count: 4
+    )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain complete agent-state residency"
-    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 4
+    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 5
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -214,6 +247,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     residencySet.addAllocation(uniformBuffer)
     residencySet.addAllocation(checkpointCopyUniformBuffer)
     residencySet.addAllocation(memoryRangeCopyUniformBuffer)
+    residencySet.addAllocation(archivePageResidencyUniformBuffer)
     residencySet.commit()
     residencySet.requestResidency()
 
@@ -228,15 +262,18 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     self.checkpointSnapshotPipeline = checkpointSnapshotPipeline
     self.checkpointRestorePipeline = checkpointRestorePipeline
     self.memoryRangeSnapshotPipeline = memoryRangeSnapshotPipeline
+    self.archivePageResidencyPipeline = archivePageResidencyPipeline
     self.initializeArguments = initializeArguments
     self.beginArguments = beginArguments
     self.applyJournalArguments = applyJournalArguments
     self.checkpointSnapshotArguments = checkpointSnapshotArguments
     self.checkpointRestoreArguments = checkpointRestoreArguments
     self.memoryRangeSnapshotArguments = memoryRangeSnapshotArguments
+    self.archivePageResidencyArguments = archivePageResidencyArguments
     self.uniformBuffer = uniformBuffer
     self.checkpointCopyUniformBuffer = checkpointCopyUniformBuffer
     self.memoryRangeCopyUniformBuffer = memoryRangeCopyUniformBuffer
+    self.archivePageResidencyUniformBuffer = archivePageResidencyUniformBuffer
     self.residencySet = residencySet
 
     try writeUniforms(
@@ -529,6 +566,236 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     )
   }
 
+  /// Freezes the compact committed page-request queue for asynchronous archive
+  /// orchestration. This synchronization readback is never part of the motor
+  /// control path and cannot observe an uncommitted request.
+  public func snapshotArchivePageRequests() throws
+    -> MetalArchivePageRequestSnapshot
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    _ = try arena.checkpointSourceView()
+    let layout = arena.layout.section(.archivePageRequests)
+    guard layout.byteCount >= MetalAgentStateLayout.archivePageRequestHeaderByteCount,
+      layout.byteCount % MemoryLayout<UInt32>.stride == 0,
+      let snapshot = device.makeBuffer(
+        length: layout.byteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate archive-request snapshot")
+    }
+    snapshot.label = "NumiBrain committed archive-page requests"
+    addTemporaryResidency([snapshot])
+    defer { removeTemporaryResidency([snapshot]) }
+    var copyUniforms = MemoryRangeCopyUniforms(byteCount: UInt64(layout.byteCount))
+    withUnsafeBytes(of: &copyUniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      memoryRangeCopyUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    let requestGPUAddress = try arena.committedHotSectionAddress(
+      .archivePageRequests
+    )
+    try submit(label: "NumiBrain snapshot archive-page requests") { encoder in
+      memoryRangeSnapshotArguments.setAddress(
+        requestGPUAddress, index: 0
+      )
+      memoryRangeSnapshotArguments.setAddress(snapshot.gpuAddress, index: 1)
+      memoryRangeSnapshotArguments.setAddress(
+        memoryRangeCopyUniformBuffer.gpuAddress, index: 2
+      )
+      encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+      encoder.setArgumentTable(memoryRangeSnapshotArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(
+          width: layout.byteCount / MemoryLayout<UInt32>.stride,
+          height: 1,
+          depth: 1
+        ),
+        threadsPerThreadgroup: threadgroupSize(for: memoryRangeSnapshotPipeline)
+      )
+    }
+    let data = Data(bytes: snapshot.contents(), count: layout.byteCount)
+    let requestCount = data.withUnsafeBytes {
+      $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self)
+    }
+    let encodedCapacity = data.withUnsafeBytes {
+      $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self)
+    }
+    let overflowCount = data.withUnsafeBytes {
+      $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self)
+    }
+    let capacity = min(
+      Int(encodedCapacity), MetalAgentStateLayout.archivePageRequestCapacity
+    )
+    guard capacity > 0,
+      layout.byteCount >= MetalAgentStateLayout.archivePageRequestHeaderByteCount
+        + capacity * MetalAgentStateLayout.archivePageRequestStride
+    else {
+      throw TissueError.transaction("archive-page request header is invalid")
+    }
+    let count = min(Int(requestCount), capacity)
+    var requests: [MetalArchivePageRequest] = []
+    requests.reserveCapacity(count)
+    for index in 0..<count {
+      let base = MetalAgentStateLayout.archivePageRequestHeaderByteCount
+        + index * MetalAgentStateLayout.archivePageRequestStride
+      let pageIdentifier = data.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: base, as: UInt32.self)
+      }
+      let flags = data.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: base + 4, as: UInt32.self)
+      }
+      let timestamp = data.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: base + 8, as: UInt64.self)
+      }
+      let target = data.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: base + 16, as: UInt64.self)
+      }
+      let priority = data.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: base + 24, as: Float.self)
+      }
+      requests.append(
+        try MetalArchivePageRequest(
+          pageIdentifier: pageIdentifier,
+          requestedTimestamp: BrainTimestamp(microseconds: timestamp),
+          targetRecordIdentifier: target,
+          priority: priority,
+          flags: flags
+        )
+      )
+    }
+    return try MetalArchivePageRequestSnapshot(
+      committedGeneration: arena.committedGeneration,
+      pageCount: UInt32(
+        arena.layout.section(.archivePageResidency).elementCount
+      ),
+      overflowCount: overflowCount,
+      requests: requests
+    )
+  }
+
+  /// Marks resident archive pages absent between control roots. Retrieval will
+  /// request them on demand and defer the corresponding memory result.
+  public func evictArchivePages(_ pageIdentifiers: [UInt32]) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try updateArchivePageResidencyLocked(
+      pageIdentifiers,
+      residentState: 0,
+      clearRequests: false
+    )
+  }
+
+  /// Resolves one exact request snapshot. Loaded pages become searchable;
+  /// deferred pages return to the absent state so a later control may request
+  /// them again. Clearing is rejected if another root committed meanwhile.
+  public func resolveArchivePageRequests(
+    _ snapshot: MetalArchivePageRequestSnapshot,
+    residentPageIdentifiers: [UInt32]
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard snapshot.committedGeneration == arena.committedGeneration else {
+      throw TissueError.transaction("archive-page request snapshot is stale")
+    }
+    let requested = Set(snapshot.requests.map(\.pageIdentifier))
+    let resident = Set(residentPageIdentifiers)
+    guard resident.isSubset(of: requested) else {
+      throw TissueError.transaction("archive worker resolved an unrequested page")
+    }
+    let deferred = requested.subtracting(resident)
+    if !resident.isEmpty {
+      try updateArchivePageResidencyLocked(
+        resident.sorted(),
+        residentState: 1,
+        clearRequests: deferred.isEmpty
+      )
+    }
+    if !deferred.isEmpty || resident.isEmpty {
+      try updateArchivePageResidencyLocked(
+        deferred.sorted(),
+        residentState: 0,
+        clearRequests: true
+      )
+    }
+  }
+
+  private func updateArchivePageResidencyLocked(
+    _ pageIdentifiers: [UInt32],
+    residentState: UInt32,
+    clearRequests: Bool
+  ) throws {
+    if arena.committedJournalNeedsConsolidation {
+      try consolidateCommittedMemoryJournalLocked()
+    }
+    _ = try arena.checkpointSourceView()
+    let pageLayout = arena.layout.section(.archivePageResidency)
+    guard residentState <= 1,
+      Set(pageIdentifiers).count == pageIdentifiers.count,
+      pageIdentifiers.allSatisfy({ Int($0) < pageLayout.elementCount }),
+      pageIdentifiers.count <= Int(UInt32.max),
+      let identifiers = device.makeBuffer(
+        length: max(pageIdentifiers.count, 1) * MemoryLayout<UInt32>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.transaction("archive page-residency update is invalid")
+    }
+    if !pageIdentifiers.isEmpty {
+      pageIdentifiers.withUnsafeBytes { bytes in
+        guard let source = bytes.baseAddress else { return }
+        identifiers.contents().copyMemory(from: source, byteCount: bytes.count)
+      }
+    }
+    identifiers.label = "NumiBrain archive page-residency identifiers"
+    addTemporaryResidency([identifiers])
+    defer { removeTemporaryResidency([identifiers]) }
+    var uniforms = ArchivePageResidencyUniforms(
+      pageCount: UInt32(pageLayout.elementCount),
+      updateCount: UInt32(pageIdentifiers.count),
+      residentState: residentState,
+      clearRequests: clearRequests ? 1 : 0
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      archivePageResidencyUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    let pageStateGPUAddress = try arena.committedHotSectionAddress(
+      .archivePageResidency
+    )
+    let requestGPUAddress = try arena.committedHotSectionAddress(
+      .archivePageRequests
+    )
+    try submit(label: "NumiBrain update archive page residency") { encoder in
+      archivePageResidencyArguments.setAddress(
+        pageStateGPUAddress, index: 0
+      )
+      archivePageResidencyArguments.setAddress(identifiers.gpuAddress, index: 1)
+      archivePageResidencyArguments.setAddress(
+        requestGPUAddress, index: 2
+      )
+      archivePageResidencyArguments.setAddress(
+        archivePageResidencyUniformBuffer.gpuAddress, index: 3
+      )
+      encoder.setComputePipelineState(archivePageResidencyPipeline)
+      encoder.setArgumentTable(archivePageResidencyArguments)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(
+          width: max(pageIdentifiers.count, 1), height: 1, depth: 1
+        ),
+        threadsPerThreadgroup: threadgroupSize(for: archivePageResidencyPipeline)
+      )
+    }
+  }
+
   private var journalEntryCapacity: Int {
     max((arena.memoryLayout.journalByteCount - 48) / 64, 1)
   }
@@ -567,8 +834,20 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       hotByteCount: UInt64(arena.layout.totalByteCount),
       memoryByteCount: UInt64(arena.memoryLayout.totalByteCount),
       journalByteCount: UInt64(arena.memoryLayout.journalByteCount),
+      archivePageResidencyOffset: UInt64(
+        arena.layout.section(.archivePageResidency).byteOffset
+      ),
+      archivePageRequestOffset: UInt64(
+        arena.layout.section(.archivePageRequests).byteOffset
+      ),
       journalEntryCapacity: UInt32(journalEntryCapacity),
-      applyMutations: applyMutations ? 1 : 0
+      applyMutations: applyMutations ? 1 : 0,
+      archivePageCount: UInt32(
+        arena.layout.section(.archivePageResidency).elementCount
+      ),
+      archivePageRequestCapacity: UInt32(
+        MetalAgentStateLayout.archivePageRequestCapacity
+      )
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }

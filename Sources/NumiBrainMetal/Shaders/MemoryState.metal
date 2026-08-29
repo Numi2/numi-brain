@@ -175,6 +175,7 @@ struct NBActiveEpisodeAccumulator {
 
 struct NBMemoryRetrievalUniforms {
   ulong target_timestamp_microseconds;
+  ulong shadow_generation;
   ulong recurrent_offset;
   ulong workspace_content_offset;
   ulong workspace_metadata_offset;
@@ -189,6 +190,8 @@ struct NBMemoryRetrievalUniforms {
   ulong control_header_offset;
   ulong internal_action_offset;
   ulong developmental_state_offset;
+  ulong archive_page_residency_offset;
+  ulong archive_page_request_offset;
   ulong parameter_version_fingerprint;
   uint recurrent_scalar_count;
   uint workspace_capacity;
@@ -200,6 +203,9 @@ struct NBMemoryRetrievalUniforms {
   uint archive_episode_capacity;
   uint archive_episode_stride;
   uint archive_search_candidate_count;
+  uint archive_records_per_page;
+  uint archive_page_count;
+  uint archive_page_request_capacity;
   uint semantic_capacity;
   uint semantic_stride;
   uint semantic_relation_capacity;
@@ -448,6 +454,24 @@ struct NBMemoryRetrievalScratch {
   uint reserved[71];
 };
 
+struct NBArchivePageRequestQueueHeader {
+  atomic_uint request_count;
+  uint request_capacity;
+  atomic_uint overflow_count;
+  uint flags;
+  ulong latest_request_timestamp_microseconds;
+  ulong shadow_generation;
+};
+
+struct NBArchivePageRequestRecord {
+  uint page_identifier;
+  uint flags;
+  ulong requested_timestamp_microseconds;
+  ulong target_record_identifier;
+  float priority;
+  uint reserved;
+};
+
 struct NBSemanticConceptSummaryRecord {
   ulong identifier;
   ulong last_used_timestamp_microseconds;
@@ -574,7 +598,7 @@ static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
 static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
 static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 232);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 272);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 184);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 216);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 112);
@@ -586,6 +610,8 @@ static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 512);
+static_assert(sizeof(NBArchivePageRequestQueueHeader) == 32);
+static_assert(sizeof(NBArchivePageRequestRecord) == 32);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
@@ -720,6 +746,72 @@ inline uint archive_storage_index_for_search_candidate(
     : archive_secondary_query_cluster(query, query_count, primary_cluster);
   return selected_cluster
     + NB_MEMORY_ARCHIVE_CLUSTER_COUNT * within_cluster;
+}
+
+inline bool archive_page_is_resident_or_request(
+  device uchar *hot_state,
+  constant NBMemoryRetrievalUniforms &uniforms,
+  uint archive_index,
+  ulong target_record_identifier,
+  float priority)
+{
+  if (uniforms.archive_records_per_page == 0u) return false;
+  const uint page_identifier = archive_index / uniforms.archive_records_per_page;
+  if (page_identifier >= uniforms.archive_page_count) return false;
+  device atomic_uint *page_states =
+    reinterpret_cast<device atomic_uint *>(
+      hot_state + uniforms.archive_page_residency_offset
+    );
+  uint state = atomic_load_explicit(
+    &page_states[page_identifier], memory_order_relaxed
+  );
+  if (state == 1u) return true;
+  if (state != 0u) return false;
+  uint expected = 0u;
+  if (!atomic_compare_exchange_weak_explicit(
+      &page_states[page_identifier], &expected, 2u,
+      memory_order_relaxed, memory_order_relaxed
+    )) return expected == 1u;
+
+  device NBArchivePageRequestQueueHeader *queue =
+    reinterpret_cast<device NBArchivePageRequestQueueHeader *>(
+      hot_state + uniforms.archive_page_request_offset
+    );
+  const uint capacity = min(
+    queue->request_capacity, uniforms.archive_page_request_capacity
+  );
+  uint count = atomic_load_explicit(&queue->request_count, memory_order_relaxed);
+  uint slot = capacity;
+  while (count < capacity) {
+    uint desired = count + 1u;
+    if (atomic_compare_exchange_weak_explicit(
+        &queue->request_count, &count, desired,
+        memory_order_relaxed, memory_order_relaxed
+      )) {
+      slot = count;
+      break;
+    }
+  }
+  if (slot >= capacity) {
+    atomic_fetch_add_explicit(
+      &queue->overflow_count, 1u, memory_order_relaxed
+    );
+    atomic_store_explicit(
+      &page_states[page_identifier], 0u, memory_order_relaxed
+    );
+    return false;
+  }
+  device NBArchivePageRequestRecord *requests =
+    reinterpret_cast<device NBArchivePageRequestRecord *>(queue + 1);
+  NBArchivePageRequestRecord request = {};
+  request.page_identifier = page_identifier;
+  request.flags = 1u;
+  request.requested_timestamp_microseconds =
+    uniforms.target_timestamp_microseconds;
+  request.target_record_identifier = target_record_identifier;
+  request.priority = clamp(priority, 0.0f, 1.0f);
+  requests[slot] = request;
+  return false;
 }
 
 inline float archive_coarse_similarity(
@@ -1026,6 +1118,11 @@ kernel void score_archive_retrieval_shortlist(
   const uint archive_index = archive_storage_index_for_search_candidate(
     query, uniforms.recurrent_scalar_count, uniforms, gid
   );
+  if (!archive_page_is_resident_or_request(
+      hot_state, uniforms, archive_index,
+      internal_actions[0].target_identifier,
+      internal_actions[0].priority
+    )) return;
   device const NBArchivedEpisodicRecord *record =
     reinterpret_cast<device const NBArchivedEpisodicRecord *>(
       persistent_memory + uniforms.archive_episode_memory_offset

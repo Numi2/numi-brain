@@ -38,6 +38,7 @@ private struct MemoryUniforms {
 
 private struct MemoryRetrievalUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
   var recurrentOffset: UInt64 = 0
   var workspaceContentOffset: UInt64 = 0
   var workspaceMetadataOffset: UInt64 = 0
@@ -52,6 +53,8 @@ private struct MemoryRetrievalUniforms {
   var controlHeaderOffset: UInt64 = 0
   var internalActionOffset: UInt64 = 0
   var developmentalStateOffset: UInt64 = 0
+  var archivePageResidencyOffset: UInt64 = 0
+  var archivePageRequestOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -63,6 +66,9 @@ private struct MemoryRetrievalUniforms {
   var archiveEpisodeCapacity: UInt32 = 0
   var archiveEpisodeStride: UInt32 = 0
   var archiveSearchCandidateCount: UInt32 = 0
+  var archiveRecordsPerPage: UInt32 = 0
+  var archivePageCount: UInt32 = 0
+  var archivePageRequestCapacity: UInt32 = 0
   var semanticCapacity: UInt32 = 0
   var semanticStride: UInt32 = 0
   var semanticRelationCapacity: UInt32 = 0
@@ -249,7 +255,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     sharedParameters: MetalSharedParameterBank
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 192,
-      MemoryLayout<MemoryRetrievalUniforms>.stride == 232,
+      MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 216,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 184,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 112,
@@ -779,6 +785,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     for pass in 0..<maximumResults {
       var uniforms = MemoryRetrievalUniforms(
         targetTimestampMicroseconds: timestamp.rawValue,
+        shadowGeneration: transaction.shadowGeneration,
         recurrentOffset: UInt64(sections.section(.regionalRecurrent).byteOffset),
         workspaceContentOffset: UInt64(sections.section(.workspaceContent).byteOffset),
         workspaceMetadataOffset: UInt64(sections.section(.workspaceMetadata).byteOffset),
@@ -799,6 +806,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         developmentalStateOffset: UInt64(
           sections.section(.developmentalState).byteOffset
         ),
+        archivePageResidencyOffset: UInt64(
+          sections.section(.archivePageResidency).byteOffset
+        ),
+        archivePageRequestOffset: UInt64(
+          sections.section(.archivePageRequests).byteOffset
+        ),
         parameterVersionFingerprint: parameterVersionFingerprint,
         recurrentScalarCount: UInt32(regionalProgram.scalarCount),
         workspaceCapacity: UInt32(
@@ -815,6 +828,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         archiveEpisodeCapacity: UInt32(archive.elementCount),
         archiveEpisodeStride: UInt32(archive.elementStride),
         archiveSearchCandidateCount: UInt32(archiveSearchCandidateCount),
+        archiveRecordsPerPage: UInt32(MetalAgentStateLayout.archiveRecordsPerPage),
+        archivePageCount: UInt32(
+          sections.section(.archivePageResidency).elementCount
+        ),
+        archivePageRequestCapacity: UInt32(
+          MetalAgentStateLayout.archivePageRequestCapacity
+        ),
         semanticCapacity: UInt32(semantic.elementCount),
         semanticStride: UInt32(semantic.elementStride),
         semanticRelationCapacity: UInt32(semanticRelations.elementCount),

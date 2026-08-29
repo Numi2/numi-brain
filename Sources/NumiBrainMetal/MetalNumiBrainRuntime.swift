@@ -97,6 +97,49 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     try parameterCohort.validate(runtime: self)
   }
 
+  /// Returns only page requests from the last committed brain generation.
+  /// Archive orchestration is intentionally unavailable during a control root.
+  public func snapshotArchivePageRequests() throws
+    -> MetalArchivePageRequestSnapshot
+  {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive paging waits for the active brain control to finish"
+      )
+    }
+    return try cognitive.agentStateRuntime.snapshotArchivePageRequests()
+  }
+
+  public func evictArchivePages(_ pageIdentifiers: [UInt32]) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive paging waits for the active brain control to finish"
+      )
+    }
+    try cognitive.agentStateRuntime.evictArchivePages(pageIdentifiers)
+  }
+
+  public func resolveArchivePageRequests(
+    _ snapshot: MetalArchivePageRequestSnapshot,
+    residentPageIdentifiers: [UInt32]
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction == nil else {
+      throw TissueError.transaction(
+        "archive paging waits for the active brain control to finish"
+      )
+    }
+    try cognitive.agentStateRuntime.resolveArchivePageRequests(
+      snapshot,
+      residentPageIdentifiers: residentPageIdentifiers
+    )
+  }
+
   /// Moves one committed embodied mind into an already-created direct
   /// successor runtime. The source remains untouched until the successor has
   /// accepted the complete migrated checkpoint, so a failed activation cannot

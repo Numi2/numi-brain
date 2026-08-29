@@ -42,6 +42,10 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case activeEpisodeAccumulator = 31
   /// Accepted-tick history used to create and advance prospective intentions.
   case prospectiveLifecycle = 32
+  /// One atomic residency state per fixed-size Tier-2 archive page.
+  case archivePageResidency = 33
+  /// Deadline-bounded GPU requests for archive pages absent this control.
+  case archivePageRequests = 34
 }
 
 @frozen
@@ -116,6 +120,10 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let fastPlasticityStride = 32
   public static let eventTokenStride = 32
   public static let delayMessageStride = 320
+  public static let archiveRecordsPerPage = 256
+  public static let archivePageRequestCapacity = 64
+  public static let archivePageRequestStride = 32
+  public static let archivePageRequestHeaderByteCount = 32
 
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
@@ -338,6 +346,28 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     )
     try builder.append(.activeEpisodeAccumulator, count: 1, stride: 256)
     try builder.append(.prospectiveLifecycle, count: 1, stride: 256)
+    let archivePageCount = max(
+      (Int(species.capacities.archiveEpisodicCapacity)
+        + Self.archiveRecordsPerPage - 1) / Self.archiveRecordsPerPage,
+      1
+    )
+    try builder.append(
+      .archivePageResidency,
+      count: archivePageCount,
+      stride: MemoryLayout<UInt32>.stride
+    )
+    let archiveRequestByteCount = try Self.checkedAdd(
+      Self.archivePageRequestHeaderByteCount,
+      try Self.checkedMultiply(
+        Self.archivePageRequestCapacity,
+        Self.archivePageRequestStride
+      )
+    )
+    try builder.append(
+      .archivePageRequests,
+      count: 1,
+      stride: archiveRequestByteCount
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
