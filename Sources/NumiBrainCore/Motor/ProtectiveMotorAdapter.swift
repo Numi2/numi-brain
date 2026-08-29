@@ -150,6 +150,46 @@ public struct ProtectiveMotorProfile: Codable, Equatable, Hashable, Sendable {
     )
     return try Self(channels: channels)
   }
+
+  /// Compiles the production protective map from the species' physical
+  /// actuator contracts and innate reflex graph. No synthetic muscle identity
+  /// or bilateral assumption is introduced.
+  public static func compiled(species: SpeciesTemplate) throws -> Self {
+    let withdrawalKinds: Set<ReflexKind> = [
+      .withdrawal, .crossedExtension, .jointLimitProtection,
+      .painInhibition, .muscleOverloadInhibition,
+    ]
+    let braceKinds: Set<ReflexKind> = [
+      .stretch, .loadCompensation, .contactStabilization,
+      .vestibulospinal, .righting, .perching,
+    ]
+    let channels = species.motor.actuatorChannels.map { actuator in
+      let applicable = species.reflexes.filter {
+        $0.innateEnabled && $0.actuatorIdentifiers.contains(actuator.identifier)
+      }
+      let withdrawalGain = applicable.lazy
+        .filter { withdrawalKinds.contains($0.kind) }
+        .map { abs($0.gain) }
+        .max() ?? 0
+      let braceGain = applicable.lazy
+        .filter { braceKinds.contains($0.kind) }
+        .map { abs($0.gain) }
+        .max() ?? 0
+      var flags: ProtectiveMuscleChannelFlags = []
+      if withdrawalGain > 0 { flags.insert(.withdrawal) }
+      if braceGain > 0 { flags.insert(.posturalBrace) }
+      return ProtectiveMuscleChannel(
+        muscleIdentifier: actuator.identifier,
+        flags: flags,
+        restingExcitation: species.motor.actuatorCommandKind == .muscleExcitation
+          ? 0 : 0.5,
+        withdrawalGain: min(withdrawalGain, 1),
+        braceGain: min(braceGain, 1),
+        maximumExcitation: 1
+      )
+    }
+    return try Self(channels: channels)
+  }
 }
 
 @frozen

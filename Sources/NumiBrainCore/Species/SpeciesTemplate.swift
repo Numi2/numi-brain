@@ -289,7 +289,7 @@ public struct MotorTopology: Codable, Equatable, Hashable, Sendable {
 }
 
 @frozen
-public enum ReflexKind: UInt16, Codable, CaseIterable, Sendable {
+public enum ReflexKind: UInt16, Codable, CaseIterable, Hashable, Sendable {
   case stretch = 1
   case tendonUnloading = 2
   case withdrawal = 3
