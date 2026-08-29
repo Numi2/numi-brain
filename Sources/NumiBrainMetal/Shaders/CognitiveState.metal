@@ -287,6 +287,13 @@ struct NBRegionalPlasticModulationRecord {
   uint flags;
 };
 
+struct NBPlasticityRegionRangeRecord {
+  uint module_identifier;
+  uint scalar_offset;
+  uint scalar_count;
+  uint flags;
+};
+
 static_assert(sizeof(NBCognitiveUniforms) == 392);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
@@ -306,6 +313,7 @@ static_assert(sizeof(NBSpatialTransformRecord) == 96);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 32);
+static_assert(sizeof(NBPlasticityRegionRangeRecord) == 16);
 
 inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
@@ -1938,6 +1946,7 @@ kernel void advance_fast_plasticity_foundation(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *plasticity_parameters [[buffer(2)]],
+  device const NBPlasticityRegionRangeRecord *region_ranges [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.fast_plasticity_count
@@ -1975,13 +1984,6 @@ kernel void advance_fast_plasticity_foundation(
     site.learning_rate = max(plasticity_parameters[0], 0.0f);
     site.maximum_magnitude = max(plasticity_parameters[7], 1.0e-4f);
   }
-  const uint pre_index = gid % uniforms.recurrent_scalar_count;
-  const uint post_index = (pre_index + 1u) % uniforms.recurrent_scalar_count;
-  const float activity_product = recurrent[pre_index] * recurrent[post_index];
-  site.eligibility = min(
-    site.eligibility_retention,
-    clamp(plasticity_parameters[2], 0.0f, 1.0f)
-  ) * site.eligibility + plasticity_parameters[3] * activity_product;
   uint region_index = gid % uniforms.module_count;
   for (uint index = 0u; index < uniforms.module_count; ++index) {
     if (maturation[index].module_identifier == uint(site.region_identifier)) {
@@ -1989,6 +1991,30 @@ kernel void advance_fast_plasticity_foundation(
       break;
     }
   }
+  const NBPlasticityRegionRangeRecord region = region_ranges[region_index];
+  const bool valid_region = region.module_identifier
+        == uint(site.region_identifier)
+    && region.scalar_count > 0u
+    && region.scalar_offset < uniforms.recurrent_scalar_count
+    && region.scalar_count
+      <= uniforms.recurrent_scalar_count - region.scalar_offset
+    && (region.flags & 1u) != 0u;
+  const uint basis_identifier = uint(site.basis_identifier);
+  const uint pre_index = valid_region
+    ? region.scalar_offset
+      + (basis_identifier * 17u + 3u) % region.scalar_count
+    : 0u;
+  const uint post_index = valid_region
+    ? region.scalar_offset
+      + (basis_identifier * 31u + 7u) % region.scalar_count
+    : 0u;
+  const float activity_product = valid_region
+    ? recurrent[pre_index] * recurrent[post_index]
+    : 0.0f;
+  site.eligibility = min(
+    site.eligibility_retention,
+    clamp(plasticity_parameters[2], 0.0f, 1.0f)
+  ) * site.eligibility + plasticity_parameters[3] * activity_product;
   const float local_modulation = nb_regional_neuromodulator_effect(
     plasticity_parameters,
     uniforms,

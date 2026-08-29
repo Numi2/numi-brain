@@ -87,6 +87,13 @@ private struct WorldModelLevelRecord {
   var reserved: UInt64 = 0
 }
 
+private struct PlasticityRegionRangeRecord {
+  var moduleIdentifier: UInt32 = 0
+  var scalarOffset: UInt32 = 0
+  var scalarCount: UInt32 = 0
+  var flags: UInt32 = 0
+}
+
 @frozen
 public struct MetalRegionalRecurrentBufferView: Equatable, Sendable {
   public let gpuAddress: UInt64
@@ -134,6 +141,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let worldModelArgumentTables: [any MTL4ArgumentTable]
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
+  private let plasticityRegionRangeBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
   private let visionObservationOffset: UInt32
   private let visionObservationCount: UInt32
@@ -166,6 +174,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   ) throws {
     guard MemoryLayout<CognitiveUniforms>.stride == 392,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
+      MemoryLayout<PlasticityRegionRangeRecord>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       sharedParameters.parameterVersionFingerprint > 0
@@ -221,7 +230,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain cognitive-state arguments"
-    descriptor.maxBufferBindCount = 3
+    descriptor.maxBufferBindCount = 4
     descriptor.initializeBindings = true
     let worldDescriptor = MTL4ArgumentTableDescriptor()
     worldDescriptor.label = "NumiBrain hierarchical world-model arguments"
@@ -254,6 +263,16 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     let worldDescriptorByteCount = worldModelLevelRecords.count
       * MemoryLayout<WorldModelLevelRecord>.stride
+    let plasticityRegionRanges = regionalProgram.layouts.map { layout in
+      PlasticityRegionRangeRecord(
+        moduleIdentifier: UInt32(layout.moduleIdentifier),
+        scalarOffset: layout.scalarOffset,
+        scalarCount: layout.scalarCount,
+        flags: 1
+      )
+    }
+    let plasticityRegionRangeByteCount = plasticityRegionRanges.count
+      * MemoryLayout<PlasticityRegionRangeRecord>.stride
     var observationScalarOffset: UInt64 = 0
     var visionObservationOffset: UInt32 = 0
     var visionObservationCount: UInt32 = 0
@@ -317,18 +336,31 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       let worldModelDescriptorBuffer = device.makeBuffer(
         length: worldDescriptorByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let plasticityRegionRangeBuffer = device.makeBuffer(
+        length: plasticityRegionRangeByteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate cognitive-state bindings")
     }
     uniformBuffer.label = "NumiBrain cognitive-state uniforms"
     worldModelDescriptorBuffer.label = "NumiBrain immutable hierarchical world-model layout"
+    plasticityRegionRangeBuffer.label =
+      "NumiBrain immutable plasticity regional recurrent ranges"
     worldModelLevelRecords.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       worldModelDescriptorBuffer.contents().copyMemory(
         from: source, byteCount: bytes.count
       )
     }
+    plasticityRegionRanges.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      plasticityRegionRangeBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(plasticityRegionRangeBuffer.gpuAddress, index: 3)
     self.layoutFingerprint = arena.layout.fingerprint
     self.arena = arena
     self.species = species
@@ -353,6 +385,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     ]
     self.uniformBuffer = uniformBuffer
     self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
+    self.plasticityRegionRangeBuffer = plasticityRegionRangeBuffer
     self.worldModelLevelRecords = worldModelLevelRecords
     self.visionObservationOffset = visionObservationOffset
     self.visionObservationCount = visionObservationCount
@@ -421,7 +454,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, worldModelDescriptorBuffer]
+    [uniformBuffer, worldModelDescriptorBuffer, plasticityRegionRangeBuffer]
   }
 
   /// Imports the accepted fast regional generation into the cognitive shadow
