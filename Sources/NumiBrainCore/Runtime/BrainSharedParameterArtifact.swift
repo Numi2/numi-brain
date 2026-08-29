@@ -209,7 +209,13 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     var sensory = [Float](repeating: 0, count: 64)
     sensory.replaceSubrange(0...7, with: [1, 0.05, 0.1, 1, 0.25, 0.5, 0.01, 0.99])
     var belief = [Float](repeating: 0, count: 64)
-    belief.replaceSubrange(0...7, with: [0.2, 0.1, 0.05, 0.25, 0.1, 0.05, 0.01, 0.99])
+    belief.replaceSubrange(
+      0...14,
+      with: [
+        0.2, 0.1, 0.05, 0.25, 0.1, 0.05, 0.01, 0.99,
+        0.08, 0.25, 0.15, 0.08, 0.025, 32, 1,
+      ]
+    )
     var world = [Float](repeating: 0, count: 192)
     for level in 0..<5 {
       for head in 0..<5 {

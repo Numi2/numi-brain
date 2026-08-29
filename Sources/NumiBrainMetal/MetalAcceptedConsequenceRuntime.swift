@@ -211,6 +211,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       "update_fast_plasticity_from_accepted_error",
       "update_accepted_procedural_trace",
       "assimilate_accepted_fast_body_schema",
+      "update_accepted_embodied_self_model",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -238,7 +239,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     uniformBuffer.label = "NumiBrain accepted-consequence uniforms"
     argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.belief, minimumScalarCount: 8),
+      try sharedParameters.gpuAddress(.belief, minimumScalarCount: 15),
       index: 2
     )
     argumentTable.setAddress(
@@ -386,6 +387,12 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    dispatch(
+      encoder,
+      pipeline: pipelines[8],
+      count: Int(species.body.bodyCount)
+    )
+    barrier(encoder)
     dispatch(
       encoder,
       pipeline: pipelines[1],

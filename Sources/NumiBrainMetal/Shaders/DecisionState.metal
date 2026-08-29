@@ -642,10 +642,10 @@ inline float nb_embodied_self_risk(
       body + 16
     );
     if ((identity[3] & 1ul) == 0ul) continue;
-    risk = max(
-      risk,
-      max(clamp(body[5], 0.0f, 1.0f), clamp(body[7], 0.0f, 1.0f))
-    );
+    risk = max(risk, max(
+      clamp(body[5], 0.0f, 1.0f),
+      max(clamp(body[10], 0.0f, 1.0f), clamp(body[11], 0.0f, 1.0f))
+    ));
   }
   device const uchar *effector_belief =
     hot_state + uniforms.somatic_effector_belief_offset;
@@ -2553,10 +2553,10 @@ kernel void generate_motor_spinal_autonomic_state(
         body + 16
       );
       if ((identity[3] & 1ul) == 0ul) continue;
-      body_risk = max(
-        body_risk,
-        max(clamp(body[5], 0.0f, 1.0f), clamp(body[7], 0.0f, 1.0f))
-      );
+      body_risk = max(body_risk, max(
+        clamp(body[5], 0.0f, 1.0f),
+        max(clamp(body[10], 0.0f, 1.0f), clamp(body[11], 0.0f, 1.0f))
+      ));
       support_confidence = max(
         support_confidence, clamp(body[3], 0.0f, 1.0f)
       );

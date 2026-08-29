@@ -21,6 +21,25 @@ constant uint NB_WORLD_EVENT_OPTION_DIMENSION = 256u;
 constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
 constant ulong NB_ACCEPTED_GOAL_SOURCE_MASK = 0x00fffffffffffffful;
 
+// Canonical 256-byte body-belief scalar prefix. Keep this order aligned with
+// BodyNodeBelief: the first eight values are embodied self-state, followed by
+// the compatible fast load posterior. Slots 6 and 7 are not generic error or
+// threat storage; downstream planning and memory must preserve their meaning.
+constant uint NB_BODY_POSITION = 0u;
+constant uint NB_BODY_VELOCITY = 1u;
+constant uint NB_BODY_CONTACT = 2u;
+constant uint NB_BODY_SUPPORT = 3u;
+constant uint NB_BODY_LOCAL_FORCE = 4u;
+constant uint NB_BODY_PAIN = 5u;
+constant uint NB_BODY_REACHABILITY = 6u;
+constant uint NB_BODY_OWNERSHIP = 7u;
+constant uint NB_BODY_LOAD = 8u;
+constant uint NB_BODY_LOAD_VARIANCE = 9u;
+constant uint NB_BODY_VULNERABILITY = 10u;
+constant uint NB_BODY_DAMAGE_RISK = 11u;
+constant uint NB_BODY_PROPRIOCEPTIVE_ERROR = 12u;
+constant uint NB_BODY_EXTERNAL_DISTURBANCE = 13u;
+
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
   ulong delta_microseconds;
@@ -453,6 +472,15 @@ inline float nb_observation_energy(
   return clamp(energy, 0.0f, 1.0f);
 }
 
+inline float nb_physical_alpha(float elapsed_seconds, float time_constant_seconds) {
+  return clamp(
+    1.0f - exp(-max(elapsed_seconds, 0.0f)
+      / max(time_constant_seconds, 1.0e-4f)),
+    0.0f,
+    1.0f
+  );
+}
+
 /// Estimates the selected object's accepted epistemic posterior from the exact
 /// receptor buffer without mutating its slot ahead of the next cognitive tick.
 /// This lets sensing efficacy learn from the committed physical consequence
@@ -715,8 +743,11 @@ inline float nb_body_schema_epistemic_uncertainty(
     device const ulong *identity = reinterpret_cast<device const ulong *>(
       body + 16
     );
-    if ((identity[3] & 1ul) == 0ul || !isfinite(body[9])) continue;
-    const float standard_deviation = sqrt(max(body[9], 0.0f));
+    if ((identity[3] & 1ul) == 0ul
+        || !isfinite(body[NB_BODY_LOAD_VARIANCE])) continue;
+    const float standard_deviation = sqrt(max(
+      body[NB_BODY_LOAD_VARIANCE], 0.0f
+    ));
     uncertainty = max(
       uncertainty,
       standard_deviation / (1.0f + standard_deviation)
@@ -742,6 +773,13 @@ kernel void assimilate_accepted_body_and_physiology(
   const float velocity_gain = min(gain, max(belief_parameters[1], 0.0f));
   const float contact_gain = min(gain, max(belief_parameters[2], 0.0f));
   const float physiology_gain = min(gain, max(belief_parameters[3], 0.0f));
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  const float body_time_constant = max(belief_parameters[8], 1.0e-4f);
+  const float body_gain = min(
+    gain, nb_physical_alpha(elapsed_seconds, body_time_constant)
+  );
   if (gid < uniforms.body_count) {
     device float *body = reinterpret_cast<device float *>(
       hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
@@ -757,18 +795,45 @@ kernel void assimilate_accepted_body_and_physiology(
       observations, uniforms.vestibular_offset,
       uniforms.vestibular_count, gid
     );
-    const float prior_position = body[0];
-    body[0] = mix(prior_position, proprioception, gain);
-    body[1] = mix(body[1], proprioception - prior_position, velocity_gain);
-    body[2] = mix(body[2], clamp(abs(touch), 0.0f, 1.0f), contact_gain);
-    body[3] = mix(body[3], clamp(1.0f - abs(vestibular), 0.0f, 1.0f), gain);
-    body[4] = mix(body[4], max(touch, 0.0f), gain);
-    body[5] = max(
-      body[5] * clamp(belief_parameters[7], 0.0f, 1.0f),
+    const float prior_position = body[NB_BODY_POSITION];
+    const float contact_evidence = clamp(abs(touch), 0.0f, 1.0f);
+    const float vestibular_stability = clamp(
+      1.0f - abs(vestibular), 0.0f, 1.0f
+    );
+    const float velocity_limit = max(belief_parameters[13], 1.0f);
+    const float observed_velocity = clamp(
+      (proprioception - prior_position) / elapsed_seconds,
+      -velocity_limit,
+      velocity_limit
+    );
+    const float retained_per_second = clamp(
+      belief_parameters[7], 0.0f, 1.0f
+    );
+    const float pain_retention = retained_per_second <= 0.0f ? 0.0f
+      : (retained_per_second >= 1.0f ? 1.0f
+        : pow(retained_per_second, elapsed_seconds));
+    body[NB_BODY_POSITION] = mix(prior_position, proprioception, body_gain);
+    body[NB_BODY_VELOCITY] = mix(
+      body[NB_BODY_VELOCITY], observed_velocity, min(velocity_gain, body_gain)
+    );
+    body[NB_BODY_CONTACT] = mix(
+      body[NB_BODY_CONTACT], contact_evidence, min(contact_gain, body_gain)
+    );
+    body[NB_BODY_SUPPORT] = mix(
+      body[NB_BODY_SUPPORT],
+      contact_evidence * vestibular_stability,
+      body_gain
+    );
+    body[NB_BODY_LOCAL_FORCE] = mix(
+      body[NB_BODY_LOCAL_FORCE], abs(touch), body_gain
+    );
+    body[NB_BODY_PAIN] = max(
+      body[NB_BODY_PAIN] * pain_retention,
       clamp(abs(touch), 0.0f, 1.0f)
     );
-    body[6] = abs(proprioception - prior_position);
-    body[7] = max(body[7] * (1.0f - gain), body[6] * gain);
+    body[NB_BODY_PROPRIOCEPTIVE_ERROR] = abs(
+      observed_velocity - body[NB_BODY_VELOCITY]
+    );
     device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
     identity[0] = ulong(gid);
     identity[1] = uniforms.target_timestamp_microseconds;
@@ -838,8 +903,15 @@ kernel void assimilate_accepted_body_and_physiology(
     muscle[1] = mix(muscle[1], proprioception, gain);
     muscle[2] = observed_delta;
     muscle[3] = mix(muscle[3], abs(proprioception), gain);
-    muscle[4] = clamp(muscle[4] + abs(command) * float(uniforms.delta_microseconds)
-      * 1.0e-8f, 0.0f, 1.0f);
+    muscle[4] = clamp(
+      muscle[4]
+        + elapsed_seconds * (
+          max(belief_parameters[11], 0.0f) * abs(command)
+            - max(belief_parameters[12], 0.0f) * (1.0f - abs(command))
+        ),
+      0.0f,
+      1.0f
+    );
     muscle[5] = effect_error;
     muscle[6] = learned_effect_gain;
     muscle[7] = learned_effect_bias;
@@ -891,14 +963,10 @@ kernel void assimilate_accepted_fast_body_schema(
   device float *body = reinterpret_cast<device float *>(
     hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
   );
-  body[8] = max(schema.estimated_absolute_load, 0.0f);
-  body[9] = max(schema.epistemic_variance, 0.0f);
-  body[10] = clamp(schema.vulnerability, 0.0f, 1.0f);
-  body[11] = clamp(schema.damage_risk, 0.0f, 1.0f);
-  if ((schema.flags & 1u) != 0u) {
-    body[5] = max(body[5], body[11]);
-    body[7] = max(body[7], max(body[10], body[11]));
-  }
+  body[NB_BODY_LOAD] = max(schema.estimated_absolute_load, 0.0f);
+  body[NB_BODY_LOAD_VARIANCE] = max(schema.epistemic_variance, 0.0f);
+  body[NB_BODY_VULNERABILITY] = clamp(schema.vulnerability, 0.0f, 1.0f);
+  body[NB_BODY_DAMAGE_RISK] = clamp(schema.damage_risk, 0.0f, 1.0f);
   device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
   identity[0] = ulong(schema.body_identifier);
   identity[1] = uniforms.target_timestamp_microseconds;
@@ -909,6 +977,68 @@ kernel void assimilate_accepted_fast_body_schema(
   identity[6] = (ulong(schema.source_muscle_identifier) << 32u)
     | ulong(schema.endpoint_role);
   identity[7] = ulong(schema.flags);
+}
+
+/// Updates the learned body ownership and reachability factors only after the
+/// accepted somatic effect model and optional fast load posterior are visible.
+/// This is a separate dispatch so no body thread observes a partially updated
+/// effector record. The state therefore reflects accepted causal consequence,
+/// never the cached intention alone.
+kernel void update_accepted_embodied_self_model(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const float *belief_parameters [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.body_count) return;
+  device float *body = reinterpret_cast<device float *>(
+    hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
+  );
+  device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+  if ((identity[3] & NB_ACCEPTED_STATE_VALID) == 0ul) return;
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  float reachability_target = 0.0f;
+  float ownership_target = 0.0f;
+  float proprioceptive_error = body[NB_BODY_PROPRIOCEPTIVE_ERROR];
+  float external_disturbance = 0.0f;
+  if (uniforms.muscle_count > 0u) {
+    uint effector_index = gid % uniforms.muscle_count;
+    if ((identity[3] & (1ul << 4u)) != 0ul) {
+      const uint source_muscle_identifier = uint(identity[6] >> 32u);
+      if (source_muscle_identifier != 0xffffffffu) {
+        effector_index = source_muscle_identifier % uniforms.muscle_count;
+      }
+    }
+    device const float *effector = reinterpret_cast<device const float *>(
+      hot_state + uniforms.muscle_belief_offset
+        + ulong(effector_index) * 192ul
+    );
+    const float agency = clamp(effector[8], 0.0f, 1.0f);
+    external_disturbance = max(effector[9], 0.0f);
+    proprioceptive_error = max(proprioceptive_error, abs(effector[5]));
+    const float learned_effect_evidence = clamp(
+      abs(effector[6]) * max(belief_parameters[14], 0.0f), 0.0f, 1.0f
+    );
+    reachability_target = learned_effect_evidence * agency;
+    ownership_target = agency / (1.0f + external_disturbance);
+  }
+  const float reachability_gain = nb_physical_alpha(
+    elapsed_seconds, max(belief_parameters[9], 1.0e-4f)
+  );
+  const float ownership_gain = nb_physical_alpha(
+    elapsed_seconds, max(belief_parameters[10], 1.0e-4f)
+  );
+  body[NB_BODY_REACHABILITY] = clamp(mix(
+    body[NB_BODY_REACHABILITY], reachability_target, reachability_gain
+  ), 0.0f, 1.0f);
+  body[NB_BODY_OWNERSHIP] = clamp(mix(
+    body[NB_BODY_OWNERSHIP], ownership_target, ownership_gain
+  ), 0.0f, 1.0f);
+  body[NB_BODY_PROPRIOCEPTIVE_ERROR] = proprioceptive_error;
+  body[NB_BODY_EXTERNAL_DISTURBANCE] = external_disturbance;
+  identity[3] |= 1ul << 5u;
 }
 
 kernel void reconcile_accepted_world_model(
@@ -1098,17 +1228,18 @@ inline float3 nb_accepted_embodied_risk(
     );
     if ((identity[3] & 1ul) == 0ul) continue;
     evidence = 1.0f;
-    if (isfinite(body[5])) {
-      pain = max(pain, clamp(body[5], 0.0f, 1.0f));
+    if (isfinite(body[NB_BODY_PAIN])) {
+      pain = max(pain, clamp(body[NB_BODY_PAIN], 0.0f, 1.0f));
     }
-    if (isfinite(body[7])) {
-      threat = max(threat, clamp(body[7], 0.0f, 1.0f));
+    if (isfinite(body[NB_BODY_VULNERABILITY])) {
+      threat = max(
+        threat, clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f)
+      );
     }
-    if (isfinite(body[10])) {
-      threat = max(threat, clamp(body[10], 0.0f, 1.0f));
-    }
-    if (isfinite(body[11])) {
-      const float damage_risk = clamp(body[11], 0.0f, 1.0f);
+    if (isfinite(body[NB_BODY_DAMAGE_RISK])) {
+      const float damage_risk = clamp(
+        body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f
+      );
       pain = max(pain, damage_risk);
       threat = max(threat, damage_risk);
     }

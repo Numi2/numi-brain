@@ -2921,9 +2921,9 @@ kernel void reconsolidate_retrieved_memory(
           accepted_damage, clamp(body[5], 0.0f, 1.0f)
         );
       }
-      if (isfinite(body[7])) {
+      if (isfinite(body[10])) {
         accepted_damage = max(
-          accepted_damage, clamp(body[7], 0.0f, 1.0f)
+          accepted_damage, clamp(body[10], 0.0f, 1.0f)
         );
       }
       if (isfinite(body[11])) {
