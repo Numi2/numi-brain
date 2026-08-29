@@ -6,7 +6,7 @@ import NumiBrainCore
 /// external NumanX checkpoint that owns the corresponding physical body.
 @frozen
 public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let cognitiveState: MetalBrainCheckpoint
@@ -140,6 +140,8 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
       episodeIdentifier: cognitiveState.episodeIdentifier,
       controlStepIdentifier: cognitiveState.controlStepIdentifier,
       speciesTemplateFingerprint: cognitiveState.speciesTemplateFingerprint,
+      compiledSpeciesTemplateFingerprint:
+        cognitiveState.compiledSpeciesTemplateFingerprint,
       regionalProgramFingerprint: cognitiveState.regionalProgramFingerprint,
       scheduleFingerprint: cognitiveState.scheduleFingerprint,
       parameterVersionFingerprint: successor.fingerprint,

@@ -144,14 +144,10 @@ extension MetalNumiBrainRuntime {
     try somaticSynergyCatalog.validate(motor: species.motor)
     let cognitive = try MetalEmbodiedBrainRuntime(
       device: device,
-      species: species,
+      compiledSpeciesTemplate: compiledSpeciesTemplate,
       regionalProgram: regionalProgram,
       parameterVersion: version,
-      sharedParameterArtifact: publication.sharedArtifact,
-      sensoryProfile: compiledSpeciesTemplate.sensoryProfile,
-      jointTopologyCatalog: compiledSpeciesTemplate.jointTopologyCatalog,
-      muscleAttachmentCatalog: compiledSpeciesTemplate.muscleAttachmentCatalog,
-      somaticSynergyCatalog: somaticSynergyCatalog
+      sharedParameterArtifact: publication.sharedArtifact
     )
     let fastTissue = try MetalTissueRuntime(
       initialState: configuration.initialTissueState,

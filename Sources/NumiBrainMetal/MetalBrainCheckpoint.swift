@@ -6,7 +6,7 @@ import NumiBrainCore
 /// the corresponding fast-tissue state for complete nervous-system recovery.
 @frozen
 public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
 
   public let formatVersion: UInt32
   public let committedGeneration: UInt64
@@ -15,6 +15,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
   public let episodeIdentifier: UInt64
   public let controlStepIdentifier: UInt64
   public let speciesTemplateFingerprint: UInt64
+  public let compiledSpeciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
@@ -32,6 +33,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
     speciesTemplateFingerprint: UInt64,
+    compiledSpeciesTemplateFingerprint: UInt64,
     regionalProgramFingerprint: UInt64,
     scheduleFingerprint: UInt64,
     parameterVersionFingerprint: UInt64,
@@ -41,7 +43,8 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     hotState: Data,
     persistentMemory: Data
   ) throws {
-    guard speciesTemplateFingerprint > 0, regionalProgramFingerprint > 0,
+    guard speciesTemplateFingerprint > 0,
+      compiledSpeciesTemplateFingerprint > 0, regionalProgramFingerprint > 0,
       scheduleFingerprint > 0, parameterVersionFingerprint > 0,
       hotLayoutFingerprint > 0, memoryLayoutFingerprint > 0,
       physicalCheckpointFingerprint > 0, !hotState.isEmpty,
@@ -56,6 +59,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     self.episodeIdentifier = episodeIdentifier
     self.controlStepIdentifier = controlStepIdentifier
     self.speciesTemplateFingerprint = speciesTemplateFingerprint
+    self.compiledSpeciesTemplateFingerprint = compiledSpeciesTemplateFingerprint
     self.regionalProgramFingerprint = regionalProgramFingerprint
     self.scheduleFingerprint = scheduleFingerprint
     self.parameterVersionFingerprint = parameterVersionFingerprint
@@ -71,6 +75,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
       episodeIdentifier: episodeIdentifier,
       controlStepIdentifier: controlStepIdentifier,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
+      compiledSpeciesTemplateFingerprint: compiledSpeciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
       parameterVersionFingerprint: parameterVersionFingerprint,
@@ -91,6 +96,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
         episodeIdentifier: episodeIdentifier,
         controlStepIdentifier: controlStepIdentifier,
         speciesTemplateFingerprint: speciesTemplateFingerprint,
+        compiledSpeciesTemplateFingerprint: compiledSpeciesTemplateFingerprint,
         regionalProgramFingerprint: regionalProgramFingerprint,
         scheduleFingerprint: scheduleFingerprint,
         parameterVersionFingerprint: parameterVersionFingerprint,
@@ -133,6 +139,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
     speciesTemplateFingerprint: UInt64,
+    compiledSpeciesTemplateFingerprint: UInt64,
     regionalProgramFingerprint: UInt64,
     scheduleFingerprint: UInt64,
     parameterVersionFingerprint: UInt64,
@@ -147,6 +154,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
       UInt64(Self.formatVersion), committedGeneration,
       committedTimestamp.rawValue, UInt64(environmentIdentifier),
       episodeIdentifier, controlStepIdentifier, speciesTemplateFingerprint,
+      compiledSpeciesTemplateFingerprint,
       regionalProgramFingerprint, scheduleFingerprint,
       parameterVersionFingerprint, hotLayoutFingerprint,
       memoryLayoutFingerprint, physicalCheckpointFingerprint,

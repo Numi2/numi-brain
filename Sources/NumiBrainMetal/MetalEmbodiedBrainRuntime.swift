@@ -175,6 +175,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let deviceName: String
   public let deviceRegistryID: UInt64
   public let speciesTemplateFingerprint: UInt64
+  public let compiledSpeciesTemplateFingerprint: UInt64
   public let parameterVersionFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
@@ -190,6 +191,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   private let device: any MTLDevice
   private let species: SpeciesTemplate
+  let boundCompiledSpeciesTemplate: CompiledSpeciesTemplate
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
@@ -200,14 +202,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   public init(
     device: any MTLDevice,
-    species: SpeciesTemplate,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
     parameterVersion: BrainParameterVersion,
     sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
-    sensoryProfile: SensoryTransductionProfile,
-    jointTopologyCatalog: NumanXJointTopologyCatalog,
-    muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
-    somaticSynergyCatalog: SomaticSynergyCatalog,
     decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
     acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
       AcceptedConsequenceDynamics? = nil,
@@ -217,6 +215,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       EpisodicSegmentationDynamics? = nil,
     initialGeneration: UInt64 = 0
   ) throws {
+    let species = compiledSpeciesTemplate.species
+    let sensoryProfile = compiledSpeciesTemplate.sensoryProfile
+    let jointTopologyCatalog = compiledSpeciesTemplate.jointTopologyCatalog
+    let muscleAttachmentCatalog = compiledSpeciesTemplate.muscleAttachmentCatalog
+    let somaticSynergyCatalog = compiledSpeciesTemplate.somaticSynergyCatalog
     guard parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.scheduleFingerprint == regionalProgram.scheduleFingerprint,
       sensoryProfile.speciesTemplateFingerprint == species.fingerprint,
@@ -339,6 +342,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.deviceName = device.name
     self.deviceRegistryID = device.registryID
     self.speciesTemplateFingerprint = species.fingerprint
+    self.compiledSpeciesTemplateFingerprint = compiledSpeciesTemplate.fingerprint
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.regionalProgramFingerprint = regionalProgram.fingerprint
     self.scheduleFingerprint = regionalProgram.scheduleFingerprint
@@ -353,6 +357,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.memoryRuntime = memoryRuntime
     self.device = device
     self.species = species
+    self.boundCompiledSpeciesTemplate = compiledSpeciesTemplate
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
@@ -378,6 +383,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       episodeIdentifier: episodeIdentifier,
       controlStepIdentifier: controlStepIdentifier,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
+      compiledSpeciesTemplateFingerprint: compiledSpeciesTemplateFingerprint,
       regionalProgramFingerprint: regionalProgramFingerprint,
       scheduleFingerprint: scheduleFingerprint,
       parameterVersionFingerprint: parameterVersionFingerprint,
@@ -426,6 +432,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   ) throws {
     try checkpoint.validate()
     guard checkpoint.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      checkpoint.compiledSpeciesTemplateFingerprint
+        == compiledSpeciesTemplateFingerprint,
       checkpoint.regionalProgramFingerprint == regionalProgramFingerprint,
       checkpoint.scheduleFingerprint == scheduleFingerprint,
       checkpoint.parameterVersionFingerprint == parameterVersionFingerprint,
