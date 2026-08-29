@@ -1596,12 +1596,6 @@ kernel void update_fast_plasticity_from_accepted_error(
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.fast_plasticity_count) return;
-  device const float *observations = reinterpret_cast<device const float *>(
-    hot_state + uniforms.observation_offset
-  );
-  device const float *world = reinterpret_cast<device const float *>(
-    hot_state + uniforms.world_model_offset
-  );
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       hot_state + uniforms.neuromodulation_offset
@@ -1610,9 +1604,6 @@ kernel void update_fast_plasticity_from_accepted_error(
     reinterpret_cast<device NBFastPlasticityRecord *>(
       hot_state + uniforms.fast_plasticity_offset
     );
-  const float error = nb_mean_prediction_error(
-    observations, world, uniforms
-  );
   NBFastPlasticityRecord site = sites[gid];
   device const NBRegionalMaturationRecord *maturation =
     reinterpret_cast<device const NBRegionalMaturationRecord *>(
@@ -1651,11 +1642,11 @@ kernel void update_fast_plasticity_from_accepted_error(
         * plasticity_parameters[weight_index];
     }
   }
-  // The cognitive shadow step already applied the interval's retention. The
-  // accepted correction is additive so one committed interval never decays
-  // the same trace twice, and a zero-duration retry cannot change plasticity.
+  // The cognitive shadow step already formed and retained the basis-aligned
+  // local eligibility. Accepted prediction error is present in the regional
+  // neuromodulator projection above; it must not become a global eligibility
+  // term shared by every synaptic basis.
   const float interval_scale = float(uniforms.delta_microseconds) / 20000.0f;
-  site.eligibility += interval_scale * error * plasticity_parameters[3];
   const float learning_rate = min(
     uniforms.plasticity_learning_rate,
     max(plasticity_parameters[0], 0.0f)
