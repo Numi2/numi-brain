@@ -27,6 +27,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong body_belief_offset;
   ulong muscle_belief_offset;
   ulong physiology_offset;
+  ulong object_slot_offset;
   ulong world_model_offset;
   ulong neuromodulation_offset;
   ulong drive_offset;
@@ -51,6 +52,7 @@ struct NBAcceptedConsequenceUniforms {
   uint body_count;
   uint muscle_count;
   uint physiology_count;
+  uint object_slot_count;
   uint world_model_count;
   uint neuromodulator_count;
   uint drive_count;
@@ -196,6 +198,21 @@ struct NBActiveSensingEfficacyRecord {
   float reserved;
 };
 
+struct NBObjectSlotRecord {
+  ulong identifier;
+  ulong last_seen_timestamp_microseconds;
+  uint format_version;
+  uint flags;
+  float existence_probability;
+  float identity_confidence;
+  float visibility;
+  float uncertainty;
+  float pose[4];
+  float velocity[4];
+  float affordances[8];
+  float latent[102];
+};
+
 struct NBAcceptedActuatorDescriptor {
   uint actuator_identifier;
   uint command_kind;
@@ -332,7 +349,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 384);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 392);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -341,6 +358,7 @@ static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
+static_assert(sizeof(NBObjectSlotRecord) == 512);
 static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBFastBodySchemaRecord) == 48);
 static_assert(sizeof(NBFastReflexStateRecord) == 128);
@@ -394,6 +412,92 @@ inline float nb_observation(
   uint index)
 {
   return count == 0u ? 0.0f : observations[offset + index % count];
+}
+
+inline float nb_observation_energy(
+  device const float *observations,
+  uint offset,
+  uint count,
+  uint seed)
+{
+  if (count == 0u) return 0.0f;
+  float energy = 0.0f;
+  for (uint sample = 0u; sample < 8u; ++sample) {
+    energy += abs(nb_observation(
+      observations, offset, count, seed * 17u + sample * 29u
+    )) * 0.125f;
+  }
+  return clamp(energy, 0.0f, 1.0f);
+}
+
+/// Estimates the selected object's accepted epistemic posterior from the exact
+/// receptor buffer without mutating its slot ahead of the next cognitive tick.
+/// This lets sensing efficacy learn from the committed physical consequence
+/// while preserving the normal entity-posterior ownership boundary.
+inline float nb_selected_object_accepted_uncertainty(
+  device const uchar *hot_state,
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  device const float *belief_parameters,
+  uint one_based_slot)
+{
+  if (one_based_slot == 0u || one_based_slot > uniforms.object_slot_count
+      || uniforms.vision_count == 0u) return 1.0f;
+  device const NBObjectSlotRecord *objects =
+    reinterpret_cast<device const NBObjectSlotRecord *>(
+      hot_state + uniforms.object_slot_offset
+    );
+  const NBObjectSlotRecord object = objects[one_based_slot - 1u];
+  if (object.identifier == 0ul || object.existence_probability <= 0.0f) {
+    return 1.0f;
+  }
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  const uint seed = (one_based_slot - 1u) * 23u + 3u;
+  const float visual_presence = clamp(
+    (nb_observation_energy(
+      observations, uniforms.vision_offset, uniforms.vision_count, seed
+    ) - max(belief_parameters[4], 0.0f))
+      * max(4.0f * belief_parameters[3], 0.25f),
+    0.0f,
+    1.0f
+  );
+  const float elapsed_seconds = max(
+    float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
+  );
+  float pose_difference = 0.0f;
+  for (uint component = 0u; component < 4u; ++component) {
+    const float observed_pose = nb_observation(
+      observations,
+      uniforms.vision_offset,
+      uniforms.vision_count,
+      seed * 11u + component * 31u
+    );
+    const float predicted_pose = object.pose[component]
+      + object.velocity[component] * elapsed_seconds;
+    pose_difference += abs(observed_pose - predicted_pose) * 0.25f;
+  }
+  const float association_likelihood = exp(
+    -max(0.5f, 4.0f * max(belief_parameters[3], 0.0f))
+      * (1.0f - 0.75f * clamp(object.uncertainty, 0.0f, 1.0f))
+      * pose_difference
+  );
+  const float assigned_evidence = visual_presence * association_likelihood;
+  const float retained_per_second = clamp(belief_parameters[7], 0.0f, 1.0f);
+  const float retention = retained_per_second <= 0.0f ? 0.0f
+    : (retained_per_second >= 1.0f ? 1.0f
+      : pow(retained_per_second, elapsed_seconds));
+  const float correction_gain = clamp(belief_parameters[0], 0.001f, 1.0f);
+  const float identity_confidence = clamp(mix(
+    retention * object.identity_confidence,
+    association_likelihood,
+    correction_gain * assigned_evidence
+  ), 0.0f, 1.0f);
+  return clamp(mix(
+    min(1.0f, object.uncertainty + (1.0f - retention)),
+    1.0f - identity_confidence,
+    correction_gain * assigned_evidence
+  ), 0.0f, 1.0f);
 }
 
 inline float nb_world_observation(
@@ -865,6 +969,15 @@ kernel void update_active_sensing_efficacy(
   float accepted_uncertainty = nb_modality_epistemic_uncertainty(
     world, uniforms.world_model_count, modality
   );
+  const uint selected_object_slot = command.attention_allocation_mask >> 16u;
+  if (modality == 1u && selected_object_slot > 0u) {
+    accepted_uncertainty = max(
+      accepted_uncertainty,
+      nb_selected_object_accepted_uncertainty(
+        hot_state, uniforms, belief_parameters, selected_object_slot
+      )
+    );
+  }
   if (modality == 3u || modality == 4u) {
     accepted_uncertainty = max(
       accepted_uncertainty,

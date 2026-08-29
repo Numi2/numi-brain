@@ -10,6 +10,7 @@ private struct AcceptedConsequenceUniforms {
   var bodyBeliefOffset: UInt64 = 0
   var muscleBeliefOffset: UInt64 = 0
   var physiologyOffset: UInt64 = 0
+  var objectSlotOffset: UInt64 = 0
   var worldModelOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
@@ -34,6 +35,7 @@ private struct AcceptedConsequenceUniforms {
   var bodyCount: UInt32 = 0
   var muscleCount: UInt32 = 0
   var physiologyCount: UInt32 = 0
+  var objectSlotCount: UInt32 = 0
   var worldModelCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
   var driveCount: UInt32 = 0
@@ -112,7 +114,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 384,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 392,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
@@ -446,6 +448,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       bodyBeliefOffset: UInt64(hot(.bodyBelief).byteOffset),
       muscleBeliefOffset: UInt64(hot(.muscleBelief).byteOffset),
       physiologyOffset: UInt64(hot(.physiologyBelief).byteOffset),
+      objectSlotOffset: UInt64(hot(.objectSlots).byteOffset),
       worldModelOffset: UInt64(hot(.worldModel).byteOffset),
       neuromodulationOffset: UInt64(hot(.neuromodulation).byteOffset),
       driveOffset: UInt64(hot(.drives).byteOffset),
@@ -480,6 +483,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       bodyCount: species.body.bodyCount,
       muscleCount: UInt32(hot(.muscleBelief).elementCount),
       physiologyCount: UInt32(species.physiology.stateDimension),
+      objectSlotCount: UInt32(hot(.objectSlots).elementCount),
       worldModelCount: UInt32(hot(.worldModel).elementCount),
       neuromodulatorCount: UInt32(NeuromodulatorKind.allCases.count),
       driveCount: UInt32(hot(.drives).elementCount),

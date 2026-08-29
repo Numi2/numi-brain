@@ -2152,6 +2152,7 @@ kernel void generate_motor_spinal_autonomic_state(
     uint epistemic_target_slot = 0u;
     float epistemic_target_command = 0.0f;
     float epistemic_target_score = 0.0f;
+    float epistemic_target_uncertainty = 0.0f;
     if (sensing_descriptor.modality == 1u) {
       device const NBObjectSlotRecord *object_slots =
         reinterpret_cast<device const NBObjectSlotRecord *>(
@@ -2177,6 +2178,7 @@ kernel void generate_motor_spinal_autonomic_state(
         if (target_score > epistemic_target_score) {
           epistemic_target_score = target_score;
           epistemic_target_slot = object_index + 1u;
+          epistemic_target_uncertainty = clamp(object.uncertainty, 0.0f, 1.0f);
           epistemic_target_command = object.pose[
             sensing_descriptor.modality_local_identifier % 3u
           ];
@@ -2188,6 +2190,9 @@ kernel void generate_motor_spinal_autonomic_state(
           clamp(weighted_uncertainty / evidence_weight, 0.0f, 1.0f)
         );
       }
+      modality_uncertainty = max(
+        modality_uncertainty, epistemic_target_uncertainty
+      );
     } else if (sensing_descriptor.modality == 3u
         || sensing_descriptor.modality == 4u) {
       float agency_uncertainty = 0.0f;
