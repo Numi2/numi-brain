@@ -422,13 +422,49 @@ kernel void assimilate_accepted_body_and_physiology(
     );
     const float command = uniforms.actuator_count == 0u
       ? 0.0f : somatic[gid % uniforms.actuator_count];
+    const float prior_proprioception = muscle[1];
+    const float observed_delta = proprioception - prior_proprioception;
+    const float effect_learning_rate = clamp(
+      min(gain, max(belief_parameters[4], 0.0f)), 0.0f, 1.0f
+    );
+    const float prior_effect_gain = muscle[6];
+    const float prior_effect_bias = muscle[7];
+    const float predicted_delta = fma(
+      prior_effect_gain, command, prior_effect_bias
+    );
+    const float effect_error = observed_delta - predicted_delta;
+    const float normalized_command_energy = fma(command, command, 1.0e-4f);
+    const float effect_limit = max(belief_parameters[6], 1.0f);
+    const float learned_effect_gain = clamp(
+      prior_effect_gain
+        + effect_learning_rate * command * effect_error
+          / normalized_command_energy,
+      -effect_limit,
+      effect_limit
+    );
+    const float learned_effect_bias = clamp(
+      prior_effect_bias + 0.25f * effect_learning_rate * effect_error,
+      -effect_limit,
+      effect_limit
+    );
+    const float agency_error_scale = max(belief_parameters[5], 1.0f);
+    const float agency_confidence = 1.0f
+      / (1.0f + agency_error_scale * abs(effect_error));
+    const float external_disturbance = abs(effect_error)
+      * (1.0f - agency_confidence);
     muscle[0] = mix(muscle[0], command, gain);
     muscle[1] = mix(muscle[1], proprioception, gain);
-    muscle[2] = proprioception - muscle[1];
+    muscle[2] = observed_delta;
     muscle[3] = mix(muscle[3], abs(proprioception), gain);
     muscle[4] = clamp(muscle[4] + abs(command) * float(uniforms.delta_microseconds)
       * 1.0e-8f, 0.0f, 1.0f);
-    muscle[5] = abs(proprioception - command);
+    muscle[5] = effect_error;
+    muscle[6] = learned_effect_gain;
+    muscle[7] = learned_effect_bias;
+    muscle[8] = agency_confidence;
+    muscle[9] = external_disturbance;
+    muscle[10] = predicted_delta;
+    muscle[11] = command;
   }
   if (gid < uniforms.physiology_count) {
     device float *physiology = reinterpret_cast<device float *>(
@@ -500,12 +536,23 @@ kernel void broadcast_accepted_prediction_error(
   const float aleatoric = nb_mean_aleatoric_uncertainty(
     world, uniforms.world_model_count
   );
+  device const uchar *muscle_bytes = hot_state + uniforms.muscle_belief_offset;
+  float mean_agency = 0.0f;
+  float mean_external_disturbance = 0.0f;
+  for (uint index = 0u; index < uniforms.muscle_count; ++index) {
+    device const float *muscle = reinterpret_cast<device const float *>(
+      muscle_bytes + ulong(index) * 192ul
+    );
+    mean_agency += muscle[8] / float(max(uniforms.muscle_count, 1u));
+    mean_external_disturbance += muscle[9]
+      / float(max(uniforms.muscle_count, 1u));
+  }
   device NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device NBNeuromodulatorRecord *>(
       hot_state + uniforms.neuromodulation_offset
     );
   if (uniforms.neuromodulator_count > 1u) {
-    neuromodulators[1].value = error;
+    neuromodulators[1].value = max(error, mean_external_disturbance);
     neuromodulators[1].kind = 2u;
     neuromodulators[1].flags = NB_ACCEPTED_STATE_VALID;
   }
@@ -527,20 +574,29 @@ kernel void broadcast_accepted_prediction_error(
     if (uniforms.workspace_dimension > 1u) {
       workspace[base + 1u] = as_type<float>(uint(uniforms.physics_state_fingerprint));
     }
+    if (uniforms.workspace_dimension > 2u) {
+      workspace[base + 2u] = mean_agency;
+    }
+    if (uniforms.workspace_dimension > 3u) {
+      workspace[base + 3u] = mean_external_disturbance;
+    }
     NBWorkspaceMetadataRecord token = metadata[2];
     token.identifier = (uniforms.target_timestamp_microseconds << 8) | 3ul;
     token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.provenance_record_identifier = uniforms.physics_state_fingerprint;
     token.kind_and_source = 7u | (50u << 16);
-    token.confidence = clamp(1.0f - error, 0.0f, 1.0f);
+    token.confidence = clamp(
+      min(1.0f - error, mean_agency), 0.0f, 1.0f
+    );
     metadata[2] = token;
   }
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
   control->unsupported_uncertainty = max(
-    epistemic * max(world_parameters[157], 0.0f), aleatoric
+    max(epistemic * max(world_parameters[157], 0.0f), aleatoric),
+    mean_external_disturbance
   );
   control->progress = clamp(control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f);
 }
