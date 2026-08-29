@@ -237,3 +237,31 @@ public struct BrainDevelopmentalState: Codable, Equatable, Sendable {
     self.capabilityEvidenceCodes = capabilityEvidenceCodes
   }
 }
+
+/// Content-addressed evidence emitted by a GPU capability evaluator from a
+/// committed physical consequence. It can unlock a named developmental gate;
+/// elapsed age alone never can.
+@frozen
+public struct DevelopmentalCapabilityEvidence: Codable, Equatable, Hashable, Sendable {
+  public let code: UInt64
+  public let timestamp: BrainTimestamp
+  public let acceptedPhysicsStateFingerprint: UInt64
+  public let confidence: Float
+
+  public init(
+    code: UInt64,
+    timestamp: BrainTimestamp,
+    acceptedPhysicsStateFingerprint: UInt64,
+    confidence: Float
+  ) throws {
+    guard code > 0, acceptedPhysicsStateFingerprint > 0,
+      confidence.isFinite, (0...1).contains(confidence)
+    else {
+      throw BrainRuntimeError.transaction("developmental capability evidence is invalid")
+    }
+    self.code = code
+    self.timestamp = timestamp
+    self.acceptedPhysicsStateFingerprint = acceptedPhysicsStateFingerprint
+    self.confidence = confidence
+  }
+}

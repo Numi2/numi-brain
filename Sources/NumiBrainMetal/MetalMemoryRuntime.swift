@@ -37,6 +37,7 @@ private struct MemoryRetrievalUniforms {
   var proceduralMemoryOffset: UInt64 = 0
   var prospectiveMemoryOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
+  var developmentalStateOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -59,6 +60,37 @@ private struct MemoryRetrievalUniforms {
   var prospectiveWeight: Float = 0
 }
 
+private struct MemoryConsolidationUniforms {
+  var targetTimestampMicroseconds: UInt64 = 0
+  var baseGeneration: UInt64 = 0
+  var shadowGeneration: UInt64 = 0
+  var controlHeaderOffset: UInt64 = 0
+  var developmentalStateOffset: UInt64 = 0
+  var driveOffset: UInt64 = 0
+  var activeEpisodeMemoryOffset: UInt64 = 0
+  var semanticMemoryOffset: UInt64 = 0
+  var proceduralMemoryOffset: UInt64 = 0
+  var replayMemoryOffset: UInt64 = 0
+  var persistentMemoryByteCount: UInt64 = 0
+  var journalByteCount: UInt64 = 0
+  var activeEpisodeCapacity: UInt32 = 0
+  var activeEpisodeStride: UInt32 = 0
+  var semanticCapacity: UInt32 = 0
+  var semanticStride: UInt32 = 0
+  var proceduralCapacity: UInt32 = 0
+  var proceduralStride: UInt32 = 0
+  var replayCapacity: UInt32 = 0
+  var replayStride: UInt32 = 0
+  var journalEntryCapacity: UInt32 = 0
+  var minimumProceduralEpisodes: UInt32 = 0
+  var flags: UInt32 = 0
+  var reserved: UInt32 = 0
+  var maximumDamage: Float = 0
+  var minimumSalience: Float = 0
+  var proceduralLearningRate: Float = 0
+  var semanticLearningRate: Float = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalMemoryRuntime: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
@@ -72,9 +104,11 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let retrievalBeginPipeline: any MTLComputePipelineState
   private let retrievalScorePipeline: any MTLComputePipelineState
   private let retrievalPublishPipeline: any MTLComputePipelineState
+  private let consolidationPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
+  private let consolidationUniformBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -86,7 +120,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics
   ) throws {
     guard MemoryLayout<MemoryUniforms>.stride == 136,
-      MemoryLayout<MemoryRetrievalUniforms>.stride == 168,
+      MemoryLayout<MemoryRetrievalUniforms>.stride == 176,
+      MemoryLayout<MemoryConsolidationUniforms>.stride == 160,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -116,6 +151,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let names = [
       "segment_and_journal_episode", "begin_memory_retrieval",
       "score_memory_retrieval_candidates", "publish_memory_retrieval_winner",
+      "consolidate_lived_memory_during_rest",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -153,6 +189,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       let fourthRetrievalUniform = device.makeBuffer(
         length: MemoryLayout<MemoryRetrievalUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let consolidationUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<MemoryConsolidationUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -165,6 +205,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     for (index, buffer) in retrievalUniformBuffers.enumerated() {
       buffer.label = "NumiBrain memory retrieval pass \(index) uniforms"
     }
+    consolidationUniformBuffer.label = "NumiBrain lived-memory consolidation uniforms"
     self.parameterVersionFingerprint = parameterVersion.fingerprint
     self.arena = arena
     self.regionalProgram = regionalProgram
@@ -178,13 +219,89 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.retrievalBeginPipeline = pipelines[1]
     self.retrievalScorePipeline = pipelines[2]
     self.retrievalPublishPipeline = pipelines[3]
+    self.consolidationPipeline = pipelines[4]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
+    self.consolidationUniformBuffer = consolidationUniformBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer] + retrievalUniformBuffers
+    [uniformBuffer, consolidationUniformBuffer] + retrievalUniformBuffers
+  }
+
+  /// Emits semantic, procedural, and replay mutations only from already
+  /// committed episodes. Rest/development/safety gating remains on the GPU.
+  public func encodeRestConsolidation(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp
+  ) throws {
+    let hot = try arena.hotStateView(transaction: transaction)
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let active = arena.memoryLayout.section(.activeEpisodes)
+    let semantic = arena.memoryLayout.section(.semanticConcepts)
+    let procedural = arena.memoryLayout.section(.proceduralSkills)
+    let replayQueue = arena.memoryLayout.section(.replayQueue)
+    let journalEntryCapacity = (memory.journalByteCount - 48) / 64
+    let sections = [active, semantic, procedural, replayQueue]
+    guard journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max),
+      sections.allSatisfy({
+        $0.elementCount > 0 && $0.elementCount <= Int(UInt32.max)
+          && $0.elementStride <= Int(UInt32.max)
+      })
+    else {
+      throw TissueError.transaction("memory consolidation exceeds GPU capacity")
+    }
+    let layout = arena.layout
+    var uniforms = MemoryConsolidationUniforms(
+      targetTimestampMicroseconds: timestamp.rawValue,
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      developmentalStateOffset: UInt64(
+        layout.section(.developmentalState).byteOffset
+      ),
+      driveOffset: UInt64(layout.section(.drives).byteOffset),
+      activeEpisodeMemoryOffset: UInt64(active.byteOffset),
+      semanticMemoryOffset: UInt64(semantic.byteOffset),
+      proceduralMemoryOffset: UInt64(procedural.byteOffset),
+      replayMemoryOffset: UInt64(replayQueue.byteOffset),
+      persistentMemoryByteCount: UInt64(memory.memoryByteCount),
+      journalByteCount: UInt64(memory.journalByteCount),
+      activeEpisodeCapacity: UInt32(active.elementCount),
+      activeEpisodeStride: UInt32(active.elementStride),
+      semanticCapacity: UInt32(semantic.elementCount),
+      semanticStride: UInt32(semantic.elementStride),
+      proceduralCapacity: UInt32(procedural.elementCount),
+      proceduralStride: UInt32(procedural.elementStride),
+      replayCapacity: UInt32(replayQueue.elementCount),
+      replayStride: UInt32(replayQueue.elementStride),
+      journalEntryCapacity: UInt32(journalEntryCapacity),
+      minimumProceduralEpisodes: 3,
+      flags: 0,
+      reserved: 0,
+      maximumDamage: 0.25,
+      minimumSalience: segmentation.boundaryThreshold,
+      proceduralLearningRate: 0.25,
+      semanticLearningRate: 0.2
+    )
+    withUnsafeBytes(of: &uniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      consolidationUniformBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    argumentTable.setAddress(hot.outputGPUAddress, index: 0)
+    argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
+    argumentTable.setAddress(memory.journalGPUAddress, index: 2)
+    argumentTable.setAddress(consolidationUniformBuffer.gpuAddress, index: 3)
+    encoder.setComputePipelineState(consolidationPipeline)
+    encoder.setArgumentTable(argumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
   }
 
   public func encodeRetrieval(
@@ -235,6 +352,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         proceduralMemoryOffset: UInt64(procedural.byteOffset),
         prospectiveMemoryOffset: UInt64(prospective.byteOffset),
         controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+        developmentalStateOffset: UInt64(
+          sections.section(.developmentalState).byteOffset
+        ),
         parameterVersionFingerprint: parameterVersionFingerprint,
         recurrentScalarCount: UInt32(regionalProgram.scalarCount),
         workspaceCapacity: UInt32(

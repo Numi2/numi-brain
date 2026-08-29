@@ -449,6 +449,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       }),
       innateBehaviors.allSatisfy({ enabled.contains($0.controllerModuleIdentifier) }),
       development.map(\.stage) == DevelopmentalStage.allCases,
+      development.dropFirst().allSatisfy({ !$0.capabilityGateCodes.isEmpty }),
       development.allSatisfy({ stage in
         Set(stage.unlockedModuleIdentifiers).isSubset(of: Set(enabled))
           && stage.workspaceCapacity <= capacities.workspaceTokenCapacity

@@ -198,7 +198,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dispatch(
       encoder,
       pipeline: pipelines[1],
-      count: arena.layout.section(.worldModel).elementCount
+      count: min(arena.layout.section(.worldModel).elementCount, 128)
     )
     barrier(encoder)
     dispatch(encoder, pipeline: pipelines[2], count: 1)

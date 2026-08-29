@@ -3,7 +3,15 @@ using namespace metal;
 
 constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
+constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT = 3u;
+constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
+constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
+constant uint NB_MEMORY_RECORD_VERSION = 1u;
+constant uint NB_MEMORY_CONTROL_FLAG_VALID = 1u;
+constant ulong NB_MEMORY_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
+constant ulong NB_MEMORY_REST_OPTION_IDENTIFIER =
+  NB_MEMORY_INNATE_OPTION_NAMESPACE | 4ul;
 
 struct NBMemoryUniforms {
   ulong target_timestamp_microseconds;
@@ -101,6 +109,7 @@ struct NBMemoryRetrievalUniforms {
   ulong procedural_memory_offset;
   ulong prospective_memory_offset;
   ulong control_header_offset;
+  ulong developmental_state_offset;
   ulong parameter_version_fingerprint;
   uint recurrent_scalar_count;
   uint workspace_capacity;
@@ -121,6 +130,37 @@ struct NBMemoryRetrievalUniforms {
   float semantic_weight;
   float procedural_weight;
   float prospective_weight;
+};
+
+struct NBMemoryConsolidationUniforms {
+  ulong target_timestamp_microseconds;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong control_header_offset;
+  ulong developmental_state_offset;
+  ulong drive_offset;
+  ulong active_episode_memory_offset;
+  ulong semantic_memory_offset;
+  ulong procedural_memory_offset;
+  ulong replay_memory_offset;
+  ulong persistent_memory_byte_count;
+  ulong journal_byte_count;
+  uint active_episode_capacity;
+  uint active_episode_stride;
+  uint semantic_capacity;
+  uint semantic_stride;
+  uint procedural_capacity;
+  uint procedural_stride;
+  uint replay_capacity;
+  uint replay_stride;
+  uint journal_entry_capacity;
+  uint minimum_procedural_episodes;
+  uint flags;
+  uint reserved;
+  float maximum_damage;
+  float minimum_salience;
+  float procedural_learning_rate;
+  float semantic_learning_rate;
 };
 
 struct NBWorkspaceMetadataRecord {
@@ -160,6 +200,38 @@ struct NBControlHeader {
   ulong reserved1;
   ulong reserved2;
   ulong reserved3;
+};
+
+struct NBDevelopmentalHeader {
+  uint format_version;
+  uint stage;
+  uint stage_count;
+  uint flags;
+  ulong developmental_age_microseconds;
+  ulong last_transition_timestamp_microseconds;
+  float maturation_progress;
+  float sensor_precision_multiplier;
+  float muscle_strength_multiplier;
+  float replay_allocation_multiplier;
+  float learning_rate_multiplier;
+  uint workspace_capacity;
+  uint planning_horizon_steps;
+  uint module_count;
+  uint evidence_count;
+  ulong species_template_fingerprint;
+  ulong accepted_physics_state_fingerprint;
+  ulong reserved[21];
+};
+
+struct NBDriveRecord {
+  float level;
+  float viable_minimum;
+  float viable_maximum;
+  float priority_weight;
+  float estimated_rate;
+  float deficit;
+  float potential;
+  uint kind;
 };
 
 struct NBMemoryRetrievalScratch {
@@ -217,19 +289,91 @@ struct NBProspectiveIntentionSummaryRecord {
   float trigger_code[16];
 };
 
+struct NBReplayQueueSummaryRecord {
+  uint queue_kind;
+  uint record_kind;
+  ulong record_identifier;
+  float priority;
+  uint replay_count;
+  ulong enqueued_timestamp_microseconds;
+};
+
 static_assert(sizeof(NBMemoryUniforms) == 136);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
 static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 168);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 176);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 160);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBDevelopmentalHeader) == 256);
+static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 256);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
+static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
+
+inline ulong consolidation_hash(ulong value) {
+  value ^= value >> 30;
+  value *= 0xbf58476d1ce4e5b9ul;
+  value ^= value >> 27;
+  value *= 0x94d049bb133111ebul;
+  return value ^ (value >> 31);
+}
+
+template<typename Record>
+inline bool append_memory_record(
+  device NBMemoryJournalHeader *journal,
+  constant NBMemoryConsolidationUniforms &uniforms,
+  thread const Record &record,
+  ulong destination,
+  uint section,
+  ulong identifier)
+{
+  constexpr uint chunk_byte_count = 16u;
+  constexpr uint chunk_count = sizeof(Record) / chunk_byte_count;
+  static_assert(sizeof(Record) % chunk_byte_count == 0u);
+  if (destination + sizeof(Record) < destination
+      || destination + sizeof(Record) > uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return false;
+  }
+  const uint first_entry = atomic_fetch_add_explicit(
+    &journal->entry_count, chunk_count, memory_order_relaxed
+  );
+  if (first_entry + chunk_count > journal->entry_capacity
+      || first_entry + chunk_count > uniforms.journal_entry_capacity) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return false;
+  }
+  device NBMemoryMutation *entries =
+    reinterpret_cast<device NBMemoryMutation *>(journal + 1);
+  const thread uint *words = reinterpret_cast<const thread uint *>(&record);
+  for (uint chunk = 0u; chunk < chunk_count; ++chunk) {
+    NBMemoryMutation mutation;
+    mutation.destination_byte_offset = destination
+      + ulong(chunk * chunk_byte_count);
+    mutation.shadow_generation = uniforms.shadow_generation;
+    for (uint word = 0u; word < 4u; ++word) {
+      mutation.payload[word] = words[chunk * 4u + word];
+    }
+    mutation.byte_count = chunk_byte_count;
+    mutation.section = section;
+    mutation.sequence = chunk;
+    mutation.flags = 0u;
+    mutation.record_identifier = identifier;
+    mutation.reserved = 0ul;
+    entries[first_entry + chunk] = mutation;
+  }
+  return true;
+}
 
 inline float retrieval_similarity(
   device const float *query,
@@ -277,6 +421,11 @@ kernel void score_memory_retrieval_candidates(
 {
   if (gid >= uniforms.candidate_count
       || uniforms.retrieval_pass >= min(uniforms.maximum_results, 4u)) return;
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  if (development->stage < 7u) return;
   device NBMemoryRetrievalScratch *scratch =
     reinterpret_cast<device NBMemoryRetrievalScratch *>(
       hot_state + uniforms.retrieval_scratch_offset
@@ -479,7 +628,10 @@ kernel void publish_memory_retrieval_winner(
   token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   token.entity_identifier = identifier;
   token.provenance_record_identifier = identifier;
-  token.kind_and_source = 5u | (56u << 16);
+  const uint source_module = kind == 2u
+    ? 58u
+    : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u));
+  token.kind_and_source = 5u | (source_module << 16);
   token.confidence = clamp(score, 0.0f, 1.0f);
   metadata[slot] = token;
   scratch->winner_record_identifiers[uniforms.retrieval_pass] = identifier;
@@ -487,6 +639,238 @@ kernel void publish_memory_retrieval_winner(
   scratch->winner_indices[uniforms.retrieval_pass] = candidate_index;
   scratch->winner_scores[uniforms.retrieval_pass] = score;
   scratch->flags |= 1u << uniforms.retrieval_pass;
+}
+
+/// Consolidates only previously committed lived episodes. The kernel is
+/// intentionally single-lane: slot choice, evidence aggregation, and journal
+/// ordering must remain deterministic for replay and rollback.
+kernel void consolidate_lived_memory_during_rest(
+  device const uchar *hot_state [[buffer(0)]],
+  device const uchar *persistent_memory [[buffer(1)]],
+  device NBMemoryJournalHeader *journal [[buffer(2)]],
+  constant NBMemoryConsolidationUniforms &uniforms [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || uniforms.active_episode_capacity == 0u
+      || uniforms.semantic_capacity == 0u || uniforms.procedural_capacity == 0u
+      || uniforms.replay_capacity == 0u) return;
+  if (journal->base_generation != uniforms.base_generation
+      || journal->shadow_generation != uniforms.shadow_generation
+      || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return;
+  }
+  device const NBControlHeader *control =
+    reinterpret_cast<device const NBControlHeader *>(
+      hot_state + uniforms.control_header_offset
+    );
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  device const NBDriveRecord *drives =
+    reinterpret_cast<device const NBDriveRecord *>(
+      hot_state + uniforms.drive_offset
+    );
+  const bool rest_selected = control->active_option_identifier
+    == NB_MEMORY_REST_OPTION_IDENTIFIER;
+  const float pain = clamp(drives[5].level, 0.0f, 1.0f);
+  const float injury = clamp(drives[6].level, 0.0f, 1.0f);
+  const float immediate_risk = clamp(drives[11].level, 0.0f, 1.0f);
+  if (development->stage < 7u || development->replay_allocation_multiplier <= 0.0f
+      || (control->flags & NB_MEMORY_CONTROL_FLAG_VALID) == 0u
+      || !rest_selected || max(max(pain, injury), immediate_risk) > 0.35f) return;
+
+  device const NBEpisodicSummaryRecord *latest = nullptr;
+  uint latest_index = 0u;
+  for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
+    device const NBEpisodicSummaryRecord *candidate =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + uniforms.active_episode_memory_offset
+          + ulong(index) * ulong(uniforms.active_episode_stride)
+      );
+    const bool committed_lived_record = candidate->format_version
+        == NB_MEMORY_EPISODE_RECORD_VERSION
+      && candidate->identifier != 0ul
+      && candidate->source_generation <= uniforms.base_generation
+      && candidate->end_timestamp_microseconds <= uniforms.target_timestamp_microseconds
+      && candidate->salience >= uniforms.minimum_salience;
+    if (committed_lived_record && (latest == nullptr
+        || candidate->end_timestamp_microseconds
+          > latest->end_timestamp_microseconds
+        || (candidate->end_timestamp_microseconds
+              == latest->end_timestamp_microseconds
+            && candidate->identifier > latest->identifier))) {
+      latest = candidate;
+      latest_index = index;
+    }
+  }
+  if (latest == nullptr) return;
+
+  uint semantic_count = 0u;
+  uint procedural_count = 0u;
+  float semantic_embedding[19] = {};
+  float procedural_code[16] = {};
+  float accumulated_damage = 0.0f;
+  float accumulated_value = 0.0f;
+  for (uint index = 0u; index < uniforms.active_episode_capacity; ++index) {
+    device const NBEpisodicSummaryRecord *episode =
+      reinterpret_cast<device const NBEpisodicSummaryRecord *>(
+        persistent_memory + uniforms.active_episode_memory_offset
+          + ulong(index) * ulong(uniforms.active_episode_stride)
+      );
+    const bool committed_lived_record = episode->format_version
+        == NB_MEMORY_EPISODE_RECORD_VERSION
+      && episode->identifier != 0ul
+      && episode->source_generation <= uniforms.base_generation
+      && episode->end_timestamp_microseconds <= uniforms.target_timestamp_microseconds;
+    if (!committed_lived_record) continue;
+    if (episode->event_kind == latest->event_kind
+        && episode->source_identifier == latest->source_identifier) {
+      semantic_count += 1u;
+      for (uint component = 0u; component < 10u; ++component) {
+        semantic_embedding[component] += episode->retrieval_key[component];
+      }
+      semantic_embedding[10] += episode->salience;
+      semantic_embedding[11] += episode->epistemic_uncertainty;
+      semantic_embedding[12] += episode->damage_severity;
+      semantic_embedding[13] += episode->factored_reinforcement;
+    }
+    if (latest->active_option_identifier != 0ul
+        && episode->active_option_identifier == latest->active_option_identifier
+        && episode->damage_severity <= uniforms.maximum_damage) {
+      procedural_count += 1u;
+      accumulated_damage += episode->damage_severity;
+      accumulated_value += episode->factored_reinforcement;
+      for (uint component = 0u; component < 10u; ++component) {
+        procedural_code[component] += episode->retrieval_key[component];
+      }
+    }
+  }
+
+  if (semantic_count >= 2u) {
+    const ulong semantic_identity = consolidation_hash(
+      (ulong(latest->event_kind) << 32) | ulong(latest->source_identifier)
+    ) & 0x3ffffffffffffffful;
+    const ulong semantic_identifier = max(semantic_identity, 1ul);
+    const uint semantic_slot = uint(
+      semantic_identifier % ulong(uniforms.semantic_capacity)
+    );
+    const ulong destination = uniforms.semantic_memory_offset
+      + ulong(semantic_slot) * ulong(uniforms.semantic_stride);
+    device const NBSemanticConceptSummaryRecord *existing =
+      reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+        persistent_memory + destination
+      );
+    const bool collision = existing->format_version == NB_MEMORY_RECORD_VERSION
+      && existing->identifier != 0ul
+      && existing->identifier != semantic_identifier;
+    if (!collision && (existing->identifier == 0ul
+        || existing->source_episode_identifier != latest->identifier
+        || existing->usage_count < ulong(semantic_count))) {
+      const float divisor = 1.0f / float(semantic_count);
+      NBSemanticConceptSummaryRecord concept = {};
+      concept.identifier = semantic_identifier;
+      concept.last_used_timestamp_microseconds =
+        latest->end_timestamp_microseconds;
+      concept.usage_count = ulong(semantic_count);
+      concept.source_episode_identifier = latest->identifier;
+      concept.format_version = NB_MEMORY_RECORD_VERSION;
+      concept.kind = 5u;
+      concept.flags = 1u;
+      concept.confidence = clamp(
+        1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+        0.0f, 1.0f
+      );
+      for (uint component = 0u; component < 14u; ++component) {
+        concept.embedding[component] = semantic_embedding[component] * divisor;
+      }
+      concept.embedding[14] = float(latest->event_kind) / 16.0f;
+      concept.embedding[15] = float(latest->source_identifier & 0xffffu) / 65535.0f;
+      concept.embedding[16] = float(latest_index)
+        / float(max(uniforms.active_episode_capacity, 1u));
+      concept.embedding[17] = development->maturation_progress;
+      concept.embedding[18] = development->replay_allocation_multiplier;
+      append_memory_record(
+        journal, uniforms, concept, destination,
+        NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, concept.identifier
+      );
+    }
+  }
+
+  if (procedural_count >= uniforms.minimum_procedural_episodes) {
+    const ulong procedural_identity = consolidation_hash(
+      latest->active_option_identifier ^ 0x50524f4345445552ul
+    ) & 0x3ffffffffffffffful;
+    const ulong procedural_identifier = max(procedural_identity, 1ul);
+    const uint procedural_slot = uint(
+      procedural_identifier % ulong(uniforms.procedural_capacity)
+    );
+    const ulong destination = uniforms.procedural_memory_offset
+      + ulong(procedural_slot) * ulong(uniforms.procedural_stride);
+    device const NBProceduralSkillSummaryRecord *existing =
+      reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
+        persistent_memory + destination
+      );
+    const bool collision = existing->format_version == NB_MEMORY_RECORD_VERSION
+      && existing->identifier != 0ul
+      && existing->identifier != procedural_identifier;
+    if (!collision && (existing->identifier == 0ul
+        || existing->last_execution_timestamp_microseconds
+          < latest->end_timestamp_microseconds)) {
+      const float divisor = 1.0f / float(procedural_count);
+      const float mean_damage = accumulated_damage * divisor;
+      NBProceduralSkillSummaryRecord skill = {};
+      skill.identifier = procedural_identifier;
+      skill.last_execution_timestamp_microseconds =
+        latest->end_timestamp_microseconds;
+      skill.execution_count = ulong(procedural_count);
+      skill.parent_skill_identifier = latest->active_option_identifier;
+      skill.format_version = NB_MEMORY_RECORD_VERSION;
+      skill.flags = 1u;
+      skill.goal_parameter_dimension = 16u;
+      skill.competence = clamp(
+        (1.0f - mean_damage)
+          * (1.0f - exp(-uniforms.procedural_learning_rate
+            * float(procedural_count))),
+        0.0f, 1.0f
+      );
+      skill.damage_cvar = mean_damage;
+      skill.expected_effort = 0.0f;
+      skill.expected_value = accumulated_value * divisor;
+      for (uint component = 0u; component < 10u; ++component) {
+        skill.policy_code[component] = procedural_code[component] * divisor;
+      }
+      if (append_memory_record(
+          journal, uniforms, skill, destination,
+          NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL, skill.identifier
+        )) {
+        NBReplayQueueSummaryRecord replay = {};
+        replay.queue_kind = 2u;
+        replay.record_kind = 2u;
+        replay.record_identifier = skill.identifier;
+        replay.priority = clamp(
+          development->replay_allocation_multiplier
+            * (1.0f - skill.competence + mean_damage),
+          0.0f, 2.0f
+        );
+        replay.replay_count = 0u;
+        replay.enqueued_timestamp_microseconds =
+          uniforms.target_timestamp_microseconds;
+        const uint replay_slot = uint(
+          skill.identifier % ulong(uniforms.replay_capacity)
+        );
+        const ulong replay_destination = uniforms.replay_memory_offset
+          + ulong(replay_slot) * ulong(uniforms.replay_stride);
+        append_memory_record(
+          journal, uniforms, replay, replay_destination,
+          NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE, skill.identifier
+        );
+      }
+    }
+  }
 }
 
 kernel void segment_and_journal_episode(

@@ -11,6 +11,7 @@ private struct SensoryUniforms {
   var adaptationOffset: UInt64 = 0
   var frameMetadataOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
+  var developmentalStateOffset: UInt64 = 0
   var environmentIdentifier: UInt32 = 0
   var descriptorCount: UInt32 = 0
   var totalObservationScalars: UInt32 = 0
@@ -148,7 +149,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     profile: SensoryTransductionProfile
   ) throws {
-    guard MemoryLayout<SensoryUniforms>.stride == 96,
+    guard MemoryLayout<SensoryUniforms>.stride == 104,
       MemoryLayout<SensoryDescriptorRecord>.stride == 64,
       MemoryLayout<ReceptorEventRuleRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -373,6 +374,9 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       adaptationOffset: UInt64(adaptation.byteOffset),
       frameMetadataOffset: UInt64(metadata.byteOffset),
       eventQueueOffset: UInt64(eventQueue.byteOffset),
+      developmentalStateOffset: UInt64(
+        arena.layout.section(.developmentalState).byteOffset
+      ),
       environmentIdentifier: environmentIdentifier,
       descriptorCount: UInt32(descriptors.count),
       totalObservationScalars: UInt32(totalObservationScalars),

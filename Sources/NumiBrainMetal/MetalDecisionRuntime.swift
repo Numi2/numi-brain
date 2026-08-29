@@ -6,6 +6,7 @@ private struct DecisionUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
   var recurrentOffset: UInt64 = 0
   var workspaceOffset: UInt64 = 0
+  var workspaceMetadataOffset: UInt64 = 0
   var worldModelOffset: UInt64 = 0
   var driveOffset: UInt64 = 0
   var neuromodulationOffset: UInt64 = 0
@@ -18,10 +19,13 @@ private struct DecisionUniforms {
   var spinalOffset: UInt64 = 0
   var autonomicOffset: UInt64 = 0
   var somaticOutputOffset: UInt64 = 0
+  var developmentalStateOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
   var reservedIdentity: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceScalarCount: UInt32 = 0
+  var workspaceCapacity: UInt32 = 0
+  var workspaceDimension: UInt32 = 0
   var worldModelScalarCount: UInt32 = 0
   var driveCount: UInt32 = 0
   var neuromodulatorCount: UInt32 = 0
@@ -78,7 +82,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     parameterVersion: BrainParameterVersion,
     dynamics: DecisionDynamics
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 216,
+    guard MemoryLayout<DecisionUniforms>.stride == 240,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -219,6 +223,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private func makeUniforms(timestamp: BrainTimestamp) throws -> DecisionUniforms {
     let recurrent = arena.layout.section(.regionalRecurrent)
     let workspace = arena.layout.section(.workspaceContent)
+    let workspaceMetadata = arena.layout.section(.workspaceMetadata)
     let world = arena.layout.section(.worldModel)
     let drives = arena.layout.section(.drives)
     let neuromodulation = arena.layout.section(.neuromodulation)
@@ -233,7 +238,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     let autonomic = controlLayout.section(.autonomicCommands)
     let counts = [
       recurrent.elementCount, workspace.elementCount, world.elementCount,
-      candidates.elementCount, plans.elementCount,
+      workspaceMetadata.elementCount, candidates.elementCount, plans.elementCount,
     ]
     guard counts.allSatisfy({ $0 <= Int(UInt32.max) }) else {
       throw TissueError.metal("decision-state count exceeds UInt32")
@@ -242,6 +247,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       targetTimestampMicroseconds: timestamp.rawValue,
       recurrentOffset: UInt64(recurrent.byteOffset),
       workspaceOffset: UInt64(workspace.byteOffset),
+      workspaceMetadataOffset: UInt64(workspaceMetadata.byteOffset),
       worldModelOffset: UInt64(world.byteOffset),
       driveOffset: UInt64(drives.byteOffset),
       neuromodulationOffset: UInt64(neuromodulation.byteOffset),
@@ -254,10 +260,17 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       spinalOffset: UInt64(spinal.byteOffset),
       autonomicOffset: UInt64(autonomic.byteOffset),
       somaticOutputOffset: UInt64(somatic.byteOffset),
+      developmentalStateOffset: UInt64(
+        arena.layout.section(.developmentalState).byteOffset
+      ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
       reservedIdentity: 0,
       recurrentScalarCount: UInt32(recurrent.elementCount),
       workspaceScalarCount: UInt32(workspace.elementCount),
+      workspaceCapacity: UInt32(workspaceMetadata.elementCount),
+      workspaceDimension: UInt32(
+        workspace.elementCount / workspaceMetadata.elementCount
+      ),
       worldModelScalarCount: UInt32(world.elementCount),
       driveCount: UInt32(DriveKind.allCases.count),
       neuromodulatorCount: UInt32(NeuromodulatorKind.allCases.count),

@@ -28,6 +28,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public let sensoryObservationScalarCount: Int
     public let receptorEventQueueGPUAddress: UInt64
     public let receptorEventCapacity: Int
+    public let regionalMaturationGPUAddress: UInt64
+    public let regionalMaturationByteCount: Int
+    public let regionalMaturationCount: Int
     public let gpuStartSeconds: Double
     public let gpuEndSeconds: Double
 
@@ -63,17 +66,20 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
     let buffer: any MTLBuffer
     let sourceOffset: Int
+    let maturationSourceOffset: Int
 
     fileprivate init(
       decision: DecisionBufferView,
       speciesTemplateFingerprint: UInt64,
       buffer: any MTLBuffer,
-      sourceOffset: Int
+      sourceOffset: Int,
+      maturationSourceOffset: Int
     ) {
       self.decision = decision
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
       self.buffer = buffer
       self.sourceOffset = sourceOffset
+      self.maturationSourceOffset = maturationSourceOffset
     }
 
     public var metalBufferObject: UnsafeMutableRawPointer {
@@ -89,6 +95,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let sensoryRuntime: MetalSensoryTransductionRuntime
   public let cognitiveRuntime: MetalCognitiveStateRuntime
   public let decisionRuntime: MetalDecisionRuntime
+  public let developmentalRuntime: MetalDevelopmentalRuntime
   public let acceptedConsequenceRuntime: MetalAcceptedConsequenceRuntime
   public let memoryRuntime: MetalMemoryRuntime
 
@@ -160,6 +167,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       parameterVersion: parameterVersion,
       dynamics: requestedDecisionDynamics ?? DecisionDynamics.foundationV1
     )
+    let developmentalRuntime = try MetalDevelopmentalRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species
+    )
     let acceptedConsequenceRuntime = try MetalAcceptedConsequenceRuntime(
       device: device,
       arena: agentStateRuntime.arena,
@@ -172,7 +184,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     residencyDescriptor.initialCapacity =
       agentStateRuntime.arena.residencyAllocations.count
       + sensoryRuntime.residencyAllocations.count
-      + memoryRuntime.residencyAllocations.count + 3
+      + cognitiveRuntime.residencyAllocations.count
+      + memoryRuntime.residencyAllocations.count
+      + developmentalRuntime.residencyAllocations.count + 2
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -185,8 +199,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for allocation in sensoryRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
-    residencySet.addAllocation(cognitiveRuntime.residencyAllocation)
+    for allocation in cognitiveRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
     residencySet.addAllocation(decisionRuntime.residencyAllocation)
+    for allocation in developmentalRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
     residencySet.addAllocation(acceptedConsequenceRuntime.residencyAllocation)
     for allocation in memoryRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
@@ -201,6 +220,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.sensoryRuntime = sensoryRuntime
     self.cognitiveRuntime = cognitiveRuntime
     self.decisionRuntime = decisionRuntime
+    self.developmentalRuntime = developmentalRuntime
     self.acceptedConsequenceRuntime = acceptedConsequenceRuntime
     self.memoryRuntime = memoryRuntime
     self.device = device
@@ -255,6 +275,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         throw TissueError.metal("failed to encode embodied cognitive control")
       }
       encoder.label = "NumiBrain receptor to cognitive decision"
+      try developmentalRuntime.encodeCurrentStage(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
       let sensory = try sensoryRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,
@@ -307,6 +337,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       )
       let control = agentStateRuntime.arena.layout.section(.activeControl)
       let workspace = agentStateRuntime.arena.layout.section(.workspaceContent)
+      let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
       return DecisionBufferView(
         transactionFingerprint: transaction.jointToken.fingerprint,
         shadowGeneration: transaction.agentStateToken.shadowGeneration,
@@ -328,6 +359,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         sensoryObservationScalarCount: sensory.observationScalarCount,
         receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
         receptorEventCapacity: sensory.eventCapacity,
+        regionalMaturationGPUAddress:
+          hot.outputGPUAddress + UInt64(maturation.byteOffset),
+        regionalMaturationByteCount:
+          maturation.elementCount * maturation.elementStride,
+        regionalMaturationCount: maturation.elementCount,
         gpuStartSeconds: feedback.gpuStartTime,
         gpuEndSeconds: feedback.gpuEndTime
       )
@@ -353,7 +389,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public func finalizeAcceptedControl(
     transaction: MetalJointAgentStateTransaction,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
-    rawSensors: [MetalRawSensorBufferLease]
+    rawSensors: [MetalRawSensorBufferLease],
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil
   ) throws -> AcceptedConsequenceView {
     lock.lock()
     defer { lock.unlock() }
@@ -374,7 +411,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     guard duration > 0, duration <= UInt64(UInt32.max) else {
       throw TissueError.transaction("accepted control interval exceeds sensory ABI")
     }
-    let dynamicResidency = try makeDynamicSensorResidency(rawSensors)
+    let dynamicResidency = try makeDynamicAcceptedResidency(
+      sensors: rawSensors,
+      developmentalEvidence: developmentalEvidence
+    )
     defer { dynamicResidency?.endResidency() }
     do {
       commandAllocator.reset()
@@ -408,6 +448,28 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         acceptedPhysicsState: acceptedPhysicsState,
         deltaMicroseconds: duration,
         receptorEventCapacity: sensory.eventCapacity
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try developmentalRuntime.encodeAcceptedProgress(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        acceptedPhysicsState: acceptedPhysicsState,
+        deltaMicroseconds: duration,
+        evidence: developmentalEvidence
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeRestConsolidation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
       )
       encoder.barrier(
         afterEncoderStages: .dispatch,
@@ -463,6 +525,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       )
     }
     let section = agentStateRuntime.arena.layout.section(.somaticOutput)
+    let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
     let buffer = try agentStateRuntime.arena.borrowShadowHotBuffer(
       transaction: transaction.agentStateToken
     )
@@ -470,7 +533,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       section.byteOffset <= buffer.length,
       decision.somaticOutputByteCount <= buffer.length - section.byteOffset,
       decision.somaticOutputGPUAddress
-        == buffer.gpuAddress + UInt64(section.byteOffset)
+        == buffer.gpuAddress + UInt64(section.byteOffset),
+      decision.regionalMaturationCount == maturation.elementCount,
+      decision.regionalMaturationByteCount
+        == maturation.elementCount * maturation.elementStride,
+      maturation.byteOffset <= buffer.length,
+      decision.regionalMaturationByteCount
+        <= buffer.length - maturation.byteOffset,
+      decision.regionalMaturationGPUAddress
+        == buffer.gpuAddress + UInt64(maturation.byteOffset)
     else {
       throw TissueError.transaction(
         "embodied somatic command does not identify its resident shadow buffer"
@@ -480,7 +551,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision: decision,
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       buffer: buffer,
-      sourceOffset: section.byteOffset
+      sourceOffset: section.byteOffset,
+      maturationSourceOffset: maturation.byteOffset
     )
   }
 
@@ -528,6 +600,27 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to borrow sensor residency: \(error)")
     }
     for sensor in sensors { set.addAllocation(sensor.buffer) }
+    set.commit()
+    set.requestResidency()
+    return set
+  }
+
+  private func makeDynamicAcceptedResidency(
+    sensors: [MetalRawSensorBufferLease],
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?
+  ) throws -> (any MTLResidencySet)? {
+    guard !sensors.isEmpty || developmentalEvidence != nil else { return nil }
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "NumiBrain accepted receptor and capability residency"
+    descriptor.initialCapacity = sensors.count + (developmentalEvidence == nil ? 0 : 1)
+    let set: any MTLResidencySet
+    do {
+      set = try device.makeResidencySet(descriptor: descriptor)
+    } catch {
+      throw TissueError.metal("failed to retain accepted input buffers: \(error)")
+    }
+    for sensor in sensors { set.addAllocation(sensor.buffer) }
+    if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
     set.commit()
     set.requestResidency()
     return set

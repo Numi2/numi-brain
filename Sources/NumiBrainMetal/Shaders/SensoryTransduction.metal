@@ -13,6 +13,7 @@ struct NBSensoryUniforms {
   ulong adaptation_offset;
   ulong frame_metadata_offset;
   ulong event_queue_offset;
+  ulong developmental_state_offset;
   uint environment_identifier;
   uint descriptor_count;
   uint total_observation_scalars;
@@ -82,12 +83,34 @@ struct NBReceptorEventRecord {
   float auxiliary_value;
 };
 
-static_assert(sizeof(NBSensoryUniforms) == 96);
+struct NBDevelopmentalHeader {
+  uint format_version;
+  uint stage;
+  uint stage_count;
+  uint flags;
+  ulong developmental_age_microseconds;
+  ulong last_transition_timestamp_microseconds;
+  float maturation_progress;
+  float sensor_precision_multiplier;
+  float muscle_strength_multiplier;
+  float replay_allocation_multiplier;
+  float learning_rate_multiplier;
+  uint workspace_capacity;
+  uint planning_horizon_steps;
+  uint module_count;
+  uint evidence_count;
+  ulong species_template_fingerprint;
+  ulong accepted_physics_state_fingerprint;
+  ulong reserved[21];
+};
+
+static_assert(sizeof(NBSensoryUniforms) == 104);
 static_assert(sizeof(NBSensoryDescriptor) == 64);
 static_assert(sizeof(NBReceptorEventRule) == 48);
 static_assert(sizeof(NBSensoryFrameMetadata) == 32);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
+static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline uint nb_hash32(uint value) {
   value ^= value >> 16;
@@ -280,7 +303,13 @@ kernel void transduce_receptor_observations(
   device float *observations = reinterpret_cast<device float *>(
     hot_state + uniforms.observation_offset
   );
-  const float noise = descriptor.noise_standard_deviation * nb_counter_noise(
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  const float effective_noise = descriptor.noise_standard_deviation
+    / max(development->sensor_precision_multiplier, 0.1f);
+  const float noise = effective_noise * nb_counter_noise(
     uniforms,
     descriptor.modality,
     local_scalar

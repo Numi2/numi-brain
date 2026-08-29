@@ -295,6 +295,17 @@ struct NBSchedulerUniformsABI {
     uint reserved;
 };
 
+struct NBRegionalMaturationRecordABI {
+    uint module_identifier;
+    uint unlocked;
+    float learning_rate_multiplier;
+    float timescale_multiplier;
+    float route_gain_multiplier;
+    float conduction_delay_multiplier;
+    float capacity_fraction;
+    uint flags;
+};
+
 struct NBParameterVersionBindingABI {
     uint format_version;
     uint component_count;
@@ -584,6 +595,8 @@ static_assert(
 );
 static_assert(sizeof(NBDueInvocationABI) == 32, "due invocation ABI drift");
 static_assert(sizeof(NBSchedulerUniformsABI) == 56, "scheduler uniform ABI drift");
+static_assert(sizeof(NBRegionalMaturationRecordABI) == 32,
+              "regional maturation ABI drift");
 static_assert(sizeof(NBParameterVersionBindingABI) == 64, "parameter binding ABI drift");
 static_assert(sizeof(NBDispatchPlanHeaderABI) == 48, "dispatch-plan header ABI drift");
 static_assert(sizeof(NBDispatchGroupABI) == 24, "dispatch group ABI drift");
@@ -1272,6 +1285,7 @@ kernel void schedule_due_modules(
     device NBSchedulerResultABI *result [[buffer(6)]],
     device const NBReceptorEventTransductionResultABI *eventResult [[buffer(7)]],
     device const NBParameterVersionBindingABI *parameterVersion [[buffer(8)]],
+    device const NBRegionalMaturationRecordABI *maturation [[buffer(9)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -1298,6 +1312,9 @@ kernel void schedule_due_modules(
 
     for (uint moduleIndex = 0u; moduleIndex < uniforms->module_count; ++moduleIndex) {
         const NBModuleDescriptorABI module = modules[moduleIndex];
+        const bool unlocked = maturation[moduleIndex].module_identifier
+                == uint(module.module_id)
+            && maturation[moduleIndex].unlocked != 0u;
         NBModuleClockStateABI clock = inputClocks[moduleIndex];
         if (initialize) {
             clock.next_due_microseconds = uniforms->committed_time_microseconds;
@@ -1305,21 +1322,23 @@ kernel void schedule_due_modules(
         }
         ulong nextDue = clock.next_due_microseconds;
         while (nextDue <= uniforms->target_time_microseconds) {
-            if (invocationCount >= uniforms->invocation_capacity) {
-                result->invocation_count = invocationCount;
-                result->status = NBSchedulerStatusInvocationCapacity;
-                return;
+            if (unlocked) {
+                if (invocationCount >= uniforms->invocation_capacity) {
+                    result->invocation_count = invocationCount;
+                    result->status = NBSchedulerStatusInvocationCapacity;
+                    return;
+                }
+                NBDueInvocationABI invocation;
+                invocation.timestamp_microseconds = nextDue;
+                invocation.interrupt_mask = 0ul;
+                invocation.environment_identifier = uniforms->environment_identifier;
+                invocation.module_id = module.module_id;
+                invocation.clock_class = module.clock_class;
+                invocation.reason_flags = NBSchedulerReasonPeriodic;
+                invocation.reserved = 0u;
+                invocations[invocationCount++] = invocation;
+                clock.last_update_microseconds = nextDue;
             }
-            NBDueInvocationABI invocation;
-            invocation.timestamp_microseconds = nextDue;
-            invocation.interrupt_mask = 0ul;
-            invocation.environment_identifier = uniforms->environment_identifier;
-            invocation.module_id = module.module_id;
-            invocation.clock_class = module.clock_class;
-            invocation.reason_flags = NBSchedulerReasonPeriodic;
-            invocation.reserved = 0u;
-            invocations[invocationCount++] = invocation;
-            clock.last_update_microseconds = nextDue;
             const ulong period = ulong(module.period_microseconds);
             if (nextDue > (~0ul) - period) {
                 result->invocation_count = invocationCount;

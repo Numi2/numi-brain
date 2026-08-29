@@ -31,6 +31,9 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case somaticOutput = 24
   /// Transactional atomic winners for GPU persistent-memory retrieval.
   case memoryRetrievalScratch = 25
+  case developmentalState = 26
+  case developmentalEvidence = 27
+  case regionalMaturation = 28
 }
 
 @frozen
@@ -265,6 +268,19 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       stride: MemoryLayout<Float>.stride
     )
     try builder.append(.memoryRetrievalScratch, count: 1, stride: 256)
+    try builder.append(.developmentalState, count: 1, stride: 256)
+    let capabilityCodeCount = species.development
+      .flatMap(\.capabilityGateCodes).count
+    try builder.append(
+      .developmentalEvidence,
+      count: max(capabilityCodeCount, 1),
+      stride: 32
+    )
+    try builder.append(
+      .regionalMaturation,
+      count: species.enabledModuleIdentifiers.count,
+      stride: 32
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)

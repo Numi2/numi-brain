@@ -13,6 +13,7 @@ struct NBCognitiveUniforms {
   ulong fast_plasticity_offset;
   ulong active_control_offset;
   ulong event_queue_offset;
+  ulong developmental_state_offset;
   ulong hot_state_byte_count;
   uint recurrent_scalar_count;
   uint workspace_capacity;
@@ -26,10 +27,22 @@ struct NBCognitiveUniforms {
   uint actuator_count;
   uint synergy_count;
   uint module_count;
-  uint reserved0;
-  uint reserved1;
+  uint world_level_count;
+  uint world_head_count;
   uint reserved2;
   uint reserved3;
+};
+
+struct NBWorldModelLevelRecord {
+  uint level;
+  uint base_scalar_offset;
+  uint latent_dimension;
+  uint update_period_microseconds;
+  ulong minimum_horizon_microseconds;
+  ulong maximum_horizon_microseconds;
+  uint head_count;
+  uint flags;
+  ulong reserved;
 };
 
 struct NBDriveStateRecord {
@@ -93,13 +106,36 @@ struct NBWorkspaceMetadataRecord {
   float confidence;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 160);
+struct NBDevelopmentalHeader {
+  uint format_version;
+  uint stage;
+  uint stage_count;
+  uint flags;
+  ulong developmental_age_microseconds;
+  ulong last_transition_timestamp_microseconds;
+  float maturation_progress;
+  float sensor_precision_multiplier;
+  float muscle_strength_multiplier;
+  float replay_allocation_multiplier;
+  float learning_rate_multiplier;
+  uint workspace_capacity;
+  uint planning_horizon_steps;
+  uint module_count;
+  uint evidence_count;
+  ulong species_template_fingerprint;
+  ulong accepted_physics_state_fingerprint;
+  ulong reserved[21];
+};
+
+static_assert(sizeof(NBCognitiveUniforms) == 168);
+static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
 static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBDevelopmentalHeader) == 256);
 
 inline float nb_saturate(float value) {
   return clamp(value, 0.0f, 1.0f);
@@ -220,13 +256,22 @@ kernel void advance_homeostasis_and_neuromodulation(
 kernel void advance_hierarchical_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  constant NBWorldModelLevelRecord &level [[buffer(3)]],
   uint gid [[thread_position_in_grid]])
 {
-  if (gid >= uniforms.world_model_scalar_count
-      || uniforms.recurrent_scalar_count == 0u) {
+  if (gid >= level.latent_dimension || uniforms.recurrent_scalar_count == 0u
+      || level.head_count != 5u || uniforms.world_head_count != 5u
+      || level.level >= uniforms.world_level_count) {
     return;
   }
-  device float *recurrent = reinterpret_cast<device float *>(
+  const ulong previous_timestamp = uniforms.target_timestamp_microseconds
+      > uniforms.delta_microseconds
+    ? uniforms.target_timestamp_microseconds - uniforms.delta_microseconds
+    : 0ul;
+  if (previous_timestamp / ulong(level.update_period_microseconds)
+      == uniforms.target_timestamp_microseconds
+        / ulong(level.update_period_microseconds)) return;
+  device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
   device float *world = reinterpret_cast<device float *>(
@@ -238,16 +283,89 @@ kernel void advance_hierarchical_world_model(
     reinterpret_cast<device const NBNeuromodulatorStateRecord *>(
       hot_state + uniforms.neuromodulation_offset
     );
-  const float elapsed_seconds = float(uniforms.delta_microseconds) * 1.0e-6f;
-  const float recurrent_value = recurrent[gid % uniforms.recurrent_scalar_count];
+  const uint base = level.base_scalar_offset;
+  const uint dimension = level.latent_dimension;
+  const uint latent_index = base + gid;
+  const uint error_index = base + dimension + gid;
+  const uint context_index = base + 2u * dimension + gid;
+  if (base + 9u * dimension > uniforms.world_model_scalar_count) return;
+  float bottom_up = recurrent[
+    (gid + level.level * 131u) % uniforms.recurrent_scalar_count
+  ];
+  if (level.level > 0u) {
+    uint lower_base = 0u;
+    uint lower_dimension = 0u;
+    if (level.level == 1u) {
+      lower_base = 0u;
+      lower_dimension = 128u;
+    } else if (level.level == 2u) {
+      lower_base = 128u * 9u;
+      lower_dimension = 256u;
+    } else if (level.level == 3u) {
+      lower_base = (128u + 256u) * 9u;
+      lower_dimension = 256u;
+    } else {
+      lower_base = (128u + 256u + 256u) * 9u;
+      lower_dimension = 256u;
+    }
+    bottom_up = world[lower_base + (gid % lower_dimension)]
+      + 0.25f * world[
+        lower_base + lower_dimension + (gid % lower_dimension)
+      ];
+  }
+  float top_down = 0.0f;
+  if (level.level + 1u < uniforms.world_level_count) {
+    const uint upper_base = base + 9u * dimension;
+    const uint upper_dimension = 256u;
+    top_down = world[upper_base + (gid % upper_dimension)];
+  }
+  const float previous_latent = world[latent_index];
   const float drive = drives[gid % uniforms.drive_count].deficit;
   const float modulation = neuromodulators[gid % uniforms.neuromodulator_count].value;
-  const float target = tanh(
-    0.68f * recurrent_value + 0.18f * world[gid]
-      + 0.09f * drive + 0.05f * modulation
+  float mean_prediction = 0.0f;
+  float head_predictions[5];
+  for (uint head = 0u; head < 5u; ++head) {
+    const float signed_head_offset = (float(head) - 2.0f) * 0.035f;
+    const float prediction = tanh(
+      (0.58f + signed_head_offset) * previous_latent
+        + 0.24f * bottom_up + 0.10f * top_down
+        + 0.05f * drive + 0.03f * modulation
+    );
+    head_predictions[head] = prediction;
+    mean_prediction += prediction * 0.2f;
+    world[base + (3u + head) * dimension + gid] = prediction;
+  }
+  float epistemic_variance = 0.0f;
+  for (uint head = 0u; head < 5u; ++head) {
+    const float difference = head_predictions[head] - mean_prediction;
+    epistemic_variance += difference * difference * 0.2f;
+  }
+  const float residual = bottom_up - mean_prediction;
+  const uint aleatoric_index = base + 8u * dimension + gid;
+  const float elapsed_seconds = float(level.update_period_microseconds) * 1.0e-6f;
+  const float horizon_seconds = max(
+    float(level.minimum_horizon_microseconds) * 1.0e-6f,
+    elapsed_seconds
   );
-  const float alpha = 1.0f - exp(-elapsed_seconds / 0.05f);
-  world[gid] = mix(world[gid], target, nb_saturate(alpha));
+  const float alpha = 1.0f - exp(-elapsed_seconds / horizon_seconds);
+  world[latent_index] = mix(
+    previous_latent, mean_prediction, nb_saturate(alpha)
+  );
+  world[error_index] = residual;
+  world[context_index] = top_down;
+  world[aleatoric_index] = mix(
+    max(world[aleatoric_index], 0.0f), residual * residual,
+    nb_saturate(alpha * 0.25f)
+  );
+  if (gid == 0u && level.level == 0u && uniforms.neuromodulator_count > 3u) {
+    device NBNeuromodulatorStateRecord *mutable_neuromodulators =
+      reinterpret_cast<device NBNeuromodulatorStateRecord *>(
+        hot_state + uniforms.neuromodulation_offset
+      );
+    mutable_neuromodulators[3].value = nb_saturate(
+      sqrt(max(epistemic_variance, 0.0f))
+    );
+  }
 }
 
 kernel void advance_fast_plasticity_foundation(
@@ -271,6 +389,10 @@ kernel void advance_fast_plasticity_foundation(
     reinterpret_cast<device NBFastPlasticityStateRecord *>(
       hot_state + uniforms.fast_plasticity_offset
     );
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
   NBFastPlasticityStateRecord site = sites[gid];
   if (site.region_identifier == 0u) {
     site.region_identifier = ushort(gid % uniforms.module_count + 1u);
@@ -289,7 +411,8 @@ kernel void advance_fast_plasticity_foundation(
   ].value;
   site.coefficient = clamp(
     site.coefficient_retention * site.coefficient
-      + site.learning_rate * local_modulation * site.eligibility,
+      + site.learning_rate * development->learning_rate_multiplier
+        * local_modulation * site.eligibility,
     -site.maximum_magnitude,
     site.maximum_magnitude
   );
@@ -301,6 +424,13 @@ kernel void broadcast_foundation_workspace(
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const NBDevelopmentalHeader *development =
+    reinterpret_cast<device const NBDevelopmentalHeader *>(
+      hot_state + uniforms.developmental_state_offset
+    );
+  const uint active_workspace_capacity = min(
+    uniforms.workspace_capacity, development->workspace_capacity
+  );
   const uint content_count = uniforms.workspace_capacity * uniforms.workspace_dimension;
   if (gid >= max(content_count, uniforms.workspace_capacity)) {
     return;
@@ -321,7 +451,9 @@ kernel void broadcast_foundation_workspace(
   if (gid < content_count) {
     const uint slot = gid / uniforms.workspace_dimension;
     const uint feature = gid % uniforms.workspace_dimension;
-    if (slot == 0u) {
+    if (slot >= active_workspace_capacity) {
+      content[gid] = 0.0f;
+    } else if (slot == 0u) {
       content[gid] = feature < uniforms.drive_count
         ? drives[feature].deficit
         : recurrent[feature % uniforms.recurrent_scalar_count];
@@ -331,7 +463,7 @@ kernel void broadcast_foundation_workspace(
       content[gid] *= 0.995f;
     }
   }
-  if (gid < uniforms.workspace_capacity && gid < 2u) {
+  if (gid < active_workspace_capacity && gid < 2u) {
     NBWorkspaceMetadataRecord token = metadata[gid];
     token.identifier = (uniforms.target_timestamp_microseconds << 8) | ulong(gid + 1u);
     token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;

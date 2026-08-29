@@ -14,6 +14,7 @@ private struct CognitiveUniforms {
   var fastPlasticityOffset: UInt64 = 0
   var activeControlOffset: UInt64 = 0
   var eventQueueOffset: UInt64 = 0
+  var developmentalStateOffset: UInt64 = 0
   var hotStateByteCount: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -27,10 +28,22 @@ private struct CognitiveUniforms {
   var actuatorCount: UInt32 = 0
   var synergyCount: UInt32 = 0
   var moduleCount: UInt32 = 0
-  var reserved0: UInt32 = 0
-  var reserved1: UInt32 = 0
+  var worldLevelCount: UInt32 = 0
+  var worldHeadCount: UInt32 = 0
   var reserved2: UInt32 = 0
   var reserved3: UInt32 = 0
+}
+
+private struct WorldModelLevelRecord {
+  var level: UInt32 = 0
+  var baseScalarOffset: UInt32 = 0
+  var latentDimension: UInt32 = 0
+  var updatePeriodMicroseconds: UInt32 = 0
+  var minimumHorizonMicroseconds: UInt64 = 0
+  var maximumHorizonMicroseconds: UInt64 = 0
+  var headCount: UInt32 = 0
+  var flags: UInt32 = 0
+  var reserved: UInt64 = 0
 }
 
 @frozen
@@ -70,7 +83,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let workspacePipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
+  private let worldModelArgumentTables: [any MTL4ArgumentTable]
   private let uniformBuffer: any MTLBuffer
+  private let worldModelDescriptorBuffer: any MTLBuffer
+  private let worldModelLevelRecords: [WorldModelLevelRecord]
 
   public init(
     device: any MTLDevice,
@@ -78,7 +94,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 160,
+    guard MemoryLayout<CognitiveUniforms>.stride == 168,
+      MemoryLayout<WorldModelLevelRecord>.stride == 48,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint
     else {
@@ -128,15 +145,62 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     descriptor.label = "NumiBrain cognitive-state arguments"
     descriptor.maxBufferBindCount = 3
     descriptor.initializeBindings = true
+    let worldDescriptor = MTL4ArgumentTableDescriptor()
+    worldDescriptor.label = "NumiBrain hierarchical world-model arguments"
+    worldDescriptor.maxBufferBindCount = 4
+    worldDescriptor.initializeBindings = true
+    var worldModelLevelRecords: [WorldModelLevelRecord] = []
+    var worldScalarOffset = 0
+    for level in WorldModelLevel.allCases {
+      let levelDescriptor = try WorldModelLevelDescriptor.referenceV1(level: level)
+      guard worldScalarOffset <= Int(UInt32.max) else {
+        throw TissueError.metal("world-model scalar offset exceeds UInt32")
+      }
+      worldModelLevelRecords.append(
+        WorldModelLevelRecord(
+          level: UInt32(level.rawValue),
+          baseScalarOffset: UInt32(worldScalarOffset),
+          latentDimension: UInt32(levelDescriptor.latentDimension),
+          updatePeriodMicroseconds: levelDescriptor.updatePeriodMicroseconds,
+          minimumHorizonMicroseconds: levelDescriptor.minimumHorizonMicroseconds,
+          maximumHorizonMicroseconds: levelDescriptor.maximumHorizonMicroseconds,
+          headCount: 5,
+          flags: 1,
+          reserved: 0
+        )
+      )
+      worldScalarOffset += Int(levelDescriptor.latentDimension) * 9
+    }
+    guard worldScalarOffset == arena.layout.section(.worldModel).elementCount else {
+      throw TissueError.metal("world-model descriptor layout drift")
+    }
+    let worldDescriptorByteCount = worldModelLevelRecords.count
+      * MemoryLayout<WorldModelLevelRecord>.stride
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
+      let firstWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
+      let secondWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
+      let thirdWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
+      let fourthWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
+      let fifthWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<CognitiveUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let worldModelDescriptorBuffer = device.makeBuffer(
+        length: worldDescriptorByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate cognitive-state bindings")
     }
     uniformBuffer.label = "NumiBrain cognitive-state uniforms"
+    worldModelDescriptorBuffer.label = "NumiBrain immutable hierarchical world-model layout"
+    worldModelLevelRecords.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      worldModelDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
     self.layoutFingerprint = arena.layout.fingerprint
     self.arena = arena
     self.species = species
@@ -148,10 +212,18 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.workspacePipeline = pipelines[4]
     self.motorPipeline = pipelines[5]
     self.argumentTable = argumentTable
+    self.worldModelArgumentTables = [
+      firstWorldTable, secondWorldTable, thirdWorldTable,
+      fourthWorldTable, fifthWorldTable,
+    ]
     self.uniformBuffer = uniformBuffer
+    self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
+    self.worldModelLevelRecords = worldModelLevelRecords
   }
 
-  public var residencyAllocation: any MTLAllocation { uniformBuffer }
+  public var residencyAllocations: [any MTLAllocation] {
+    [uniformBuffer, worldModelDescriptorBuffer]
+  }
 
   public func encodeAcceptedCognitiveStep(
     encoder: any MTL4ComputeCommandEncoder,
@@ -200,12 +272,23 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       threadCount: max(DriveKind.allCases.count, NeuromodulatorKind.allCases.count)
     )
     barrier(encoder)
-    try dispatch(
-      encoder: encoder,
-      pipeline: worldModelPipeline,
-      threadCount: arena.layout.section(.worldModel).elementCount
-    )
-    barrier(encoder)
+    for (index, record) in worldModelLevelRecords.enumerated() {
+      let worldTable = worldModelArgumentTables[index]
+      worldTable.setAddress(hot.outputGPUAddress, index: 0)
+      worldTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+      worldTable.setAddress(
+        worldModelDescriptorBuffer.gpuAddress
+          + UInt64(index * MemoryLayout<WorldModelLevelRecord>.stride),
+        index: 3
+      )
+      try dispatch(
+        encoder: encoder,
+        pipeline: worldModelPipeline,
+        threadCount: Int(record.latentDimension),
+        argumentTable: worldTable
+      )
+      barrier(encoder)
+    }
     try dispatch(
       encoder: encoder,
       pipeline: fastPlasticityPipeline,
@@ -254,6 +337,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       fastPlasticityOffset: offset(.fastPlasticity),
       activeControlOffset: offset(.activeControl),
       eventQueueOffset: offset(.eventQueue),
+      developmentalStateOffset: offset(.developmentalState),
       hotStateByteCount: UInt64(arena.layout.totalByteCount),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
@@ -267,8 +351,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       actuatorCount: species.motor.actuatorCount,
       synergyCount: UInt32(species.motor.synergyCount),
       moduleCount: UInt32(species.enabledModuleIdentifiers.count),
-      reserved0: 0,
-      reserved1: 0,
+      worldLevelCount: UInt32(worldModelLevelRecords.count),
+      worldHeadCount: 5,
       reserved2: 0,
       reserved3: 0
     )
@@ -277,13 +361,14 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private func dispatch(
     encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
-    threadCount: Int
+    threadCount: Int,
+    argumentTable selectedArgumentTable: (any MTL4ArgumentTable)? = nil
   ) throws {
     guard threadCount > 0 else {
       throw TissueError.metal("cognitive-state dispatch cannot be empty")
     }
     encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
+    encoder.setArgumentTable(selectedArgumentTable ?? argumentTable)
     let width = min(
       max(pipeline.threadExecutionWidth, 1),
       pipeline.maxTotalThreadsPerThreadgroup

@@ -2,6 +2,8 @@
 using namespace metal;
 
 constant uint NB_ACCEPTED_STATE_VALID = 1u;
+constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
+constant uint NB_WORLD_HEAD_COUNT = 5u;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -168,13 +170,61 @@ inline float nb_mean_prediction_error(
   device const float *world,
   uint world_count)
 {
-  const uint sample_count = min(min(observation_count, world_count), 256u);
+  const bool structured_world_available = world_count
+    >= 9u * NB_WORLD_RECEPTOR_DIMENSION;
+  const uint sample_count = structured_world_available
+    ? min(observation_count, NB_WORLD_RECEPTOR_DIMENSION)
+    : min(min(observation_count, world_count), 256u);
   if (sample_count == 0u) return 0.0f;
   float total = 0.0f;
   for (uint index = 0u; index < sample_count; ++index) {
-    total += abs(observations[index] - world[index]);
+    float prediction = world[index];
+    if (structured_world_available) {
+      prediction = 0.0f;
+      for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+        prediction += world[
+          (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+        ] / float(NB_WORLD_HEAD_COUNT);
+      }
+    }
+    total += abs(observations[index] - prediction);
   }
   return total / float(sample_count);
+}
+
+inline float nb_mean_epistemic_disagreement(
+  device const float *world,
+  uint world_count)
+{
+  if (world_count < 9u * NB_WORLD_RECEPTOR_DIMENSION) return 0.0f;
+  float total_variance = 0.0f;
+  for (uint index = 0u; index < NB_WORLD_RECEPTOR_DIMENSION; ++index) {
+    float mean = 0.0f;
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index]
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+      const float difference = world[
+        (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+      ] - mean;
+      total_variance += difference * difference
+        / float(NB_WORLD_HEAD_COUNT);
+    }
+  }
+  return sqrt(total_variance / float(NB_WORLD_RECEPTOR_DIMENSION));
+}
+
+inline float nb_mean_aleatoric_uncertainty(
+  device const float *world,
+  uint world_count)
+{
+  if (world_count < 9u * NB_WORLD_RECEPTOR_DIMENSION) return 0.0f;
+  float total = 0.0f;
+  for (uint index = 0u; index < NB_WORLD_RECEPTOR_DIMENSION; ++index) {
+    total += max(world[8u * NB_WORLD_RECEPTOR_DIMENSION + index], 0.0f);
+  }
+  return sqrt(total / float(NB_WORLD_RECEPTOR_DIMENSION));
 }
 
 kernel void assimilate_accepted_body_and_physiology(
@@ -254,7 +304,9 @@ kernel void reconcile_accepted_world_model(
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   uint gid [[thread_position_in_grid]])
 {
-  if (gid >= uniforms.world_model_count || uniforms.observation_count == 0u) return;
+  if (gid >= min(uniforms.world_model_count, NB_WORLD_RECEPTOR_DIMENSION)
+      || uniforms.observation_count == 0u
+      || uniforms.world_model_count < 9u * NB_WORLD_RECEPTOR_DIMENSION) return;
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
@@ -262,8 +314,19 @@ kernel void reconcile_accepted_world_model(
     hot_state + uniforms.world_model_offset
   );
   const float observed = observations[gid % uniforms.observation_count];
-  world[gid] += clamp(uniforms.world_correction_gain, 0.0f, 1.0f)
-    * (observed - world[gid]);
+  float predicted_mean = 0.0f;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    predicted_mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + gid]
+      / float(NB_WORLD_HEAD_COUNT);
+  }
+  const float residual = observed - predicted_mean;
+  const float gain = clamp(uniforms.world_correction_gain, 0.0f, 1.0f);
+  world[gid] = mix(world[gid], observed, gain);
+  world[NB_WORLD_RECEPTOR_DIMENSION + gid] = residual;
+  const uint aleatoric_index = 8u * NB_WORLD_RECEPTOR_DIMENSION + gid;
+  world[aleatoric_index] = mix(
+    max(world[aleatoric_index], 0.0f), residual * residual, gain * 0.1f
+  );
 }
 
 kernel void broadcast_accepted_prediction_error(
@@ -281,6 +344,12 @@ kernel void broadcast_accepted_prediction_error(
   const float error = nb_mean_prediction_error(
     observations, uniforms.observation_count, world, uniforms.world_model_count
   );
+  const float epistemic = nb_mean_epistemic_disagreement(
+    world, uniforms.world_model_count
+  );
+  const float aleatoric = nb_mean_aleatoric_uncertainty(
+    world, uniforms.world_model_count
+  );
   device NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device NBNeuromodulatorRecord *>(
       hot_state + uniforms.neuromodulation_offset
@@ -291,7 +360,7 @@ kernel void broadcast_accepted_prediction_error(
     neuromodulators[1].flags = NB_ACCEPTED_STATE_VALID;
   }
   if (uniforms.neuromodulator_count > 3u) {
-    neuromodulators[3].value = max(neuromodulators[3].value * 0.95f, error);
+    neuromodulators[3].value = epistemic;
     neuromodulators[3].kind = 4u;
     neuromodulators[3].flags = NB_ACCEPTED_STATE_VALID;
   }
@@ -320,7 +389,7 @@ kernel void broadcast_accepted_prediction_error(
   device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
-  control->unsupported_uncertainty = error;
+  control->unsupported_uncertainty = max(epistemic, aleatoric);
   control->progress = clamp(control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f);
 }
 
