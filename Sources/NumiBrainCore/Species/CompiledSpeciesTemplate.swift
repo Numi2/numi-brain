@@ -5,8 +5,9 @@ import Foundation
 /// receptor and actuator table consumed by the GPU runtimes.
 @frozen
 public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
+  public let referenceBrainGraph: ReferenceBrainGraph
   public let species: SpeciesTemplate
   public let sensoryProfile: SensoryTransductionProfile
   public let numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog
@@ -17,6 +18,7 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
   public let fingerprint: UInt64
 
   public init(
+    referenceBrainGraph: ReferenceBrainGraph,
     species: SpeciesTemplate,
     sensoryProfile: SensoryTransductionProfile,
     numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog,
@@ -25,6 +27,32 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
     muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
     somaticSynergyCatalog: SomaticSynergyCatalog
   ) throws {
+    guard species.referenceGraphFingerprint == referenceBrainGraph.fingerprint else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "compiled species does not name its supplied reference brain graph"
+      )
+    }
+    let canonicalSpecies = try SpeciesTemplate(
+      family: species.family,
+      name: species.name,
+      referenceGraph: referenceBrainGraph,
+      enabledModuleIdentifiers: species.enabledModuleIdentifiers,
+      regionGraph: species.regionGraph,
+      body: species.body,
+      senses: species.senses,
+      motor: species.motor,
+      reflexes: species.reflexes,
+      cpg: species.cpg,
+      physiology: species.physiology,
+      innateBehaviors: species.innateBehaviors,
+      development: species.development,
+      capacities: species.capacities
+    )
+    guard canonicalSpecies == species else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "compiled species template has content or fingerprint drift"
+      )
+    }
     try jointTopologyCatalog.validate(species: species)
     try somaticSynergyCatalog.validate(motor: species.motor)
 
@@ -109,7 +137,8 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
       )
     }
 
-    self.species = species
+    self.referenceBrainGraph = referenceBrainGraph
+    self.species = canonicalSpecies
     self.sensoryProfile = sensoryProfile
     self.numanXReceptorAnatomyCatalog = numanXReceptorAnatomyCatalog
     self.jointTopologyCatalog = jointTopologyCatalog
@@ -117,7 +146,8 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
     self.muscleAttachmentCatalog = muscleAttachmentCatalog
     self.somaticSynergyCatalog = somaticSynergyCatalog
     self.fingerprint = Self.computeFingerprint(
-      species: species,
+      referenceBrainGraph: referenceBrainGraph,
+      species: canonicalSpecies,
       sensoryProfile: sensoryProfile,
       numanXReceptorAnatomyCatalog: numanXReceptorAnatomyCatalog,
       jointTopologyCatalog: jointTopologyCatalog,
@@ -133,6 +163,7 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case formatVersion
+    case referenceBrainGraph
     case species
     case sensoryProfile
     case numanXReceptorAnatomyCatalog
@@ -146,6 +177,7 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
   public func encode(to encoder: any Encoder) throws {
     var values = encoder.container(keyedBy: CodingKeys.self)
     try values.encode(Self.formatVersion, forKey: .formatVersion)
+    try values.encode(referenceBrainGraph, forKey: .referenceBrainGraph)
     try values.encode(species, forKey: .species)
     try values.encode(sensoryProfile, forKey: .sensoryProfile)
     try values.encode(
@@ -172,6 +204,10 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
       )
     }
     let decoded = try Self(
+      referenceBrainGraph: values.decode(
+        ReferenceBrainGraph.self,
+        forKey: .referenceBrainGraph
+      ),
       species: values.decode(SpeciesTemplate.self, forKey: .species),
       sensoryProfile: values.decode(
         SensoryTransductionProfile.self,
@@ -209,6 +245,7 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
   }
 
   private static func computeFingerprint(
+    referenceBrainGraph: ReferenceBrainGraph,
     species: SpeciesTemplate,
     sensoryProfile: SensoryTransductionProfile,
     numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog,
@@ -220,6 +257,7 @@ public struct CompiledSpeciesTemplate: Codable, Equatable, Sendable {
     var hash: UInt64 = 14_695_981_039_346_656_037
     for value in [
       UInt64(formatVersion), species.fingerprint, sensoryProfile.fingerprint,
+      referenceBrainGraph.fingerprint,
       numanXReceptorAnatomyCatalog.fingerprint,
       jointTopologyCatalog.fingerprint, protectiveMotorProfile.fingerprint,
       muscleAttachmentCatalog?.fingerprint ?? 0,
@@ -245,6 +283,7 @@ extension SpeciesTemplateCompiler {
   /// Produces the immutable runtime anatomy contract after all constituent
   /// catalogs have been compiled from authoritative species and NumanX data.
   public static func compileRuntimeTemplate(
+    referenceBrainGraph: ReferenceBrainGraph,
     species: SpeciesTemplate,
     sensoryProfile: SensoryTransductionProfile,
     numanXReceptorAnatomyCatalog: NumanXReceptorAnatomyCatalog,
@@ -254,6 +293,7 @@ extension SpeciesTemplateCompiler {
     protectiveMotorProfile: ProtectiveMotorProfile? = nil
   ) throws -> CompiledSpeciesTemplate {
     try CompiledSpeciesTemplate(
+      referenceBrainGraph: referenceBrainGraph,
       species: species,
       sensoryProfile: sensoryProfile,
       numanXReceptorAnatomyCatalog: numanXReceptorAnatomyCatalog,
