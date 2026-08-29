@@ -891,6 +891,41 @@ kernel void generate_active_goal_state(
       }
     }
   }
+  uint continuing_goal_rank = 4u;
+  for (uint rank = 0u; rank < 4u; ++rank) {
+    if (goal_identifiers[rank] == previous_goal_identifier) {
+      continuing_goal_rank = rank;
+      break;
+    }
+  }
+  const bool emergency_preemption = goal_origins[0] == 6u
+    && uint(previous_goal_identifier >> 56u) != 6u;
+  if (continuing_goal_rank > 0u && continuing_goal_rank < 4u
+      && !emergency_preemption) {
+    const float accepted_progress = clamp(header->progress, 0.0f, 1.0f);
+    const float midcourse_commitment =
+      4.0f * accepted_progress * (1.0f - accepted_progress);
+    const float required_switch_advantage = uniforms.switching_margin
+      * (1.0f + midcourse_commitment)
+      + max(header->interruption_cost, 0.0f);
+    if (goal_priorities[0]
+        < goal_priorities[continuing_goal_rank] + required_switch_advantage) {
+      const ulong retained_identifier = goal_identifiers[continuing_goal_rank];
+      const uint retained_origin = goal_origins[continuing_goal_rank];
+      const uint retained_source = goal_sources[continuing_goal_rank];
+      const float retained_priority = goal_priorities[continuing_goal_rank];
+      for (uint rank = continuing_goal_rank; rank > 0u; --rank) {
+        goal_identifiers[rank] = goal_identifiers[rank - 1u];
+        goal_origins[rank] = goal_origins[rank - 1u];
+        goal_sources[rank] = goal_sources[rank - 1u];
+        goal_priorities[rank] = goal_priorities[rank - 1u];
+      }
+      goal_identifiers[0] = retained_identifier;
+      goal_origins[0] = retained_origin;
+      goal_sources[0] = retained_source;
+      goal_priorities[0] = retained_priority;
+    }
+  }
   header->active_goal_identifier = goal_identifiers[0];
   header->reserved2 = 0ul;
   float active_intention_confidence = -INFINITY;
