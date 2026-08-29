@@ -1973,18 +1973,31 @@ kernel void score_memory_retrieval_candidates(
               persistent_memory + uniforms.prospective_memory_offset
                 + ulong(local_index) * ulong(uniforms.prospective_stride)
             );
-          const bool before_deadline = record->deadline_timestamp_microseconds == 0ul
-            || uniforms.target_timestamp_microseconds
-              <= record->deadline_timestamp_microseconds;
-          if (record->format_version == 1u && record->identifier != 0ul
-              && (record->status == 1u || record->status == 2u)
-              && before_deadline) {
+          if (record->format_version == NB_MEMORY_RECORD_VERSION
+              && record->identifier != 0ul
+              && (record->status == 1u || record->status == 2u)) {
+            const bool before_deadline =
+              record->deadline_timestamp_microseconds == 0ul
+                || uniforms.target_timestamp_microseconds
+                  <= record->deadline_timestamp_microseconds;
+            const float trigger_match = retrieval_similarity(
+              query, uniforms.recurrent_scalar_count, record->trigger_code, 16u
+            );
+            const float trigger_threshold = clamp(
+              record->trigger_confidence, 0.0f, 1.0f
+            );
+            const bool trigger_detected = record->status == 2u
+              || trigger_match >= trigger_threshold;
+            if (!before_deadline || !trigger_detected) return;
             kind = 4u;
             identifier = record->identifier;
+            // Once an intention is active, lifecycle context_match supplies
+            // persistence even if active sensing temporarily moves the live
+            // recurrent state away from the original trigger context.
+            const float effective_match = record->status == 2u
+              ? max(trigger_match, record->context_match) : trigger_match;
             score = uniforms.prospective_weight * max(memory_parameters[3], 0.0f) * (
-              retrieval_similarity(
-                query, uniforms.recurrent_scalar_count, record->trigger_code, 16u
-              ) + record->priority + record->trigger_confidence
+              effective_match + record->priority + record->trigger_confidence
                 + (record->status == 2u ? 0.15f : 0.0f)
             );
           }
