@@ -347,7 +347,23 @@ public final class MLXBrainLearner: @unchecked Sendable {
       + Float(2) * batch.acceptedStopMask)
     let stateDelta = posterior - prior
     let actionState = posterior[0..., 0..<16]
-    let worldActionContext = completeAction.mean(axis: 1, keepDims: true)
+    let somaticWorldAction = completeAction[0..., 0..<16]
+      .mean(axis: 1, keepDims: true)
+    let autonomicWorldAction = completeAction[0..., 16..<32]
+      .mean(axis: 1, keepDims: true)
+    let sensingWorldAction = completeAction[0..., 32..<48]
+      .mean(axis: 1, keepDims: true)
+    let internalWorldAction = completeAction[0..., 48..<80]
+      .mean(axis: 1, keepDims: true)
+    let worldActionContexts = [
+      (somaticWorldAction + sensingWorldAction + autonomicWorldAction) / Float(3),
+      Float(0.5) * somaticWorldAction + Float(0.25) * autonomicWorldAction
+        + Float(0.25) * sensingWorldAction,
+      Float(0.35) * somaticWorldAction + Float(0.4) * sensingWorldAction
+        + Float(0.25) * internalWorldAction,
+      Float(0.4) * autonomicWorldAction + Float(0.6) * internalWorldAction,
+      Float(0.25) * autonomicWorldAction + Float(0.75) * internalWorldAction,
+    ]
     let worldActionGain = world[160..<185].mean()
     let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
     let activeSensingTrace = batch.activeSensingTrace
@@ -423,7 +439,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
             + world[base + 1] * observation
             + world[base + 3] * metrics[0..., 4..<5]
             + world[base + 4] * metrics[0..., 6..<7]
-            + world[160 + level * 5 + head] * worldActionContext
+            + world[160 + level * 5 + head] * worldActionContexts[level]
             + world[base + 5]
         )
         actionConditionedWorldLoss = actionConditionedWorldLoss

@@ -639,7 +639,22 @@ inline float nb_world_action_context(
   float action_context;
   switch (level) {
     case 0u:
-      action_context = 0.5f * somatic_value + 0.5f * sensing_value;
+      if (component < 48u) {
+        // Vision and audition depend on physically accepted orienting/sensing.
+        action_context = sensing_value;
+      } else if (component < 64u) {
+        // Touch combines active palpation with self-generated body motion.
+        action_context = 0.5f * somatic_value + 0.5f * sensing_value;
+      } else if (component < 96u) {
+        // Proprioception and vestibular consequences are somatic.
+        action_context = somatic_value;
+      } else if (component < 116u) {
+        // Olfaction and taste include sniffing and sampling actions.
+        action_context = sensing_value;
+      } else {
+        // Interoceptive receptor dynamics follow accepted autonomic output.
+        action_context = autonomic_value;
+      }
       break;
     case 1u:
       action_context = 0.5f * somatic_value + 0.25f * autonomic_value
