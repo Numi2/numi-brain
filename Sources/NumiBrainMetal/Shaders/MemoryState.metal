@@ -2043,6 +2043,7 @@ kernel void publish_memory_retrieval_winner(
   device const NBEpisodicSummaryRecord *episodic_value = nullptr;
   device const NBArchivedEpisodicRecord *archived_value = nullptr;
   device const NBProceduralSkillSummaryRecord *procedural_value = nullptr;
+  device const NBProspectiveIntentionSummaryRecord *prospective_value = nullptr;
   uint value_count = 0u;
   device const float *query = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
@@ -2152,6 +2153,7 @@ kernel void publish_memory_retrieval_winner(
           kind = 4u;
           identifier = record->identifier;
           score = record->priority;
+          prospective_value = record;
           value = record->trigger_code;
           value_count = 16u;
         }
@@ -2275,15 +2277,19 @@ kernel void publish_memory_retrieval_winner(
     ? episodic_value->end_timestamp_microseconds
     : (archived_value != nullptr
       ? archived_value->end_timestamp_microseconds
-      : uniforms.target_timestamp_microseconds);
+      : (prospective_value != nullptr
+        ? prospective_value->created_timestamp_microseconds
+        : uniforms.target_timestamp_microseconds));
   token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   token.entity_identifier = identifier;
   token.goal_identifier = episodic_value != nullptr
     ? episodic_value->active_goal_identifier
     : (archived_value != nullptr
       ? archived_value->active_goal_identifier
-      : (kind == 3u && procedural_value != nullptr
-        ? procedural_value->initiation_goal_identifier : 0ul));
+      : (prospective_value != nullptr
+        ? prospective_value->goal_identifier
+        : (kind == 3u && procedural_value != nullptr
+          ? procedural_value->initiation_goal_identifier : 0ul)));
   token.bound_token_identifier = episodic_value != nullptr
     ? episodic_value->active_option_identifier
     : (archived_value != nullptr
