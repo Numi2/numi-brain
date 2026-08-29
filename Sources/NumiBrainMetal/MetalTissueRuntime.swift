@@ -67,6 +67,77 @@ private struct BodyLoadFieldRecord {
   }
 }
 
+private struct BodySchemaUniforms {
+  var bodyCount: UInt32 = 0
+  var reserved0: UInt32 = 0
+  var targetTimestampMicroseconds: UInt64 = 0
+  var forceScaleNewtons: Float = 0
+  var loadTimeConstantMicroseconds: UInt32 = 0
+  var initialVariance: Float = 0
+  var maximumVariance: Float = 0
+  var processVariancePerSecond: Float = 0
+  var observationVariance: Float = 0
+  var vulnerabilityGainPerSecond: Float = 0
+  var recoveryPerSecond: Float = 0
+  var uncertaintyRiskWeight: Float = 0
+  var reserved1: Float = 0
+}
+
+private struct BodySchemaRecord {
+  static let noObservation = UInt64.max
+
+  var bodyIdentifier: UInt32 = 0
+  var flags: UInt32 = 0
+  var sourceMuscleIdentifier: UInt32 = UInt32.max
+  var endpointRole: UInt32 = 0
+  var estimatedAbsoluteLoad: Float = 0
+  var epistemicVariance: Float = 0
+  var vulnerability: Float = 0
+  var damageRisk: Float = 0
+  var lastObservationTimestampMicroseconds: UInt64 = noObservation
+  var stateTimestampMicroseconds: UInt64 = 0
+
+  init() {}
+
+  init(cell: BodySchemaPosteriorCell) {
+    bodyIdentifier = cell.bodyIdentifier
+    flags = cell.flags.rawValue
+    sourceMuscleIdentifier = cell.sourceMuscleIdentifier
+    endpointRole = cell.endpointRole.rawValue
+    estimatedAbsoluteLoad = cell.estimatedAbsoluteLoad
+    epistemicVariance = cell.epistemicVariance
+    vulnerability = cell.vulnerability
+    damageRisk = cell.damageRisk
+    lastObservationTimestampMicroseconds =
+      cell.lastObservationTimestamp?.rawValue ?? Self.noObservation
+    stateTimestampMicroseconds = cell.stateTimestamp.rawValue
+  }
+
+  func value() throws -> BodySchemaPosteriorCell {
+    try BodySchemaPosteriorCell(
+      bodyIdentifier: bodyIdentifier,
+      flags: BodySchemaFlags(rawValue: flags),
+      sourceMuscleIdentifier: sourceMuscleIdentifier,
+      endpointRole: BodyLoadEndpointRole(rawValue: endpointRole),
+      estimatedAbsoluteLoad: estimatedAbsoluteLoad,
+      epistemicVariance: epistemicVariance,
+      vulnerability: vulnerability,
+      damageRisk: damageRisk,
+      lastObservationTimestamp: lastObservationTimestampMicroseconds == Self.noObservation
+        ? nil
+        : BrainTimestamp(microseconds: lastObservationTimestampMicroseconds),
+      stateTimestamp: BrainTimestamp(microseconds: stateTimestampMicroseconds)
+    )
+  }
+}
+
+private struct MuscleAttachmentRecord {
+  var muscleIdentifier: UInt32 = UInt32.max
+  var firstBodyIdentifier: UInt32 = UInt32.max
+  var terminalBodyIdentifier: UInt32 = UInt32.max
+  var reserved: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalTissueRuntime: @unchecked Sendable {
   /// Retains the exact Metal allocations lent to one immediate NumanX
@@ -197,6 +268,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectivePipeline: any MTLComputePipelineState
   private let protectiveMotorPipeline: any MTLComputePipelineState
   private let bodyLoadFieldPipeline: any MTLComputePipelineState
+  private let bodySchemaPipeline: any MTLComputePipelineState
   private let argumentTable: any MTL4ArgumentTable
   private let eventArgumentTable: any MTL4ArgumentTable
   private let receptorInterruptArgumentTable: any MTL4ArgumentTable
@@ -205,6 +277,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveArgumentTable: any MTL4ArgumentTable
   private let protectiveMotorArgumentTable: any MTL4ArgumentTable
   private let bodyLoadFieldArgumentTable: any MTL4ArgumentTable
+  private let bodySchemaArgumentTable: any MTL4ArgumentTable
   private let residencySet: any MTLResidencySet
   private let stateBuffers: [any MTLBuffer]
   private let structureBuffer: any MTLBuffer
@@ -245,11 +318,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let protectiveCommandBuffers: [any MTLBuffer]
   private let protectiveMotorProfileBuffer: any MTLBuffer
   private let protectiveSourceInhibitionMaskBuffer: any MTLBuffer
+  private let zeroDescendingSomaticBuffer: any MTLBuffer
+  private let descendingSomaticBuffer: any MTLBuffer
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
   private let bodyLoadFieldUniformBuffer: any MTLBuffer
   private let bodyLoadFieldUpdateBuffer: any MTLBuffer
   private let bodyLoadFieldStateBuffers: [any MTLBuffer]
+  private let bodySchemaUniformBuffer: any MTLBuffer
+  private let bodySchemaStateBuffers: [any MTLBuffer]
+  private let muscleAttachmentBuffer: any MTLBuffer
   private let stagingBuffer: any MTLBuffer
   private let stateByteCount: Int
   private let relayByteCount: Int
@@ -281,12 +359,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public let protectiveMotorProfile: ProtectiveMotorProfile
   public let numanXMuscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
   public let bodyLoadFieldDynamics: BodyLoadFieldDynamics
+  public let bodySchemaDynamics: BodySchemaPosteriorDynamics
   public let protectiveMotorProfileByteCount: Int
   public let protectiveSourceInhibitionMaskByteCount: Int
   public let protectiveMotorOutputHeaderByteCount = ProtectiveMotorOutput.headerByteCount
   public let protectiveMuscleExcitationByteCount: Int
   public let bodyLoadFieldUpdateCapacityByteCount: Int
   public let bodyLoadFieldStateByteCount: Int
+  public let bodySchemaStateByteCount: Int
+  public let muscleAttachmentByteCount: Int
 
   private var committedIndex = 0
   private var committedHistoryOwnerMask: UInt32 = 0
@@ -309,6 +390,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var pendingSchedulerInitialized = false
   private var hasCommittedSchedulerResult = false
   private var pendingJointTransaction: BrainJointTransaction?
+  private var descendingSomaticTransactionFingerprint: UInt64?
 
   private struct InteractiveCandidate {
     let substep: BrainJointSubstepToken
@@ -350,6 +432,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     numanXMuscleAttachmentCatalog requestedNumanXMuscleAttachmentCatalog:
       NumanXMuscleAttachmentCatalog? = nil,
     bodyLoadFieldDynamics requestedBodyLoadFieldDynamics: BodyLoadFieldDynamics? = nil,
+    bodySchemaDynamics requestedBodySchemaDynamics: BodySchemaPosteriorDynamics? = nil,
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maxSchedulerEvents: Int = 64,
     maxSchedulerInvocations: Int = 4_096,
@@ -462,6 +545,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let bodyLoadFieldDynamics =
       try requestedBodyLoadFieldDynamics
       ?? BodyLoadFieldDynamics.runtimeFoundationV0
+    let bodySchemaDynamics =
+      try requestedBodySchemaDynamics
+      ?? BodySchemaPosteriorDynamics.runtimeFoundationV0
     if let requestedNumanXMuscleAttachmentCatalog {
       do {
         try requestedNumanXMuscleAttachmentCatalog.validate(
@@ -586,6 +672,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("materialize_body_load_field is missing from the Metal library")
     }
+    guard let bodySchemaFunction = library.makeFunction(name: "advance_body_schema") else {
+      throw TissueError.metal("advance_body_schema is missing from the Metal library")
+    }
     let tissuePipeline: any MTLComputePipelineState
     let eventCompactionPipeline: any MTLComputePipelineState
     let receptorInterruptTransductionPipeline: any MTLComputePipelineState
@@ -594,6 +683,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let protectivePipeline: any MTLComputePipelineState
     let protectiveMotorPipeline: any MTLComputePipelineState
     let bodyLoadFieldPipeline: any MTLComputePipelineState
+    let bodySchemaPipeline: any MTLComputePipelineState
     do {
       tissuePipeline = try device.makeComputePipelineState(function: tissueFunction)
       eventCompactionPipeline = try device.makeComputePipelineState(
@@ -610,6 +700,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
       bodyLoadFieldPipeline = try device.makeComputePipelineState(
         function: bodyLoadFieldFunction
+      )
+      bodySchemaPipeline = try device.makeComputePipelineState(
+        function: bodySchemaFunction
       )
     } catch {
       throw TissueError.metal(
@@ -681,7 +774,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let protectiveMotorArgumentDescriptor = MTL4ArgumentTableDescriptor()
     protectiveMotorArgumentDescriptor.label = "NumiBrain protective-motor arguments"
-    protectiveMotorArgumentDescriptor.maxBufferBindCount = 8
+    protectiveMotorArgumentDescriptor.maxBufferBindCount = 11
     protectiveMotorArgumentDescriptor.initializeBindings = true
     guard
       let protectiveMotorArgumentTable = try? device.makeArgumentTable(
@@ -700,6 +793,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     else {
       throw TissueError.metal("failed to create the body-load field argument table")
+    }
+    let bodySchemaArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    bodySchemaArgumentDescriptor.label = "NumiBrain body-schema arguments"
+    bodySchemaArgumentDescriptor.maxBufferBindCount = 4
+    bodySchemaArgumentDescriptor.initializeBindings = true
+    guard
+      let bodySchemaArgumentTable = try? device.makeArgumentTable(
+        descriptor: bodySchemaArgumentDescriptor
+      )
+    else {
+      throw TissueError.metal("failed to create the body-schema argument table")
     }
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
@@ -887,7 +991,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("protective motor profile byte count overflows Int")
     }
     guard MemoryLayout<BodyLoadFieldUniforms>.stride == 32,
-      MemoryLayout<BodyLoadFieldRecord>.stride == 56
+      MemoryLayout<BodyLoadFieldRecord>.stride == 56,
+      MemoryLayout<BodySchemaUniforms>.stride == 56,
+      MemoryLayout<BodySchemaRecord>.stride == 48,
+      MemoryLayout<MuscleAttachmentRecord>.stride == 16
     else {
       throw TissueError.metal("body-load field ABI layout drift")
     }
@@ -906,6 +1013,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       !bodyLoadUpdateByteOverflow
     else {
       throw TissueError.metal("body-load field byte count overflows Int")
+    }
+    let (bodySchemaStateByteCount, bodySchemaStateByteOverflow) =
+      max(bodyLoadFieldBodyCount, 1).multipliedReportingOverflow(
+        by: MemoryLayout<BodySchemaRecord>.stride
+      )
+    let (muscleAttachmentByteCount, muscleAttachmentByteOverflow) =
+      max(protectiveMotorProfile.channels.count, 1).multipliedReportingOverflow(
+        by: MemoryLayout<MuscleAttachmentRecord>.stride
+      )
+    guard !bodySchemaStateByteOverflow, !muscleAttachmentByteOverflow else {
+      throw TissueError.metal("body-schema byte count overflows Int")
     }
     guard
       let schedulerDescriptorBuffer = device.makeBuffer(
@@ -1064,6 +1182,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: protectiveMuscleExcitationByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
+      let zeroDescendingSomaticBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let descendingSomaticBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let firstProtectiveMotorOutputHeaderBuffer = device.makeBuffer(
         length: ProtectiveMotorOutput.headerByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
@@ -1094,6 +1220,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       let secondBodyLoadFieldStateBuffer = device.makeBuffer(
         length: bodyLoadFieldStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let bodySchemaUniformBuffer = device.makeBuffer(
+        length: MemoryLayout<BodySchemaUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let firstBodySchemaStateBuffer = device.makeBuffer(
+        length: bodySchemaStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let secondBodySchemaStateBuffer = device.makeBuffer(
+        length: bodySchemaStateByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let muscleAttachmentBuffer = device.makeBuffer(
+        length: muscleAttachmentByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       )
     else {
@@ -1143,6 +1285,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       firstBodyLoadFieldStateBuffer,
       secondBodyLoadFieldStateBuffer,
     ]
+    let bodySchemaStateBuffers: [any MTLBuffer] = [
+      firstBodySchemaStateBuffer,
+      secondBodySchemaStateBuffer,
+    ]
     schedulerDescriptorBuffer.label = "NumiBrain immutable module descriptors"
     firstSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 0"
     secondSchedulerClockBuffer.label = "NumiBrain scheduler clock generation 1"
@@ -1186,6 +1332,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     firstProtectiveCommandBuffer.label = "NumiBrain protective command generation 0"
     secondProtectiveCommandBuffer.label = "NumiBrain protective command generation 1"
     protectiveMotorProfileBuffer.label = "NumiBrain immutable protective motor profile"
+    zeroDescendingSomaticBuffer.label = "NumiBrain zero descending somatic command"
+    descendingSomaticBuffer.label = "NumiBrain transaction descending somatic command"
     protectiveSourceInhibitionMaskBuffer.label =
       "NumiBrain transaction-local protective source-inhibition mask"
     firstProtectiveMotorOutputHeaderBuffer.label =
@@ -1200,6 +1348,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     bodyLoadFieldUpdateBuffer.label = "NumiBrain accepted body-load field updates"
     firstBodyLoadFieldStateBuffer.label = "NumiBrain body-load field generation 0"
     secondBodyLoadFieldStateBuffer.label = "NumiBrain body-load field generation 1"
+    bodySchemaUniformBuffer.label = "NumiBrain body-schema uniforms"
+    firstBodySchemaStateBuffer.label = "NumiBrain body-schema generation 0"
+    secondBodySchemaStateBuffer.label = "NumiBrain body-schema generation 1"
+    muscleAttachmentBuffer.label = "NumiBrain immutable muscle endpoint map"
     let uniformByteCount = maxEncodedSubsteps * TissueUniforms.byteCount
     guard
       let uniformBuffer = device.makeBuffer(
@@ -1241,7 +1393,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
                   regionalUploadByteCount,
                   max(
                     max(protectiveMotorProfileByteCount, protectiveMuscleExcitationByteCount),
-                    bodyLoadFieldStateByteCount
+                    max(
+                      max(bodyLoadFieldStateByteCount, bodySchemaStateByteCount),
+                      muscleAttachmentByteCount
+                    )
                   )
                 )
               )
@@ -1321,6 +1476,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     residencySet.addAllocation(protectiveMotorProfileBuffer)
     residencySet.addAllocation(protectiveSourceInhibitionMaskBuffer)
+    residencySet.addAllocation(zeroDescendingSomaticBuffer)
+    residencySet.addAllocation(descendingSomaticBuffer)
     for buffer in protectiveMotorOutputHeaderBuffers {
       residencySet.addAllocation(buffer)
     }
@@ -1332,6 +1489,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for buffer in bodyLoadFieldStateBuffers {
       residencySet.addAllocation(buffer)
     }
+    residencySet.addAllocation(bodySchemaUniformBuffer)
+    for buffer in bodySchemaStateBuffers {
+      residencySet.addAllocation(buffer)
+    }
+    residencySet.addAllocation(muscleAttachmentBuffer)
     residencySet.addAllocation(stagingBuffer)
     residencySet.commit()
     residencySet.requestResidency()
@@ -1354,6 +1516,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMotorProfile = protectiveMotorProfile
     self.numanXMuscleAttachmentCatalog = requestedNumanXMuscleAttachmentCatalog
     self.bodyLoadFieldDynamics = bodyLoadFieldDynamics
+    self.bodySchemaDynamics = bodySchemaDynamics
     self.protectiveSourceInhibitionMaskByteCount = protectiveMuscleExcitationByteCount
     self.schedulerEnvironmentIdentifier = schedulerEnvironmentIdentifier
     self.maximumTissueDelayMicroseconds = maximumTissueDelayMicroseconds
@@ -1371,6 +1534,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectivePipeline = protectivePipeline
     self.protectiveMotorPipeline = protectiveMotorPipeline
     self.bodyLoadFieldPipeline = bodyLoadFieldPipeline
+    self.bodySchemaPipeline = bodySchemaPipeline
     self.argumentTable = argumentTable
     self.eventArgumentTable = eventArgumentTable
     self.receptorInterruptArgumentTable = receptorInterruptArgumentTable
@@ -1379,6 +1543,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveArgumentTable = protectiveArgumentTable
     self.protectiveMotorArgumentTable = protectiveMotorArgumentTable
     self.bodyLoadFieldArgumentTable = bodyLoadFieldArgumentTable
+    self.bodySchemaArgumentTable = bodySchemaArgumentTable
     self.residencySet = residencySet
     self.stateBuffers = stateBuffers
     self.structureBuffer = structureBuffer
@@ -1419,11 +1584,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveCommandBuffers = protectiveCommandBuffers
     self.protectiveMotorProfileBuffer = protectiveMotorProfileBuffer
     self.protectiveSourceInhibitionMaskBuffer = protectiveSourceInhibitionMaskBuffer
+    self.zeroDescendingSomaticBuffer = zeroDescendingSomaticBuffer
+    self.descendingSomaticBuffer = descendingSomaticBuffer
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
     self.bodyLoadFieldUniformBuffer = bodyLoadFieldUniformBuffer
     self.bodyLoadFieldUpdateBuffer = bodyLoadFieldUpdateBuffer
     self.bodyLoadFieldStateBuffers = bodyLoadFieldStateBuffers
+    self.bodySchemaUniformBuffer = bodySchemaUniformBuffer
+    self.bodySchemaStateBuffers = bodySchemaStateBuffers
+    self.muscleAttachmentBuffer = muscleAttachmentBuffer
     self.stagingBuffer = stagingBuffer
     self.stateByteCount = stateByteCount
     self.relayByteCount = relayByteCount
@@ -1456,6 +1626,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.protectiveMuscleExcitationByteCount = protectiveMuscleExcitationByteCount
     self.bodyLoadFieldUpdateCapacityByteCount = bodyLoadFieldUpdateCapacityByteCount
     self.bodyLoadFieldStateByteCount = bodyLoadFieldStateByteCount
+    self.bodySchemaStateByteCount = bodySchemaStateByteCount
+    self.muscleAttachmentByteCount = muscleAttachmentByteCount
 
     initialState.cells.withUnsafeBytes { sourceBytes in
       guard let source = sourceBytes.baseAddress else { return }
@@ -1775,6 +1947,23 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       repeating: 0,
       count: protectiveMuscleExcitationByteCount
     )
+    stagingBuffer.contents().initializeMemory(
+      as: UInt8.self,
+      repeating: 0,
+      count: protectiveMuscleExcitationByteCount
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: zeroDescendingSomaticBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "NumiBrain zero descending somatic command upload"
+    )
+    try copy(
+      source: stagingBuffer,
+      destination: descendingSomaticBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "NumiBrain initial descending somatic command upload"
+    )
     let initialProtectiveMotorOutput = try ProtectiveMotorOutput.reference(
       command: initialProtectiveCommand,
       profile: protectiveMotorProfile
@@ -1852,6 +2041,81 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       repeating: 0,
       count: bodyLoadFieldUpdateCapacityByteCount
     )
+    let initialBodySchemaRecords: [BodySchemaRecord]
+    if bodyLoadFieldBodyCount > 0 {
+      initialBodySchemaRecords = try bodySchemaDynamics.initialState(
+        bodyCount: UInt32(bodyLoadFieldBodyCount)
+      ).map(BodySchemaRecord.init(cell:))
+    } else {
+      var empty = BodySchemaRecord()
+      empty.epistemicVariance = bodySchemaDynamics.initialVariance
+      initialBodySchemaRecords = [empty]
+    }
+    initialBodySchemaRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: bodySchemaStateByteCount
+      )
+    }
+    for (index, buffer) in bodySchemaStateBuffers.enumerated() {
+      try copy(
+        source: stagingBuffer,
+        destination: buffer,
+        size: bodySchemaStateByteCount,
+        label: "NumiBrain body-schema generation \(index) upload"
+      )
+    }
+    var initialBodySchemaUniforms = BodySchemaUniforms(
+      bodyCount: UInt32(bodyLoadFieldBodyCount),
+      reserved0: 0,
+      targetTimestampMicroseconds: 0,
+      forceScaleNewtons: bodySchemaDynamics.forceScaleNewtons,
+      loadTimeConstantMicroseconds: bodySchemaDynamics.loadTimeConstantMicroseconds,
+      initialVariance: bodySchemaDynamics.initialVariance,
+      maximumVariance: bodySchemaDynamics.maximumVariance,
+      processVariancePerSecond: bodySchemaDynamics.processVariancePerSecond,
+      observationVariance: bodySchemaDynamics.observationVariance,
+      vulnerabilityGainPerSecond: bodySchemaDynamics.vulnerabilityGainPerSecond,
+      recoveryPerSecond: bodySchemaDynamics.recoveryPerSecond,
+      uncertaintyRiskWeight: bodySchemaDynamics.uncertaintyRiskWeight,
+      reserved1: 0
+    )
+    withUnsafeBytes(of: &initialBodySchemaUniforms) { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      bodySchemaUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: sourceBytes.count
+      )
+    }
+    let attachmentRecords: [MuscleAttachmentRecord]
+    if let requestedNumanXMuscleAttachmentCatalog {
+      attachmentRecords = requestedNumanXMuscleAttachmentCatalog.attachments.map {
+        MuscleAttachmentRecord(
+          muscleIdentifier: $0.muscleIdentifier,
+          firstBodyIdentifier: $0.firstBodyIdentifier,
+          terminalBodyIdentifier: $0.terminalBodyIdentifier,
+          reserved: 0
+        )
+      }
+    } else {
+      attachmentRecords = protectiveMotorProfile.channels.map {
+        MuscleAttachmentRecord(muscleIdentifier: $0.muscleIdentifier)
+      }
+    }
+    attachmentRecords.withUnsafeBytes { sourceBytes in
+      guard let source = sourceBytes.baseAddress else { return }
+      stagingBuffer.contents().copyMemory(
+        from: source,
+        byteCount: muscleAttachmentByteCount
+      )
+    }
+    try copy(
+      source: stagingBuffer,
+      destination: muscleAttachmentBuffer,
+      size: muscleAttachmentByteCount,
+      label: "NumiBrain muscle endpoint-map upload"
+    )
   }
 
   deinit {
@@ -1888,6 +2152,32 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   public var schedulerResultByteCount: Int {
     MemoryLayout<NBSchedulerResult>.stride
+  }
+
+  public func committedRegionalRecurrentBufferView()
+    throws -> MetalRegionalRecurrentBufferView
+  {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before borrowing committed recurrence")
+    }
+    return try MetalRegionalRecurrentBufferView(
+      gpuAddress: regionalTokenStateBuffers[committedRegionalStateIndex].gpuAddress,
+      scalarCount: regionalTokenProgram.scalarCount,
+      regionalProgramFingerprint: regionalTokenProgram.fingerprint
+    )
+  }
+
+  public func pendingRegionalRecurrentBufferView()
+    throws -> MetalRegionalRecurrentBufferView
+  {
+    guard pendingRootShadowIndex != nil, let pendingRegionalStateIndex else {
+      throw TissueError.transaction("encode a root before borrowing shadow recurrence")
+    }
+    return try MetalRegionalRecurrentBufferView(
+      gpuAddress: regionalTokenStateBuffers[pendingRegionalStateIndex].gpuAddress,
+      scalarCount: regionalTokenProgram.scalarCount,
+      regionalProgramFingerprint: regionalTokenProgram.fingerprint
+    )
   }
 
   /// Creates the stable root identity used by a NumanX shadow transaction.
@@ -1955,7 +2245,57 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       firstGPUStartSeconds: nil,
       lastGPUEndSeconds: nil
     )
+    descendingSomaticTransactionFingerprint = nil
     return transaction.token
+  }
+
+  /// Copies the high-level brain's contiguous muscle command into the fast
+  /// tissue runtime entirely on GPU. Reflex, body-risk, and localized injury
+  /// inhibition remain authoritative overlays in the substep motor kernel.
+  public func stageDescendingSomaticCommand(
+    _ lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    for transaction: BrainJointTransactionToken
+  ) throws {
+    guard let root = interactiveJointRoot,
+      root.transaction.token == transaction,
+      root.candidate == nil,
+      lease.decision.transactionFingerprint == transaction.fingerprint,
+      lease.decision.shadowGeneration == transaction.shadowGeneration,
+      lease.decision.somaticOutputCount == protectiveMotorProfile.channels.count,
+      lease.decision.somaticOutputByteCount == protectiveMuscleExcitationByteCount,
+      lease.sourceOffset <= lease.buffer.length,
+      protectiveMuscleExcitationByteCount <= lease.buffer.length - lease.sourceOffset
+    else {
+      throw TissueError.transaction(
+        "descending somatic command is stale or incompatible with the NumanX motor profile"
+      )
+    }
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "NumiBrain borrowed embodied somatic residency"
+    descriptor.initialCapacity = 1
+    let borrowedResidency: any MTLResidencySet
+    do {
+      borrowedResidency = try device.makeResidencySet(descriptor: descriptor)
+    } catch {
+      throw TissueError.metal("failed to retain embodied somatic allocation: \(error)")
+    }
+    borrowedResidency.addAllocation(lease.buffer)
+    borrowedResidency.commit()
+    borrowedResidency.requestResidency()
+    defer { borrowedResidency.endResidency() }
+    _ = try submit(
+      label: "NumiBrain descending somatic GPU handoff",
+      additionalResidencySet: borrowedResidency
+    ) { encoder in
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.sourceOffset,
+        destinationBuffer: descendingSomaticBuffer,
+        destinationOffset: 0,
+        size: protectiveMuscleExcitationByteCount
+      )
+    }
+    descendingSomaticTransactionFingerprint = transaction.fingerprint
   }
 
   /// Advances one neural tissue candidate without publishing it. Corrected
@@ -2856,6 +3196,28 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         byteCount: bytes.count
       )
     }
+    var bodySchemaUniforms = BodySchemaUniforms(
+      bodyCount: numanXMuscleAttachmentCatalog?.bodyCount ?? 0,
+      reserved0: 0,
+      targetTimestampMicroseconds: targetTimestamp.rawValue,
+      forceScaleNewtons: bodySchemaDynamics.forceScaleNewtons,
+      loadTimeConstantMicroseconds: bodySchemaDynamics.loadTimeConstantMicroseconds,
+      initialVariance: bodySchemaDynamics.initialVariance,
+      maximumVariance: bodySchemaDynamics.maximumVariance,
+      processVariancePerSecond: bodySchemaDynamics.processVariancePerSecond,
+      observationVariance: bodySchemaDynamics.observationVariance,
+      vulnerabilityGainPerSecond: bodySchemaDynamics.vulnerabilityGainPerSecond,
+      recoveryPerSecond: bodySchemaDynamics.recoveryPerSecond,
+      uncertaintyRiskWeight: bodySchemaDynamics.uncertaintyRiskWeight,
+      reserved1: 0
+    )
+    withUnsafeBytes(of: &bodySchemaUniforms) { bytes in
+      guard let source = bytes.baseAddress else { return }
+      bodySchemaUniformBuffer.contents().copyMemory(
+        from: source,
+        byteCount: bytes.count
+      )
+    }
   }
 
   private func publishRootTransaction() throws {
@@ -3212,6 +3574,52 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       }
     }
     return cells
+  }
+
+  public func snapshotCommittedBodySchema() throws -> [BodySchemaPosteriorCell] {
+    guard pendingRootShadowIndex == nil else {
+      throw TissueError.transaction("commit or abort before reading body-schema state")
+    }
+    return try snapshotBodySchema(
+      stateIndex: committedRegionalStateIndex,
+      label: "NumiBrain committed body-schema inspection"
+    )
+  }
+
+  public func snapshotInteractiveBodySchema() throws -> [BodySchemaPosteriorCell] {
+    guard let root = interactiveJointRoot else {
+      throw TissueError.transaction("there is no interactive body-schema state")
+    }
+    let stateIndex = root.fastSchedulerWindow?.outputClockIndex
+      ?? committedRegionalStateIndex
+    return try snapshotBodySchema(
+      stateIndex: stateIndex,
+      label: "NumiBrain interactive body-schema inspection"
+    )
+  }
+
+  private func snapshotBodySchema(
+    stateIndex: Int,
+    label: String
+  ) throws -> [BodySchemaPosteriorCell] {
+    guard let numanXMuscleAttachmentCatalog else { return [] }
+    try copy(
+      source: bodySchemaStateBuffers[stateIndex],
+      destination: stagingBuffer,
+      size: bodySchemaStateByteCount,
+      label: label
+    )
+    let records = stagingBuffer.contents().bindMemory(
+      to: BodySchemaRecord.self,
+      capacity: Int(numanXMuscleAttachmentCatalog.bodyCount)
+    )
+    return try (0..<numanXMuscleAttachmentCatalog.bodyCount).map { bodyIdentifier in
+      let record = records[Int(bodyIdentifier)]
+      guard record.bodyIdentifier == bodyIdentifier else {
+        throw TissueError.metal("body-schema identity drift")
+      }
+      return try record.value()
+    }
   }
 
   public func snapshotCommittedProtectiveCommand() throws -> ProtectiveMotorCommand {
@@ -3701,6 +4109,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+    bodySchemaArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 0)
+    bodySchemaArgumentTable.setAddress(
+      bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 1
+    )
+    bodySchemaArgumentTable.setAddress(
+      bodySchemaStateBuffers[schedulerWindow.inputClockIndex].gpuAddress,
+      index: 2
+    )
+    bodySchemaArgumentTable.setAddress(
+      bodySchemaStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 3
+    )
+    encoder.setComputePipelineState(bodySchemaPipeline)
+    encoder.setArgumentTable(bodySchemaArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(
+        width: max(Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0), 1),
+        height: 1,
+        depth: 1
+      ),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
     protectiveMotorArgumentTable.setAddress(
       protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 0
@@ -3724,6 +4160,17 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 7
     )
+    protectiveMotorArgumentTable.setAddress(muscleAttachmentBuffer.gpuAddress, index: 8)
+    protectiveMotorArgumentTable.setAddress(
+      bodySchemaStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
+      index: 9
+    )
+    let descendingBuffer =
+      descendingSomaticTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? descendingSomaticBuffer
+      : zeroDescendingSomaticBuffer
+    protectiveMotorArgumentTable.setAddress(descendingBuffer.gpuAddress, index: 10)
     encoder.setComputePipelineState(protectiveMotorPipeline)
     encoder.setArgumentTable(protectiveMotorArgumentTable)
     encoder.dispatchThreads(
@@ -3980,11 +4427,15 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   private func submit(
     label: String,
+    additionalResidencySet: (any MTLResidencySet)? = nil,
     encode: (any MTL4ComputeCommandEncoder) -> Void
   ) throws -> FeedbackSnapshot {
     commandAllocator.reset()
     commandBuffer.beginCommandBuffer(allocator: commandAllocator)
     commandBuffer.useResidencySet(residencySet)
+    if let additionalResidencySet {
+      commandBuffer.useResidencySet(additionalResidencySet)
+    }
     guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
       commandBuffer.endCommandBuffer()
       throw TissueError.metal("failed to create a Metal 4 compute command encoder")

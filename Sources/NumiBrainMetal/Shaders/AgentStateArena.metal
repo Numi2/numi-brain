@@ -1,0 +1,164 @@
+#include <metal_stdlib>
+using namespace metal;
+
+constant uint NB_AGENT_ARENA_VERSION = 1u;
+constant uint NB_AGENT_JOURNAL_ENTRY_WORD_COUNT = 4u;
+constant uint NB_AGENT_JOURNAL_STATUS_VALID = 1u;
+constant uint NB_AGENT_JOURNAL_STATUS_INVALID_HEADER = 1u << 1;
+constant uint NB_AGENT_JOURNAL_STATUS_OUT_OF_BOUNDS = 1u << 2;
+constant uint NB_AGENT_JOURNAL_STATUS_INVALID_ENTRY = 1u << 3;
+
+struct NBAgentArenaUniforms {
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong hot_byte_count;
+  ulong memory_byte_count;
+  ulong journal_byte_count;
+  uint journal_entry_capacity;
+  uint apply_mutations;
+};
+
+struct NBAgentMemoryJournalHeader {
+  uint format_version;
+  atomic_uint entry_count;
+  uint entry_capacity;
+  atomic_uint status;
+  ulong base_generation;
+  ulong shadow_generation;
+  ulong memory_byte_count;
+  ulong reserved;
+};
+
+/// One fixed 16-byte write into persistent individual memory. Larger logical
+/// mutations are emitted as ordered, non-overlapping chunks by the owning
+/// memory kernel.
+struct NBAgentMemoryMutation {
+  ulong destination_byte_offset;
+  ulong shadow_generation;
+  uint payload[NB_AGENT_JOURNAL_ENTRY_WORD_COUNT];
+  uint byte_count;
+  uint section;
+  uint sequence;
+  uint flags;
+  ulong record_identifier;
+  ulong reserved;
+};
+
+static_assert(sizeof(NBAgentArenaUniforms) == 48);
+static_assert(sizeof(NBAgentMemoryJournalHeader) == 48);
+static_assert(sizeof(NBAgentMemoryMutation) == 64);
+
+kernel void initialize_agent_state_arena(
+  device uint *hot_state [[buffer(0)]],
+  device uint *persistent_memory [[buffer(1)]],
+  device uint *journal_zero [[buffer(2)]],
+  device uint *journal_one [[buffer(3)]],
+  constant NBAgentArenaUniforms &uniforms [[buffer(4)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const ulong byte_offset = ulong(gid) * sizeof(uint);
+  if (byte_offset < uniforms.hot_byte_count) {
+    hot_state[gid] = 0u;
+  }
+  if (byte_offset < uniforms.memory_byte_count) {
+    persistent_memory[gid] = 0u;
+  }
+  if (byte_offset < uniforms.journal_byte_count) {
+    journal_zero[gid] = 0u;
+    journal_one[gid] = 0u;
+  }
+}
+
+kernel void begin_agent_state_shadow(
+  device const uint *committed_hot_state [[buffer(0)]],
+  device uint *shadow_hot_state [[buffer(1)]],
+  device uint *shadow_journal_words [[buffer(2)]],
+  constant NBAgentArenaUniforms &uniforms [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const ulong byte_offset = ulong(gid) * sizeof(uint);
+  if (byte_offset < uniforms.hot_byte_count) {
+    shadow_hot_state[gid] = committed_hot_state[gid];
+  }
+  if (byte_offset < uniforms.journal_byte_count) {
+    shadow_journal_words[gid] = 0u;
+  }
+  if (gid == 0u) {
+    device NBAgentMemoryJournalHeader *header =
+      reinterpret_cast<device NBAgentMemoryJournalHeader *>(shadow_journal_words);
+    header->format_version = NB_AGENT_ARENA_VERSION;
+    atomic_store_explicit(&header->entry_count, 0u, memory_order_relaxed);
+    header->entry_capacity = uniforms.journal_entry_capacity;
+    atomic_store_explicit(
+      &header->status,
+      NB_AGENT_JOURNAL_STATUS_VALID,
+      memory_order_relaxed
+    );
+    header->base_generation = uniforms.base_generation;
+    header->shadow_generation = uniforms.shadow_generation;
+    header->memory_byte_count = uniforms.memory_byte_count;
+    header->reserved = 0ul;
+  }
+}
+
+kernel void apply_agent_memory_journal(
+  device uchar *persistent_memory [[buffer(0)]],
+  device NBAgentMemoryJournalHeader *header [[buffer(1)]],
+  constant NBAgentArenaUniforms &uniforms [[buffer(2)]],
+  uint gid [[thread_position_in_grid]])
+{
+  const uint entry_count = atomic_load_explicit(
+    &header->entry_count,
+    memory_order_relaxed
+  );
+  if (header->format_version != NB_AGENT_ARENA_VERSION
+      || header->base_generation != uniforms.base_generation
+      || header->shadow_generation != uniforms.shadow_generation
+      || header->entry_capacity != uniforms.journal_entry_capacity
+      || header->memory_byte_count != uniforms.memory_byte_count
+      || entry_count > header->entry_capacity) {
+    if (gid == 0u) {
+      atomic_fetch_or_explicit(
+        &header->status,
+        NB_AGENT_JOURNAL_STATUS_INVALID_HEADER,
+        memory_order_relaxed
+      );
+    }
+    return;
+  }
+  if (gid >= entry_count) {
+    return;
+  }
+
+  device NBAgentMemoryMutation *entries =
+    reinterpret_cast<device NBAgentMemoryMutation *>(header + 1);
+  const NBAgentMemoryMutation mutation = entries[gid];
+  if (mutation.shadow_generation != uniforms.shadow_generation
+      || mutation.byte_count == 0u
+      || mutation.byte_count > sizeof(mutation.payload)) {
+    atomic_fetch_or_explicit(
+      &header->status,
+      NB_AGENT_JOURNAL_STATUS_INVALID_ENTRY,
+      memory_order_relaxed
+    );
+    return;
+  }
+  const ulong end = mutation.destination_byte_offset + ulong(mutation.byte_count);
+  if (end < mutation.destination_byte_offset || end > uniforms.memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &header->status,
+      NB_AGENT_JOURNAL_STATUS_OUT_OF_BOUNDS,
+      memory_order_relaxed
+    );
+    return;
+  }
+
+  if (uniforms.apply_mutations != 0u) {
+    const thread uchar *payload =
+      reinterpret_cast<const thread uchar *>(mutation.payload);
+    for (uint byte_index = 0u; byte_index < mutation.byte_count; ++byte_index) {
+      persistent_memory[mutation.destination_byte_offset + ulong(byte_index)] =
+        payload[byte_index];
+    }
+  }
+}

@@ -1,0 +1,394 @@
+#include <metal_stdlib>
+using namespace metal;
+
+constant uint NB_ACCEPTED_STATE_VALID = 1u;
+
+struct NBAcceptedConsequenceUniforms {
+  ulong target_timestamp_microseconds;
+  ulong delta_microseconds;
+  ulong observation_offset;
+  ulong event_queue_offset;
+  ulong body_belief_offset;
+  ulong muscle_belief_offset;
+  ulong physiology_offset;
+  ulong world_model_offset;
+  ulong neuromodulation_offset;
+  ulong fast_plasticity_offset;
+  ulong workspace_content_offset;
+  ulong workspace_metadata_offset;
+  ulong control_header_offset;
+  ulong motor_command_offset;
+  ulong cerebellar_offset;
+  ulong somatic_output_offset;
+  ulong physics_state_fingerprint;
+  uint observation_count;
+  uint body_count;
+  uint muscle_count;
+  uint physiology_count;
+  uint world_model_count;
+  uint neuromodulator_count;
+  uint fast_plasticity_count;
+  uint workspace_capacity;
+  uint workspace_dimension;
+  uint active_cerebellar_count;
+  uint actuator_count;
+  uint event_capacity;
+  uint proprioception_offset;
+  uint proprioception_count;
+  uint touch_offset;
+  uint touch_count;
+  uint vestibular_offset;
+  uint vestibular_count;
+  uint interoception_offset;
+  uint interoception_count;
+  float belief_gain;
+  float world_correction_gain;
+  float cerebellar_learning_rate;
+  float plasticity_learning_rate;
+};
+
+struct NBEventQueueHeader {
+  atomic_uint count;
+  uint capacity;
+  atomic_uint overflow_count;
+  uint flags;
+  ulong target_timestamp_microseconds;
+  ulong generation;
+};
+
+struct NBReceptorEventRecord {
+  uint environment_identifier;
+  uint kind;
+  uint source_identifier;
+  uint flags;
+  ulong timestamp_microseconds;
+  float magnitude;
+  float auxiliary_value;
+};
+
+struct NBNeuromodulatorRecord {
+  float value;
+  float decay_time_constant_seconds;
+  uint kind;
+  uint flags;
+};
+
+struct NBFastPlasticityRecord {
+  float coefficient;
+  float eligibility;
+  float coefficient_retention;
+  float eligibility_retention;
+  float learning_rate;
+  float maximum_magnitude;
+  ushort region_identifier;
+  ushort basis_identifier;
+  uint flags;
+};
+
+struct NBWorkspaceMetadataRecord {
+  ulong identifier;
+  ulong source_timestamp_microseconds;
+  ulong last_refresh_timestamp_microseconds;
+  ulong entity_identifier;
+  ulong goal_identifier;
+  ulong bound_token_identifier;
+  ulong provenance_record_identifier;
+  uint kind_and_source;
+  float confidence;
+};
+
+struct NBControlHeader {
+  ulong active_goal_identifier;
+  ulong active_option_identifier;
+  ulong active_plan_identifier;
+  ulong selected_timestamp_microseconds;
+  uint mode;
+  uint candidate_count;
+  uint plan_step_count;
+  uint flags;
+  float selected_score;
+  float selected_damage_cvar;
+  float confidence;
+  float vigor;
+  float exploration_temperature;
+  float controller_phase;
+  float interruption_cost;
+  float progress;
+  float predicted_effort;
+  float predicted_information_gain;
+  float unsupported_uncertainty;
+  float reserved_float;
+  ulong reserved0;
+  ulong reserved1;
+  ulong reserved2;
+  ulong reserved3;
+};
+
+struct NBMotorCommandRecord {
+  float excitation;
+  float force_target;
+  float stiffness_target;
+  float damping_target;
+  float cerebellar_residual;
+  float risk_inhibition;
+  uint synergy_identifier;
+  uint flags;
+};
+
+struct NBCerebellarExpertRecord {
+  uint expert_identifier;
+  uint flags;
+  float weight;
+  float prediction_error;
+  float state[60];
+};
+
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 232);
+static_assert(sizeof(NBEventQueueHeader) == 32);
+static_assert(sizeof(NBReceptorEventRecord) == 32);
+static_assert(sizeof(NBNeuromodulatorRecord) == 16);
+static_assert(sizeof(NBFastPlasticityRecord) == 32);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
+static_assert(sizeof(NBControlHeader) == 128);
+static_assert(sizeof(NBMotorCommandRecord) == 32);
+static_assert(sizeof(NBCerebellarExpertRecord) == 256);
+
+inline float nb_observation(
+  device const float *observations,
+  uint offset,
+  uint count,
+  uint index)
+{
+  return count == 0u ? 0.0f : observations[offset + index % count];
+}
+
+inline float nb_mean_prediction_error(
+  device const float *observations,
+  uint observation_count,
+  device const float *world,
+  uint world_count)
+{
+  const uint sample_count = min(min(observation_count, world_count), 256u);
+  if (sample_count == 0u) return 0.0f;
+  float total = 0.0f;
+  for (uint index = 0u; index < sample_count; ++index) {
+    total += abs(observations[index] - world[index]);
+  }
+  return total / float(sample_count);
+}
+
+kernel void assimilate_accepted_body_and_physiology(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  const float gain = clamp(uniforms.belief_gain, 0.0f, 1.0f);
+  if (gid < uniforms.body_count) {
+    device float *body = reinterpret_cast<device float *>(
+      hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
+    );
+    const float proprioception = nb_observation(
+      observations, uniforms.proprioception_offset,
+      uniforms.proprioception_count, gid
+    );
+    const float touch = nb_observation(
+      observations, uniforms.touch_offset, uniforms.touch_count, gid
+    );
+    const float vestibular = nb_observation(
+      observations, uniforms.vestibular_offset,
+      uniforms.vestibular_count, gid
+    );
+    const float prior_position = body[0];
+    body[0] = mix(prior_position, proprioception, gain);
+    body[1] = mix(body[1], proprioception - prior_position, gain);
+    body[2] = mix(body[2], clamp(abs(touch), 0.0f, 1.0f), gain);
+    body[3] = mix(body[3], clamp(1.0f - abs(vestibular), 0.0f, 1.0f), gain);
+    body[4] = mix(body[4], max(touch, 0.0f), gain);
+    body[5] = max(body[5] * 0.999f, clamp(abs(touch), 0.0f, 1.0f));
+    body[6] = abs(proprioception - prior_position);
+    body[7] = max(body[7] * (1.0f - gain), body[6] * gain);
+    device ulong *identity = reinterpret_cast<device ulong *>(body + 16);
+    identity[0] = ulong(gid);
+    identity[1] = uniforms.target_timestamp_microseconds;
+    identity[2] = uniforms.physics_state_fingerprint;
+    identity[3] = NB_ACCEPTED_STATE_VALID;
+  }
+  if (gid < uniforms.muscle_count) {
+    device float *muscle = reinterpret_cast<device float *>(
+      hot_state + uniforms.muscle_belief_offset + ulong(gid) * 192ul
+    );
+    device const float *somatic = reinterpret_cast<device const float *>(
+      hot_state + uniforms.somatic_output_offset
+    );
+    const float proprioception = nb_observation(
+      observations, uniforms.proprioception_offset,
+      uniforms.proprioception_count, gid
+    );
+    const float command = uniforms.actuator_count == 0u
+      ? 0.0f : somatic[gid % uniforms.actuator_count];
+    muscle[0] = mix(muscle[0], command, gain);
+    muscle[1] = mix(muscle[1], proprioception, gain);
+    muscle[2] = proprioception - muscle[1];
+    muscle[3] = mix(muscle[3], abs(proprioception), gain);
+    muscle[4] = clamp(muscle[4] + abs(command) * float(uniforms.delta_microseconds)
+      * 1.0e-8f, 0.0f, 1.0f);
+    muscle[5] = abs(proprioception - command);
+  }
+  if (gid < uniforms.physiology_count) {
+    device float *physiology = reinterpret_cast<device float *>(
+      hot_state + uniforms.physiology_offset
+    );
+    const float interoception = nb_observation(
+      observations, uniforms.interoception_offset,
+      uniforms.interoception_count, gid
+    );
+    physiology[gid] = mix(physiology[gid], interoception, gain);
+  }
+}
+
+kernel void reconcile_accepted_world_model(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.world_model_count || uniforms.observation_count == 0u) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device float *world = reinterpret_cast<device float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  const float observed = observations[gid % uniforms.observation_count];
+  world[gid] += clamp(uniforms.world_correction_gain, 0.0f, 1.0f)
+    * (observed - world[gid]);
+}
+
+kernel void broadcast_accepted_prediction_error(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const float *world = reinterpret_cast<device const float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  const float error = nb_mean_prediction_error(
+    observations, uniforms.observation_count, world, uniforms.world_model_count
+  );
+  device NBNeuromodulatorRecord *neuromodulators =
+    reinterpret_cast<device NBNeuromodulatorRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
+  if (uniforms.neuromodulator_count > 1u) {
+    neuromodulators[1].value = error;
+    neuromodulators[1].kind = 2u;
+    neuromodulators[1].flags = NB_ACCEPTED_STATE_VALID;
+  }
+  if (uniforms.neuromodulator_count > 3u) {
+    neuromodulators[3].value = max(neuromodulators[3].value * 0.95f, error);
+    neuromodulators[3].kind = 4u;
+    neuromodulators[3].flags = NB_ACCEPTED_STATE_VALID;
+  }
+  if (uniforms.workspace_capacity > 2u && uniforms.workspace_dimension > 0u) {
+    device float *workspace = reinterpret_cast<device float *>(
+      hot_state + uniforms.workspace_content_offset
+    );
+    device NBWorkspaceMetadataRecord *metadata =
+      reinterpret_cast<device NBWorkspaceMetadataRecord *>(
+        hot_state + uniforms.workspace_metadata_offset
+      );
+    const uint base = 2u * uniforms.workspace_dimension;
+    workspace[base] = error;
+    if (uniforms.workspace_dimension > 1u) {
+      workspace[base + 1u] = as_type<float>(uint(uniforms.physics_state_fingerprint));
+    }
+    NBWorkspaceMetadataRecord token = metadata[2];
+    token.identifier = (uniforms.target_timestamp_microseconds << 8) | 3ul;
+    token.source_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    token.provenance_record_identifier = uniforms.physics_state_fingerprint;
+    token.kind_and_source = 7u | (50u << 16);
+    token.confidence = clamp(1.0f - error, 0.0f, 1.0f);
+    metadata[2] = token;
+  }
+  device NBControlHeader *control = reinterpret_cast<device NBControlHeader *>(
+    hot_state + uniforms.control_header_offset
+  );
+  control->unsupported_uncertainty = error;
+  control->progress = clamp(control->progress + (1.0f - error) * 0.01f, 0.0f, 1.0f);
+}
+
+kernel void adapt_cerebellar_experts_from_accepted_error(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.active_cerebellar_count) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const float *world = reinterpret_cast<device const float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  device NBCerebellarExpertRecord *experts =
+    reinterpret_cast<device NBCerebellarExpertRecord *>(
+      hot_state + uniforms.cerebellar_offset
+    );
+  const float error = nb_mean_prediction_error(
+    observations, uniforms.observation_count, world, uniforms.world_model_count
+  );
+  NBCerebellarExpertRecord expert = experts[gid];
+  expert.prediction_error = error;
+  expert.state[0] = mix(
+    expert.state[0], error,
+    clamp(uniforms.cerebellar_learning_rate, 0.0f, 1.0f)
+  );
+  expert.state[1] = mix(expert.state[1], error * expert.weight, 0.25f);
+  expert.flags |= NB_ACCEPTED_STATE_VALID;
+  experts[gid] = expert;
+}
+
+kernel void update_fast_plasticity_from_accepted_error(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= uniforms.fast_plasticity_count) return;
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const float *world = reinterpret_cast<device const float *>(
+    hot_state + uniforms.world_model_offset
+  );
+  device const NBNeuromodulatorRecord *neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
+  device NBFastPlasticityRecord *sites =
+    reinterpret_cast<device NBFastPlasticityRecord *>(
+      hot_state + uniforms.fast_plasticity_offset
+    );
+  const float error = nb_mean_prediction_error(
+    observations, uniforms.observation_count, world, uniforms.world_model_count
+  );
+  NBFastPlasticityRecord site = sites[gid];
+  const float modulation = uniforms.neuromodulator_count == 0u
+    ? 0.0f
+    : neuromodulators[gid % uniforms.neuromodulator_count].value;
+  site.eligibility = site.eligibility_retention * site.eligibility + error;
+  const float limit = max(site.maximum_magnitude, 1.0f);
+  site.coefficient = clamp(
+    site.coefficient_retention * site.coefficient
+      + uniforms.plasticity_learning_rate * modulation * site.eligibility,
+    -limit,
+    limit
+  );
+  site.flags |= NB_ACCEPTED_STATE_VALID;
+  sites[gid] = site;
+}

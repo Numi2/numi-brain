@@ -260,7 +260,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
   public static func reference(
     command: ProtectiveMotorCommand,
     profile: ProtectiveMotorProfile,
-    sourceInhibitedMuscleIdentifiers: Set<UInt32> = []
+    sourceInhibitedMuscleIdentifiers: Set<UInt32> = [],
+    bodySchema: [BodySchemaPosteriorCell] = [],
+    attachmentCatalog: NumanXMuscleAttachmentCatalog? = nil
   ) throws -> Self {
     guard
       sourceInhibitedMuscleIdentifiers.isSubset(
@@ -271,6 +273,25 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
         "protective source-inhibition identifiers are absent from the motor profile"
       )
     }
+    guard (bodySchema.isEmpty && attachmentCatalog == nil)
+      || (!bodySchema.isEmpty && attachmentCatalog != nil)
+    else {
+      throw BrainRuntimeError.transaction(
+        "protective body-schema mapping requires both schema and attachment catalog"
+      )
+    }
+    let schemaByBody = Dictionary(
+      uniqueKeysWithValues: bodySchema.map { ($0.bodyIdentifier, $0) }
+    )
+    if let attachmentCatalog {
+      guard bodySchema.count == Int(attachmentCatalog.bodyCount),
+        schemaByBody.count == bodySchema.count
+      else {
+        throw BrainRuntimeError.transaction(
+          "protective body-schema mapping does not cover the attachment catalog"
+        )
+      }
+    }
     let excitations = profile.channels.map { channel in
       guard !sourceInhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) else {
         return Float.zero
@@ -280,8 +301,19 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
         channel.withdrawalGain,
         channel.restingExcitation
       )
+      let localizedRisk: Float
+      if let attachment = attachmentCatalog?.attachment(
+        forMuscleIdentifier: channel.muscleIdentifier
+      ) {
+        localizedRisk = max(
+          schemaByBody[attachment.firstBodyIdentifier]?.damageRisk ?? 0,
+          schemaByBody[attachment.terminalBodyIdentifier]?.damageRisk ?? 0
+        )
+      } else {
+        localizedRisk = 0
+      }
       let protectiveExcitation = fmaf(
-        command.posturalStiffness,
+        max(command.posturalStiffness, localizedRisk),
         channel.braceGain,
         withdrawalExcitation
       )

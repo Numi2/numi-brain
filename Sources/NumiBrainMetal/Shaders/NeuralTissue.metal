@@ -462,6 +462,48 @@ struct NBBodyLoadFieldRecordABI {
     ulong field_state_timestamp_microseconds;
 };
 
+struct NBBodySchemaUniformsABI {
+    uint body_count;
+    uint reserved0;
+    ulong target_timestamp_microseconds;
+    float force_scale_newtons;
+    uint load_time_constant_microseconds;
+    float initial_variance;
+    float maximum_variance;
+    float process_variance_per_second;
+    float observation_variance;
+    float vulnerability_gain_per_second;
+    float recovery_per_second;
+    float uncertainty_risk_weight;
+    float reserved1;
+};
+
+struct NBBodySchemaRecordABI {
+    uint body_identifier;
+    uint flags;
+    uint source_muscle_identifier;
+    uint endpoint_role;
+    float estimated_absolute_load;
+    float epistemic_variance;
+    float vulnerability;
+    float damage_risk;
+    ulong last_observation_timestamp_microseconds;
+    ulong state_timestamp_microseconds;
+};
+
+struct NBMuscleAttachmentRecordABI {
+    uint muscle_identifier;
+    uint first_body_identifier;
+    uint terminal_body_identifier;
+    uint reserved;
+};
+
+constant uint NBBodySchemaFlagEverObserved = 1u << 0u;
+constant uint NBBodySchemaFlagObservedThisUpdate = 1u << 1u;
+constant uint NBBodySchemaFlagFirstRouteEndpoint = 1u << 2u;
+constant uint NBBodySchemaFlagTerminalRouteEndpoint = 1u << 3u;
+constant ulong NBBodySchemaNoObservation = ~0ul;
+
 struct NBRegionalTokenLayoutABI {
     uint scalar_offset;
     uint scalar_count;
@@ -559,6 +601,9 @@ static_assert(sizeof(NBMotorChannelDescriptorABI) == 32, "motor channel ABI drif
 static_assert(sizeof(NBMotorOutputHeaderABI) == 64, "motor output ABI drift");
 static_assert(sizeof(NBBodyLoadFieldUniformsABI) == 32, "body-load uniforms drift");
 static_assert(sizeof(NBBodyLoadFieldRecordABI) == 56, "body-load record drift");
+static_assert(sizeof(NBBodySchemaUniformsABI) == 56, "body-schema uniforms drift");
+static_assert(sizeof(NBBodySchemaRecordABI) == 48, "body-schema record drift");
+static_assert(sizeof(NBMuscleAttachmentRecordABI) == 16, "attachment record drift");
 static_assert(sizeof(NBRegionalTokenLayoutABI) == 32, "regional layout ABI drift");
 static_assert(sizeof(NBRegionalRouteABI) == 24, "regional route ABI drift");
 static_assert(sizeof(NBRegionalTokenParametersABI) == 32, "regional parameter ABI drift");
@@ -2717,6 +2762,9 @@ kernel void map_protective_motor_output(
     device const uint *sourceInhibitionMask [[buffer(5)]],
     constant NBBodyLoadFieldUniformsABI *bodyLoadUniforms [[buffer(6)]],
     device const NBBodyLoadFieldRecordABI *bodyLoadField [[buffer(7)]],
+    device const NBMuscleAttachmentRecordABI *attachments [[buffer(8)]],
+    device const NBBodySchemaRecordABI *bodySchema [[buffer(9)]],
+    device const float *descendingSomaticExcitations [[buffer(10)]],
     uint threadIndex [[thread_position_in_grid]]
 ) {
     if (threadIndex != 0u) {
@@ -2731,10 +2779,35 @@ kernel void map_protective_motor_output(
             channel.withdrawal_gain,
             channel.resting_excitation
         );
-        const float excitation = fma(
-            command.postural_stiffness,
+        const NBMuscleAttachmentRecordABI attachment = attachments[index];
+        float localizedRisk = 0.0f;
+        if (attachment.muscle_identifier == channel.muscle_id) {
+            if (attachment.first_body_identifier < bodyLoadUniforms->body_count) {
+                localizedRisk = max(
+                    localizedRisk,
+                    bodySchema[attachment.first_body_identifier].damage_risk
+                );
+            }
+            if (attachment.terminal_body_identifier < bodyLoadUniforms->body_count) {
+                localizedRisk = max(
+                    localizedRisk,
+                    bodySchema[attachment.terminal_body_identifier].damage_risk
+                );
+            }
+        }
+        const float protectiveExcitation = fma(
+            max(command.postural_stiffness, localizedRisk),
             channel.brace_gain,
             withdrawalExcitation
+        );
+        const float descendingExcitation = clamp(
+            descendingSomaticExcitations[index],
+            0.0f,
+            channel.maximum_excitation
+        ) * (1.0f - clamp(command.motor_inhibition, 0.0f, 1.0f));
+        const float excitation = min(
+            descendingExcitation + protectiveExcitation,
+            channel.maximum_excitation
         );
         bool retainedSourceInhibition = false;
         for (uint bodyIndex = 0u;
@@ -2884,6 +2957,112 @@ kernel void materialize_body_load_field(
         }
         output[bodyIndex] = selected;
     }
+}
+
+/// Advances the dense brain-owned body posterior from causal load evidence.
+/// Retained load-field cells are memory, not fresh observations: only a cell
+/// activated at this target timestamp performs the posterior measurement
+/// update. Every body advances on physical time in the same root generation.
+kernel void advance_body_schema(
+    constant NBBodySchemaUniformsABI *uniforms [[buffer(0)]],
+    device const NBBodyLoadFieldRecordABI *bodyLoadField [[buffer(1)]],
+    device const NBBodySchemaRecordABI *previous [[buffer(2)]],
+    device NBBodySchemaRecordABI *output [[buffer(3)]],
+    uint bodyIndex [[thread_position_in_grid]]
+) {
+    if (bodyIndex >= uniforms->body_count) {
+        return;
+    }
+    const NBBodySchemaRecordABI priorState = previous[bodyIndex];
+    if (uniforms->target_timestamp_microseconds <
+        priorState.state_timestamp_microseconds) {
+        output[bodyIndex] = priorState;
+        return;
+    }
+    const ulong elapsedMicroseconds =
+        uniforms->target_timestamp_microseconds -
+        priorState.state_timestamp_microseconds;
+    const float elapsedSeconds = float(elapsedMicroseconds) * 0.000001f;
+    const float retention = max(
+        0.0f,
+        1.0f - float(elapsedMicroseconds) /
+            float(uniforms->load_time_constant_microseconds)
+    );
+    const float priorLoad = priorState.estimated_absolute_load * retention;
+    const float priorVariance = min(
+        uniforms->maximum_variance,
+        priorState.epistemic_variance +
+            uniforms->process_variance_per_second * elapsedSeconds
+    );
+    const NBBodyLoadFieldRecordABI load = bodyLoadField[bodyIndex];
+    const bool freshObservation = load.endpoint_role != 0u &&
+        load.field_activation_timestamp_microseconds ==
+            uniforms->target_timestamp_microseconds;
+
+    NBBodySchemaRecordABI next = priorState;
+    next.body_identifier = bodyIndex;
+    next.flags &= ~NBBodySchemaFlagObservedThisUpdate;
+    if (freshObservation) {
+        const float gain = priorVariance /
+            (priorVariance + uniforms->observation_variance);
+        next.estimated_absolute_load = max(
+            0.0f,
+            fma(
+                gain,
+                load.effective_absolute_muscle_force - priorLoad,
+                priorLoad
+            )
+        );
+        next.epistemic_variance = max(
+            0.0f,
+            (1.0f - gain) * priorVariance
+        );
+        next.source_muscle_identifier = load.source_muscle_identifier;
+        next.endpoint_role = load.endpoint_role;
+        next.last_observation_timestamp_microseconds =
+            uniforms->target_timestamp_microseconds;
+        next.flags |= NBBodySchemaFlagEverObserved |
+            NBBodySchemaFlagObservedThisUpdate;
+        next.flags &= ~(NBBodySchemaFlagFirstRouteEndpoint |
+            NBBodySchemaFlagTerminalRouteEndpoint);
+        if ((load.endpoint_role & 1u) != 0u) {
+            next.flags |= NBBodySchemaFlagFirstRouteEndpoint;
+        }
+        if ((load.endpoint_role & 2u) != 0u) {
+            next.flags |= NBBodySchemaFlagTerminalRouteEndpoint;
+        }
+    } else {
+        next.estimated_absolute_load = priorLoad;
+        next.epistemic_variance = priorVariance;
+    }
+
+    const float normalizedLoad = clamp(
+        next.estimated_absolute_load / uniforms->force_scale_newtons,
+        0.0f,
+        1.0f
+    );
+    next.vulnerability = clamp(
+        priorState.vulnerability + elapsedSeconds *
+            (uniforms->vulnerability_gain_per_second * normalizedLoad -
+             uniforms->recovery_per_second * (1.0f - normalizedLoad)),
+        0.0f,
+        1.0f
+    );
+    const float normalizedUncertainty = min(
+        sqrt(next.epistemic_variance) / uniforms->force_scale_newtons,
+        1.0f
+    );
+    next.damage_risk =
+        next.last_observation_timestamp_microseconds == NBBodySchemaNoObservation
+        ? 0.0f
+        : min(
+            normalizedLoad * (0.25f + 0.75f * next.vulnerability) +
+                uniforms->uncertainty_risk_weight * normalizedUncertainty,
+            1.0f
+        );
+    next.state_timestamp_microseconds =
+        uniforms->target_timestamp_microseconds;
+    output[bodyIndex] = next;
 }
 
 kernel void neural_tissue_step(

@@ -1,0 +1,535 @@
+import Foundation
+@preconcurrency import Metal
+import NumiBrainCore
+
+/// Standalone GPU-resident cognitive runtime above the fast tissue/spinal
+/// loop. It transduces delayed physical sensor buffers and advances one shadow
+/// mind generation, but publication still requires the joint NumanX receipt.
+@available(macOS 26.0, *)
+public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
+  @frozen
+  public struct DecisionBufferView: Equatable, Sendable {
+    public let transactionFingerprint: UInt64
+    public let shadowGeneration: UInt64
+    public let decisionTimestamp: BrainTimestamp
+    public let activeControlGPUAddress: UInt64
+    public let activeControlByteCount: Int
+    public let motorCommandGPUAddress: UInt64
+    public let motorCommandCount: Int
+    public let spinalStateGPUAddress: UInt64
+    public let somaticOutputGPUAddress: UInt64
+    public let somaticOutputByteCount: Int
+    public let somaticOutputCount: Int
+    public let autonomicCommandGPUAddress: UInt64
+    public let autonomicCommandCount: Int
+    public let workspaceContentGPUAddress: UInt64
+    public let workspaceContentByteCount: Int
+    public let sensoryObservationGPUAddress: UInt64
+    public let sensoryObservationScalarCount: Int
+    public let receptorEventQueueGPUAddress: UInt64
+    public let receptorEventCapacity: Int
+    public let gpuStartSeconds: Double
+    public let gpuEndSeconds: Double
+
+    public var gpuDurationSeconds: Double {
+      max(gpuEndSeconds - gpuStartSeconds, 0)
+    }
+  }
+
+  @frozen
+  public struct AcceptedConsequenceView: Equatable, Sendable {
+    public let transactionFingerprint: UInt64
+    public let shadowGeneration: UInt64
+    public let acceptedPhysicsTokenFingerprint: UInt64
+    public let acceptedTimestamp: BrainTimestamp
+    public let sensoryObservationGPUAddress: UInt64
+    public let sensoryObservationScalarCount: Int
+    public let receptorEventQueueGPUAddress: UInt64
+    public let receptorEventCapacity: Int
+    public let gpuStartSeconds: Double
+    public let gpuEndSeconds: Double
+
+    public var gpuDurationSeconds: Double {
+      max(gpuEndSeconds - gpuStartSeconds, 0)
+    }
+  }
+
+  /// Retains the private shadow generation while NumanX or the fast tissue
+  /// runtime consumes its contiguous muscle/actuator command vector. No CPU
+  /// pointer to command contents is exposed.
+  public final class NumanXSomaticBufferLease: @unchecked Sendable {
+    public let decision: DecisionBufferView
+    public let speciesTemplateFingerprint: UInt64
+
+    let buffer: any MTLBuffer
+    let sourceOffset: Int
+
+    fileprivate init(
+      decision: DecisionBufferView,
+      speciesTemplateFingerprint: UInt64,
+      buffer: any MTLBuffer,
+      sourceOffset: Int
+    ) {
+      self.decision = decision
+      self.speciesTemplateFingerprint = speciesTemplateFingerprint
+      self.buffer = buffer
+      self.sourceOffset = sourceOffset
+    }
+
+    public var metalBufferObject: UnsafeMutableRawPointer {
+      Unmanaged.passUnretained(buffer as AnyObject).toOpaque()
+    }
+  }
+
+  public let deviceName: String
+  public let speciesTemplateFingerprint: UInt64
+  public let parameterVersionFingerprint: UInt64
+  public let regionalProgramFingerprint: UInt64
+  public let agentStateRuntime: MetalAgentStateRuntime
+  public let sensoryRuntime: MetalSensoryTransductionRuntime
+  public let cognitiveRuntime: MetalCognitiveStateRuntime
+  public let decisionRuntime: MetalDecisionRuntime
+  public let acceptedConsequenceRuntime: MetalAcceptedConsequenceRuntime
+  public let memoryRuntime: MetalMemoryRuntime
+
+  private let device: any MTLDevice
+  private let commandQueue: any MTL4CommandQueue
+  private let commandAllocator: any MTL4CommandAllocator
+  private let commandBuffer: any MTL4CommandBuffer
+  private let residencySet: any MTLResidencySet
+  private let lock = NSLock()
+
+  public init(
+    device: any MTLDevice,
+    species: SpeciesTemplate,
+    regionalProgram: RegionalTokenProgram,
+    parameterVersion: BrainParameterVersion,
+    sensoryProfile: SensoryTransductionProfile,
+    decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
+    acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
+      AcceptedConsequenceDynamics? = nil,
+    memoryRetrievalDynamics requestedMemoryRetrievalDynamics:
+      MemoryRetrievalDynamics? = nil,
+    episodicSegmentation requestedEpisodicSegmentation:
+      EpisodicSegmentationDynamics? = nil,
+    initialGeneration: UInt64 = 0
+  ) throws {
+    guard parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
+      parameterVersion.scheduleFingerprint == regionalProgram.scheduleFingerprint,
+      sensoryProfile.speciesTemplateFingerprint == species.fingerprint,
+      let commandQueue = device.makeMTL4CommandQueue(),
+      let commandAllocator = device.makeCommandAllocator(),
+      let commandBuffer = device.makeCommandBuffer()
+    else {
+      throw TissueError.metal("embodied brain immutable bindings are inconsistent")
+    }
+    let agentStateRuntime = try MetalAgentStateRuntime(
+      device: device,
+      species: species,
+      regionalProgram: regionalProgram,
+      initialGeneration: initialGeneration
+    )
+    let sensoryRuntime = try MetalSensoryTransductionRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species,
+      profile: sensoryProfile
+    )
+    let cognitiveRuntime = try MetalCognitiveStateRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species,
+      regionalProgram: regionalProgram
+    )
+    let memoryRuntime = try MetalMemoryRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species,
+      regionalProgram: regionalProgram,
+      parameterVersion: parameterVersion,
+      segmentation: requestedEpisodicSegmentation
+        ?? EpisodicSegmentationDynamics.foundationV1,
+      retrieval: requestedMemoryRetrievalDynamics
+        ?? MemoryRetrievalDynamics.foundationV1
+    )
+    let decisionRuntime = try MetalDecisionRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species,
+      regionalProgram: regionalProgram,
+      parameterVersion: parameterVersion,
+      dynamics: requestedDecisionDynamics ?? DecisionDynamics.foundationV1
+    )
+    let acceptedConsequenceRuntime = try MetalAcceptedConsequenceRuntime(
+      device: device,
+      arena: agentStateRuntime.arena,
+      species: species,
+      dynamics: requestedAcceptedConsequenceDynamics
+        ?? AcceptedConsequenceDynamics.foundationV1
+    )
+    let residencyDescriptor = MTLResidencySetDescriptor()
+    residencyDescriptor.label = "NumiBrain embodied cognitive residency"
+    residencyDescriptor.initialCapacity =
+      agentStateRuntime.arena.residencyAllocations.count
+      + sensoryRuntime.residencyAllocations.count
+      + memoryRuntime.residencyAllocations.count + 3
+    let residencySet: any MTLResidencySet
+    do {
+      residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
+    } catch {
+      throw TissueError.metal("failed to create embodied brain residency: \(error)")
+    }
+    for allocation in agentStateRuntime.arena.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
+    for allocation in sensoryRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
+    residencySet.addAllocation(cognitiveRuntime.residencyAllocation)
+    residencySet.addAllocation(decisionRuntime.residencyAllocation)
+    residencySet.addAllocation(acceptedConsequenceRuntime.residencyAllocation)
+    for allocation in memoryRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
+    residencySet.commit()
+    residencySet.requestResidency()
+    self.deviceName = device.name
+    self.speciesTemplateFingerprint = species.fingerprint
+    self.parameterVersionFingerprint = parameterVersion.fingerprint
+    self.regionalProgramFingerprint = regionalProgram.fingerprint
+    self.agentStateRuntime = agentStateRuntime
+    self.sensoryRuntime = sensoryRuntime
+    self.cognitiveRuntime = cognitiveRuntime
+    self.decisionRuntime = decisionRuntime
+    self.acceptedConsequenceRuntime = acceptedConsequenceRuntime
+    self.memoryRuntime = memoryRuntime
+    self.device = device
+    self.commandQueue = commandQueue
+    self.commandAllocator = commandAllocator
+    self.commandBuffer = commandBuffer
+    self.residencySet = residencySet
+  }
+
+  deinit { residencySet.endResidency() }
+
+  public func beginControl(
+    jointToken: BrainJointTransactionToken,
+    cachedDecisionFingerprint: UInt64
+  ) throws -> MetalJointAgentStateTransaction {
+    guard jointToken.parameterVersionFingerprint == parameterVersionFingerprint else {
+      throw TissueError.transaction("control root parameter version is not bound")
+    }
+    return try MetalJointAgentStateTransaction(
+      jointToken: jointToken,
+      runtime: agentStateRuntime,
+      cachedDecisionFingerprint: cachedDecisionFingerprint
+    )
+  }
+
+  public func inferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    rawSensors: [MetalRawSensorBufferLease],
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil
+  ) throws -> DecisionBufferView {
+    lock.lock()
+    defer { lock.unlock() }
+    guard transaction.status == .open,
+      transaction.jointToken.parameterVersionFingerprint == parameterVersionFingerprint
+    else {
+      throw TissueError.transaction("embodied control transaction is not open")
+    }
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("embodied control interval exceeds sensory ABI")
+    }
+    let dynamicResidency = try makeDynamicSensorResidency(rawSensors)
+    defer { dynamicResidency?.endResidency() }
+    do {
+      commandAllocator.reset()
+      commandBuffer.beginCommandBuffer(allocator: commandAllocator)
+      commandBuffer.useResidencySet(residencySet)
+      if let dynamicResidency { commandBuffer.useResidencySet(dynamicResidency) }
+      guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        commandBuffer.endCommandBuffer()
+        throw TissueError.metal("failed to encode embodied cognitive control")
+      }
+      encoder.label = "NumiBrain receptor to cognitive decision"
+      let sensory = try sensoryRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        rawSensorViews: rawSensors.map(\.view),
+        environmentIdentifier: transaction.jointToken.environmentIdentifier,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+        targetTimestamp: transaction.jointToken.committedTimestamp,
+        deltaMicroseconds: UInt32(duration)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try cognitiveRuntime.encodeAcceptedCognitiveStep(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: transaction.jointToken.committedTimestamp,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity,
+        regionalRecurrentInput: regionalRecurrentInput
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeRetrieval(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      let decision = try decisionRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp
+      )
+      encoder.endEncoding()
+      commandBuffer.endCommandBuffer()
+      let feedback = try commitCommandBuffer(label: "NumiBrain embodied cognitive control")
+      let hot = try agentStateRuntime.hotStateView(
+        transaction: transaction.agentStateToken
+      )
+      let control = agentStateRuntime.arena.layout.section(.activeControl)
+      let workspace = agentStateRuntime.arena.layout.section(.workspaceContent)
+      return DecisionBufferView(
+        transactionFingerprint: transaction.jointToken.fingerprint,
+        shadowGeneration: transaction.agentStateToken.shadowGeneration,
+        decisionTimestamp: transaction.jointToken.committedTimestamp,
+        activeControlGPUAddress: hot.outputGPUAddress + UInt64(control.byteOffset),
+        activeControlByteCount: control.byteCount,
+        motorCommandGPUAddress: decision.motorCommandGPUAddress,
+        motorCommandCount: decision.motorCommandCount,
+        spinalStateGPUAddress: decision.spinalStateGPUAddress,
+        somaticOutputGPUAddress: decision.somaticOutputGPUAddress,
+        somaticOutputByteCount:
+          decision.somaticOutputCount * MemoryLayout<Float>.stride,
+        somaticOutputCount: decision.somaticOutputCount,
+        autonomicCommandGPUAddress: decision.autonomicCommandGPUAddress,
+        autonomicCommandCount: decision.autonomicCommandCount,
+        workspaceContentGPUAddress: hot.outputGPUAddress + UInt64(workspace.byteOffset),
+        workspaceContentByteCount: workspace.byteCount,
+        sensoryObservationGPUAddress: sensory.observationGPUAddress,
+        sensoryObservationScalarCount: sensory.observationScalarCount,
+        receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
+        receptorEventCapacity: sensory.eventCapacity,
+        gpuStartSeconds: feedback.gpuStartTime,
+        gpuEndSeconds: feedback.gpuEndTime
+      )
+    } catch {
+      try? transaction.abort()
+      throw error
+    }
+  }
+
+  public func commit(
+    transaction: MetalJointAgentStateTransaction,
+    receipt: BrainJointCommitToken
+  ) throws {
+    try transaction.commit(with: receipt)
+  }
+
+  public func abort(transaction: MetalJointAgentStateTransaction) throws {
+    try transaction.abort()
+  }
+
+  /// Assimilates only receptor signals generated from the accepted physical
+  /// root, then seals hot state and memory for an atomic joint commit.
+  public func finalizeAcceptedControl(
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    rawSensors: [MetalRawSensorBufferLease]
+  ) throws -> AcceptedConsequenceView {
+    lock.lock()
+    defer { lock.unlock() }
+    guard transaction.status == .open,
+      acceptedPhysicsState.transactionFingerprint
+        == transaction.jointToken.fingerprint,
+      acceptedPhysicsState.acceptedTimestamp
+        == transaction.jointToken.targetTimestamp,
+      acceptedPhysicsState.environmentIdentifier
+        == transaction.jointToken.environmentIdentifier
+    else {
+      throw TissueError.transaction(
+        "accepted consequence does not finish the open embodied control root"
+      )
+    }
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("accepted control interval exceeds sensory ABI")
+    }
+    let dynamicResidency = try makeDynamicSensorResidency(rawSensors)
+    defer { dynamicResidency?.endResidency() }
+    do {
+      commandAllocator.reset()
+      commandBuffer.beginCommandBuffer(allocator: commandAllocator)
+      commandBuffer.useResidencySet(residencySet)
+      if let dynamicResidency { commandBuffer.useResidencySet(dynamicResidency) }
+      guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+        commandBuffer.endCommandBuffer()
+        throw TissueError.metal("failed to encode accepted brain consequence")
+      }
+      encoder.label = "NumiBrain accepted physical consequence"
+      let sensory = try sensoryRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        rawSensorViews: rawSensors.map(\.view),
+        environmentIdentifier: transaction.jointToken.environmentIdentifier,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: UInt32(duration)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try acceptedConsequenceRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        acceptedPhysicsState: acceptedPhysicsState,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeEpisodicSegmentation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      encoder.endEncoding()
+      commandBuffer.endCommandBuffer()
+      let feedback = try commitCommandBuffer(
+        label: "NumiBrain accepted physical consequence"
+      )
+      try transaction.finishGPUState(
+        acceptedPhysicsState: acceptedPhysicsState
+      )
+      return AcceptedConsequenceView(
+        transactionFingerprint: transaction.jointToken.fingerprint,
+        shadowGeneration: transaction.agentStateToken.shadowGeneration,
+        acceptedPhysicsTokenFingerprint: acceptedPhysicsState.fingerprint,
+        acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        sensoryObservationGPUAddress: sensory.observationGPUAddress,
+        sensoryObservationScalarCount: sensory.observationScalarCount,
+        receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
+        receptorEventCapacity: sensory.eventCapacity,
+        gpuStartSeconds: feedback.gpuStartTime,
+        gpuEndSeconds: feedback.gpuEndTime
+      )
+    } catch {
+      try? transaction.abort()
+      throw error
+    }
+  }
+
+  public func borrowNumanXSomaticBuffer(
+    for decision: DecisionBufferView,
+    transaction: MetalJointAgentStateTransaction
+  ) throws -> NumanXSomaticBufferLease {
+    guard transaction.status == .open,
+      decision.transactionFingerprint == transaction.jointToken.fingerprint,
+      decision.shadowGeneration == transaction.agentStateToken.shadowGeneration,
+      decision.somaticOutputCount > 0,
+      decision.somaticOutputByteCount
+        == decision.somaticOutputCount * MemoryLayout<Float>.stride
+    else {
+      throw TissueError.transaction(
+        "cannot lend a stale or incomplete embodied somatic command"
+      )
+    }
+    let section = agentStateRuntime.arena.layout.section(.somaticOutput)
+    let buffer = try agentStateRuntime.arena.borrowShadowHotBuffer(
+      transaction: transaction.agentStateToken
+    )
+    guard section.elementCount == decision.somaticOutputCount,
+      section.byteOffset <= buffer.length,
+      decision.somaticOutputByteCount <= buffer.length - section.byteOffset,
+      decision.somaticOutputGPUAddress
+        == buffer.gpuAddress + UInt64(section.byteOffset)
+    else {
+      throw TissueError.transaction(
+        "embodied somatic command does not identify its resident shadow buffer"
+      )
+    }
+    return NumanXSomaticBufferLease(
+      decision: decision,
+      speciesTemplateFingerprint: speciesTemplateFingerprint,
+      buffer: buffer,
+      sourceOffset: section.byteOffset
+    )
+  }
+
+  private struct Feedback {
+    let gpuStartTime: Double
+    let gpuEndTime: Double
+  }
+
+  private func commitCommandBuffer(label: String) throws -> Feedback {
+    let semaphore = DispatchSemaphore(value: 0)
+    final class FeedbackBox: @unchecked Sendable {
+      var feedback: (any MTL4CommitFeedback)?
+    }
+    let feedbackBox = FeedbackBox()
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { feedback in
+      feedbackBox.feedback = feedback
+      semaphore.signal()
+    }
+    commandQueue.commit([commandBuffer], options: options)
+    semaphore.wait()
+    guard let feedback = feedbackBox.feedback else {
+      throw TissueError.metal("\(label) completed without feedback")
+    }
+    if let error = feedback.error {
+      throw TissueError.metal("\(label) failed: \(error)")
+    }
+    return Feedback(
+      gpuStartTime: feedback.gpuStartTime,
+      gpuEndTime: feedback.gpuEndTime
+    )
+  }
+
+  private func makeDynamicSensorResidency(
+    _ sensors: [MetalRawSensorBufferLease]
+  ) throws -> (any MTLResidencySet)? {
+    guard !sensors.isEmpty else { return nil }
+    let descriptor = MTLResidencySetDescriptor()
+    descriptor.label = "NumiBrain borrowed NumanX sensor residency"
+    descriptor.initialCapacity = sensors.count
+    let set: any MTLResidencySet
+    do {
+      set = try device.makeResidencySet(descriptor: descriptor)
+    } catch {
+      throw TissueError.metal("failed to borrow sensor residency: \(error)")
+    }
+    for sensor in sensors { set.addAllocation(sensor.buffer) }
+    set.commit()
+    set.requestResidency()
+    return set
+  }
+}

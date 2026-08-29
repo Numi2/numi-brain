@@ -1,4 +1,11 @@
 public enum ReferenceBrainSchedule {
+  /// Complete multi-rate logical schedule for the 96-module mammalian graph.
+  /// Species templates may derive altered schedules from the graph without
+  /// changing stable runtime module identities.
+  public static func mammalianReferenceV1() throws -> BrainModuleSchedule {
+    try ReferenceBrainGraph.mammalianV1().schedule
+  }
+
   /// Executable Phase 1 subset of the 96-module mammalian reference graph.
   /// It is a scheduler qualification fixture, not a complete active brain graph.
   public static func runtimeFoundationSubset() throws -> BrainModuleSchedule {
