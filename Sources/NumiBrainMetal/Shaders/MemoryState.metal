@@ -4,6 +4,7 @@ using namespace metal;
 constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT = 3u;
+constant uint NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION = 4u;
 constant uint NB_MEMORY_MUTATION_SECTION_PROCEDURAL_SKILL = 5u;
 constant uint NB_MEMORY_MUTATION_SECTION_REPLAY_QUEUE = 7u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
@@ -24,6 +25,7 @@ struct NBMemoryUniforms {
   ulong event_queue_offset;
   ulong workspace_content_offset;
   ulong control_header_offset;
+  ulong active_episode_accumulator_offset;
   ulong active_episode_memory_offset;
   ulong journal_byte_count;
   ulong persistent_memory_byte_count;
@@ -98,6 +100,35 @@ struct NBEpisodicSummaryRecord {
   float retrieval_key[10];
 };
 
+struct NBActiveEpisodeAccumulator {
+  ulong identifier;
+  ulong start_timestamp_microseconds;
+  ulong last_timestamp_microseconds;
+  ulong parameter_version_fingerprint;
+  ulong source_generation;
+  ulong active_goal_identifier;
+  ulong active_option_identifier;
+  ulong last_boundary_timestamp_microseconds;
+  ulong reserved_identity;
+  uint format_version;
+  uint sample_count;
+  uint event_kind;
+  uint source_identifier;
+  uint flags;
+  uint event_count;
+  uint goal_transition_count;
+  uint option_transition_count;
+  float maximum_salience;
+  float epistemic_sum;
+  float maximum_damage;
+  float reinforcement_sum;
+  float latest_surprise;
+  float latest_boundary_score;
+  float latest_event_salience;
+  float reserved_float;
+  float retrieval_key_sum[30];
+};
+
 struct NBMemoryRetrievalUniforms {
   ulong target_timestamp_microseconds;
   ulong recurrent_offset;
@@ -106,6 +137,7 @@ struct NBMemoryRetrievalUniforms {
   ulong retrieval_scratch_offset;
   ulong active_episode_memory_offset;
   ulong semantic_memory_offset;
+  ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
   ulong prospective_memory_offset;
   ulong control_header_offset;
@@ -118,6 +150,8 @@ struct NBMemoryRetrievalUniforms {
   uint active_episode_stride;
   uint semantic_capacity;
   uint semantic_stride;
+  uint semantic_relation_capacity;
+  uint semantic_relation_stride;
   uint procedural_capacity;
   uint procedural_stride;
   uint prospective_capacity;
@@ -141,6 +175,7 @@ struct NBMemoryConsolidationUniforms {
   ulong drive_offset;
   ulong active_episode_memory_offset;
   ulong semantic_memory_offset;
+  ulong semantic_relation_memory_offset;
   ulong procedural_memory_offset;
   ulong replay_memory_offset;
   ulong persistent_memory_byte_count;
@@ -149,6 +184,8 @@ struct NBMemoryConsolidationUniforms {
   uint active_episode_stride;
   uint semantic_capacity;
   uint semantic_stride;
+  uint semantic_relation_capacity;
+  uint semantic_relation_stride;
   uint procedural_capacity;
   uint procedural_stride;
   uint replay_capacity;
@@ -257,6 +294,20 @@ struct NBSemanticConceptSummaryRecord {
   float embedding[19];
 };
 
+struct NBSemanticRelationSummaryRecord {
+  ulong identifier;
+  ulong source_concept_identifier;
+  ulong destination_concept_identifier;
+  ulong last_used_timestamp_microseconds;
+  uint format_version;
+  uint kind;
+  uint flags;
+  uint supporting_episode_count;
+  float confidence;
+  float contradiction;
+  float evidence_embedding[10];
+};
+
 struct NBProceduralSkillSummaryRecord {
   ulong identifier;
   ulong last_execution_timestamp_microseconds;
@@ -298,20 +349,22 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 136);
+static_assert(sizeof(NBMemoryUniforms) == 144);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
 static_assert(sizeof(NBMemoryMutation) == 64);
 static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
-static_assert(sizeof(NBMemoryRetrievalUniforms) == 176);
-static_assert(sizeof(NBMemoryConsolidationUniforms) == 160);
+static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
+static_assert(sizeof(NBMemoryRetrievalUniforms) == 192);
+static_assert(sizeof(NBMemoryConsolidationUniforms) == 176);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBMemoryRetrievalScratch) == 256);
 static_assert(sizeof(NBSemanticConceptSummaryRecord) == 128);
+static_assert(sizeof(NBSemanticRelationSummaryRecord) == 96);
 static_assert(sizeof(NBProceduralSkillSummaryRecord) == 128);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 128);
 static_assert(sizeof(NBReplayQueueSummaryRecord) == 32);
@@ -369,6 +422,82 @@ inline bool append_memory_record(
     mutation.sequence = chunk;
     mutation.flags = 0u;
     mutation.record_identifier = identifier;
+    mutation.reserved = 0ul;
+    entries[first_entry + chunk] = mutation;
+  }
+  return true;
+}
+
+inline bool journal_accumulated_episode(
+  device NBMemoryJournalHeader *journal,
+  constant NBMemoryUniforms &uniforms,
+  device const NBActiveEpisodeAccumulator *accumulator)
+{
+  if (accumulator->format_version != NB_MEMORY_EPISODE_RECORD_VERSION
+      || accumulator->identifier == 0ul || accumulator->sample_count == 0u) {
+    return false;
+  }
+  NBEpisodicSummaryRecord record = {};
+  record.identifier = accumulator->identifier;
+  record.start_timestamp_microseconds = accumulator->start_timestamp_microseconds;
+  record.end_timestamp_microseconds = accumulator->last_timestamp_microseconds;
+  record.parameter_version_fingerprint =
+    accumulator->parameter_version_fingerprint;
+  record.source_generation = uniforms.shadow_generation;
+  record.active_goal_identifier = accumulator->active_goal_identifier;
+  record.active_option_identifier = accumulator->active_option_identifier;
+  record.format_version = NB_MEMORY_EPISODE_RECORD_VERSION;
+  record.event_kind = accumulator->event_kind;
+  record.source_identifier = accumulator->source_identifier;
+  record.flags = accumulator->flags | 1u;
+  record.salience = clamp(accumulator->maximum_salience, 0.0f, 1.0f);
+  const float divisor = 1.0f / float(accumulator->sample_count);
+  record.epistemic_uncertainty = accumulator->epistemic_sum * divisor;
+  record.damage_severity = accumulator->maximum_damage;
+  record.factored_reinforcement = accumulator->reinforcement_sum;
+  for (uint index = 0u; index < 10u; ++index) {
+    record.retrieval_key[index] = accumulator->retrieval_key_sum[index] * divisor;
+  }
+
+  constexpr uint chunk_byte_count = 16u;
+  constexpr uint chunk_count = sizeof(NBEpisodicSummaryRecord) / chunk_byte_count;
+  const uint first_entry = atomic_fetch_add_explicit(
+    &journal->entry_count, chunk_count, memory_order_relaxed
+  );
+  if (first_entry + chunk_count > journal->entry_capacity
+      || first_entry + chunk_count > uniforms.journal_entry_capacity) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return false;
+  }
+  const uint slot = uint(record.identifier % ulong(uniforms.active_episode_capacity));
+  const ulong destination = uniforms.active_episode_memory_offset
+    + ulong(slot) * ulong(uniforms.active_episode_stride);
+  if (destination + sizeof(NBEpisodicSummaryRecord) < destination
+      || destination + sizeof(NBEpisodicSummaryRecord)
+        > uniforms.persistent_memory_byte_count) {
+    atomic_fetch_or_explicit(
+      &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
+    );
+    return false;
+  }
+  device NBMemoryMutation *entries =
+    reinterpret_cast<device NBMemoryMutation *>(journal + 1);
+  const thread uint *words = reinterpret_cast<const thread uint *>(&record);
+  for (uint chunk = 0u; chunk < chunk_count; ++chunk) {
+    NBMemoryMutation mutation;
+    mutation.destination_byte_offset = destination
+      + ulong(chunk * chunk_byte_count);
+    mutation.shadow_generation = uniforms.shadow_generation;
+    for (uint word = 0u; word < 4u; ++word) {
+      mutation.payload[word] = words[chunk * 4u + word];
+    }
+    mutation.byte_count = chunk_byte_count;
+    mutation.section = NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE;
+    mutation.sequence = chunk;
+    mutation.flags = 0u;
+    mutation.record_identifier = record.identifier;
     mutation.reserved = 0ul;
     entries[first_entry + chunk] = mutation;
   }
@@ -479,7 +608,25 @@ kernel void score_memory_retrieval_candidates(
       }
     } else {
       local_index -= uniforms.semantic_capacity;
-      if (local_index < uniforms.procedural_capacity) {
+      if (local_index < uniforms.semantic_relation_capacity) {
+        device const NBSemanticRelationSummaryRecord *record =
+          reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+            persistent_memory + uniforms.semantic_relation_memory_offset
+              + ulong(local_index) * ulong(uniforms.semantic_relation_stride)
+          );
+        if (record->format_version == 1u && record->identifier != 0ul) {
+          kind = 5u;
+          identifier = record->identifier;
+          score = uniforms.semantic_weight * (
+            retrieval_similarity(
+              query, uniforms.recurrent_scalar_count,
+              record->evidence_embedding, 10u
+            ) + record->confidence - record->contradiction
+          );
+        }
+      } else {
+        local_index -= uniforms.semantic_relation_capacity;
+        if (local_index < uniforms.procedural_capacity) {
         device const NBProceduralSkillSummaryRecord *record =
           reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
             persistent_memory + uniforms.procedural_memory_offset
@@ -495,9 +642,9 @@ kernel void score_memory_retrieval_candidates(
             ) + record->competence - record->damage_cvar
           );
         }
-      } else {
-        local_index -= uniforms.procedural_capacity;
-        if (local_index < uniforms.prospective_capacity) {
+        } else {
+          local_index -= uniforms.procedural_capacity;
+          if (local_index < uniforms.prospective_capacity) {
           device const NBProspectiveIntentionSummaryRecord *record =
             reinterpret_cast<device const NBProspectiveIntentionSummaryRecord *>(
               persistent_memory + uniforms.prospective_memory_offset
@@ -515,6 +662,7 @@ kernel void score_memory_retrieval_candidates(
                 query, uniforms.recurrent_scalar_count, record->trigger_code, 16u
               ) + record->priority + record->trigger_confidence
             );
+          }
           }
         }
       }
@@ -583,7 +731,20 @@ kernel void publish_memory_retrieval_winner(
       value_count = 19u;
     } else {
       local_index -= uniforms.semantic_capacity;
-      if (local_index < uniforms.procedural_capacity) {
+      if (local_index < uniforms.semantic_relation_capacity) {
+        device const NBSemanticRelationSummaryRecord *record =
+          reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+            persistent_memory + uniforms.semantic_relation_memory_offset
+              + ulong(local_index) * ulong(uniforms.semantic_relation_stride)
+          );
+        kind = 5u;
+        identifier = record->identifier;
+        score = record->confidence;
+        value = record->evidence_embedding;
+        value_count = 10u;
+      } else {
+        local_index -= uniforms.semantic_relation_capacity;
+        if (local_index < uniforms.procedural_capacity) {
         device const NBProceduralSkillSummaryRecord *record =
           reinterpret_cast<device const NBProceduralSkillSummaryRecord *>(
             persistent_memory + uniforms.procedural_memory_offset
@@ -594,18 +755,19 @@ kernel void publish_memory_retrieval_winner(
         score = record->competence;
         value = record->policy_code;
         value_count = 16u;
-      } else {
-        local_index -= uniforms.procedural_capacity;
-        device const NBProspectiveIntentionSummaryRecord *record =
+        } else {
+          local_index -= uniforms.procedural_capacity;
+          device const NBProspectiveIntentionSummaryRecord *record =
           reinterpret_cast<device const NBProspectiveIntentionSummaryRecord *>(
             persistent_memory + uniforms.prospective_memory_offset
               + ulong(local_index) * ulong(uniforms.prospective_stride)
           );
-        kind = 4u;
-        identifier = record->identifier;
-        score = record->priority;
-        value = record->trigger_code;
-        value_count = 16u;
+          kind = 4u;
+          identifier = record->identifier;
+          score = record->priority;
+          value = record->trigger_code;
+          value_count = 16u;
+        }
       }
     }
   }
@@ -630,7 +792,8 @@ kernel void publish_memory_retrieval_winner(
   token.provenance_record_identifier = identifier;
   const uint source_module = kind == 2u
     ? 58u
-    : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u));
+    : (kind == 5u ? 59u
+      : (kind == 3u ? 60u : (kind == 4u ? 61u : 56u)));
   token.kind_and_source = 5u | (source_module << 16);
   token.confidence = clamp(score, 0.0f, 1.0f);
   metadata[slot] = token;
@@ -652,7 +815,9 @@ kernel void consolidate_lived_memory_during_rest(
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u || uniforms.active_episode_capacity == 0u
-      || uniforms.semantic_capacity == 0u || uniforms.procedural_capacity == 0u
+      || uniforms.semantic_capacity == 0u
+      || uniforms.semantic_relation_capacity == 0u
+      || uniforms.procedural_capacity == 0u
       || uniforms.replay_capacity == 0u) return;
   if (journal->base_generation != uniforms.base_generation
       || journal->shadow_generation != uniforms.shadow_generation
@@ -750,14 +915,14 @@ kernel void consolidate_lived_memory_during_rest(
     }
   }
 
+  const ulong semantic_identity = consolidation_hash(
+    (ulong(latest->event_kind) << 32) | ulong(latest->source_identifier)
+  ) & 0x3ffffffffffffffful;
+  const ulong semantic_identifier = max(semantic_identity, 1ul);
+  const uint semantic_slot = uint(
+    semantic_identifier % ulong(uniforms.semantic_capacity)
+  );
   if (semantic_count >= 2u) {
-    const ulong semantic_identity = consolidation_hash(
-      (ulong(latest->event_kind) << 32) | ulong(latest->source_identifier)
-    ) & 0x3ffffffffffffffful;
-    const ulong semantic_identifier = max(semantic_identity, 1ul);
-    const uint semantic_slot = uint(
-      semantic_identifier % ulong(uniforms.semantic_capacity)
-    );
     const ulong destination = uniforms.semantic_memory_offset
       + ulong(semantic_slot) * ulong(uniforms.semantic_stride);
     device const NBSemanticConceptSummaryRecord *existing =
@@ -797,6 +962,103 @@ kernel void consolidate_lived_memory_during_rest(
         journal, uniforms, concept, destination,
         NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, concept.identifier
       );
+    }
+  }
+
+  if (semantic_count >= 2u && latest->active_goal_identifier != 0ul) {
+    const ulong goal_identity = consolidation_hash(
+      latest->active_goal_identifier ^ 0x474f414c434f4e43ul
+    ) & 0x3ffffffffffffffful;
+    const ulong goal_identifier = max(goal_identity, 1ul);
+    const uint goal_slot = uint(goal_identifier % ulong(uniforms.semantic_capacity));
+    const ulong goal_destination = uniforms.semantic_memory_offset
+      + ulong(goal_slot) * ulong(uniforms.semantic_stride);
+    device const NBSemanticConceptSummaryRecord *existing_goal =
+      reinterpret_cast<device const NBSemanticConceptSummaryRecord *>(
+        persistent_memory + goal_destination
+      );
+    const bool goal_collision = goal_slot == semantic_slot
+      || (existing_goal->format_version == NB_MEMORY_RECORD_VERSION
+        && existing_goal->identifier != 0ul
+        && existing_goal->identifier != goal_identifier);
+    if (!goal_collision && (existing_goal->identifier == 0ul
+        || existing_goal->source_episode_identifier != latest->identifier
+        || existing_goal->usage_count < ulong(semantic_count))) {
+      NBSemanticConceptSummaryRecord goal = {};
+      goal.identifier = goal_identifier;
+      goal.last_used_timestamp_microseconds = latest->end_timestamp_microseconds;
+      goal.usage_count = ulong(semantic_count);
+      goal.source_episode_identifier = latest->identifier;
+      goal.format_version = NB_MEMORY_RECORD_VERSION;
+      goal.kind = 6u;
+      goal.flags = 1u;
+      goal.confidence = clamp(
+        1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+        0.0f, 1.0f
+      );
+      for (uint component = 0u; component < 10u; ++component) {
+        goal.embedding[component] = latest->retrieval_key[component];
+      }
+      goal.embedding[10] = float(
+        uint(latest->active_goal_identifier)
+      ) * 2.3283064365386963e-10f;
+      goal.embedding[11] = float(
+        uint(latest->active_goal_identifier >> 32)
+      ) * 2.3283064365386963e-10f;
+      goal.embedding[12] = latest->factored_reinforcement;
+      goal.embedding[13] = latest->damage_severity;
+      append_memory_record(
+        journal, uniforms, goal, goal_destination,
+        NB_MEMORY_MUTATION_SECTION_SEMANTIC_CONCEPT, goal.identifier
+      );
+    }
+
+    if (!goal_collision) {
+      const ulong relation_identity = consolidation_hash(
+        goal_identifier ^ (semantic_identifier << 1)
+          ^ 0x52454c4154494f4eul
+      ) & 0x3ffffffffffffffful;
+      const ulong relation_identifier = max(relation_identity, 1ul);
+      const uint relation_slot = uint(
+        relation_identifier % ulong(uniforms.semantic_relation_capacity)
+      );
+      const ulong relation_destination = uniforms.semantic_relation_memory_offset
+        + ulong(relation_slot) * ulong(uniforms.semantic_relation_stride);
+      device const NBSemanticRelationSummaryRecord *existing_relation =
+        reinterpret_cast<device const NBSemanticRelationSummaryRecord *>(
+          persistent_memory + relation_destination
+        );
+      const bool relation_collision = existing_relation->format_version
+          == NB_MEMORY_RECORD_VERSION
+        && existing_relation->identifier != 0ul
+        && existing_relation->identifier != relation_identifier;
+      if (!relation_collision && (existing_relation->identifier == 0ul
+          || existing_relation->supporting_episode_count < semantic_count
+          || existing_relation->last_used_timestamp_microseconds
+            < latest->end_timestamp_microseconds)) {
+        NBSemanticRelationSummaryRecord relation = {};
+        relation.identifier = relation_identifier;
+        relation.source_concept_identifier = goal_identifier;
+        relation.destination_concept_identifier = semantic_identifier;
+        relation.last_used_timestamp_microseconds =
+          latest->end_timestamp_microseconds;
+        relation.format_version = NB_MEMORY_RECORD_VERSION;
+        relation.kind = 12u;
+        relation.flags = 1u;
+        relation.supporting_episode_count = semantic_count;
+        relation.confidence = clamp(
+          1.0f - exp(-uniforms.semantic_learning_rate * float(semantic_count)),
+          0.0f, 1.0f
+        );
+        relation.contradiction = 0.0f;
+        for (uint component = 0u; component < 10u; ++component) {
+          relation.evidence_embedding[component] = latest->retrieval_key[component];
+        }
+        append_memory_record(
+          journal, uniforms, relation, relation_destination,
+          NB_MEMORY_MUTATION_SECTION_SEMANTIC_RELATION, relation.identifier
+        );
+      }
     }
   }
 
@@ -929,76 +1191,83 @@ kernel void segment_and_journal_episode(
   }
   const float boundary_score = surprise
     + uniforms.event_salience_weight * event_salience;
-  if (boundary_score < uniforms.boundary_threshold && event_count == 0u) return;
-
-  NBEpisodicSummaryRecord record;
-  record.identifier = (uniforms.episode_identifier << 32)
-    ^ uniforms.control_step_identifier ^ uniforms.shadow_generation;
-  record.start_timestamp_microseconds = uniforms.base_generation == 0ul
-    ? 0ul
-    : uniforms.target_timestamp_microseconds;
-  record.end_timestamp_microseconds = uniforms.target_timestamp_microseconds;
-  record.parameter_version_fingerprint = uniforms.parameter_version_fingerprint;
-  record.source_generation = uniforms.shadow_generation;
-  record.active_goal_identifier = control->active_goal_identifier;
-  record.active_option_identifier = control->active_option_identifier;
-  record.format_version = NB_MEMORY_EPISODE_RECORD_VERSION;
-  record.event_kind = strongest_event_kind;
-  record.source_identifier = strongest_source;
-  record.flags = strongest_flags | 1u;
-  record.salience = clamp(boundary_score, 0.0f, 1.0f);
-  record.epistemic_uncertainty = surprise;
-  record.damage_severity = damage;
-  record.factored_reinforcement = -damage;
-  for (uint index = 0u; index < 10u; ++index) {
-    record.retrieval_key[index] = recurrent[index % uniforms.recurrent_scalar_count];
-  }
-
-  constexpr uint chunk_byte_count = 16u;
-  constexpr uint chunk_count = sizeof(NBEpisodicSummaryRecord) / chunk_byte_count;
-  const uint first_entry = atomic_fetch_add_explicit(
-    &journal->entry_count,
-    chunk_count,
-    memory_order_relaxed
-  );
-  if (first_entry + chunk_count > journal->entry_capacity
-      || first_entry + chunk_count > uniforms.journal_entry_capacity) {
-    atomic_fetch_or_explicit(
-      &journal->status,
-      NB_MEMORY_JOURNAL_STATUS_CAPACITY,
-      memory_order_relaxed
+  device NBActiveEpisodeAccumulator *accumulator =
+    reinterpret_cast<device NBActiveEpisodeAccumulator *>(
+      hot_state + uniforms.active_episode_accumulator_offset
     );
-    return;
-  }
-  const uint slot = uint(record.identifier % ulong(uniforms.active_episode_capacity));
-  const ulong record_destination = uniforms.active_episode_memory_offset
-    + ulong(slot) * ulong(uniforms.active_episode_stride);
-  if (record_destination + sizeof(NBEpisodicSummaryRecord)
-      > uniforms.persistent_memory_byte_count) {
-    atomic_fetch_or_explicit(
-      &journal->status,
-      NB_MEMORY_JOURNAL_STATUS_CAPACITY,
-      memory_order_relaxed
-    );
-    return;
-  }
-  device NBMemoryMutation *entries =
-    reinterpret_cast<device NBMemoryMutation *>(journal + 1);
-  const thread uint *record_words = reinterpret_cast<const thread uint *>(&record);
-  for (uint chunk = 0u; chunk < chunk_count; ++chunk) {
-    NBMemoryMutation mutation;
-    mutation.destination_byte_offset = record_destination
-      + ulong(chunk * chunk_byte_count);
-    mutation.shadow_generation = uniforms.shadow_generation;
-    for (uint word = 0u; word < 4u; ++word) {
-      mutation.payload[word] = record_words[chunk * 4u + word];
+  bool valid_accumulator = accumulator->format_version
+      == NB_MEMORY_EPISODE_RECORD_VERSION
+    && accumulator->identifier != 0ul;
+  const bool goal_transition = valid_accumulator
+    && accumulator->active_goal_identifier != control->active_goal_identifier;
+  const bool option_transition = valid_accumulator
+    && accumulator->active_option_identifier != control->active_option_identifier;
+  if (goal_transition || option_transition) {
+    if (goal_transition && accumulator->goal_transition_count != ~0u) {
+      accumulator->goal_transition_count += 1u;
     }
-    mutation.byte_count = chunk_byte_count;
-    mutation.section = NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE;
-    mutation.sequence = chunk;
-    mutation.flags = 0u;
-    mutation.record_identifier = record.identifier;
-    mutation.reserved = 0ul;
-    entries[first_entry + chunk] = mutation;
+    if (option_transition && accumulator->option_transition_count != ~0u) {
+      accumulator->option_transition_count += 1u;
+    }
+    journal_accumulated_episode(journal, uniforms, accumulator);
+    NBActiveEpisodeAccumulator cleared = {};
+    *accumulator = cleared;
+    valid_accumulator = false;
+  }
+  if (!valid_accumulator) {
+    NBActiveEpisodeAccumulator initial = {};
+    initial.identifier = ((uniforms.episode_identifier << 32)
+      ^ uniforms.control_step_identifier ^ uniforms.shadow_generation
+      ^ uniforms.target_timestamp_microseconds) | 1ul;
+    initial.start_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    initial.last_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+    initial.parameter_version_fingerprint = uniforms.parameter_version_fingerprint;
+    initial.source_generation = uniforms.shadow_generation;
+    initial.active_goal_identifier = control->active_goal_identifier;
+    initial.active_option_identifier = control->active_option_identifier;
+    initial.last_boundary_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    initial.format_version = NB_MEMORY_EPISODE_RECORD_VERSION;
+    *accumulator = initial;
+  }
+
+  accumulator->last_timestamp_microseconds = uniforms.target_timestamp_microseconds;
+  accumulator->source_generation = uniforms.shadow_generation;
+  if (accumulator->sample_count != ~0u) accumulator->sample_count += 1u;
+  if (accumulator->event_count <= ~0u - event_count) {
+    accumulator->event_count += event_count;
+  } else {
+    accumulator->event_count = ~0u;
+  }
+  accumulator->maximum_salience = max(
+    accumulator->maximum_salience, boundary_score
+  );
+  accumulator->epistemic_sum += surprise;
+  accumulator->maximum_damage = max(accumulator->maximum_damage, damage);
+  accumulator->reinforcement_sum -= damage;
+  accumulator->latest_surprise = surprise;
+  accumulator->latest_boundary_score = boundary_score;
+  if (event_salience >= accumulator->latest_event_salience) {
+    accumulator->event_kind = strongest_event_kind;
+    accumulator->source_identifier = strongest_source;
+    accumulator->flags |= strongest_flags;
+    accumulator->latest_event_salience = event_salience;
+  }
+  for (uint index = 0u; index < 30u; ++index) {
+    accumulator->retrieval_key_sum[index] += recurrent[
+      index % uniforms.recurrent_scalar_count
+    ];
+  }
+
+  const bool salient_boundary = boundary_score >= uniforms.boundary_threshold
+    || event_count > 0u
+    || uniforms.target_timestamp_microseconds
+      - accumulator->start_timestamp_microseconds >= 2000000ul;
+  if (salient_boundary) {
+    accumulator->last_boundary_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    journal_accumulated_episode(journal, uniforms, accumulator);
+    NBActiveEpisodeAccumulator cleared = {};
+    *accumulator = cleared;
   }
 }
