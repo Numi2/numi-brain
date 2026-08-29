@@ -19,8 +19,10 @@ public enum BrainAgentStateFactory {
       species.body.bodyCount == attachmentCatalog.bodyCount,
       species.body.muscleCount == UInt32(attachmentCatalog.attachments.count),
       species.body.muscleAttachmentFingerprint == attachmentCatalog.fingerprint,
-      regionalProgram.scheduleFingerprint == graph.schedule.fingerprint,
-      parameterVersion.scheduleFingerprint == graph.schedule.fingerprint,
+      regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
+      Set(regionalProgram.layouts.map(\.moduleIdentifier))
+        == Set(species.enabledModuleIdentifiers),
+      parameterVersion.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
     else {
       throw BrainRuntimeError.invalidDescriptor(
@@ -149,14 +151,13 @@ public enum BrainAgentStateFactory {
       }
     )
     let fastPlasticity = try makeFastPlasticity(
-      graph: graph,
       species: species,
       timestamp: initialTimestamp
     )
     let control = try makeInnateControl(species: species, timestamp: initialTimestamp)
-    let development = try makeInnateDevelopment(species: species, graph: graph)
+    let development = try makeInnateDevelopment(species: species)
     let scheduler = try initialScheduler(
-      schedule: graph.schedule,
+      schedule: species.regionGraph.schedule,
       parameterVersionFingerprint: parameterVersion.fingerprint,
       timestamp: initialTimestamp
     )
@@ -184,7 +185,9 @@ public enum BrainAgentStateFactory {
         controlStepIdentifier: 0,
         generation: 0,
         moduleCounters: Dictionary(
-          uniqueKeysWithValues: graph.modules.map { ($0.identifier, 0) }
+          uniqueKeysWithValues: species.regionGraph.modules.map {
+            ($0.identifier, 0)
+          }
         )
       ),
       transactionGeneration: 0
@@ -263,7 +266,6 @@ public enum BrainAgentStateFactory {
   }
 
   private static func makeFastPlasticity(
-    graph: ReferenceBrainGraph,
     species: SpeciesTemplate,
     timestamp: BrainTimestamp
   ) throws -> FastPlasticityState {
@@ -329,8 +331,7 @@ public enum BrainAgentStateFactory {
   }
 
   private static func makeInnateDevelopment(
-    species: SpeciesTemplate,
-    graph: ReferenceBrainGraph
+    species: SpeciesTemplate
   ) throws -> BrainDevelopmentalState {
     guard let stage = species.development.first,
       stage.stage == .innateScaffold
@@ -338,7 +339,7 @@ public enum BrainAgentStateFactory {
       throw BrainRuntimeError.invalidDescriptor("species has no innate developmental stage")
     }
     let unlocked = Set(stage.unlockedModuleIdentifiers)
-    let regions = try graph.modules.map { module in
+    let regions = try species.regionGraph.modules.map { module in
       try RegionalMaturationState(
         moduleIdentifier: module.identifier,
         learningRateMultiplier: stage.learningRateMultiplier,

@@ -480,6 +480,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
   public let family: SpeciesFamily
   public let name: String
   public let referenceGraphFingerprint: UInt64
+  public let regionGraph: SpeciesRegionGraph
   public let enabledModuleIdentifiers: [UInt16]
   public let body: SpeciesBodyTopology
   public let senses: [SensoryTopology]
@@ -497,6 +498,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     name: String,
     referenceGraph: ReferenceBrainGraph,
     enabledModuleIdentifiers: [UInt16],
+    regionGraph requestedRegionGraph: SpeciesRegionGraph? = nil,
     body: SpeciesBodyTopology,
     senses: [SensoryTopology],
     motor: MotorTopology,
@@ -508,10 +510,15 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     capacities: BrainCapacityProfile
   ) throws {
     let enabled = enabledModuleIdentifiers.sorted()
-    let moduleSet = Set(referenceGraph.modules.map(\.identifier))
+    let regionGraph = try requestedRegionGraph ?? SpeciesRegionGraph.referenceSubset(
+      referenceGraph: referenceGraph,
+      enabledModuleIdentifiers: enabled
+    )
+    let regionalIdentifiers = regionGraph.modules.map(\.identifier)
     guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !enabled.isEmpty, Set(enabled).count == enabled.count,
-      Set(enabled).isSubset(of: moduleSet),
+      regionGraph.referenceGraphFingerprint == referenceGraph.fingerprint,
+      enabled == regionalIdentifiers,
       senses.count == SensoryModality.allCases.count,
       Set(senses.map(\.modality)).count == senses.count,
       senses.contains(where: \.enabled),
@@ -535,6 +542,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     Self.mix(Self.formatVersion, into: &hash)
     Self.mix(UInt32(family.rawValue), into: &hash)
     Self.mix(referenceGraph.fingerprint, into: &hash)
+    Self.mix(regionGraph.fingerprint, into: &hash)
     Self.mix(body.muscleAttachmentFingerprint, into: &hash)
     Self.mix(body.morphologyCode, into: &hash)
     for byte in name.utf8 { Self.mix(byte, into: &hash) }
@@ -577,6 +585,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
     self.family = family
     self.name = name
     self.referenceGraphFingerprint = referenceGraph.fingerprint
+    self.regionGraph = regionGraph
     self.enabledModuleIdentifiers = enabled
     self.body = body
     self.senses = senses.sorted { $0.modality.rawValue < $1.modality.rawValue }
@@ -591,6 +600,12 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
   }
 
   public var fingerprintHex: String { String(format: "%016llx", fingerprint) }
+
+  public func regionalProgram(
+    historyCapacity: Int = RegionalTokenProgram.routeHistoryCapacity
+  ) throws -> RegionalTokenProgram {
+    try regionGraph.regionalProgram(historyCapacity: historyCapacity)
+  }
 
   private static func mix(_ value: UInt8, into hash: inout UInt64) {
     hash ^= UInt64(value)
@@ -632,6 +647,47 @@ public enum SpeciesTemplateCompiler {
       name: name,
       referenceGraph: graph,
       enabledModuleIdentifiers: graph.modules.map(\.identifier),
+      body: body,
+      senses: senses,
+      motor: motor,
+      reflexes: reflexes,
+      cpg: cpg,
+      physiology: physiology,
+      innateBehaviors: innateBehaviors,
+      development: development,
+      capacities: capacities
+    )
+  }
+
+  /// Compiles a split, merged, reduced, or species-extended graph against
+  /// authoritative morphology. Custom regions retain explicit provenance to
+  /// the 96 reference roles or carry a nonzero species-specific role code.
+  public static func compileSpecializedReference(
+    family: SpeciesFamily,
+    name: String,
+    regionGraph: SpeciesRegionGraph,
+    body: SpeciesBodyTopology,
+    senses: [SensoryTopology],
+    motor: MotorTopology,
+    reflexes: [ReflexCircuitTemplate],
+    cpg: CPGTopology,
+    physiology: PhysiologyTemplate,
+    innateBehaviors: [InnateBehaviorTemplate],
+    development: [DevelopmentalStageTemplate],
+    capacities: BrainCapacityProfile
+  ) throws -> SpeciesTemplate {
+    let reference = try ReferenceBrainGraph.mammalianV1()
+    guard regionGraph.referenceGraphFingerprint == reference.fingerprint else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "specialized graph does not derive from the authoritative reference"
+      )
+    }
+    return try SpeciesTemplate(
+      family: family,
+      name: name,
+      referenceGraph: reference,
+      enabledModuleIdentifiers: regionGraph.modules.map(\.identifier),
+      regionGraph: regionGraph,
       body: body,
       senses: senses,
       motor: motor,

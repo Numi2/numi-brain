@@ -131,6 +131,9 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     maximumDelayMessages: Int = 4_096
   ) throws {
     guard species.fingerprint > 0, regionalProgram.fingerprint > 0,
+      regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
+      Set(regionalProgram.layouts.map(\.moduleIdentifier))
+        == Set(species.enabledModuleIdentifiers),
       regionalProgram.scalarCount
         <= Int(species.capacities.activeRecurrentScalarCapacity),
       maximumRelationSlots > 0, maximumSpatialTransforms > 0,
