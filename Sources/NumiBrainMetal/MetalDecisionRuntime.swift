@@ -110,6 +110,13 @@ private struct DecisionAutonomicChannelDescriptor {
   var reserved: Float = 0
 }
 
+private struct DecisionActiveSensingChannelDescriptor {
+  var channelIdentifier: UInt32 = 0
+  var modality: UInt32 = 0
+  var modalityLocalIdentifier: UInt32 = 0
+  var flags: UInt32 = 0
+}
+
 @available(macOS 26.0, *)
 public final class MetalDecisionRuntime: @unchecked Sendable {
   @frozen
@@ -150,6 +157,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let cpgOscillatorDescriptorBuffer: any MTLBuffer
   private let cpgCouplingDescriptorBuffer: any MTLBuffer
   private let autonomicChannelDescriptorBuffer: any MTLBuffer
+  private let activeSensingChannelDescriptorBuffer: any MTLBuffer
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
@@ -172,6 +180,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
       MemoryLayout<DecisionAutonomicChannelDescriptor>.stride == 48,
+      MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride == 16,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint
@@ -226,7 +235,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 10
+    descriptor.maxBufferBindCount = 11
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -323,6 +332,17 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         reserved: 0
       )
     }
+    var activeSensingChannelDescriptors = species.activeSensingChannels.map {
+      DecisionActiveSensingChannelDescriptor(
+        channelIdentifier: UInt32($0.identifier),
+        modality: UInt32($0.modality.rawValue),
+        modalityLocalIdentifier: UInt32($0.modalityLocalIdentifier),
+        flags: 1
+      )
+    }
+    if activeSensingChannelDescriptors.isEmpty {
+      activeSensingChannelDescriptors = [DecisionActiveSensingChannelDescriptor()]
+    }
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<DecisionUniforms>.stride,
@@ -347,6 +367,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         length: autonomicChannelDescriptors.count
           * MemoryLayout<DecisionAutonomicChannelDescriptor>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let activeSensingChannelDescriptorBuffer = device.makeBuffer(
+        length: activeSensingChannelDescriptors.count
+          * MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -360,6 +385,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "NumiBrain immutable species CPG couplings"
     autonomicChannelDescriptorBuffer.label =
       "NumiBrain immutable decision autonomic channels"
+    activeSensingChannelDescriptorBuffer.label =
+      "NumiBrain immutable species active sensing channels"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
@@ -381,6 +408,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     autonomicChannelDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       autonomicChannelDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    activeSensingChannelDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      activeSensingChannelDescriptorBuffer.contents().copyMemory(
         from: source, byteCount: bytes.count
       )
     }
@@ -406,6 +439,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.cpgOscillatorDescriptorBuffer = cpgOscillatorDescriptorBuffer
     self.cpgCouplingDescriptorBuffer = cpgCouplingDescriptorBuffer
     self.autonomicChannelDescriptorBuffer = autonomicChannelDescriptorBuffer
+    self.activeSensingChannelDescriptorBuffer =
+      activeSensingChannelDescriptorBuffer
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -427,7 +462,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     [
       uniformBuffer, communicationDescriptorBuffer,
       cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
-      autonomicChannelDescriptorBuffer,
+      autonomicChannelDescriptorBuffer, activeSensingChannelDescriptorBuffer,
     ]
   }
 
@@ -452,6 +487,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(cpgOscillatorDescriptorBuffer.gpuAddress, index: 7)
     argumentTable.setAddress(cpgCouplingDescriptorBuffer.gpuAddress, index: 8)
     argumentTable.setAddress(autonomicChannelDescriptorBuffer.gpuAddress, index: 9)
+    argumentTable.setAddress(
+      activeSensingChannelDescriptorBuffer.gpuAddress, index: 10
+    )
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)

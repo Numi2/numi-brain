@@ -235,6 +235,13 @@ struct NBAutonomicChannelDescriptor {
   float reserved;
 };
 
+struct NBActiveSensingChannelDescriptor {
+  uint channel_identifier;
+  uint modality;
+  uint modality_local_identifier;
+  uint flags;
+};
+
 struct NBCPGOscillatorDescriptor {
   uint identifier;
   uint output_synergy_identifier;
@@ -383,6 +390,7 @@ static_assert(sizeof(NBSpinalStateRecord) == 16);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBCommunicationChannelDescriptor) == 16);
 static_assert(sizeof(NBAutonomicChannelDescriptor) == 48);
+static_assert(sizeof(NBActiveSensingChannelDescriptor) == 16);
 static_assert(sizeof(NBCPGOscillatorDescriptor) == 32);
 static_assert(sizeof(NBCPGCouplingDescriptor) == 16);
 static_assert(sizeof(NBCPGStateRecord) == 64);
@@ -1628,6 +1636,8 @@ kernel void generate_motor_spinal_autonomic_state(
     [[buffer(6)]],
   device const NBAutonomicChannelDescriptor *autonomic_descriptors
     [[buffer(9)]],
+  device const NBActiveSensingChannelDescriptor *active_sensing_descriptors
+    [[buffer(10)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
@@ -1640,6 +1650,10 @@ kernel void generate_motor_spinal_autonomic_state(
   device const NBDriveRecord *drives = reinterpret_cast<device const NBDriveRecord *>(
     hot_state + uniforms.drive_offset
   );
+  device const NBNeuromodulatorRecord *neuromodulators =
+    reinterpret_cast<device const NBNeuromodulatorRecord *>(
+      hot_state + uniforms.neuromodulation_offset
+    );
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -1975,30 +1989,114 @@ kernel void generate_motor_spinal_autonomic_state(
     const bool communication_sensing = descriptor_index
       < uniforms.communication_descriptor_count
       && (communication_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+    const NBActiveSensingChannelDescriptor sensing_descriptor =
+      active_sensing_descriptors[gid];
     const uint parameter_index = communication_selected && communication_sensing
       ? communication_descriptor.local_channel_index % parameter_count
       : (gid + 8u) % parameter_count;
+    const float epistemic = uniforms.neuromodulator_count > 3u
+      ? clamp(neuromodulators[3].value, 0.0f, 1.0f) : 0.0f;
+    float modality_uncertainty = epistemic;
+    if (sensing_descriptor.modality == 1u) {
+      device const NBObjectSlotRecord *object_slots =
+        reinterpret_cast<device const NBObjectSlotRecord *>(
+          hot_state + uniforms.object_slot_offset
+        );
+      float weighted_uncertainty = 0.0f;
+      float evidence_weight = 0.0f;
+      for (uint object_index = 0u; object_index < uniforms.object_slot_count;
+          ++object_index) {
+        const NBObjectSlotRecord object = object_slots[object_index];
+        if (object.identifier == 0ul
+            || (object.flags & NB_CONTROL_FLAG_VALID) == 0u
+            || object.existence_probability <= 0.01f) continue;
+        const float weight = clamp(
+          object.existence_probability * max(object.visibility, 0.1f),
+          0.0f, 1.0f
+        );
+        weighted_uncertainty += clamp(object.uncertainty, 0.0f, 1.0f) * weight;
+        evidence_weight += weight;
+      }
+      if (evidence_weight > 0.0f) {
+        modality_uncertainty = max(
+          modality_uncertainty,
+          clamp(weighted_uncertainty / evidence_weight, 0.0f, 1.0f)
+        );
+      }
+    } else if (sensing_descriptor.modality == 3u
+        || sensing_descriptor.modality == 4u) {
+      float agency_uncertainty = 0.0f;
+      for (uint effector_index = 0u;
+          effector_index < uniforms.somatic_effector_belief_count;
+          ++effector_index) {
+        device const float *effector = reinterpret_cast<device const float *>(
+          hot_state + uniforms.somatic_effector_belief_offset
+            + ulong(effector_index) * 192ul
+        );
+        agency_uncertainty = max(
+          agency_uncertainty, 1.0f - clamp(effector[8], 0.0f, 1.0f)
+        );
+      }
+      modality_uncertainty = max(modality_uncertainty, agency_uncertainty);
+    } else if (sensing_descriptor.modality == 5u) {
+      float support_uncertainty = 0.0f;
+      device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+      for (uint body_index = 0u;
+          body_index < uniforms.body_belief_count; ++body_index) {
+        device const float *body = reinterpret_cast<device const float *>(
+          body_belief + ulong(body_index) * 256ul
+        );
+        device const ulong *identity = reinterpret_cast<device const ulong *>(
+          body + 16
+        );
+        if ((identity[3] & 1ul) == 0ul) continue;
+        support_uncertainty = max(
+          support_uncertainty, 1.0f - clamp(body[3], 0.0f, 1.0f)
+        );
+      }
+      modality_uncertainty = max(modality_uncertainty, support_uncertainty);
+    }
+    const float expected_information = clamp(
+      max(modality_uncertainty, candidate.information_gain), 0.0f, 1.0f
+    );
+    const float fatigue = uniforms.drive_count > 4u
+      ? clamp(drives[4].level, 0.0f, 1.0f) : 0.0f;
+    const float embodied_risk = max(
+      safety, nb_embodied_self_risk(hot_state, uniforms)
+    );
+    const float sensing_cost = clamp(
+      embodied_risk + 0.5f * fatigue + 0.25f * candidate.effort_cost,
+      0.0f, 1.0f
+    );
+    const float information_allocation = expected_information
+        > max(policy_parameters[14], 0.0f)
+      ? expected_information * (1.0f - sensing_cost)
+      : 0.0f;
+    const float communication_allocation =
+      communication_selected && communication_sensing
+        ? header->confidence * (1.0f - sensing_cost) : 0.0f;
+    const float allocation = rest_selected ? 0.0f : clamp(
+      max(information_allocation, communication_allocation)
+        * (1.0f - deliberate_inhibition),
+      0.0f, 1.0f
+    );
+    const float raw_command = communication_selected && communication_sensing
+      ? candidate.parameters[parameter_index] * communication_descriptor.gain
+      : tanh(candidate.parameters[parameter_index])
+        * clamp(policy_parameters[9], 0.0f, 1.0f);
     NBActiveSensingCommandRecord command;
-    command.command = rest_selected
-      ? 0.0f
-      : (communication_selected && communication_sensing
-        ? clamp(
-            candidate.parameters[parameter_index] * communication_descriptor.gain,
-            -1.0f,
-            1.0f
-          )
-        : clamp(
-            candidate.parameters[parameter_index] * policy_parameters[9],
-            -1.0f,
-            1.0f
-          ));
-    command.confidence = rest_selected ? 1.0f : header->confidence;
-    command.attention_allocation_mask = rest_selected
-      ? 0u : (1u << min(gid, 31u));
+    command.command = clamp(raw_command * allocation, -1.0f, 1.0f);
+    command.confidence = rest_selected ? 1.0f
+      : clamp(allocation * max(header->confidence, expected_information), 0.0f, 1.0f);
+    command.attention_allocation_mask = allocation > 0.0f
+      ? (1u << min(max(sensing_descriptor.modality, 1u) - 1u, 31u)) : 0u;
     command.kind_and_flags =
-      (communication_sensing ? communication_descriptor.effector_kind : 0u)
+      (sensing_descriptor.modality & 0xffu)
+      | ((sensing_descriptor.modality_local_identifier & 0xffu) << 8u)
       | (NB_CONTROL_FLAG_VALID << 16u)
-      | (communication_selected && communication_sensing ? (1u << 17u) : 0u);
+      | (communication_selected && communication_sensing ? (1u << 17u) : 0u)
+      | ((communication_sensing ? communication_descriptor.effector_kind : 0u)
+        << 24u);
     active_sensing[gid] = command;
   }
 }
