@@ -503,7 +503,12 @@ final class MetalJointTransactionTests: XCTestCase {
 
   func testAcceptedSubstepInterruptAdvancesFastRegionalShadowBeforeRootFinish() throws {
     try requireMetal4()
-    let runtime = try makeRuntime(maxEncodedSubsteps: 3)
+    let bound = try makeNumanXInteropBoundRuntime(
+      parameters: parameters,
+      maxEncodedSubsteps: 3
+    )
+    let runtime = bound.runtime
+    let compiledSpeciesTemplate = bound.compiledSpeciesTemplate
     let token = try runtime.beginInteractiveJointControl(
       controlStepIdentifier: 8,
       basePhysicsGeneration: 100,
@@ -525,7 +530,7 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(firstCandidate.protectiveMotorOutput.timestamp, BrainTimestamp(microseconds: 0))
     XCTAssertEqual(firstCandidate.protectiveMotorOutput.brainGeneration, 0)
     XCTAssertEqual(firstCandidate.protectiveMotorOutput.muscleCount, 6)
-    XCTAssertEqual(firstCandidate.protectiveMotorOutput.headerByteCount, 64)
+    XCTAssertEqual(firstCandidate.protectiveMotorOutput.headerByteCount, 80)
     XCTAssertEqual(firstCandidate.protectiveMotorOutput.muscleExcitationByteCount, 24)
     XCTAssertEqual(
       firstCandidate.protectiveMotorOutput.profileFingerprint,
@@ -533,8 +538,8 @@ final class MetalJointTransactionTests: XCTestCase {
     )
     XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.headerGPUAddress, 0)
     XCTAssertNotEqual(firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress, 0)
-    XCTAssertEqual(nb_brain_abi_numanx_motor_candidate_size(), 96)
-    XCTAssertEqual(MemoryLayout<NBNumanXMotorCandidate>.stride, 96)
+    XCTAssertEqual(nb_brain_abi_numanx_motor_candidate_size(), 152)
+    XCTAssertEqual(MemoryLayout<NBNumanXMotorCandidate>.stride, 152)
     let firstNumanXMotorCandidate = try NumanXMotorCandidate(
       transaction: token,
       fastSystems: firstCandidate
@@ -542,12 +547,40 @@ final class MetalJointTransactionTests: XCTestCase {
     XCTAssertEqual(firstNumanXMotorCandidate.acceptedBrainTimestamp, .init(microseconds: 0))
     XCTAssertEqual(firstNumanXMotorCandidate.brainGeneration, token.baseBrainGeneration)
     XCTAssertEqual(
+      firstNumanXMotorCandidate.speciesTemplateFingerprint,
+      compiledSpeciesTemplate.species.fingerprint
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.compiledSpeciesTemplateFingerprint,
+      compiledSpeciesTemplate.fingerprint
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.actuatorCommandKind,
+      compiledSpeciesTemplate.species.motor.actuatorCommandKind
+    )
+    XCTAssertEqual(
       firstNumanXMotorCandidate.motorOutputHeaderGPUAddress,
       firstCandidate.protectiveMotorOutput.headerGPUAddress
     )
     XCTAssertEqual(
       firstNumanXMotorCandidate.muscleExcitationGPUAddress,
       firstCandidate.protectiveMotorOutput.muscleExcitationGPUAddress
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.autonomicCommandGPUAddress,
+      firstCandidate.fastAutonomicOutput.gpuAddress
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.autonomicCommandCount,
+      UInt32(firstCandidate.fastAutonomicOutput.channelCount)
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.activeSensingCommandGPUAddress,
+      firstCandidate.activeSensingOutput.gpuAddress
+    )
+    XCTAssertEqual(
+      firstNumanXMotorCandidate.activeSensingCommandCount,
+      UInt32(firstCandidate.activeSensingOutput.channelCount)
     )
     let firstMotorLease = try runtime.borrowNumanXMotorBuffers(for: firstCandidate)
     XCTAssertEqual(firstMotorLease.output, firstCandidate.protectiveMotorOutput)
@@ -557,9 +590,19 @@ final class MetalJointTransactionTests: XCTestCase {
     let borrowedExcitationObject = Unmanaged<AnyObject>.fromOpaque(
       firstMotorLease.excitationMetalBufferObject
     ).takeUnretainedValue()
+    let borrowedAutonomicObject = Unmanaged<AnyObject>.fromOpaque(
+      firstMotorLease.autonomicMetalBufferObject
+    ).takeUnretainedValue()
+    let borrowedActiveSensingObject = Unmanaged<AnyObject>.fromOpaque(
+      firstMotorLease.activeSensingMetalBufferObject
+    ).takeUnretainedValue()
     let borrowedHeader = try XCTUnwrap(borrowedHeaderObject as? any MTLBuffer)
     let borrowedExcitations = try XCTUnwrap(
       borrowedExcitationObject as? any MTLBuffer
+    )
+    let borrowedAutonomic = try XCTUnwrap(borrowedAutonomicObject as? any MTLBuffer)
+    let borrowedActiveSensing = try XCTUnwrap(
+      borrowedActiveSensingObject as? any MTLBuffer
     )
     XCTAssertEqual(
       borrowedHeader.gpuAddress,
@@ -574,11 +617,20 @@ final class MetalJointTransactionTests: XCTestCase {
       Int(firstNumanXMotorCandidate.muscleExcitationByteCount)
     )
     XCTAssertEqual(
+      borrowedAutonomic.gpuAddress,
+      firstNumanXMotorCandidate.autonomicCommandGPUAddress
+    )
+    XCTAssertEqual(
+      borrowedActiveSensing.gpuAddress,
+      firstNumanXMotorCandidate.activeSensingCommandGPUAddress
+    )
+    XCTAssertEqual(
       firstNumanXMotorCandidate,
       try NumanXMotorCandidate(
         validating: firstNumanXMotorCandidate.abiRecord,
         transaction: token,
-        substep: firstCandidate.substep
+        substep: firstCandidate.substep,
+        compiledSpeciesTemplate: compiledSpeciesTemplate
       )
     )
     var invalidNumanXMotorCandidate = firstNumanXMotorCandidate.abiRecord
@@ -592,7 +644,25 @@ final class MetalJointTransactionTests: XCTestCase {
       try NumanXMotorCandidate(
         validating: invalidNumanXMotorCandidate,
         transaction: token,
-        substep: firstCandidate.substep
+        substep: firstCandidate.substep,
+        compiledSpeciesTemplate: compiledSpeciesTemplate
+      )
+    )
+    var wrongKindNumanXMotorCandidate = firstNumanXMotorCandidate.abiRecord
+    wrongKindNumanXMotorCandidate.actuator_command_kind = UInt32(
+      ActuatorCommandKind.torque.rawValue
+    )
+    wrongKindNumanXMotorCandidate.candidate_fingerprint = withUnsafePointer(
+      to: &wrongKindNumanXMotorCandidate
+    ) {
+      nb_brain_abi_numanx_motor_candidate_fingerprint($0)
+    }
+    XCTAssertThrowsError(
+      try NumanXMotorCandidate(
+        validating: wrongKindNumanXMotorCandidate,
+        transaction: token,
+        substep: firstCandidate.substep,
+        compiledSpeciesTemplate: compiledSpeciesTemplate
       )
     )
     let firstPhysics = try AcceptedPhysicsStateToken(

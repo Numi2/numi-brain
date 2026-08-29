@@ -8,28 +8,28 @@ final class BrainSchedulerTests: XCTestCase {
   func testCompiledModuleABIAndFingerprintAreStable() throws {
     XCTAssertEqual(nb_brain_abi_module_descriptor_size(), 32)
     XCTAssertEqual(nb_brain_abi_module_clock_state_size(), 16)
-    XCTAssertEqual(nb_brain_abi_interrupt_event_size(), 24)
+    XCTAssertEqual(nb_brain_abi_interrupt_event_size(), 32)
     XCTAssertEqual(nb_brain_abi_due_invocation_size(), 32)
     XCTAssertEqual(nb_brain_abi_scheduler_uniforms_size(), 56)
     XCTAssertEqual(nb_brain_abi_scheduler_result_size(), 16)
     XCTAssertEqual(nb_brain_abi_regional_module_state_size(), 32)
-    XCTAssertEqual(nb_brain_abi_regional_token_layout_size(), 32)
+    XCTAssertEqual(nb_brain_abi_regional_token_layout_size(), 40)
     XCTAssertEqual(nb_brain_abi_regional_route_size(), 24)
     XCTAssertEqual(nb_brain_abi_regional_token_parameters_size(), 32)
-    XCTAssertEqual(nb_brain_abi_regional_program_header_size(), 48)
+    XCTAssertEqual(nb_brain_abi_regional_program_header_size(), 56)
     XCTAssertEqual(nb_brain_abi_regional_route_history_state_size(), 16)
     XCTAssertEqual(nb_brain_abi_regional_route_runtime_state_size(), 32)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_module_id(), 0)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_interrupt_mask(), 16)
     XCTAssertEqual(nb_brain_abi_module_descriptor_offset_flags(), 28)
-    XCTAssertEqual(BrainModuleSchedule.abiVersion, 1)
+    XCTAssertEqual(BrainModuleSchedule.abiVersion, 6)
     XCTAssertEqual(BrainModuleSchedule.moduleDescriptorByteCount, 32)
 
     let forward = try makeSchedule()
     let reversed = try BrainModuleSchedule(modules: forward.modules.reversed())
     XCTAssertEqual(forward.modules.map(\.moduleIdentifier), [12, 25, 77])
     XCTAssertEqual(forward.fingerprint, reversed.fingerprint)
-    XCTAssertEqual(forward.fingerprintHex, "91641fbb345b98b1")
+    XCTAssertEqual(forward.fingerprintHex, "15cfa8bbc9c2ace2")
 
     var invalid = NBModuleDescriptor()
     invalid.module_id = 1
@@ -48,7 +48,7 @@ final class BrainSchedulerTests: XCTestCase {
   func testReferenceScheduleAndSerializedFingerprintAreCanonical() throws {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
     XCTAssertEqual(schedule.modules.count, 8)
-    XCTAssertEqual(schedule.fingerprintHex, "c0162952817e2b01")
+    XCTAssertEqual(schedule.fingerprintHex, "b03f396be5750d66")
     XCTAssertEqual(
       schedule.modules.map(\.periodMicroseconds),
       [1_000, 50_000, 1_000, 20_000, 100_000, 5_000, 2_000, 1_000]
@@ -202,7 +202,7 @@ final class BrainSchedulerTests: XCTestCase {
     XCTAssertEqual(program.headerRecord.program_fingerprint, program.fingerprint)
     XCTAssertEqual(program.headerRecord.history_capacity, 512)
     XCTAssertEqual(program.headerRecord.history_scalar_count, 393_216)
-    XCTAssertEqual(program.headerRecord.program_version, 2)
+    XCTAssertEqual(program.headerRecord.program_version, 3)
     XCTAssertEqual(program.headerRecord.minimum_route_persistence_microseconds, 2_000)
     XCTAssertEqual(program.headerRecord.salience_gain, 0.125)
     XCTAssertEqual(program.headerRecord.persistence_bonus, 0.05)
@@ -216,8 +216,8 @@ final class BrainSchedulerTests: XCTestCase {
       [[37, 25], [12, 26], [25, 77], [95, 83], [26, 95], [83, 95], [90, 95]]
     )
     XCTAssertNotEqual(program.fingerprint, 0)
-    XCTAssertEqual(program.fingerprintHex, "704931c121ffb989")
-    XCTAssertEqual(program.shapeFingerprintHex, "97cc4e9a47c2baa8")
+    XCTAssertEqual(program.fingerprintHex, "c8cb938e144a2134")
+    XCTAssertEqual(program.shapeFingerprintHex, "27bc121b4e419c02")
 
     let descriptors = schedule.modules.map(\.abiRecord)
     let layouts = program.layouts.map(\.abiRecord)
@@ -399,7 +399,8 @@ final class BrainSchedulerTests: XCTestCase {
           senderModuleIdentifier: 1,
           receiverModuleIdentifier: 2,
           delayMicroseconds: 2_000,
-          gain: 1
+          gain: 1,
+          flags: .emergency
         )
       ]
     )

@@ -6,9 +6,9 @@ import XCTest
 final class ProtectiveMotorAdapterTests: XCTestCase {
   func testCompiledProfileAndReferenceMotorOutput() throws {
     XCTAssertEqual(nb_brain_abi_motor_channel_descriptor_size(), 32)
-    XCTAssertEqual(nb_brain_abi_motor_output_header_size(), 64)
+    XCTAssertEqual(nb_brain_abi_motor_output_header_size(), 80)
     XCTAssertEqual(MemoryLayout<NBMotorChannelDescriptor>.stride, 32)
-    XCTAssertEqual(MemoryLayout<NBMotorOutputHeader>.stride, 64)
+    XCTAssertEqual(MemoryLayout<NBMotorOutputHeader>.stride, 80)
 
     let profile = try ProtectiveMotorProfile.runtimeFoundationFixture()
     XCTAssertEqual(profile.channels.count, 6)
@@ -48,8 +48,8 @@ final class ProtectiveMotorAdapterTests: XCTestCase {
     XCTAssertEqual(output.environmentIdentifier, command.environmentIdentifier)
     XCTAssertEqual(output.motorInhibition, 1)
     XCTAssertEqual(output.autonomicArousal, 0.8)
-    XCTAssertEqual(output.muscleExcitations, [0.82, 0.74, 0.73, 0.73, 0.90999997, 0.90999997])
-    XCTAssertEqual(output.fingerprintHex, "f53f0a94ea61c403")
+    XCTAssertEqual(output.muscleExcitations, [Float](repeating: 0, count: 6))
+    XCTAssertEqual(output.fingerprintHex, "7e6fda8e21029aa3")
     XCTAssertEqual(
       output,
       try ProtectiveMotorOutput(

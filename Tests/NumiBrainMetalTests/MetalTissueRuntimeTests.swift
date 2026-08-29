@@ -232,7 +232,7 @@ final class MetalTissueRuntimeTests: XCTestCase {
     )
     XCTAssertEqual(metal.schedulerDescriptorByteCount, 8 * 32)
     XCTAssertEqual(metal.schedulerClockByteCount, 8 * 16)
-    XCTAssertEqual(metal.schedulerEventCapacityByteCount, 64 * 24)
+    XCTAssertEqual(metal.schedulerEventCapacityByteCount, 64 * 32)
     XCTAssertEqual(metal.schedulerInvocationCapacityByteCount, 4_096 * 32)
     XCTAssertEqual(metal.regionalStateByteCount, 8 * 32)
     XCTAssertEqual(metal.regionalTokenStateByteCount, 10_752 * 4)
@@ -704,7 +704,8 @@ final class MetalTissueRuntimeTests: XCTestCase {
           senderModuleIdentifier: 1,
           receiverModuleIdentifier: 2,
           delayMicroseconds: 2_000,
-          gain: 1
+          gain: 1,
+          flags: .emergency
         )
       ]
     )

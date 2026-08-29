@@ -778,7 +778,7 @@ private struct NumiBrainTissueCommand {
       operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
       revision: ProcessInfo.processInfo.environment["NUMIBRAIN_REVISION"] ?? "unknown",
       model:
-        "heterogeneous Wilson-Cowan E/I field with immutable content-addressed parameter generations, GPU-compacted receptor events, causal GPU receptor-onset interrupt transduction, transactional multi-rate scheduling, factorized recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
+        "heterogeneous Wilson-Cowan E/I field with immutable content-addressed parameter generations, GPU-compacted receptor events, causal GPU receptor-onset interrupt transduction, transactional multi-rate scheduling, dense-local recurrent regional token state, content-scored dynamic top-k routes with emergency bypass and transaction-owned conduction history, adaptation, local conduction delays, and sparse delayed projections",
       numericalScope: "mesoscale neural population tissue; uncalibrated research scaffold",
       grid: GridShape(
         width: initialState.width,
@@ -1233,7 +1233,7 @@ private struct NumiBrainTissueCommand {
       execution:
         "one advance_due_regional_tokens threadgroup per root consumes the private due list, synchronizes modules by timestamp, resolves causal route messages, scores and compacts deterministic top-k routes, preserves emergency bypass and minimum persistence, normalizes selected strengths, and writes private token, diagnostic, route-history, and routing-state shadow generations",
       interpretation:
-        "10,752 FP32 recurrent token scalars over eight logical modules with immutable factorized slow parameters and seven candidate sparse routes carrying 0-5 ms compiled delays; context-conditioned route biases, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, and cohort compaction remain unimplemented"
+        "10,752 FP32 recurrent token scalars over eight logical modules with immutable per-scalar residuals, 180,224 shared dense-local weights, and seven candidate sparse routes carrying 0-5 ms compiled delays; learned dense weights, context-conditioned route biases, capacity balancing, differentiable training routing, tiled-kernel throughput, and nonzero fast-plastic basis behavior remain unqualified"
     )
     return (
       try runtime.snapshotCommitted(),

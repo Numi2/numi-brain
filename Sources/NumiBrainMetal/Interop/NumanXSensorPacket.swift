@@ -50,6 +50,7 @@ public struct NumanXSensorPacket: Equatable, Sendable {
             && acceptedPhysicsState?.environmentIdentifier
               == transaction.environmentIdentifier
         ),
+      sortedViews.count == enabledSenses.count,
       Set(sortedViews.map(\.modality)) == Set(enabledSenses.map(\.modality)),
       sortedViews.count <= 8
     else {
@@ -189,6 +190,32 @@ public struct NumanXSensorPacket: Equatable, Sendable {
         validityGPUAddress: channel.validity_gpu_address,
         validityByteCount: Int(channel.validity_byte_count)
       )
+    }
+    let enabledSenses = compiledSpeciesTemplate.species.senses.filter(\.enabled)
+    let topologyByModality = Dictionary(
+      uniqueKeysWithValues: enabledSenses.map { ($0.modality, $0) }
+    )
+    guard views.count == enabledSenses.count,
+      Set(views.map(\.modality)) == Set(enabledSenses.map(\.modality)),
+      views.count <= 8
+    else {
+      throw TissueError.transaction(
+        "NumanX sensor packet channels do not match the compiled morphology"
+      )
+    }
+    for view in views {
+      guard let topology = topologyByModality[view.modality],
+        view.receptorCount == topology.receptorCount,
+        view.featureDimension == topology.observationDimension,
+        record.delivery_timestamp_microseconds >= UInt64(topology.latencyMicroseconds),
+        view.receptorTimestamp.rawValue
+          == record.delivery_timestamp_microseconds
+            - UInt64(topology.latencyMicroseconds)
+      else {
+        throw TissueError.transaction(
+          "NumanX sensor packet channel violates compiled shape or latency"
+        )
+      }
     }
     transactionFingerprint = record.transaction_fingerprint
     acceptedPhysicsTokenFingerprint =

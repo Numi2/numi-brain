@@ -109,7 +109,7 @@ public struct RegionalTokenLayout: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-/// Immutable factorized slow parameters for one recurrent token scalar.
+/// Immutable per-scalar residual and gate parameters for one recurrent token.
 /// The structure is deliberately explicit so a learner can publish a new
 /// fingerprinted version without mutating rollout-owned recurrent state.
 @frozen
@@ -484,7 +484,7 @@ public struct RegionalTokenProgram: Equatable, Sendable {
     )
   }
 
-  /// Uses the authoritative token shapes and factorized recurrent parameters
+  /// Uses the authoritative token shapes and dense-local recurrent parameters
   /// without long-range routes. This remains the explicit route-ablation and
   /// isolated-recurrence profile; production cohort execution uses routed state.
   public static func runtimeFoundationUnroutedV0(
@@ -1013,7 +1013,9 @@ public enum CPURegionalTokenOperator {
     program: RegionalTokenProgram,
     invocations: [BrainModuleInvocation],
     routeHistory initialRouteHistory: RegionalRouteHistory? = nil,
-    routingState initialRoutingState: RegionalRoutingState? = nil
+    routingState initialRoutingState: RegionalRoutingState? = nil,
+    routeParameters requestedRouteParameters: [Float]? = nil,
+    denseParameters requestedDenseParameters: [Float]? = nil
   ) throws -> RegionalTokenTransition {
     guard program.scheduleFingerprint == schedule.fingerprint else {
       throw BrainRuntimeError.invalidSchedule("regional program and schedule fingerprints differ")
@@ -1023,6 +1025,20 @@ public enum CPURegionalTokenOperator {
     }
     guard initialDiagnostics.count == schedule.modules.count else {
       throw BrainRuntimeError.invalidSchedule("regional diagnostic-state count mismatch")
+    }
+    let denseParameters = try requestedDenseParameters
+      ?? BrainSharedParameterArtifact.foundationRegionalDenseParameters(
+        elementCount: program.denseParameterCount
+      )
+    guard denseParameters.count == program.denseParameterCount else {
+      throw BrainRuntimeError.invalidSchedule("regional dense parameter count mismatch")
+    }
+    let routeParameters = requestedRouteParameters
+      ?? BrainSharedParameterArtifact.foundationRouteOperatorParameters
+    guard routeParameters.count >= 7,
+      routeParameters.allSatisfy(\.isFinite)
+    else {
+      throw BrainRuntimeError.invalidSchedule("regional route parameters are invalid")
     }
     var routeHistory = initialRouteHistory ?? RegionalRouteHistory(program: program)
     try routeHistory.validate(program: program)
@@ -1056,7 +1072,8 @@ public enum CPURegionalTokenOperator {
           routeHistory: routeHistory,
           routingState: &routingState,
           program: program,
-          moduleIndices: moduleIndices
+          moduleIndices: moduleIndices,
+          routeParameters: routeParameters
         )
       }
       for invocation in invocations[cursor..<end] {
@@ -1096,18 +1113,21 @@ public enum CPURegionalTokenOperator {
           let localScalar = scalarIndex - Int(layout.scalarOffset)
           let tokenStart = Int(layout.scalarOffset) + (localScalar / dimension) * dimension
           let feature = localScalar % dimension
-          var localSum: Float = 0
+          var localProjection: Float = 0
           for localFeature in 0..<dimension {
-            localSum += preTimestamp[tokenStart + localFeature]
+            localProjection +=
+              denseParameters[
+                Int(layout.denseWeightOffset) + feature * dimension + localFeature
+              ] * preTimestamp[tokenStart + localFeature]
           }
-          let localMean = localSum / Float(dimension)
+          localProjection /= Foundation.sqrt(Float(dimension))
           var routedInput: Float = 0
           for routeIndex in routeRange {
             let routeState = routingState.states[routeIndex]
             guard routeState.isActive else { continue }
             let route = program.routes[routeIndex]
             routedInput +=
-              route.gain * routeState.strength
+              routeParameters[3] * route.gain * routeState.strength
               * (try routeMessageValue(
                 routeIndex: routeIndex,
                 timestamp: invocation.timestamp,
@@ -1124,7 +1144,7 @@ public enum CPURegionalTokenOperator {
             Foundation.tanh(
               Double(
                 parameter.recurrentGain * current
-                  + parameter.localGain * localMean
+                  + parameter.localGain * localProjection
                   + parameter.routeGain * routedInput
                   + parameter.driveGain * drive
                   + parameter.bias
@@ -1199,7 +1219,8 @@ public enum CPURegionalTokenOperator {
     routeHistory: RegionalRouteHistory,
     routingState: inout RegionalRoutingState,
     program: RegionalTokenProgram,
-    moduleIndices: [UInt16: Int]
+    moduleIndices: [UInt16: Int],
+    routeParameters: [Float]
   ) throws {
     let receiver = program.layouts[receiverModuleIndex]
     let routeRange =
@@ -1227,11 +1248,14 @@ public enum CPURegionalTokenOperator {
         salience += abs(message)
       }
       var score =
-        dot / Float(Foundation.sqrt(Double(queryDimension)))
-        + program.headerRecord.salience_gain * salience / Float(queryDimension)
+        routeParameters[0] * dot / Float(Foundation.sqrt(Double(queryDimension)))
+        + routeParameters[1] * program.headerRecord.salience_gain * salience
+          / Float(queryDimension)
       let previous = routingState.states[routeIndex]
       if previous.isActive {
-        score += program.headerRecord.persistence_bonus
+        score += routeParameters[2] * program.headerRecord.persistence_bonus
+      } else {
+        score -= max(routeParameters[4], 0)
       }
       routingState.states[routeIndex].score = score
     }
@@ -1277,7 +1301,7 @@ public enum CPURegionalTokenOperator {
             bestRoute = routeIndex
           }
         }
-        guard let bestRoute else { break }
+        guard let bestRoute, bestScore >= max(routeParameters[6], 0) else { break }
         selected.append(bestRoute)
       }
     }
@@ -1288,7 +1312,12 @@ public enum CPURegionalTokenOperator {
     unnormalized.reserveCapacity(selected.count)
     for routeIndex in selected {
       let value = Float(
-        Foundation.exp(Double(routingState.states[routeIndex].score - maximumScore))
+        Foundation.exp(
+          Double(
+            (routingState.states[routeIndex].score - maximumScore)
+              / max(routeParameters[5], 1e-4)
+          )
+        )
       )
       unnormalized[routeIndex] = value
       strengthDenominator += value

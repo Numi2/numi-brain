@@ -14,24 +14,24 @@ This separation prevents Swift object layout or synthesized serialization from b
 
 ## Stable records
 
-ABI version 1 compiles the following standard-layout records:
+ABI version 6 compiles the following standard-layout records:
 
 | Record | Bytes | Purpose |
 | --- | ---: | --- |
 | `NBModuleDescriptor` | 32 | Immutable module identity, timing, interrupt, and token shape |
 | `NBModuleClockState` | 16 | Per-agent next-due and last-update physical time |
 | `NBReceptorEvent` | 64 | Canonical tissue drive plus interrupt, latency, receptor identity, and magnitude metadata |
-| `NBInterruptEvent` | 24 | Timestamped receptor-derived interrupt class |
+| `NBInterruptEvent` | 32 | Timestamped receptor-derived interrupt class |
 | `NBReceptorEventTransductionUniforms` | 40 | Root interval and bounded input/output queue counts |
 | `NBReceptorEventTransductionResult` | 16 | Private compacted event counts and typed status |
 | `NBDueInvocation` | 32 | Compacted environment/module execution request |
 | `NBSchedulerUniforms` | 56 | Root physical-time window, parameter/schedule identity, capacities, and initialization flags |
 | `NBSchedulerResult` | 16 | Device invocation count, typed status, and target time |
 | `NBRegionalModuleState` | 32 | Compact population trace, counters, phase, and last-update time |
-| `NBRegionalTokenLayout` | 32 | Region-major token, incoming-route span, and normal-route budget |
+| `NBRegionalTokenLayout` | 40 | Region-major token, incoming-route span, normal-route budget, and dense-operator span |
 | `NBRegionalRoute` | 24 | Compiled sparse message edge |
-| `NBRegionalTokenParameters` | 32 | Immutable factorized recurrence and gate coefficients per scalar |
-| `NBRegionalProgramHeader` | 48 | Versioned program counts, routing policy constants, and fingerprint |
+| `NBRegionalTokenParameters` | 32 | Immutable per-scalar recurrence and gate coefficients paired with shared dense-local weights |
+| `NBRegionalProgramHeader` | 56 | Versioned program counts, dense-operator shape, routing policy constants, and fingerprint |
 | `NBRegionalRouteHistoryState` | 16 | Timestamped causal-message ring cursor |
 | `NBRegionalRouteRuntimeState` | 32 | Per-agent route score, strength, selection, persistence, and counters |
 | `NBParameterComponent` | 32 | Canonical immutable shared-parameter component identity |
@@ -91,7 +91,7 @@ If a module is both periodically due and interrupted at the same timestamp, the 
 
 Events earlier than committed scheduler time or later than the current transaction target are rejected. Receptor events carry an onset, interrupt mask, receptor identity, and conduction latency. Their effective interrupt timestamp is the onset plus latency. The first root includes an onset at its committed lower boundary; later roots exclude that boundary so an event cannot be delivered twice. Future receptor events stay in the immutable schedule without entering the current compact queue.
 
-The Metal path dispatches `transduce_receptor_interrupts` after the accepted tissue sequence. One deterministic lane merges due receptor onsets with the bounded host input view, sorts the combined 24-byte records by timestamp, identifier, mask, and flags, and writes a private GPU interrupt queue plus private result header. `schedule_due_modules` consumes that result after a device barrier without a CPU count readback. The CPU oracle independently derives the same records from the 64-byte receptor ABI. Dynamic NumanX-owned GPU event queues will later replace the host upload view and immutable development schedule.
+The Metal path dispatches `transduce_receptor_interrupts` after the accepted tissue sequence. One deterministic lane merges due receptor onsets with the bounded host input view, sorts the combined 32-byte records by timestamp, identifier, mask, and flags, and writes a private GPU interrupt queue plus private result header. `schedule_due_modules` consumes that result after a device barrier without a CPU count readback. The CPU oracle independently derives the same records from the 64-byte receptor ABI. Dynamic NumanX-owned GPU event queues will later replace the host upload view and immutable development schedule.
 
 ## Transactions and checkpointing
 
@@ -118,11 +118,11 @@ This v0.6 bridge preserves event time and root transaction semantics, but it dis
 
 ## Recurrent regional execution
 
-After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal threadgroup to the agent. Its lanes stride across 10,752 region-major FP32 scalars. For each due timestamp, they evaluate local token means, compiled sparse routed input, immutable factorized recurrence, periodic or interrupt drive, and a learned-form update gate. All modules at that timestamp read the same pre-timestamp state; delayed routes resolve the newest timestamped message no later than their conduction boundary, then all candidates and outgoing messages publish after device barriers.
+After a device barrier, `advance_due_regional_tokens` assigns one bounded Metal threadgroup to the agent. Its lanes stride across 10,752 region-major FP32 scalars. For each due timestamp, they evaluate an immutable shared dense-local projection, compiled sparse routed input, per-scalar recurrent residuals, periodic or interrupt drive, and a learned-form update gate. All modules at that timestamp read the same pre-timestamp state; delayed routes resolve the newest timestamped message no later than their conduction boundary, then all candidates and outgoing messages publish after device barriers.
 
 Two private token generations and two private diagnostic generations track the scheduler clock generations. Commit publishes tissue, scheduler clocks, token state, and diagnostics together; abort publishes none. The 32-byte diagnostic record retains update counts, interrupt counts, phase, salience, and last-update time, but is no longer the authoritative regional neural state. The token operator has a deterministic CPU numerical oracle and performs no hot-path readback.
 
-The executable token program is fingerprinted and immutable during rollout. Seven candidate sparse routes provide the first live routed input sum with compiled 0-5 ms delays and transaction-owned 512-slot message rings. At each due receiver timestamp, the deployment path deterministically scores causal messages, retains routes inside a 2 ms minimum-persistence interval, fills the receiver's normal top-k budget with canonical tie breaking, includes every emergency route outside that budget, normalizes the selected strengths, and gathers compact selected indices. Two private route-runtime generations commit scores, selections, timestamps, and counters with tokens and clocks. Learned/context-conditioned routing, capacity balancing, differentiable training routing, dense tiled matrices, fast-plastic bases, and indirect cohort dispatch remain unimplemented. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
+The executable token program is fingerprinted and immutable during rollout. Seven candidate sparse routes provide the first live routed input sum with compiled 0-5 ms delays and transaction-owned 512-slot message rings. At each due receiver timestamp, the deployment path deterministically scores causal messages, retains routes inside a 2 ms minimum-persistence interval, fills the receiver's normal top-k budget above the shared activation threshold with canonical tie breaking, includes every emergency route outside that budget, normalizes the selected strengths at the shared temperature, and gathers compact selected indices. Two private route-runtime generations commit scores, selections, timestamps, and counters with tokens and clocks. Learned/context-conditioned routing, capacity balancing, differentiable training routing, tiled dense-kernel throughput, and nonzero fast-plastic basis behavior remain unqualified; indirect cohort dispatch is executable separately. See [REGIONAL_TOKEN_V0.md](REGIONAL_TOKEN_V0.md).
 
 ## Cohort compaction oracle
 
@@ -152,7 +152,7 @@ The first executable schedule activates eight logical roles:
 | 90 | locomotor CPG | 2 ms |
 | 95 | reflex interneuron network | 1 ms |
 
-These names define scheduling roles. Every role currently executes the common factorized recurrent operator with its own shape and parameter span, not its final role-specific learned model.
+These names define scheduling roles. Every role currently executes the common dense-local recurrent operator with its own shape and parameter span, not its final role-specific learned model.
 
 ## Evidence gates
 
@@ -207,4 +207,4 @@ These names define scheduling roles. Every role currently executes the common fa
 49. The materializer writes the exact private threadgroup count consumed by a Metal 4 indirect dispatch after a device barrier.
 50. Every expanded 32-byte work item and its field-wise fingerprint exactly match the CPU plan without an intervening count readback.
 
-Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, dense tiled operators, large-cohort throughput, GPU prefix-sum grouping, adaptive periods, biological timing calibration, or Phase 1 completion.
+Passing these gates establishes Metal residence for bounded one-agent due selection, recurrent dense-local regional token execution, deterministic delayed top-k sparse messages, and the shared transaction boundary. It does not establish learned production weights or route projections, differentiable training routing, tiled dense-kernel throughput, large-cohort throughput, adaptive periods, biological timing calibration, or Phase 1 completion.

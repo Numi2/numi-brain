@@ -386,6 +386,9 @@ public struct ProtectiveMotorOutput: Codable, Equatable, Hashable, Sendable {
       localizedWithdrawalBodies = []
     }
     let excitations = profile.channels.map { channel in
+      guard !command.flags.contains(.emergencyStop) else {
+        return Float.zero
+      }
       guard !sourceInhibitedMuscleIdentifiers.contains(channel.muscleIdentifier) else {
         return Float.zero
       }

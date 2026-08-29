@@ -44,8 +44,13 @@ final class BrainJointTransactionTests: XCTestCase {
     XCTAssertEqual(MemoryLayout<NBJointSubstepToken>.stride, 72)
     XCTAssertEqual(MemoryLayout<NBAcceptedPhysicsStateToken>.stride, 64)
     XCTAssertEqual(MemoryLayout<NBJointCommitToken>.stride, 64)
+    XCTAssertEqual(BrainJointTransactionToken.byteCount, 96)
+    XCTAssertEqual(BrainJointSubstepToken.byteCount, 72)
+    XCTAssertEqual(AcceptedPhysicsStateToken.byteCount, 64)
+    XCTAssertEqual(BrainJointCommitToken.byteCount, 64)
 
     let token = try makeToken()
+    XCTAssertEqual(token.shadowGeneration, token.baseBrainGeneration + 1)
     var root = token.abiRecord
     XCTAssertEqual(
       withUnsafePointer(to: &root) { nb_brain_abi_validate_joint_transaction($0) },
@@ -71,6 +76,8 @@ final class BrainJointTransactionTests: XCTestCase {
     let rejected = try transaction.beginPhysicsSubstep(durationMicroseconds: 5_000)
     XCTAssertEqual(rejected.substepIndex, 0)
     XCTAssertEqual(rejected.attemptIndex, 0)
+    XCTAssertEqual(rejected.shadowGeneration, token.shadowGeneration)
+    XCTAssertEqual(rejected.randomCounterGeneration, token.randomCounterGeneration)
     let rejectedEvent = try BrainInterruptEvent(
       timestamp: BrainTimestamp(microseconds: 82_500),
       mask: .pain,

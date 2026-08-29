@@ -147,7 +147,7 @@ The command does not write NumanX state directly.
 The first compiled adapter now maps that command through an immutable ordered
 muscle profile. Each 32-byte channel supplies a stable muscle identifier,
 resting excitation, withdrawal and brace gains, and a maximum. Metal writes a
-fingerprinted 64-byte header plus a private FP32 protective-excitation array
+fingerprinted 80-byte header plus a private FP32 protective-excitation array
 paired with the command generation. The following candidate receives GPU
 addresses and identity metadata for both buffers. Rejection, abort, and commit
 apply to command and excitation generations together.

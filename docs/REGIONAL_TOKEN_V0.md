@@ -1,4 +1,4 @@
-# Regional recurrent token operator v0.5
+# Regional recurrent token operator v0.6
 
 This document defines the first executable regional `H_r` state in NumiBrain. It replaces the former compact population trace as the authoritative neural regional state while retaining that 32-byte per-module record as scheduler diagnostics and evidence metadata.
 
@@ -10,16 +10,16 @@ It implements a bounded eight-module vertical slice of NumiBrain v1.0 Section 8.
 
 | Record | Bytes | Purpose |
 | --- | ---: | --- |
-| `NBRegionalTokenLayout` | 32 | Region-major token shape, scalar/parameter offsets, incoming-route span, and normal-route budget |
+| `NBRegionalTokenLayout` | 40 | Region-major token shape, scalar/parameter offsets, incoming-route span, dense-weight span, and normal-route budget |
 | `NBRegionalRoute` | 24 | Sparse sender, receiver, sender-token, gain, flags, delay, and compiled history layout |
-| `NBRegionalTokenParameters` | 32 | Immutable factorized candidate and gate coefficients for one token scalar |
-| `NBRegionalProgramHeader` | 48 | Versioned program counts, fingerprint, route-history capacity, persistence interval, and score constants |
+| `NBRegionalTokenParameters` | 32 | Immutable per-scalar candidate and gate coefficients paired with shared dense-local weights |
+| `NBRegionalProgramHeader` | 56 | Versioned program counts, dense-parameter count, fingerprint, route-history capacity, persistence interval, and score constants |
 | `NBRegionalRouteHistoryState` | 16 | Per-route ring cursor, valid count, and latest publication time |
 | `NBRegionalRouteRuntimeState` | 32 | Per-agent score, strength, active flag, selection count, last-selected time, and switch count |
 
-The validator requires layouts to match the canonical module descriptors, scalar and route spans to be contiguous, every normal-route budget to fit the receiver's non-emergency candidate count, route endpoints and sender tokens to exist, parameters and gains to be finite, history offsets and message dimensions to be canonical for the compiled capacity, route delays to lie in `0...5000` microseconds, history capacity to lie in `1...512`, and the parameter count to equal the token-state scalar count. Duplicate route identities, nonzero reserved fields, and budget drift are rejected. A delayed route never silently executes as an undelayed substitute.
+The validator requires layouts to match the canonical module descriptors, scalar, route, and dense-weight spans to be contiguous, each dense span to be exactly `tokenDimension²`, every normal-route budget to fit the receiver's non-emergency candidate count, route endpoints and sender tokens to exist, parameters and gains to be finite, history offsets and message dimensions to be canonical for the compiled capacity, route delays to lie in `0...5000` microseconds, history capacity to lie in `1...512`, the per-scalar parameter count to equal the token-state scalar count, and the program dense count to equal the compiled dense spans. Duplicate route identities, nonzero reserved fields, and budget drift are rejected. A delayed route never silently executes as an undelayed substitute.
 
-The program fingerprint is FNV-1a over explicit little-endian layout and route-budget fields, program version, history capacity, delay and persistence bounds, score constants, route fields, and exact FP32 parameter bit patterns. Padding is excluded. The program is immutable for the lifetime of a rollout runtime.
+The program fingerprint is FNV-1a over explicit little-endian layout, dense-shape, and route-budget fields, program version, history capacity, delay and persistence bounds, score constants, route fields, and exact per-scalar FP32 parameter bit patterns. Padding is excluded. Dense weight bytes are content-addressed by the immutable shared-parameter artifact and parameter-version manifest. The program and shared artifact are immutable for the lifetime of a rollout runtime.
 
 A second compiled shape fingerprint excludes learned FP32 parameter bits and route gains while retaining layout, route identity, delay, history, and budget structure. Parameter publication requires this shape identity to remain compatible while allowing the content fingerprint to change. The active content fingerprint is included in the immutable parameter version and checked again by the Metal regional kernel.
 
@@ -40,6 +40,8 @@ The runtime-foundation subset retains the token shapes already carried by the mo
 | Total | region-major FP32 | 10,752 |
 
 Two private 43,008-byte token generations hold committed and shadow state. A separate private candidate buffer supports synchronous timestamp publication. Two private 256-byte diagnostic generations retain update counts, interrupt counts, phase, salience, and last-update time.
+
+The eight compiled dense-local matrices contain 180,224 FP32 values (720,896 bytes): one `tokenDimension x tokenDimension` matrix per module, shared across that module's tokens. The runtime-foundation artifact initializes deterministic small zero-mean weights; they are executable untrained parameters, not biological or learned knowledge.
 
 History capacity is part of both the content and shape fingerprints. The one-agent reference profile retains 512 timestamp slots and 512 copies of each selected sender token. Across the reference graph this is 393,216 FP32 history values. Its two transactional generations use 224 bytes of route metadata, 57,344 bytes of timestamps, and 3,145,728 bytes of message values.
 
@@ -68,7 +70,8 @@ For candidate route `j -> r`, the deployment score uses receiver token zero as t
 \[
 s_{jr}=\frac{q_r^\mathsf{T}m_{jr}}{\sqrt{d_r}}
 +0.125\,\operatorname{mean}|m_{jr}|
-+0.05\,\mathbf 1[\text{previously active}].
++0.05\,\mathbf 1[\text{previously active}]
+-0.1\,\mathbf 1[\text{inactive}].
 \]
 
 A zero-delay message reads the common pre-timestamp sender state. A delayed message reads the newest published sender token no later than the conduction boundary. Undelivered history therefore scores as a zero message rather than observing future state.
@@ -77,8 +80,8 @@ Selection is deterministic:
 
 1. append every emergency route in canonical route order;
 2. retain previously active normal routes selected less than 2,000 microseconds ago, up to the normal budget;
-3. fill the remaining normal budget by descending score, breaking exact ties by canonical route index;
-4. apply a stable softmax over all selected emergency and normal scores;
+3. fill the remaining normal budget with scores at least `0.01`, descending by score and breaking exact ties by canonical route index;
+4. apply a stable softmax with temperature `0.25` over all selected emergency and normal scores;
 5. compact the selected route indices into the receiver's compiled incoming span.
 
 Every selected route increments its saturating selection counter and updates its last-selected timestamp. Every active/inactive transition increments a saturating switch counter. These values are independent per-agent state, not shared weights. Emergency routes remain selected even when their score is lower than normal candidates.
@@ -88,7 +91,9 @@ Every selected route increments its saturating selection counter and updates its
 For each due receiver token scalar `h`, the operator reads the common pre-timestamp regional state and computes:
 
 \[
-i = w_L \bar h_{token} + w_R \sum_{j\in\mathcal A_r} a_{jr}g_{jr}h_{j,f} + w_D d + b,
+p_f = \frac{(W_r h_{token})_f}{\sqrt{d_r}},
+\qquad
+i = w_L p_f + w_R \sum_{j\in\mathcal A_r} a_{jr}g_{jr}h_{j,f} + w_D d + b,
 \]
 
 \[
@@ -101,7 +106,7 @@ z = \sigma(b_z + w_{zH}h + w_{zI}(r+d)),
 h' = h + \left(1-e^{-\Delta t/\tau_r}\right)z(\widetilde h-h).
 \]
 
-`d` contains periodic and receptor-derived interrupt drive. `bar h_token` is the local token mean. A route maps the receiver feature to the sender token feature modulo the sender dimension. Every scalar has explicit immutable FP32 coefficients; the current deterministic initializer is an executable parameter fixture, not trained knowledge.
+`d` contains periodic and receptor-derived interrupt drive. `W_r` is the module's immutable dense-local matrix from the shared `.regionalDense` parameter component. A route maps the receiver feature to the sender token feature modulo the sender dimension. Every scalar also has explicit immutable FP32 residual and gate coefficients; the current deterministic initializer is an executable parameter fixture, not trained knowledge.
 
 Here `A_r` is the compact selected set and `a_jr` is its normalized route strength. All modules due at one physical timestamp read the same pre-timestamp state. A zero-delay route reads its sender from that common state. A delayed route reads the newest timestamped sender message no later than `t - delay`; if no such publication exists, its routed contribution is zero. Candidates publish only after a device-wide threadgroup barrier, after which due sender messages are appended to their route rings. A cyclic route therefore cannot observe a peer's partially published state. The CPU oracle performs the same timestamp grouping, scoring, selection, normalization, and delayed lookup.
 
@@ -124,6 +129,7 @@ The implementation and tests establish:
 - compiled history capacity in both content and shape identities, with exact default-512 fingerprint compatibility;
 - rejection of zero, over-maximum, and history-layout-mismatched capacities;
 - 10,752-scalar GPU-resident recurrent state;
+- 180,224 executable shared dense-local FP32 weights with exact CPU/Metal parity;
 - scheduler-driven multi-rate updates;
 - timestamp-synchronous sparse route gathering;
 - causal 0-5 ms per-route message delivery through persistent GPU rings;
@@ -135,4 +141,4 @@ The implementation and tests establish:
 - a Metal route-ablation effect isolated from tissue and scheduler diagnostics;
 - exact retry, abort, replay, and control-window chunking behavior for route history and routing state.
 
-They do not establish learned or context-conditioned score projections, capacity balancing, differentiable training routing, dense tiled regional matrices, fast-plastic bases, active-environment cohort compaction, role-specific learned models, training, NumanX coupling, calibrated neural dynamics, or production throughput.
+They do not establish learned dense weights or context-conditioned score projections, capacity balancing, differentiable training routing, tiled dense-kernel throughput, nonzero fast-plastic basis behavior, role-specific learned models, training, NumanX coupling, calibrated neural dynamics, or production throughput.

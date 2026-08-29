@@ -73,6 +73,9 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
   /// vigor, and exploration-temperature effects.
   public static let plasticityReceptorEffectCount = 14
   public static let defaultPlasticityBasisCapacityPerRegion = 128
+  public static let foundationRouteOperatorParameters: [Float] = [
+    1, 1, 1, 1, 0.1, 0.25, 0.01, 0.99,
+  ]
   public static let requiredKinds: [BrainParameterComponentKind] = [
     .sensory, .belief, .world, .route, .memory, .value, .policy,
     .motor, .cerebellar, .plasticity, .regionalDense,
@@ -237,7 +240,7 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
     }
     world.replaceSubrange(185...189, with: [0.025, 0.04, 0.08, 0.06, 0.08])
     var route = [Float](repeating: 0, count: 64)
-    route.replaceSubrange(0...7, with: [1, 1, 1, 1, 0.1, 0.25, 0.01, 0.99])
+    route.replaceSubrange(0...7, with: foundationRouteOperatorParameters)
     var memory = [Float](repeating: 0, count: 64)
     memory.replaceSubrange(0...17, with: [
       1, 1, 1, 1, 0.2, 0.25, 0.1, 0.99,
@@ -274,17 +277,9 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
       let centered = Float(Int(bits & 0xffff) - 32_768) / 32_768
       plasticity[index] = centered * 0.025
     }
-    // Small deterministic zero-mean weights activate a true dense local path
-    // without overwhelming the explicit recurrent residual at initialization.
-    var regionalDense = [Float](repeating: 0, count: regionalDenseElementCount)
-    for index in regionalDense.indices {
-      var bits = UInt64(index) &+ 0x9e37_79b9_7f4a_7c15
-      bits = (bits ^ (bits >> 30)) &* 0xbf58_476d_1ce4_e5b9
-      bits = (bits ^ (bits >> 27)) &* 0x94d0_49bb_1331_11eb
-      bits ^= bits >> 31
-      let centered = Float(Int(bits & 0xffff) - 32_768) / 32_768
-      regionalDense[index] = centered * 0.025
-    }
+    let regionalDense = try foundationRegionalDenseParameters(
+      elementCount: regionalDenseElementCount
+    )
     return try [
       payload(.sensory, sensory), payload(.belief, belief),
       payload(.world, world), payload(.route, route),
@@ -293,6 +288,30 @@ public struct BrainSharedParameterArtifact: Codable, Equatable, Sendable {
       payload(.cerebellar, cerebellar), payload(.plasticity, plasticity),
       payload(.regionalDense, regionalDense),
     ]
+  }
+
+  /// Deterministic untrained dense-local weights used by both the CPU oracle
+  /// and the default immutable Metal parameter artifact.
+  public static func foundationRegionalDenseParameters(
+    elementCount: Int
+  ) throws -> [Float] {
+    guard elementCount > 0 else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "regional dense parameter count must be positive"
+      )
+    }
+    // Small deterministic zero-mean weights activate a true dense local path
+    // without overwhelming the explicit recurrent residual at initialization.
+    var weights = [Float](repeating: 0, count: elementCount)
+    for index in weights.indices {
+      var bits = UInt64(index) &+ 0x9e37_79b9_7f4a_7c15
+      bits = (bits ^ (bits >> 30)) &* 0xbf58_476d_1ce4_e5b9
+      bits = (bits ^ (bits >> 27)) &* 0x94d0_49bb_1331_11eb
+      bits ^= bits >> 31
+      let centered = Float(Int(bits & 0xffff) - 32_768) / 32_768
+      weights[index] = centered * 0.025
+    }
+    return weights
   }
 
   public static func foundation(

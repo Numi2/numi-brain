@@ -29,10 +29,11 @@ unknown flags, nonfinite or out-of-range values, gain/flag disagreement,
 resting excitation above the maximum, and a zero maximum. A field-wise FNV-1a
 fingerprint binds the ordered profile without hashing padding.
 
-`NBMotorOutputHeader` is a 64-byte record paired with a contiguous FP32 muscle
+`NBMotorOutputHeader` is an 80-byte record paired with a contiguous FP32 somatic
 excitation array. It binds format and emergency-stop flags, physical timestamp,
 brain generation, motor-profile and source-command fingerprints, muscle count,
-environment, descending inhibition, autonomic arousal, and a field-wise
+environment, descending inhibition, autonomic arousal, actuator command kind,
+output range, and a field-wise
 fingerprint covering every excitation. Consumers must compare its profile
 identity and muscle count with the body profile they own.
 
@@ -49,7 +50,9 @@ p_i = \operatorname{clip}\left(
 where `w` is withdrawal drive, `b` is brace drive, `r_i` is resting excitation,
 the two `g` values are profile gains, and `m_i` is the channel maximum. CPU and
 Metal use the same explicit fused multiply-add order, giving exact FP32 output
-and fingerprint parity.
+and fingerprint parity. An emergency stop suppresses this residual and publishes
+the actuator's compiled safe command; the runtime-foundation muscle contract is
+`0`, so all six legacy reference excitations are zero in that state.
 
 The intended future NumanX composition is:
 
@@ -68,7 +71,7 @@ terms. The current runtime owns only `p_i`, `h`, and autonomic arousal.
 ## Metal ownership
 
 The Metal runtime owns one private immutable channel-profile buffer, two
-private 64-byte output-header generations, two private FP32 excitation
+private 80-byte output-header generations, two private FP32 excitation
 generations, and one shared 32-byte identity/count uniform. A device barrier
 connects `derive_protective_command` to `map_protective_motor_output`. The v0.1
 kernel uses one lane to preserve canonical fingerprint order.
@@ -80,13 +83,14 @@ inspection APIs.
 
 ## NumanX candidate packet
 
-`NBNumanXMotorCandidate` is a compiled 96-byte, transaction-local handoff. It
+`NBNumanXMotorCandidate` is a compiled 152-byte, transaction-local handoff. It
 binds the root and candidate-substep fingerprints to the accepted brain
-timestamp and generation, motor-profile identity, header and excitation GPU
-addresses, byte counts, muscle count, environment, and unchanged random-counter
-generation. Validation cross-checks the complete root/substep relation and
-rejects stale generations, misaligned or null addresses, size/count drift, and
-fingerprint drift.
+timestamp and generation, species and compiled-morphology identities,
+motor-profile and actuator-command identity, header, somatic, autonomic, and
+active-sensing GPU addresses and exact counts, environment, and unchanged
+random-counter generation. Validation cross-checks the complete root/substep
+relation and rejects stale generations, misaligned or null addresses,
+size/count drift, morphology drift, and fingerprint drift.
 
 GPU virtual addresses are intentionally part of this ephemeral packet but not
 of persistent checkpoints or parameter identity. The packet is valid only while

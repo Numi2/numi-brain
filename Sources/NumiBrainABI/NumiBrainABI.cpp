@@ -770,7 +770,7 @@ uint32_t nb_brain_abi_validate_parameter_version(
   for (uint32_t index = 0; index < binding->component_count; ++index) {
     const NBParameterComponent &component = components[index];
     if (component.component_kind == 0
-        || component.component_kind > NB_PARAMETER_COMPONENT_REGIONAL_OPERATOR
+        || component.component_kind > NB_PARAMETER_COMPONENT_REGIONAL_DENSE
         || (index > 0 && component.component_kind <= previous_kind)) {
       return NB_PARAMETER_VERSION_COMPONENT_ORDER;
     }

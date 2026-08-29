@@ -401,6 +401,8 @@ final class MetalDispatchPlanRuntimeTests: XCTestCase {
         + Int(NB_REGIONAL_PROGRAM_HEADER_BYTE_COUNT)
         + program.layouts.count * Int(NB_REGIONAL_TOKEN_LAYOUT_BYTE_COUNT)
         + program.routes.count * Int(NB_REGIONAL_ROUTE_BYTE_COUNT)
+        + program.outgoingRouteOffsets.count * MemoryLayout<UInt32>.stride
+        + program.outgoingRouteIndices.count * MemoryLayout<UInt32>.stride
         + program.parameters.count * Int(NB_REGIONAL_TOKEN_PARAMETERS_BYTE_COUNT)
         + first.tokenStateByteCount
         + first.routeHistoryByteCount

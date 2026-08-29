@@ -134,6 +134,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
         == compiledSpeciesTemplate.fingerprint,
       record.motor_profile_fingerprint
         == compiledSpeciesTemplate.protectiveMotorProfile.fingerprint,
+      record.actuator_command_kind
+        == UInt32(compiledSpeciesTemplate.species.motor.actuatorCommandKind.rawValue),
       record.muscle_count
         == compiledSpeciesTemplate.somaticSynergyCatalog.actuatorCount
     else {

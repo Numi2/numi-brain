@@ -21,6 +21,10 @@ final class BrainParameterVersionTests: XCTestCase {
 
   func testCompiledParameterManifestABIAndCanonicalFingerprint() throws {
     XCTAssertEqual(
+      BrainParameterComponentKind.regionalDense.rawValue,
+      UInt16(NB_PARAMETER_COMPONENT_REGIONAL_DENSE.rawValue)
+    )
+    XCTAssertEqual(
       nb_brain_abi_parameter_component_size(),
       Int(NB_PARAMETER_COMPONENT_BYTE_COUNT)
     )
@@ -36,7 +40,7 @@ final class BrainParameterVersionTests: XCTestCase {
     XCTAssertEqual(version.parentFingerprint, 0)
     XCTAssertEqual(version.regionalShapeFingerprint, program.shapeFingerprint)
     XCTAssertEqual(version.regionalProgramFingerprint, program.fingerprint)
-    XCTAssertEqual(version.components.map(\.kind), [.tissueDynamics, .regionalOperator])
+    XCTAssertEqual(version.components.map(\.kind), BrainParameterComponentKind.allCases)
     XCTAssertGreaterThan(version.totalParameterBytes, 0)
 
     var binding = version.abiBinding
