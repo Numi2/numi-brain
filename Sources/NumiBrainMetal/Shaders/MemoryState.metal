@@ -51,6 +51,7 @@ struct NBMemoryUniforms {
   ulong event_queue_offset;
   ulong workspace_content_offset;
   ulong control_header_offset;
+  ulong body_belief_offset;
   ulong active_episode_accumulator_offset;
   ulong active_episode_memory_offset;
   ulong compressed_episode_memory_offset;
@@ -73,6 +74,8 @@ struct NBMemoryUniforms {
   uint archive_page_count;
   uint journal_entry_capacity;
   uint surprise_sample_count;
+  uint body_belief_count;
+  uint reserved_body_belief;
   float boundary_threshold;
   float event_salience_weight;
 };
@@ -901,7 +904,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 208);
+static_assert(sizeof(NBMemoryUniforms) == 224);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -4380,9 +4383,47 @@ kernel void segment_and_journal_episode(
       damage = max(damage, event.magnitude);
     }
   }
+  float embodied_salience = 0.0f;
+  float embodied_uncertainty = 0.0f;
+  uint embodied_source = 0u;
+  for (uint body_index = 0u;
+      body_index < uniforms.body_belief_count; ++body_index) {
+    device const float *body = reinterpret_cast<device const float *>(
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      body + 16
+    );
+    if ((identity[3] & 1ul) == 0ul
+        || !isfinite(body[8]) || !isfinite(body[9])
+        || !isfinite(body[10]) || !isfinite(body[11])) continue;
+    const float load = max(body[8], 0.0f);
+    const float normalized_load = load / (1.0f + load);
+    const float uncertainty = sqrt(max(body[9], 0.0f));
+    const float normalized_uncertainty = uncertainty / (1.0f + uncertainty);
+    const float vulnerability = clamp(body[10], 0.0f, 1.0f);
+    const float damage_risk = clamp(body[11], 0.0f, 1.0f);
+    const float salience = max(
+      max(damage_risk, vulnerability), 0.5f * normalized_load
+    );
+    if (salience > embodied_salience) {
+      embodied_salience = salience;
+      embodied_source = body_index;
+    }
+    embodied_uncertainty = max(
+      embodied_uncertainty, normalized_uncertainty
+    );
+    damage = max(damage, damage_risk);
+  }
+  if (embodied_salience > event_salience) {
+    strongest_event_kind = 9u;
+    strongest_source = embodied_source;
+    strongest_flags = 0u;
+  }
   const float boundary_score = max(memory_parameters[0], 0.0f) * surprise
     + uniforms.event_salience_weight * max(memory_parameters[4], 0.0f)
-      * event_salience;
+      * max(event_salience, embodied_salience)
+    + 0.25f * embodied_uncertainty;
   device NBActiveEpisodeAccumulator *accumulator =
     reinterpret_cast<device NBActiveEpisodeAccumulator *>(
       hot_state + uniforms.active_episode_accumulator_offset
@@ -4438,16 +4479,17 @@ kernel void segment_and_journal_episode(
   accumulator->maximum_salience = max(
     accumulator->maximum_salience, boundary_score
   );
-  accumulator->epistemic_sum += surprise;
+  accumulator->epistemic_sum += max(surprise, embodied_uncertainty);
   accumulator->maximum_damage = max(accumulator->maximum_damage, damage);
   accumulator->reinforcement_sum -= damage;
   accumulator->latest_surprise = surprise;
   accumulator->latest_boundary_score = boundary_score;
-  if (event_salience >= accumulator->latest_event_salience) {
+  const float accepted_salience = max(event_salience, embodied_salience);
+  if (accepted_salience >= accumulator->latest_event_salience) {
     accumulator->event_kind = strongest_event_kind;
     accumulator->source_identifier = strongest_source;
     accumulator->flags |= strongest_flags;
-    accumulator->latest_event_salience = event_salience;
+    accumulator->latest_event_salience = accepted_salience;
   }
   for (uint index = 0u; index < 30u; ++index) {
     accumulator->retrieval_key_sum[index] += recurrent[
@@ -4457,6 +4499,7 @@ kernel void segment_and_journal_episode(
 
   const bool salient_boundary = boundary_score >= uniforms.boundary_threshold
     || event_count > 0u
+    || embodied_salience >= uniforms.boundary_threshold
     || uniforms.target_timestamp_microseconds
       - accumulator->start_timestamp_microseconds >= 2000000ul;
   if (salient_boundary && !completed_episode_this_root) {

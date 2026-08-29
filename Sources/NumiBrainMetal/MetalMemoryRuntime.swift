@@ -14,6 +14,7 @@ private struct MemoryUniforms {
   var eventQueueOffset: UInt64 = 0
   var workspaceContentOffset: UInt64 = 0
   var controlHeaderOffset: UInt64 = 0
+  var bodyBeliefOffset: UInt64 = 0
   var activeEpisodeAccumulatorOffset: UInt64 = 0
   var activeEpisodeMemoryOffset: UInt64 = 0
   var compressedEpisodeMemoryOffset: UInt64 = 0
@@ -36,6 +37,8 @@ private struct MemoryUniforms {
   var archivePageCount: UInt32 = 0
   var journalEntryCapacity: UInt32 = 0
   var surpriseSampleCount: UInt32 = 0
+  var bodyBeliefCount: UInt32 = 0
+  var reservedBodyBelief: UInt32 = 0
   var boundaryThreshold: Float = 0
   var eventSalienceWeight: Float = 0
 }
@@ -334,7 +337,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 208,
+    guard MemoryLayout<MemoryUniforms>.stride == 224,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 272,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 272,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
@@ -1187,6 +1190,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let recurrent = arena.layout.section(.regionalRecurrent)
     let events = arena.layout.section(.eventQueue)
     let workspace = arena.layout.section(.workspaceContent)
+    let bodyBelief = arena.layout.section(.bodyBelief)
     let journalEntryCapacity = (memory.journalByteCount - 48) / 64
     guard transaction.layoutFingerprint == arena.layout.fingerprint,
       regionalProgram.scalarCount <= Int(UInt32.max),
@@ -1199,6 +1203,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       archiveEpisodes.elementStride <= Int(UInt32.max),
       replayQueue.elementCount <= Int(UInt32.max),
       replayQueue.elementStride <= Int(UInt32.max),
+      bodyBelief.elementCount > 0,
+      bodyBelief.elementCount <= Int(UInt32.max),
       journalEntryCapacity > 0, journalEntryCapacity <= Int(UInt32.max)
     else {
       throw TissueError.transaction("episodic segmentation exceeds memory capacity")
@@ -1214,6 +1220,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       eventQueueOffset: UInt64(events.byteOffset),
       workspaceContentOffset: UInt64(workspace.byteOffset),
       controlHeaderOffset: UInt64(controlLayout.section(.header).byteOffset),
+      bodyBeliefOffset: UInt64(bodyBelief.byteOffset),
       activeEpisodeAccumulatorOffset: UInt64(
         arena.layout.section(.activeEpisodeAccumulator).byteOffset
       ),
@@ -1244,6 +1251,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       surpriseSampleCount: UInt32(segmentation.surpriseSampleCount),
+      bodyBeliefCount: UInt32(bodyBelief.elementCount),
       boundaryThreshold: segmentation.boundaryThreshold,
       eventSalienceWeight: segmentation.eventSalienceWeight
     )
