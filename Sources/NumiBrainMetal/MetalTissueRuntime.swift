@@ -251,6 +251,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let fastAutonomicStateCount: Int
     let fastAutonomicStateByteCount: Int
     let fastAutonomicStateBuffer: any MTLBuffer
+    let acceptedSomaticOutputCount: Int
+    let acceptedSomaticOutputByteCount: Int
+    let acceptedSomaticOutputBuffer: any MTLBuffer
+    let actuatorCommandKind: ActuatorCommandKind
 
     fileprivate init(
       transactionFingerprint: UInt64,
@@ -266,7 +270,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       fastCerebellarStateBuffer: any MTLBuffer,
       fastAutonomicStateCount: Int,
       fastAutonomicStateByteCount: Int,
-      fastAutonomicStateBuffer: any MTLBuffer
+      fastAutonomicStateBuffer: any MTLBuffer,
+      acceptedSomaticOutputCount: Int,
+      acceptedSomaticOutputByteCount: Int,
+      acceptedSomaticOutputBuffer: any MTLBuffer,
+      actuatorCommandKind: ActuatorCommandKind
     ) {
       self.transactionFingerprint = transactionFingerprint
       self.acceptedTimestamp = acceptedTimestamp
@@ -282,6 +290,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.fastAutonomicStateCount = fastAutonomicStateCount
       self.fastAutonomicStateByteCount = fastAutonomicStateByteCount
       self.fastAutonomicStateBuffer = fastAutonomicStateBuffer
+      self.acceptedSomaticOutputCount = acceptedSomaticOutputCount
+      self.acceptedSomaticOutputByteCount = acceptedSomaticOutputByteCount
+      self.acceptedSomaticOutputBuffer = acceptedSomaticOutputBuffer
+      self.actuatorCommandKind = actuatorCommandKind
     }
   }
   /// Retains the exact Metal allocations lent to one immediate NumanX
@@ -552,6 +564,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let stagedRegionalPlasticModulationBuffer: any MTLBuffer
   private let protectiveMotorOutputHeaderBuffers: [any MTLBuffer]
   private let protectiveMuscleExcitationBuffers: [any MTLBuffer]
+  private let stagedAcceptedSomaticOutputBuffer: any MTLBuffer
   private let bodyLoadFieldUniformBuffer: any MTLBuffer
   private let bodyLoadFieldUpdateBuffer: any MTLBuffer
   private let bodyLoadFieldStateBuffers: [any MTLBuffer]
@@ -650,6 +663,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let destinationIndex: Int
     let historyWriteSlot: Int
     let historyWritePlane: UInt32
+    let motorStateIndex: Int
   }
 
   private struct InteractiveJointRoot {
@@ -1643,6 +1657,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         length: protectiveMuscleExcitationByteCount,
         options: [.storageModePrivate, .hazardTrackingModeTracked]
       ),
+      let stagedAcceptedSomaticOutputBuffer = device.makeBuffer(
+        length: protectiveMuscleExcitationByteCount,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let bodyLoadFieldUniformBuffer = device.makeBuffer(
         length: MemoryLayout<BodyLoadFieldUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -1815,6 +1833,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       "NumiBrain protective muscle excitation generation 0"
     secondProtectiveMuscleExcitationBuffer.label =
       "NumiBrain protective muscle excitation generation 1"
+    stagedAcceptedSomaticOutputBuffer.label =
+      "NumiBrain last accepted physical somatic output"
     bodyLoadFieldUniformBuffer.label = "NumiBrain body-load field uniforms"
     bodyLoadFieldUpdateBuffer.label = "NumiBrain accepted body-load field updates"
     firstBodyLoadFieldStateBuffer.label = "NumiBrain body-load field generation 0"
@@ -1916,7 +1936,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain tissue residency"
-    residencyDescriptor.initialCapacity = stateBuffers.count + 52
+    residencyDescriptor.initialCapacity = stateBuffers.count + 53
       + sharedParameterBank.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
@@ -2012,6 +2032,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     for buffer in protectiveMuscleExcitationBuffers {
       residencySet.addAllocation(buffer)
     }
+    residencySet.addAllocation(stagedAcceptedSomaticOutputBuffer)
     residencySet.addAllocation(bodyLoadFieldUniformBuffer)
     residencySet.addAllocation(bodyLoadFieldUpdateBuffer)
     for buffer in bodyLoadFieldStateBuffers {
@@ -2144,6 +2165,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       stagedRegionalPlasticModulationBuffer
     self.protectiveMotorOutputHeaderBuffers = protectiveMotorOutputHeaderBuffers
     self.protectiveMuscleExcitationBuffers = protectiveMuscleExcitationBuffers
+    self.stagedAcceptedSomaticOutputBuffer = stagedAcceptedSomaticOutputBuffer
     self.bodyLoadFieldUniformBuffer = bodyLoadFieldUniformBuffer
     self.bodyLoadFieldUpdateBuffer = bodyLoadFieldUpdateBuffer
     self.bodyLoadFieldStateBuffers = bodyLoadFieldStateBuffers
@@ -3643,21 +3665,22 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         threadsPerThreadgroup: threadgroupSize()
       )
     }
-    root.transaction = transaction
-    root.candidate = InteractiveCandidate(
-      substep: substep,
-      destinationIndex: destination,
-      historyWriteSlot: historyWriteSlot,
-      historyWritePlane: historyWritePlane
-    )
-    root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartTime
-    interactiveJointRoot = root
     let protectiveStateIndex =
       root.fastSchedulerWindow?.outputClockIndex
       ?? (descendingSomaticTransactionFingerprint
         == root.transaction.token.fingerprint
           ? 1 - committedSchedulerClockIndex
           : committedSchedulerClockIndex)
+    root.transaction = transaction
+    root.candidate = InteractiveCandidate(
+      substep: substep,
+      destinationIndex: destination,
+      historyWriteSlot: historyWriteSlot,
+      historyWritePlane: historyWritePlane,
+      motorStateIndex: protectiveStateIndex
+    )
+    root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartTime
+    interactiveJointRoot = root
     let protectiveTimestamp =
       root.fastSchedulerWindow == nil
       ? committedSchedulerTime ?? BrainTimestamp(microseconds: 0)
@@ -3757,6 +3780,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       consumeInterruptEvents: true
     )
     let feedback = try submit(label: "NumiBrain accepted fast regional prefix") { encoder in
+      // Preserve the command that NumanX actually accepted before the
+      // post-consequence scheduler overwrites this ping-pong motor generation
+      // with the command for the next candidate.
+      encoder.copy(
+        sourceBuffer: protectiveMuscleExcitationBuffers[candidate.motorStateIndex],
+        sourceOffset: 0,
+        destinationBuffer: stagedAcceptedSomaticOutputBuffer,
+        destinationOffset: 0,
+        size: protectiveMuscleExcitationByteCount
+      )
+      encoder.barrier(
+        afterEncoderStages: .blit,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
       encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     }
     root.transaction = transaction
@@ -4025,7 +4063,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       fastAutonomicStateCount: boundFastAutonomicChannelCount,
       fastAutonomicStateByteCount:
         boundFastAutonomicChannelCount * Self.fastAutonomicStateStride,
-      fastAutonomicStateBuffer: stagedFastAutonomicStateBuffer
+      fastAutonomicStateBuffer: stagedFastAutonomicStateBuffer,
+      acceptedSomaticOutputCount: protectiveMotorProfile.channels.count,
+      acceptedSomaticOutputByteCount: protectiveMuscleExcitationByteCount,
+      acceptedSomaticOutputBuffer: stagedAcceptedSomaticOutputBuffer,
+      actuatorCommandKind: boundActuatorCommandKind
     )
   }
 

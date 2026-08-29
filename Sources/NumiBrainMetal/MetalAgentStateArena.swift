@@ -64,6 +64,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case fastAutonomicState = 41
   /// Accepted per-channel estimate of epistemic value from active sensing.
   case activeSensingEfficacy = 42
+  /// Exact physical actuator command accepted by the fast NumanX substep loop.
+  case acceptedSomaticOutput = 43
 }
 
 @frozen
@@ -433,6 +435,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       .activeSensingEfficacy,
       count: max(Int(species.motor.activeSensingActionDimension), 1),
       stride: Self.activeSensingEfficacyStride
+    )
+    try builder.append(
+      .acceptedSomaticOutput,
+      count: Int(species.motor.actuatorCount),
+      stride: MemoryLayout<Float>.stride
     )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)

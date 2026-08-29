@@ -11,6 +11,7 @@ constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
 constant uint NB_WORLD_RECEPTOR_DIMENSION = 128u;
 constant uint NB_WORLD_HEAD_COUNT = 5u;
+constant uint NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION = 1u;
 
 struct NBAcceptedConsequenceUniforms {
   ulong target_timestamp_microseconds;
@@ -34,6 +35,7 @@ struct NBAcceptedConsequenceUniforms {
   ulong somatic_output_offset;
   ulong active_sensing_command_offset;
   ulong active_sensing_efficacy_offset;
+  ulong accepted_somatic_output_offset;
   ulong physics_state_fingerprint;
   uint observation_count;
   uint body_count;
@@ -169,6 +171,17 @@ struct NBActiveSensingEfficacyRecord {
   float reserved;
 };
 
+struct NBAcceptedActuatorDescriptor {
+  uint actuator_identifier;
+  uint command_kind;
+  uint flags;
+  uint reserved;
+  float output_minimum;
+  float output_maximum;
+  float neutral_command;
+  float emergency_command;
+};
+
 struct NBOptionCandidateRecord {
   ulong option_identifier;
   ulong goal_identifier;
@@ -241,7 +254,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 328);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 336);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -250,11 +263,47 @@ static_assert(sizeof(NBWorkspaceMetadataRecord) == 64);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
+static_assert(sizeof(NBAcceptedActuatorDescriptor) == 32);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBMotorCommandRecord) == 32);
 static_assert(sizeof(NBCerebellarExpertRecord) == 256);
+
+/// Converts the exact accepted physical actuator command back into the
+/// species-neutral causal feature used by body-effect and policy learning.
+/// Muscle excitation remains [0, 1]; other actuators are signed around their
+/// explicit physical neutral and preserve asymmetric ranges.
+inline float nb_accepted_actuator_feature(
+  const float physical_command,
+  const NBAcceptedActuatorDescriptor actuator)
+{
+  if (actuator.command_kind == NB_ACCEPTED_ACTUATOR_MUSCLE_EXCITATION) {
+    return clamp(
+      (physical_command - actuator.output_minimum)
+        / max(actuator.output_maximum - actuator.output_minimum, 1.0e-6f),
+      0.0f,
+      1.0f
+    );
+  }
+  const float bounded_command = clamp(
+    physical_command, actuator.output_minimum, actuator.output_maximum
+  );
+  if (bounded_command >= actuator.neutral_command) {
+    return clamp(
+      (bounded_command - actuator.neutral_command)
+        / max(actuator.output_maximum - actuator.neutral_command, 1.0e-6f),
+      0.0f,
+      1.0f
+    );
+  }
+  return -clamp(
+    (actuator.neutral_command - bounded_command)
+      / max(actuator.neutral_command - actuator.output_minimum, 1.0e-6f),
+    0.0f,
+    1.0f
+  );
+}
 
 inline float nb_observation(
   device const float *observations,
@@ -449,6 +498,8 @@ kernel void assimilate_accepted_body_and_physiology(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const NBAcceptedActuatorDescriptor *actuator_descriptors
+    [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
   device const float *observations = reinterpret_cast<device const float *>(
@@ -497,15 +548,31 @@ kernel void assimilate_accepted_body_and_physiology(
     device float *muscle = reinterpret_cast<device float *>(
       hot_state + uniforms.muscle_belief_offset + ulong(gid) * 192ul
     );
-    device const float *somatic = reinterpret_cast<device const float *>(
+    device float *somatic = reinterpret_cast<device float *>(
       hot_state + uniforms.somatic_output_offset
     );
+    device const float *accepted_somatic =
+      reinterpret_cast<device const float *>(
+        hot_state + uniforms.accepted_somatic_output_offset
+      );
     const float proprioception = nb_observation(
       observations, uniforms.proprioception_offset,
       uniforms.proprioception_count, gid
     );
+    const uint actuator_index = gid % max(uniforms.actuator_count, 1u);
+    const NBAcceptedActuatorDescriptor actuator =
+      actuator_descriptors[actuator_index];
+    const float physical_command = uniforms.actuator_count == 0u
+      ? 0.0f : accepted_somatic[actuator_index];
     const float command = uniforms.actuator_count == 0u
-      ? 0.0f : somatic[gid % uniforms.actuator_count];
+      || (actuator.flags & NB_ACCEPTED_STATE_VALID) == 0u
+      ? 0.0f
+      : nb_accepted_actuator_feature(physical_command, actuator);
+    if (gid < uniforms.actuator_count) {
+      // Committed transition records consume this exact accepted action
+      // feature after consequence assimilation, never the rejected decision.
+      somatic[gid] = command;
+    }
     const float prior_proprioception = muscle[1];
     const float observed_delta = proprioception - prior_proprioception;
     const float effect_learning_rate = clamp(
@@ -549,6 +616,13 @@ kernel void assimilate_accepted_body_and_physiology(
     muscle[9] = external_disturbance;
     muscle[10] = predicted_delta;
     muscle[11] = command;
+    device ulong *effector_identity = reinterpret_cast<device ulong *>(
+      muscle + 16
+    );
+    effector_identity[0] = ulong(actuator.actuator_identifier);
+    effector_identity[1] = uniforms.target_timestamp_microseconds;
+    effector_identity[2] = ulong(actuator.command_kind);
+    effector_identity[3] = NB_ACCEPTED_STATE_VALID;
   }
   if (gid < uniforms.physiology_count) {
     device float *physiology = reinterpret_cast<device float *>(

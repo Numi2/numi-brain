@@ -24,6 +24,7 @@ private struct AcceptedConsequenceUniforms {
   var somaticOutputOffset: UInt64 = 0
   var activeSensingCommandOffset: UInt64 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
+  var acceptedSomaticOutputOffset: UInt64 = 0
   var physicsStateFingerprint: UInt64 = 0
   var observationCount: UInt32 = 0
   var bodyCount: UInt32 = 0
@@ -64,6 +65,17 @@ private struct AcceptedConsequenceUniforms {
   var plasticityLearningRate: Float = 0
 }
 
+private struct AcceptedActuatorDescriptor {
+  var actuatorIdentifier: UInt32 = 0
+  var commandKind: UInt32 = 0
+  var flags: UInt32 = 0
+  var reserved: UInt32 = 0
+  var outputMinimum: Float = 0
+  var outputMaximum: Float = 1
+  var neutralCommand: Float = 0
+  var emergencyCommand: Float = 0
+}
+
 private struct ObservationRange: Sendable {
   let offset: UInt32
   let count: UInt32
@@ -82,6 +94,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let pipelines: [any MTLComputePipelineState]
   private let argumentTable: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
+  private let actuatorDescriptorBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -90,7 +103,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     dynamics: AcceptedConsequenceDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 328,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 336,
+      MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       arena.layout.speciesTemplateFingerprint == species.fingerprint
     else {
       throw TissueError.metal("accepted-consequence ABI or species binding drift")
@@ -112,6 +126,35 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     guard Int(offset) == arena.layout.section(.sensoryObservations).elementCount else {
       throw TissueError.metal("accepted sensory ranges do not cover the arena")
+    }
+    let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
+      AcceptedActuatorDescriptor(
+        actuatorIdentifier: channel.identifier,
+        commandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
+        flags: 1,
+        reserved: 0,
+        outputMinimum: channel.outputMinimum,
+        outputMaximum: channel.outputMaximum,
+        neutralCommand: channel.neutralCommand,
+        emergencyCommand: channel.emergencyCommand
+      )
+    }
+    guard actuatorDescriptors.count == Int(species.motor.actuatorCount),
+      let actuatorDescriptorBuffer = device.makeBuffer(
+        length: actuatorDescriptors.count
+          * MemoryLayout<AcceptedActuatorDescriptor>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate accepted actuator descriptors")
+    }
+    actuatorDescriptorBuffer.label =
+      "NumiBrain immutable accepted actuator descriptors"
+    actuatorDescriptors.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      actuatorDescriptorBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
     }
     let sourceURL =
       Bundle.module.url(
@@ -156,7 +199,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 6
+    descriptor.maxBufferBindCount = 7
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -183,6 +226,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       try sharedParameters.gpuAddress(.plasticity, minimumScalarCount: 8),
       index: 5
     )
+    argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
     self.arena = arena
     self.species = species
     self.dynamics = dynamics
@@ -194,9 +238,12 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.pipelines = pipelines
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
+    self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
   }
 
-  public var residencyAllocation: any MTLAllocation { uniformBuffer }
+  public var residencyAllocations: [any MTLAllocation] {
+    [uniformBuffer, actuatorDescriptorBuffer]
+  }
 
   public func encode(
     encoder: any MTL4ComputeCommandEncoder,
@@ -325,6 +372,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       activeSensingCommandOffset: UInt64(activeSensing.byteOffset),
       activeSensingEfficacyOffset: UInt64(
         hot(.activeSensingEfficacy).byteOffset
+      ),
+      acceptedSomaticOutputOffset: UInt64(
+        hot(.acceptedSomaticOutput).byteOffset
       ),
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       observationCount: UInt32(hot(.sensoryObservations).elementCount),

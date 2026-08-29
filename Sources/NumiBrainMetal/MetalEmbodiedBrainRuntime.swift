@@ -282,7 +282,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       + memoryRuntime.residencyAllocations.count
       + sharedParameterBank.residencyAllocations.count
       + developmentalRuntime.residencyAllocations.count
-      + decisionRuntime.residencyAllocations.count + 1
+      + decisionRuntime.residencyAllocations.count
+      + acceptedConsequenceRuntime.residencyAllocations.count
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -307,7 +308,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for allocation in developmentalRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
-    residencySet.addAllocation(acceptedConsequenceRuntime.residencyAllocation)
+    for allocation in acceptedConsequenceRuntime.residencyAllocations {
+      residencySet.addAllocation(allocation)
+    }
     for allocation in memoryRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
@@ -850,10 +853,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
-  /// Imports accepted fast-substep oscillator, reflex, per-actuator
-  /// cerebellar, and autonomic state into the same shadow generation that
-  /// will receive accepted sensory consequences and memory journals. A later
-  /// abort discards this copy with the rest of the mind.
+  /// Imports the exact accepted physical somatic output plus fast-substep
+  /// oscillator, reflex, per-actuator cerebellar, and autonomic state into the
+  /// same shadow generation. That generation receives accepted sensory
+  /// consequences and memory journals; a later abort discards every copy with
+  /// the rest of the mind.
   func importAcceptedFastMotorState(
     _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
     transaction: MetalJointAgentStateTransaction
@@ -867,6 +871,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     )
     let fastAutonomicSection = agentStateRuntime.arena.layout.section(
       .fastAutonomicState
+    )
+    let acceptedSomaticSection = agentStateRuntime.arena.layout.section(
+      .acceptedSomaticOutput
     )
     let expectedReflexRuleCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
@@ -885,7 +892,12 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       lease.fastCerebellarStateByteCount == fastCerebellarSection.byteCount,
       lease.fastAutonomicStateCount
         == Int(species.physiology.autonomicActionDimension),
-      lease.fastAutonomicStateByteCount == fastAutonomicSection.byteCount
+      lease.fastAutonomicStateByteCount == fastAutonomicSection.byteCount,
+      lease.acceptedSomaticOutputCount == Int(species.motor.actuatorCount),
+      lease.acceptedSomaticOutputByteCount == acceptedSomaticSection.byteCount,
+      lease.acceptedSomaticOutputBuffer.length
+        >= lease.acceptedSomaticOutputByteCount,
+      lease.actuatorCommandKind == species.motor.actuatorCommandKind
     else {
       throw TissueError.transaction(
         "accepted fast motor state does not match the cognitive shadow"
@@ -894,10 +906,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     guard lease.byteCount > 0 || lease.reflexStateByteCount > 0
       || lease.fastCerebellarStateByteCount > 0
       || lease.fastAutonomicStateByteCount > 0
+      || lease.acceptedSomaticOutputByteCount > 0
     else { return }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
-    descriptor.initialCapacity = 4
+    descriptor.initialCapacity = 5
     let borrowedResidency: any MTLResidencySet
     do {
       borrowedResidency = try device.makeResidencySet(descriptor: descriptor)
@@ -908,6 +921,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     borrowedResidency.addAllocation(lease.reflexStateBuffer)
     borrowedResidency.addAllocation(lease.fastCerebellarStateBuffer)
     borrowedResidency.addAllocation(lease.fastAutonomicStateBuffer)
+    borrowedResidency.addAllocation(lease.acceptedSomaticOutputBuffer)
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
@@ -957,6 +971,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         destinationBuffer: destination,
         destinationOffset: fastAutonomicSection.byteOffset,
         size: lease.fastAutonomicStateByteCount
+      )
+    }
+    if lease.acceptedSomaticOutputByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.acceptedSomaticOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedSomaticSection.byteOffset,
+        size: lease.acceptedSomaticOutputByteCount
       )
     }
     encoder.endEncoding()
