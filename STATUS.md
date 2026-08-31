@@ -9,6 +9,7 @@
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, GPU-generated indirect work consumption, environment-major invocation compaction, independent compact cohort diagnostic advance, timestamp-synchronous routed regional-token integration for both one-agent and cohort execution, protective-command derivation, and compiled profile-to-muscle mapping with private transactional command, header, and excitation generations
 - NumanX interop: compiled root/substep/motor/gate/accepted-physics/Brain-preflight/ACK/applied/publication ABIs; same-device retained motor and sensor leases; asynchronous Metal 4 decision and motor-ready gates; a versioned C bridge owning the real full-body Human, HumanIO, Matter, and ABI4 owner lifecycle; persistent device-resident q/v/MyoSim continuation; aggregate proprioceptive, interoceptive, kinesthetic, vestibular, tactile, vision/depth, and auditory channels; mutation-free proposal, Matter-then-Human apply/restore, and one aggregate reader/publication gate across Brain, physics, and sensors. The bounded production path is live for one environment and one physical substep. The learned v11 policy head enacts sixteen sensor-conditioned synergies through the immutable 416-by-16 muscle decoder; all seven physical channels and autonomous gaze now pass bounded held-out causal-benefit interventions. Anatomical nervous topology, calibrated systemic physiology, multimodal general control, multi-environment production scale, and performance qualification remain absent.
+- Gate C packaging: a deterministic `.nbpolicy` now binds a learned publication's exact bytes to model/runtime/species/controller/safety identity, source and split provenance, action-generation/latency declarations, and the complete Gate C evidence-axis manifest. Developmental seeds, tampering, split aliases, missing/failed evidence, and Metal runtime identity drift fail closed. This is a candidate/deployment boundary, not a trained foundation policy or Gate C promotion; production datasets and held-out qualification remain absent.
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU execution/correctness evidence: bounded Apple M4 closed-loop NumiBrain-NumanX temporal-body-field joint-root v0.8, private-field v0.7 through selected-muscle v0.2, Apple M4 Pro NumanX MyoSim borrowed-excitation v0.1, protective-motor/NumanX-packet v0.2, routed-cohort v0.20, accepted-fast-prefix joint v0.6, and interactive-joint v0.4 full-suite correctness, Apple M4 v0.19 routed-cohort correctness, Apple M4 v0.14 lightweight indirect-consumption correctness, and Apple M4 Pro/M4 v0.12 and earlier tissue correctness probes only; all are correctness evidence, and production throughput and counter qualification remain pending
 
@@ -99,9 +100,9 @@ physical search-coverage criterion. The bounded Gate B causal-control matrix is
 therefore complete; systemic physiology, language, coupled ocular/neck dynamics,
 autonomous capability discovery, and throughput remain explicit follow-on work.
 
-Qualification is split by resource envelope: the complete 150-test package
+Qualification is split by resource envelope: the complete 154-test package
 passes with zero failures and seven intentionally unconfigured bridge/stress
-skips in 58.858 seconds;
+skips in 63.356 seconds;
 the bounded real external-task plus publication/retry E2E passes 2/2 in 15.514
 seconds; the accepted-maturation/replay, rejected-root, and malformed-intent
 physical-gaze proofs pass independently in 20.181, 7.889, and 7.176 seconds;
@@ -109,7 +110,7 @@ the paired command-ablation search proof passes in 13.703 seconds;
 and the seven explicit 37-root modality cohorts pass independently in
 39.644–40.080 seconds each. Strict Developmental and Decision Metal checks pass,
 the 40-test ABI4/provisional matrix passes, and a fresh production build succeeds
-in 56.49 seconds. These timings are orchestration telemetry, not control-loop
+in 86.85 seconds. These timings are orchestration telemetry, not control-loop
 latency or throughput measurements.
 
 ## Joint transaction foundation

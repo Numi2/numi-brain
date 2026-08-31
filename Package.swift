@@ -15,6 +15,7 @@ let package = Package(
     .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
     .executable(name: "numi-brain-dispatch", targets: ["NumiBrainDispatchCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
+    .executable(name: "numi-brain-policy", targets: ["NumiBrainPolicyCLI"]),
     .executable(
       name: "numi-brain-numanx-interop",
       targets: ["NumiBrainNumanXInteropCLI"]
@@ -66,6 +67,10 @@ let package = Package(
     .executableTarget(
       name: "NumiBrainTissueCLI",
       dependencies: ["NumiBrainCore", "NumiBrainMetal"]
+    ),
+    .executableTarget(
+      name: "NumiBrainPolicyCLI",
+      dependencies: ["NumiBrainCore"]
     ),
     .executableTarget(
       name: "NumiBrainNumanXInteropCLI",

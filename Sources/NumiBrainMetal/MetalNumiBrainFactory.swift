@@ -178,4 +178,47 @@ extension MetalNumiBrainHandle {
       device: device
     )
   }
+
+  /// Creates a runtime from one content-addressed learned-policy package. The
+  /// default package boundary requires a complete Gate C evidence manifest;
+  /// explicit candidate evaluation may opt out while retaining structural,
+  /// parameter-byte, species, and program-identity validation. Manifest
+  /// completeness does not replace rerunning its content-addressed evidence.
+  public static func create(
+    configuration: MetalNumiBrainConfiguration,
+    policyPackage: BrainFoundationPolicyPackage,
+    requireGateCEvidenceManifest: Bool = true,
+    device requestedDevice: (any MTLDevice)? = nil
+  ) throws -> MetalNumiBrainHandle {
+    if requireGateCEvidenceManifest {
+      try policyPackage.validateGateCEvidenceManifest()
+    } else {
+      try policyPackage.validate()
+    }
+    let species = configuration.compiledSpeciesTemplate.species
+    let regionalProgram = try species.regionalProgram()
+    let enabledModalities = species.senses.filter(\.enabled).map(\.modality)
+    let planningHorizon = species.development.map(\.planningHorizonSteps).max() ?? 0
+    guard policyPackage.architecture.speciesFingerprint == species.fingerprint,
+      policyPackage.architecture.runtimeProgramFingerprint
+        == regionalProgram.fingerprint,
+      policyPackage.architecture.lowLevelControllerFingerprint
+        == configuration.compiledSpeciesTemplate.somaticSynergyCatalog.fingerprint,
+      policyPackage.architecture.hardSafetyProgramFingerprint
+        == configuration.compiledSpeciesTemplate.protectiveMotorProfile.fingerprint,
+      policyPackage.architecture.inputModalities
+        == enabledModalities.sorted(by: { $0.rawValue < $1.rawValue }),
+      policyPackage.architecture.actionGeneration == .autoregressive,
+      policyPackage.architecture.actionHorizon == UInt32(planningHorizon)
+    else {
+      throw TissueError.metal(
+        "foundation-policy package does not match the requested Metal runtime"
+      )
+    }
+    return try create(
+      configuration: configuration,
+      publication: policyPackage.publication(),
+      device: requestedDevice
+    )
+  }
 }

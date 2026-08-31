@@ -239,6 +239,16 @@ and [pi0.5](https://www.physicalintelligence.company/download/pi05.pdf).
 NumanX must run comparable held-out tasks before making a comparative
 generalist claim.
 
+The first Gate C production boundary is now executable but is not a promotion:
+`BrainFoundationPolicyPackage` binds exact learned parameter bytes, architecture,
+species/runtime/controller/safety identities, dataset and split provenance, and
+all required evidence axes into a deterministic content-addressed `.nbpolicy`.
+The Metal factory rejects seeds, incomplete evidence manifests, sensor/program/
+controller drift, and unsupported action-generation geometry by default. The
+`numi-brain-policy` CLI can inspect or structurally validate a package. No real
+production package or retained Gate C dataset/evaluation matrix exists yet, so
+Gate C remains open. See [NUMANX_GATE_C_REQUIREMENTS.md](NUMANX_GATE_C_REQUIREMENTS.md).
+
 ### Gate D — physical and biological validation
 
 Required suites include:
