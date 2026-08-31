@@ -179,22 +179,46 @@ extension MetalNumiBrainHandle {
     )
   }
 
-  /// Creates a runtime from one content-addressed learned-policy package. The
-  /// default package boundary requires a complete Gate C evidence manifest;
-  /// explicit candidate evaluation may opt out while retaining structural,
-  /// parameter-byte, species, and program-identity validation. Manifest
-  /// completeness does not replace rerunning its content-addressed evidence.
+  /// Creates a runtime from one learned-policy package only after the evidence
+  /// verifier has streamed and semantically checked every retained artifact.
+  /// The receipt is in-process authority and cannot be decoded or constructed
+  /// from package declarations alone.
   public static func create(
     configuration: MetalNumiBrainConfiguration,
     policyPackage: BrainFoundationPolicyPackage,
-    requireGateCEvidenceManifest: Bool = true,
+    evidenceReceipt: BrainFoundationPolicyEvidenceReceipt,
     device requestedDevice: (any MTLDevice)? = nil
   ) throws -> MetalNumiBrainHandle {
-    if requireGateCEvidenceManifest {
-      try policyPackage.validateGateCEvidenceManifest()
-    } else {
-      try policyPackage.validate()
-    }
+    try policyPackage.validateGateCEvidenceManifest()
+    try evidenceReceipt.validate(package: policyPackage)
+    return try createValidatedPolicyPackage(
+      configuration: configuration,
+      policyPackage: policyPackage,
+      requestedDevice: requestedDevice
+    )
+  }
+
+  /// Explicit offline/evaluation path for a structurally valid candidate whose
+  /// retained Gate C evidence has not yet been verified. This name prevents an
+  /// unverified package from silently entering the production admission path.
+  public static func createUnverifiedPolicyCandidate(
+    configuration: MetalNumiBrainConfiguration,
+    policyPackage: BrainFoundationPolicyPackage,
+    device requestedDevice: (any MTLDevice)? = nil
+  ) throws -> MetalNumiBrainHandle {
+    try policyPackage.validate()
+    return try createValidatedPolicyPackage(
+      configuration: configuration,
+      policyPackage: policyPackage,
+      requestedDevice: requestedDevice
+    )
+  }
+
+  private static func createValidatedPolicyPackage(
+    configuration: MetalNumiBrainConfiguration,
+    policyPackage: BrainFoundationPolicyPackage,
+    requestedDevice: (any MTLDevice)?
+  ) throws -> MetalNumiBrainHandle {
     let species = configuration.compiledSpeciesTemplate.species
     let regionalProgram = try species.regionalProgram()
     let enabledModalities = species.senses.filter(\.enabled).map(\.modality)

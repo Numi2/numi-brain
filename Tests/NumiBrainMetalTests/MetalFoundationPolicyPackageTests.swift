@@ -177,21 +177,195 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
     )
   }
 
-  func testMetalFactoryLoadsOnlyCompleteExactPolicyManifestByDefault() throws {
+  private struct EvidenceFixture {
+    let policyPackage: BrainFoundationPolicyPackage
+    let receipt: BrainFoundationPolicyEvidenceReceipt
+    let directory: URL
+  }
+
+  private func requiredSplit(
+    for axis: BrainPolicyQualificationAxis
+  ) -> BrainPolicyDatasetSplit {
+    switch axis {
+    case .actionGenerationLatency: .validation
+    case .crossTask: .heldOutTask
+    case .crossScene: .heldOutScene
+    case .crossObject: .heldOutObject
+    case .crossEmbodiment: .heldOutEmbodiment
+    case .fewShotAdaptation: .adaptation
+    case .delayedConsequences, .interruptedTasks, .stateAliasing: .heldOutTask
+    case .uncertaintyAndOOD, .hardSafetyRetention: .safety
+    }
+  }
+
+  private func evidenceFixture(
+    compiled: CompiledSpeciesTemplate,
+    publication: BrainParameterPublication,
+    hardSafetyFingerprint: UInt64? = nil
+  ) throws -> EvidenceFixture {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    do {
+      let simHash = try BrainPolicyEvidenceArtifact.write(
+        Data("metal-sim-source".utf8),
+        to: directory
+      )
+      let externalHash = try BrainPolicyEvidenceArtifact.write(
+        Data("metal-external-source".utf8),
+        to: directory
+      )
+      let sources = [
+        try BrainPolicyDatasetSource(
+          identifier: "sim",
+          revision: "r1",
+          sourceKind: .simulated,
+          purposes: [.multimodalPretraining, .simulationDemonstration],
+          sourceURI: "https://example.invalid/sim",
+          licenseIdentifier: "Apache-2.0",
+          contentSHA256: simHash
+        ),
+        try BrainPolicyDatasetSource(
+          identifier: "external",
+          revision: "r1",
+          sourceKind: .independentlySourced,
+          purposes: [.embodiment],
+          sourceURI: "https://example.invalid/external",
+          licenseIdentifier: "CC-BY-4.0",
+          contentSHA256: externalHash
+        ),
+      ]
+      var membersByPartition: [String: [String]] = [:]
+      var partitions: [BrainPolicyDatasetPartition] = []
+      for (index, split) in BrainPolicyDatasetSplit.allCases.enumerated() {
+        let identifier = "partition-\(split.rawValue)"
+        let members = [
+          BrainPolicyEvidenceArtifact.sha256(Data("\(identifier)-0".utf8)),
+          BrainPolicyEvidenceArtifact.sha256(Data("\(identifier)-1".utf8)),
+        ]
+        let membership = try BrainPolicyDatasetMembershipEvidence(
+          partitionIdentifier: identifier,
+          memberSHA256: members
+        )
+        let membershipHash = try BrainPolicyEvidenceArtifact.write(
+          membership.encoded(),
+          to: directory
+        )
+        membersByPartition[identifier] = members
+        partitions.append(
+          try BrainPolicyDatasetPartition(
+            identifier: identifier,
+            split: split,
+            datasetIdentifier: split == .training ? "sim" : "external",
+            membershipArtifactSHA256: membershipHash,
+            sampleCount: UInt64(members.count),
+            learnerBatchFingerprint: split == .training ? 0xc001 : 0,
+            taskSetFingerprint: UInt64(10 + index),
+            sceneSetFingerprint: UInt64(20 + index),
+            objectSetFingerprint: UInt64(30 + index),
+            embodimentSetFingerprint: UInt64(40 + index)
+          ))
+      }
+      let splitEvidence = try BrainPolicySplitIntegrityEvidence(
+        bindings: try partitions.map {
+          try BrainPolicySplitIntegrityBinding(
+            partitionIdentifier: $0.identifier,
+            membershipArtifactSHA256: $0.membershipArtifactSHA256
+          )
+        }
+      )
+      let splitHash = try BrainPolicyEvidenceArtifact.write(
+        splitEvidence.encoded(),
+        to: directory
+      )
+      let enabledModalities = compiled.species.senses.filter(\.enabled).map(\.modality)
+      let architecture = try BrainFoundationPolicyArchitecture(
+        family: .hierarchicalEmbodied,
+        modelIdentifier: "numibrain.metal.package.test",
+        modelRevision: "r1",
+        modelWeightsSHA256:
+          try BrainFoundationPolicyPackage.parameterWeightsSHA256(publication),
+        speciesFingerprint: compiled.species.fingerprint,
+        runtimeProgramFingerprint: publication.version.regionalProgramFingerprint,
+        lowLevelControllerFingerprint: compiled.somaticSynergyCatalog.fingerprint,
+        hardSafetyProgramFingerprint: hardSafetyFingerprint
+          ?? compiled.protectiveMotorProfile.fingerprint,
+        inputModalities: enabledModalities,
+        goalInterfaces: [.structuredTask, .demonstration],
+        actionGeneration: .autoregressive,
+        actionHorizon: 4,
+        inferencePrecision: .fp32,
+        maximumInferenceLatencyMicroseconds: 10_000,
+        uncertaintyMethod: "ensemble-conformal-v1",
+        supervisionRequestThreshold: 0.7,
+        rootRejectionThreshold: 0.9
+      )
+      let results = try BrainPolicyQualificationAxis.allCases.map { axis in
+        let split = requiredSplit(for: axis)
+        let partition = try XCTUnwrap(partitions.first(where: { $0.split == split }))
+        let members = try XCTUnwrap(membersByPartition[partition.identifier])
+        let metric = try BrainPolicyQualificationMetricEvidence(
+          identifier: "\(axis.rawValue)-score",
+          unit: "ratio",
+          reducer: .mean,
+          threshold: 0.9,
+          direction: .atLeast,
+          observations: try members.map {
+            try BrainPolicyMetricObservation(sampleSHA256: $0, value: 1)
+          }
+        )
+        let evidence = try BrainPolicyQualificationEvidence(
+          axis: axis,
+          modelWeightsSHA256: architecture.modelWeightsSHA256,
+          partitionIdentifiers: [partition.identifier],
+          metrics: [metric]
+        )
+        _ = try BrainPolicyEvidenceArtifact.write(evidence.encoded(), to: directory)
+        return try evidence.qualificationResult()
+      }
+      let policyPackage = try BrainFoundationPolicyPackage(
+        packageIdentifier: "numibrain.metal.package.evidence.r1",
+        createdAtUnixMicroseconds: 1,
+        sourceRevision: "r1",
+        toolchainIdentifier: "swift-metal-test",
+        architecture: architecture,
+        parameterPublication: publication,
+        datasetSources: sources,
+        datasetPartitions: partitions,
+        splitIntegrityReportSHA256: splitHash,
+        qualificationResults: results
+      )
+      return EvidenceFixture(
+        policyPackage: policyPackage,
+        receipt: try BrainFoundationPolicyEvidenceVerifier.verify(
+          package: policyPackage,
+          artifactDirectory: directory
+        ),
+        directory: directory
+      )
+    } catch {
+      try? FileManager.default.removeItem(at: directory)
+      throw error
+    }
+  }
+
+  func testMetalFactoryRequiresVerifiedExactPolicyEvidence() throws {
     guard let device = MTLCreateSystemDefaultDevice() else {
       throw XCTSkip("Metal device is unavailable")
     }
     let compiled = try compiledTemplate()
     let publication = try learnedPublication(compiled: compiled)
     let configuration = try configuration(compiled: compiled)
-    let qualified = try package(
+    let qualified = try evidenceFixture(
       compiled: compiled,
-      publication: publication,
-      qualified: true
+      publication: publication
     )
+    defer { try? FileManager.default.removeItem(at: qualified.directory) }
     let handle = try MetalNumiBrainHandle.create(
       configuration: configuration,
-      policyPackage: qualified,
+      policyPackage: qualified.policyPackage,
+      evidenceReceipt: qualified.receipt,
       device: device
     )
     XCTAssertEqual(handle.committedGeneration, 0)
@@ -206,16 +380,14 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       qualified: false
     )
     XCTAssertThrowsError(
-      try MetalNumiBrainHandle.create(
-        configuration: configuration,
-        policyPackage: candidate,
-        device: device
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: candidate,
+        artifactDirectory: qualified.directory
       )
     )
-    let evaluationHandle = try MetalNumiBrainHandle.create(
+    let evaluationHandle = try MetalNumiBrainHandle.createUnverifiedPolicyCandidate(
       configuration: configuration,
       policyPackage: candidate,
-      requireGateCEvidenceManifest: false,
       device: device
     )
     XCTAssertEqual(
@@ -230,10 +402,24 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       hardSafetyFingerprint: compiled.protectiveMotorProfile.fingerprint &+ 1
     )
     XCTAssertThrowsError(
-      try MetalNumiBrainHandle.create(
+      try MetalNumiBrainHandle.createUnverifiedPolicyCandidate(
         configuration: configuration,
         policyPackage: wrongSafety,
-        requireGateCEvidenceManifest: false,
+        device: device
+      )
+    )
+
+    let otherPackage = try package(
+      compiled: compiled,
+      publication: publication,
+      qualified: true,
+      hardSafetyFingerprint: compiled.protectiveMotorProfile.fingerprint
+    )
+    XCTAssertThrowsError(
+      try MetalNumiBrainHandle.create(
+        configuration: configuration,
+        policyPackage: otherPackage,
+        evidenceReceipt: qualified.receipt,
         device: device
       )
     )

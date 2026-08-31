@@ -55,33 +55,48 @@ unknown datasets, incomplete provenance, missing axes, failed declared metrics,
 or parameter/model identity drift are rejected. Encoding uses sorted-key JSON,
 round-trips byte-identically, and supports atomic `.nbpolicy` writes.
 
-`MetalNumiBrainHandle.create(configuration:policyPackage:)` admits a package only
-when its complete evidence manifest is present and its species, enabled sensor
-set, regional program, autoregressive planning horizon, somatic-synergy catalog,
-protective motor profile, and learned parameter bytes match the actual runtime.
-Candidate evaluation must opt out explicitly; it still retains all structural
-and runtime identity checks.
+`BrainFoundationPolicyEvidenceVerifier` streams every content-addressed source,
+membership, split-integrity, and evaluation artifact from a retained artifact
+directory. It rejects missing, symlinked, hash-mismatched, overlapping, foreign-
+sample, wrong-split, wrong-model, or metric-drifted evidence. Evaluation metrics
+are recomputed from canonical per-sample observations. A successful verification
+returns a non-serializable in-process receipt bound to the exact package hash and
+the complete verified artifact set.
+
+`MetalNumiBrainHandle.create(configuration:policyPackage:evidenceReceipt:)`
+admits a package only with that exact receipt and when its species, enabled
+sensor set, regional program, autoregressive planning horizon, somatic-synergy
+catalog, protective motor profile, and learned parameter bytes match the actual
+runtime. Offline candidate evaluation uses the explicitly named
+`createUnverifiedPolicyCandidate` path; it retains all structural and runtime
+identity checks but cannot enter production admission.
 
 The inspection tool is:
 
 ```sh
 swift run numi-brain-policy inspect candidate.nbpolicy
 swift run numi-brain-policy validate candidate.nbpolicy
+swift run numi-brain-policy verify candidate.nbpolicy retained-artifacts/
 ```
 
 `validate` means that the content-addressed evidence manifest is complete and
 its declared metrics satisfy their thresholds. It deliberately does **not**
 mean that Codex or the CLI reran, reproduced, or independently authenticated the
-referenced datasets and evaluations.
+referenced datasets and evaluations. `verify` reads the retained artifacts,
+checks their SHA-256 filenames and contents, proves split disjointness, and
+recomputes every declared metric. Its printed evidence root is diagnostic;
+production admission performs the same verification in-process and consumes the
+unforgeable receipt directly.
 
 ## Current evidence and remaining work
 
 The package boundary is executable: focused Core tests prove deterministic
-round-trip, atomic write, exact publication recovery, seed rejection, tamper
-rejection, split-alias rejection, incomplete-axis rejection, and failed-metric
-rejection. A focused Apple Metal test proves default complete-manifest admission,
-explicit candidate admission, exact learned-version loading, and fail-closed
-hard-safety identity drift.
+round-trip, atomic write, exact publication recovery, streamed artifact hashing,
+metric recomputation, split disjointness, foreign-sample rejection, seed
+rejection, tamper rejection, incomplete-axis rejection, and failed-metric
+rejection. A focused Apple Metal test proves receipt-required admission, exact
+package/receipt binding, explicit unverified-candidate admission, exact learned-
+version loading, and fail-closed hard-safety identity drift.
 
 Gate C remains open. There is no retained production dataset manifest, no
 production `.nbpolicy`, no independently sourced embodiment cohort, no
@@ -92,9 +107,9 @@ Gate B learner is a small bounded successor update, not a generalist foundation
 policy. Those missing artifacts and physical results—not additional schema—are
 the next promotion work.
 
-At this checkpoint the four focused package/Metal tests pass, the complete
-Swift package passes 154 tests with seven intentionally unconfigured bridge/
-stress skips and zero failures in 63.356 seconds, `git diff --check` is clean,
-and a fresh production build including `numi-brain-policy` passes in 86.85
-seconds. These are implementation-correctness and build results, not Gate C
-task-performance evidence.
+At this checkpoint the six focused verifier/package/Metal tests pass. The full
+Swift package executes 156 tests with seven intentionally unconfigured bridge/
+stress cases skipped and zero failures in 64.75 seconds. A fresh production
+build including `numi-brain-policy` passes in 84.86 seconds, scoped format lint
+and `git diff --check` are clean. These are implementation-correctness results,
+not Gate C task-performance evidence.

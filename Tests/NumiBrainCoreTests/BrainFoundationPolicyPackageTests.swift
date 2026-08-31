@@ -258,4 +258,218 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       )
     )
   }
+
+  private struct EvidenceFixture {
+    let package: BrainFoundationPolicyPackage
+    let directory: URL
+  }
+
+  private func requiredSplit(
+    for axis: BrainPolicyQualificationAxis
+  ) -> BrainPolicyDatasetSplit {
+    switch axis {
+    case .actionGenerationLatency: .validation
+    case .crossTask: .heldOutTask
+    case .crossScene: .heldOutScene
+    case .crossObject: .heldOutObject
+    case .crossEmbodiment: .heldOutEmbodiment
+    case .fewShotAdaptation: .adaptation
+    case .delayedConsequences, .interruptedTasks, .stateAliasing: .heldOutTask
+    case .uncertaintyAndOOD, .hardSafetyRetention: .safety
+    }
+  }
+
+  private func evidenceFixture(
+    overlapSplits: Bool = false,
+    foreignMetricSample: Bool = false
+  ) throws -> EvidenceFixture {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    let simHash = try BrainPolicyEvidenceArtifact.write(
+      Data("simulated-dataset".utf8),
+      to: directory
+    )
+    let externalHash = try BrainPolicyEvidenceArtifact.write(
+      Data("independent-embodiment-dataset".utf8),
+      to: directory
+    )
+    let sources = [
+      try BrainPolicyDatasetSource(
+        identifier: "sim-v1",
+        revision: "r1",
+        sourceKind: .simulated,
+        purposes: [.multimodalPretraining, .simulationDemonstration],
+        sourceURI: "https://example.invalid/sim-v1",
+        licenseIdentifier: "Apache-2.0",
+        contentSHA256: simHash
+      ),
+      try BrainPolicyDatasetSource(
+        identifier: "external-v1",
+        revision: "r1",
+        sourceKind: .independentlySourced,
+        purposes: [.embodiment],
+        sourceURI: "https://example.invalid/external-v1",
+        licenseIdentifier: "CC-BY-4.0",
+        contentSHA256: externalHash
+      ),
+    ]
+    var membersByPartition: [String: [String]] = [:]
+    var partitions: [BrainPolicyDatasetPartition] = []
+    for (index, split) in BrainPolicyDatasetSplit.allCases.enumerated() {
+      let identifier = "partition-\(split.rawValue)"
+      var members = [
+        BrainPolicyEvidenceArtifact.sha256(Data("\(identifier)-0".utf8)),
+        BrainPolicyEvidenceArtifact.sha256(Data("\(identifier)-1".utf8)),
+      ]
+      if overlapSplits, index == 1,
+        let first = membersByPartition["partition-training"]?.first
+      {
+        members[0] = first
+      }
+      let evidence = try BrainPolicyDatasetMembershipEvidence(
+        partitionIdentifier: identifier,
+        memberSHA256: members
+      )
+      let membershipHash = try BrainPolicyEvidenceArtifact.write(
+        evidence.encoded(),
+        to: directory
+      )
+      membersByPartition[identifier] = members
+      partitions.append(
+        try BrainPolicyDatasetPartition(
+          identifier: identifier,
+          split: split,
+          datasetIdentifier: split == .training ? "sim-v1" : "external-v1",
+          membershipArtifactSHA256: membershipHash,
+          sampleCount: UInt64(members.count),
+          learnerBatchFingerprint: split == .training ? 0xabc0_0001 : 0,
+          taskSetFingerprint: UInt64(0x6000 + index),
+          sceneSetFingerprint: UInt64(0x7000 + index),
+          objectSetFingerprint: UInt64(0x8000 + index),
+          embodimentSetFingerprint: UInt64(0x9000 + index)
+        ))
+    }
+    let splitEvidence = try BrainPolicySplitIntegrityEvidence(
+      bindings: try partitions.map {
+        try BrainPolicySplitIntegrityBinding(
+          partitionIdentifier: $0.identifier,
+          membershipArtifactSHA256: $0.membershipArtifactSHA256
+        )
+      }
+    )
+    let splitHash = try BrainPolicyEvidenceArtifact.write(
+      splitEvidence.encoded(),
+      to: directory
+    )
+    let publication = try learnedPublication()
+    let architecture = try architecture(publication: publication)
+    let results = try BrainPolicyQualificationAxis.allCases.map { axis in
+      let split = requiredSplit(for: axis)
+      let partition = try XCTUnwrap(partitions.first(where: { $0.split == split }))
+      var sampleHashes = try XCTUnwrap(membersByPartition[partition.identifier])
+      if foreignMetricSample, axis == .crossTask {
+        sampleHashes[0] = BrainPolicyEvidenceArtifact.sha256(Data("foreign".utf8))
+      }
+      let metricEvidence = try BrainPolicyQualificationMetricEvidence(
+        identifier: "\(axis.rawValue)-success",
+        unit: "ratio",
+        reducer: .mean,
+        threshold: 0.8,
+        direction: .atLeast,
+        observations: try sampleHashes.map {
+          try BrainPolicyMetricObservation(sampleSHA256: $0, value: 1)
+        }
+      )
+      let evidence = try BrainPolicyQualificationEvidence(
+        axis: axis,
+        modelWeightsSHA256: architecture.modelWeightsSHA256,
+        partitionIdentifiers: [partition.identifier],
+        metrics: [metricEvidence]
+      )
+      _ = try BrainPolicyEvidenceArtifact.write(evidence.encoded(), to: directory)
+      return try evidence.qualificationResult()
+    }
+    return EvidenceFixture(
+      package: try BrainFoundationPolicyPackage(
+        packageIdentifier: "numibrain.foundation-policy.evidence.r1",
+        createdAtUnixMicroseconds: 1_788_220_800_000_000,
+        sourceRevision: "0123456789abcdef0123456789abcdef01234567",
+        toolchainIdentifier: "swift-6.3-metal-4",
+        architecture: architecture,
+        parameterPublication: publication,
+        datasetSources: sources,
+        datasetPartitions: partitions,
+        splitIntegrityReportSHA256: splitHash,
+        qualificationResults: results
+      ),
+      directory: directory
+    )
+  }
+
+  func testEvidenceVerifierStreamsHashesProvesSplitsAndRecomputesMetrics() throws {
+    let fixture = try evidenceFixture()
+    defer { try? FileManager.default.removeItem(at: fixture.directory) }
+    let receipt = try BrainFoundationPolicyEvidenceVerifier.verify(
+      package: fixture.package,
+      artifactDirectory: fixture.directory
+    )
+    try receipt.validate(package: fixture.package)
+    XCTAssertTrue(BrainPolicyEvidenceArtifact.isSHA256(receipt.evidenceRootSHA256))
+    XCTAssertEqual(
+      receipt.evidenceRootSHA256,
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: fixture.package,
+        artifactDirectory: fixture.directory
+      ).evidenceRootSHA256
+    )
+
+    let sourceHash = fixture.package.datasetSources[0].contentSHA256
+    let sourceURL = try BrainPolicyEvidenceArtifact.url(
+      forSHA256: sourceHash,
+      in: fixture.directory
+    )
+    try Data("tampered".utf8).write(to: sourceURL, options: [.atomic])
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: fixture.package,
+        artifactDirectory: fixture.directory
+      )
+    )
+
+    try FileManager.default.removeItem(at: sourceURL)
+    let symlinkTarget = fixture.directory.appending(path: "source-target")
+    try Data("simulated-dataset".utf8).write(to: symlinkTarget)
+    try FileManager.default.createSymbolicLink(
+      at: sourceURL,
+      withDestinationURL: symlinkTarget
+    )
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: fixture.package,
+        artifactDirectory: fixture.directory
+      )
+    )
+  }
+
+  func testEvidenceVerifierRejectsOverlapAndForeignMetricSamples() throws {
+    let overlap = try evidenceFixture(overlapSplits: true)
+    defer { try? FileManager.default.removeItem(at: overlap.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: overlap.package,
+        artifactDirectory: overlap.directory
+      )
+    )
+
+    let foreign = try evidenceFixture(foreignMetricSample: true)
+    defer { try? FileManager.default.removeItem(at: foreign.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: foreign.package,
+        artifactDirectory: foreign.directory
+      )
+    )
+  }
 }

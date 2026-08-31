@@ -14,27 +14,43 @@ private struct PolicySummary: Codable {
   let datasetPartitionCount: Int
   let qualificationAxisCount: Int
   let gateCEvidenceManifestComplete: Bool
+  let evidenceRootSHA256: String?
 }
 
 private func usage() -> Never {
   FileHandle.standardError.write(
     Data(
-      "usage: numi-brain-policy <inspect|validate> <package.nbpolicy>\n".utf8
+      "usage: numi-brain-policy <inspect|validate> <package.nbpolicy>\n"
+        .appending(
+          "       numi-brain-policy verify <package.nbpolicy> <artifact-directory>\n"
+        ).utf8
     ))
   exit(64)
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count == 3 else { usage() }
+guard arguments.count >= 3 else { usage() }
 let mode = arguments[1]
-guard mode == "inspect" || mode == "validate" else { usage() }
+guard mode == "inspect" || mode == "validate" || mode == "verify" else {
+  usage()
+}
+guard
+  (mode == "verify" && arguments.count == 4)
+    || (mode != "verify" && arguments.count == 3)
+else { usage() }
 
 do {
   let url = URL(fileURLWithPath: arguments[2])
   let package = try BrainFoundationPolicyPackage.decode(Data(contentsOf: url))
-  if mode == "validate" {
+  if mode == "validate" || mode == "verify" {
     try package.validateGateCEvidenceManifest()
   }
+  let receipt =
+    try mode == "verify"
+    ? BrainFoundationPolicyEvidenceVerifier.verify(
+      package: package,
+      artifactDirectory: URL(fileURLWithPath: arguments[3], isDirectory: true)
+    ) : nil
   let publication = try package.publication()
   let summary = PolicySummary(
     packageIdentifier: package.packageIdentifier,
@@ -47,7 +63,8 @@ do {
     datasetSourceCount: package.datasetSources.count,
     datasetPartitionCount: package.datasetPartitions.count,
     qualificationAxisCount: package.qualificationResults.count,
-    gateCEvidenceManifestComplete: package.isGateCEvidenceManifestComplete
+    gateCEvidenceManifestComplete: package.isGateCEvidenceManifestComplete,
+    evidenceRootSHA256: receipt?.evidenceRootSHA256
   )
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
