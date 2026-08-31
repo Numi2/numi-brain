@@ -229,7 +229,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     case "interoception": (
       .interoception,
       .ablated(.interoception),
-      .proprioception,
+      .vestibular,
       "ablated"
     )
     case "kinesthesia": (

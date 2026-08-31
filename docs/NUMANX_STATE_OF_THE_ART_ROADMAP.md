@@ -177,9 +177,12 @@ work.
 The aggregate root now publishes all seven listed channel families. Vision,
 audition, touch, proprioception, vestibular, and kinesthesia have independent
 closed-loop learned-policy interventions on the held-out support task. The
-interoceptive producer still needs authored energy/fatigue/damage physiology,
-and active sensing still needs a transaction-bound physical mechanism. Promote
-the remaining boundaries independently:
+interoceptive producer now has transactionally accepted reduced local energy,
+gas-burden, temperature, fatigue, and damage state, plus feature-aware cognitive
+aggregation, but its held-out ablation still improves the support outcome and
+therefore fails promotion. It also remains short of systemic physiology.
+Active sensing still needs a transaction-bound physical mechanism. Promote the
+remaining boundaries independently:
 
 - tactile/contact pressure and slip;
 - vestibular and base acceleration;

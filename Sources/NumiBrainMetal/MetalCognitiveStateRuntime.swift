@@ -77,7 +77,7 @@ private struct CognitiveUniforms {
   var autonomicActionCount: UInt32 = 0
   var internalActionCount: UInt32 = 0
   var plasticityParameterCount: UInt32 = 0
-  var reserved: UInt32 = 0
+  var interoceptionFeatureDimension: UInt32 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -166,6 +166,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let gustationObservationCount: UInt32
   private let interoceptionObservationOffset: UInt32
   private let interoceptionObservationCount: UInt32
+  private let interoceptionFeatureDimension: UInt32
   private let beliefParameterGPUAddress: UInt64
   private let worldParameterGPUAddress: UInt64
   private let memoryParameterGPUAddress: UInt64
@@ -300,6 +301,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     var gustationObservationCount: UInt32 = 0
     var interoceptionObservationOffset: UInt32 = 0
     var interoceptionObservationCount: UInt32 = 0
+    var interoceptionFeatureDimension: UInt32 = 0
     for topology in species.senses where topology.enabled {
       let scalarCount = UInt64(topology.receptorCount)
         * UInt64(topology.observationDimension)
@@ -327,6 +329,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       } else if topology.modality == .interoception {
         interoceptionObservationOffset = UInt32(observationScalarOffset)
         interoceptionObservationCount = UInt32(scalarCount)
+        interoceptionFeatureDimension = topology.observationDimension
       }
       observationScalarOffset += scalarCount
     }
@@ -423,6 +426,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.gustationObservationCount = gustationObservationCount
     self.interoceptionObservationOffset = interoceptionObservationOffset
     self.interoceptionObservationCount = interoceptionObservationCount
+    self.interoceptionFeatureDimension = interoceptionFeatureDimension
     let controlLayout = try MetalActiveControlLayout(
       arenaLayout: arena.layout,
       species: species
@@ -827,7 +831,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
         species.physiology.autonomicActionDimension
       ),
       internalActionCount: internalActionCount,
-      plasticityParameterCount: plasticityParameterCount
+      plasticityParameterCount: plasticityParameterCount,
+      interoceptionFeatureDimension: interoceptionFeatureDimension
     )
   }
 

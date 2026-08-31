@@ -66,11 +66,15 @@ vestibular, and kinesthesia. The maximum learned-action deltas range from
 `0.0011254251` to `0.5306565`; decoded muscle-command deltas range from
 `0.000060815364` to `0.023855925`; and each intervention worsens a predeclared
 continuous touch, proprioceptive, kinesthetic, or vestibular drift outcome
-under the same accepted goal/option sequence. Gate B remains open because the
-native interoceptive channel still carries six muscle-mechanics fields rather
-than authored energy, fatigue, damage, and systemic physiology, and active
-sensing is still an acquisition-gain control rather than a physical
-eye/head/ear mechanism.
+under the same accepted goal/option sequence. The native interoceptive channel
+now carries six bounded local-physiology fields integrated from causal MyoSim
+workload and the previous accepted sensor generation; NumiBrain aggregates
+each feature across all 416 receptors rather than misreading the flattened
+tensor as nine body-wide scalars. This removes the semantic/indexing defect,
+but the held-out ablation still improves rather than degrades postural drift,
+so interoception is not promoted. Gate B also remains open because this reduced
+model is not systemic physiology and active sensing is still an acquisition-
+gain control rather than a physical eye/head/ear mechanism.
 
 Qualification is split by resource envelope: the complete 146-test package
 passes with zero failures and three asset-dependent skips in 58.722 seconds;

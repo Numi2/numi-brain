@@ -251,16 +251,21 @@ ownership, the named physical signal perturbation, one bounded
 active-acquisition command, exact simulated sensor-clock delivery, plus fixed
 replay and rejection behavior. It does not yet establish wall-clock GPU
 capture-to-publication latency/performance, a physical eye/head/ear mechanism,
-or waveform/speech/language sensing. Most importantly, the native 416x6
-interoceptive channel currently contains muscle activation, fibre length and
-velocity, active force, tendon tension, and equilibrium residual. Those are
-real mechanics, but they are not the authored energy availability, hydration,
-oxygen/CO2, temperature, fatigue, damage, inflammation, and sleep-pressure
-signals assumed by the cognitive physiology layer. Interoceptive ablation
-changes learned action by `0.009519786` and muscle output by `0.00077152904`,
-but it does not worsen the predeclared interoceptive or postural task outcome.
-That semantic/qualification gap and the nonphysical active-sensing mechanism
-keep Gate B open.
+or waveform/speech/language sensing. The native 416x6 interoceptive channel now
+integrates bounded local energy availability, oxygen availability, carbon-
+dioxide burden, temperature deviation, fatigue, and damage from causal MyoSim
+workload and only the previous accepted HumanIO generation. Rejected candidates
+cannot advance that history. The cognitive runtime now aggregates one semantic
+feature across all 416 receptors instead of treating the first nine flattened
+muscle scalars as nine body-wide physiological variables. This is a reduced
+control model, not authored systemic hydration, inflammation, sleep, metabolic,
+or clinical physiology. In the real three-root intervention, ablation changes
+learned action by `0.0021179318`, descending and muscle output by
+`0.00017181039`, and later vision, touch, proprioception, vestibular, and
+kinesthetic state. It nevertheless improves the predeclared postural outcome
+(`46.580482` intact vestibular drift versus `46.49666` ablated), so the causal
+benefit criterion still fails. That measured training/qualification gap and the
+nonphysical active-sensing mechanism keep Gate B open.
 
 Focused executable evidence at this checkpoint includes 14/14 native NumanX
 integration tests (green twice), the focused Swift

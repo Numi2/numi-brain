@@ -102,7 +102,7 @@ struct NBCognitiveUniforms {
   uint autonomic_action_count;
   uint internal_action_count;
   uint plasticity_parameter_count;
-  uint reserved;
+  uint interoception_feature_dimension;
 };
 
 struct NBWorldModelLevelRecord {
@@ -479,22 +479,32 @@ inline float nb_fused_interoceptive_feature(
   device const uint *validity,
   uint observation_offset,
   uint observation_count,
+  uint feature_dimension,
   device const float *physiology,
   uint physiology_count,
-  uint index)
+  uint feature_index,
+  uint belief_index)
 {
-  const uint scalar_index = observation_count > 0u
-    ? observation_offset + index % observation_count : 0u;
-  const bool has_receptor = observation_count > 0u
-    && validity[scalar_index] != 0u;
-  const bool has_belief = physiology_count > 0u;
+  const uint receptor_count = feature_dimension > 0u
+    ? observation_count / feature_dimension : 0u;
+  float receptor_sum = 0.0f;
+  uint valid_receptor_count = 0u;
+  if (feature_index < feature_dimension
+      && receptor_count * feature_dimension == observation_count) {
+    for (uint receptor = 0u; receptor < receptor_count; ++receptor) {
+      const uint scalar_index = observation_offset
+        + receptor * feature_dimension + feature_index;
+      if (validity[scalar_index] == 0u) continue;
+      receptor_sum += observations[scalar_index];
+      valid_receptor_count += 1u;
+    }
+  }
+  const bool has_receptor = valid_receptor_count > 0u;
+  const bool has_belief = belief_index < physiology_count;
   const float receptor = has_receptor
-    ? nb_observation_feature(
-        observations, validity, observation_offset, observation_count, index
-      )
-    : 0.0f;
+    ? receptor_sum / float(valid_receptor_count) : 0.0f;
   const float belief = has_belief
-    ? physiology[index % physiology_count]
+    ? physiology[belief_index]
     : 0.0f;
   if (has_receptor && has_belief) {
     return clamp(0.5f * (receptor + belief), -1.0f, 1.0f);
@@ -596,26 +606,21 @@ kernel void advance_homeostasis_and_neuromodulation(
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      0u,
       0u
-    ));
-    const float hydration = nb_saturate(nb_fused_interoceptive_feature(
-      observations,
-      validity,
-      uniforms.interoception_observation_offset,
-      uniforms.interoception_observation_count,
-      physiology,
-      uniforms.physiology_belief_count,
-      1u
     ));
     const float oxygen = nb_saturate(nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      1u,
       2u
     ));
     const float carbon_dioxide = nb_saturate(nb_fused_interoceptive_feature(
@@ -623,8 +628,10 @@ kernel void advance_homeostasis_and_neuromodulation(
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      2u,
       3u
     ));
     const float temperature = nb_fused_interoceptive_feature(
@@ -632,8 +639,10 @@ kernel void advance_homeostasis_and_neuromodulation(
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      3u,
       4u
     );
     const float sensed_fatigue = nb_saturate(nb_fused_interoceptive_feature(
@@ -641,8 +650,10 @@ kernel void advance_homeostasis_and_neuromodulation(
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      4u,
       5u
     ));
     const float tissue_damage = nb_saturate(nb_fused_interoceptive_feature(
@@ -650,36 +661,19 @@ kernel void advance_homeostasis_and_neuromodulation(
       validity,
       uniforms.interoception_observation_offset,
       uniforms.interoception_observation_count,
+      uniforms.interoception_feature_dimension,
       physiology,
       uniforms.physiology_belief_count,
+      5u,
       6u
-    ));
-    const float inflammation = nb_saturate(nb_fused_interoceptive_feature(
-      observations,
-      validity,
-      uniforms.interoception_observation_offset,
-      uniforms.interoception_observation_count,
-      physiology,
-      uniforms.physiology_belief_count,
-      7u
-    ));
-    const float sleep_pressure = nb_saturate(nb_fused_interoceptive_feature(
-      observations,
-      validity,
-      uniforms.interoception_observation_offset,
-      uniforms.interoception_observation_count,
-      physiology,
-      uniforms.physiology_belief_count,
-      8u
     ));
     const float interoceptive_alpha = 1.0f - exp(-elapsed_seconds / 0.1f);
     const bool has_interoceptive_evidence =
-      uniforms.interoception_observation_count > 0u;
+      uniforms.interoception_feature_dimension >= 6u
+      && uniforms.interoception_observation_count
+        % uniforms.interoception_feature_dimension == 0u;
     if (has_interoceptive_evidence && gid == 0u) {
       target = mix(state.level, 1.0f - energy_availability, interoceptive_alpha);
-    }
-    if (has_interoceptive_evidence && gid == 1u) {
-      target = mix(state.level, 1.0f - hydration, interoceptive_alpha);
     }
     if (has_interoceptive_evidence && gid == 2u) target = mix(
       state.level,
@@ -698,11 +692,8 @@ kernel void advance_homeostasis_and_neuromodulation(
     if (gid == 5u) target = max(target * exp(-elapsed_seconds * 0.5f), pain);
     if (gid == 6u) target = max(
       max(target * exp(-elapsed_seconds * 0.02f), injury),
-      has_interoceptive_evidence ? max(tissue_damage, inflammation) : 0.0f
+      has_interoceptive_evidence ? tissue_damage : 0.0f
     );
-    if (has_interoceptive_evidence && gid == 7u) {
-      target = mix(state.level, sleep_pressure, interoceptive_alpha);
-    }
     if (gid == 2u) target = max(target, physiological_critical);
     if (gid == 11u) {
       target = max(max(injury, support_loss), max(impact, physiological_critical));
