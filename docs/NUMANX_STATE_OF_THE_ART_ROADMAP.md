@@ -187,9 +187,12 @@ ABI4 prepared path now turns FNV-bound host capability claims into private
 developmental evidence only after the authoritative GPU accepted-physics gate.
 After six accepted roots the reference brain reaches its active-sensing stage;
 the seventh decision autonomously commands the physical gimbal, while rejected
-or fingerprint-mutated claims cannot unlock it. Autonomous capability discovery
-and a gaze command-ablation task outcome remain open. Promote the remaining
-boundaries independently:
+or fingerprint-mutated claims cannot unlock it. A command-only ablation leaves
+all nonvisual outputs byte-identical while autonomous gaze increases valid
+depth and geometry coverage, so the active-sensing causal-benefit criterion is
+promoted. Autonomous capability discovery remains a limitation rather than
+evidence supplied by this host-authored developmental environment. Promote the
+remaining boundaries independently:
 
 - tactile/contact pressure and slip;
 - vestibular and base acceleration;
@@ -197,8 +200,8 @@ boundaries independently:
 - interoceptive muscle/tendon/fatigue/energy state;
 - vision and depth with calibrated capture time and rolling/exposure semantics;
 - audition and language input;
-- autonomous developmental capability discovery/verification and predeclared
-  active-sensing command-ablation task-benefit evidence.
+- autonomous developmental capability discovery/verification beyond the
+  current accepted-root-authenticated host claims.
 
 Every channel needs exact capture time, delivery time, latency, shape, validity,
 species/profile identity, accepted-root provenance, perturbation tests, and an

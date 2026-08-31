@@ -130,7 +130,7 @@ struct NBDecisionUniforms {
   uint somatic_effector_belief_count;
   ulong active_sensing_efficacy_offset;
   uint actuator_command_kind;
-  uint reserved_motor_abi;
+  uint active_sensing_command_scale_bits;
 };
 
 struct NBDriveRecord {
@@ -4219,10 +4219,19 @@ kernel void generate_motor_spinal_autonomic_state(
           clamp(epistemic_target_score, 0.0f, 1.0f)
         )
       : ungrounded_command;
+    const float authored_command_scale =
+      as_type<float>(uniforms.active_sensing_command_scale_bits);
+    const float command_scale = isfinite(authored_command_scale)
+        && authored_command_scale >= 0.0f
+        && authored_command_scale <= 1.0f
+      ? authored_command_scale : 0.0f;
     NBActiveSensingCommandRecord command;
-    command.command = clamp(raw_command * allocation, -1.0f, 1.0f);
+    command.command = clamp(
+      raw_command * allocation * command_scale, -1.0f, 1.0f
+    );
     command.confidence = clamp(
-      allocation * max(header->confidence, expected_information), 0.0f, 1.0f
+      allocation * max(header->confidence, expected_information) * command_scale,
+      0.0f, 1.0f
     );
     command.attention_allocation_mask = allocation > 0.0f
       ? (1u << min(max(sensing_descriptor.modality, 1u) - 1u, 7u))

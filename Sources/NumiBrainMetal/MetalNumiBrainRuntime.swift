@@ -1247,6 +1247,27 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     waitFor waitPoint: MetalSharedEventPoint? = nil,
     signal completionPoint: MetalSharedEventPoint
   ) throws -> DecisionSubmissionTicket {
+    try submitInferAndDecide(
+      transaction,
+      numanXSensors: numanXSensors,
+      externalGoal: externalGoal,
+      activeSensingCommandScale: 1,
+      waitFor: waitPoint,
+      signal: completionPoint
+    )
+  }
+
+  /// Qualification-only command intervention. It is internal so production
+  /// callers cannot bypass the autonomous policy; the resulting zeroed command
+  /// still passes through the ordinary decision-ready and motor-ready proofs.
+  func submitInferAndDecide(
+    _ transaction: ControlTransaction,
+    numanXSensors: NumanXSensorPacketLease,
+    externalGoal: ActiveGoal? = nil,
+    activeSensingCommandScale: Float,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> DecisionSubmissionTicket {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .open)
@@ -1257,6 +1278,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         numanXSensors: numanXSensors,
         regionalRecurrentInput: recurrence,
         externalGoal: externalGoal,
+        activeSensingCommandScale: activeSensingCommandScale,
         waitFor: waitPoint,
         signal: completionPoint
       )

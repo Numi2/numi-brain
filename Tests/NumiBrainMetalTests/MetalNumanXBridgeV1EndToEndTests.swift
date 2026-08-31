@@ -275,6 +275,87 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     }
   }
 
+  func testGateBAutonomousGazeImprovesPredeclaredVisualSearchCoverage() throws {
+    let paths = try bridgePaths()
+    guard let device = MTLCreateSystemDefaultDevice(),
+      device.makeMTL4CommandQueue() != nil,
+      device.makeCommandAllocator() != nil,
+      device.makeCommandBuffer() != nil
+    else {
+      throw XCTSkip("Metal 4 execution is unavailable")
+    }
+    let compiled = try makeNumanXFullBodyTransportCompiledTemplate()
+    let publication = try BrainParameterPublication.developmentalSeedV1(
+      species: compiled.species,
+      tissueParameters: .corticalSheetV0
+    )
+    let capabilityCodes = compiled.species.development
+      .dropFirst()
+      .flatMap(\.capabilityGateCodes)
+
+    // Predeclared outcome: maximize physically valid RGB-D geometry coverage
+    // in the seventh root. The ablation scales only the active-sensing record
+    // to zero before the ordinary decision-ready proof hashes it.
+    let intact = try runAcceptedScenario(
+      paths: paths,
+      contactPath: paths.contacts,
+      compiled: compiled,
+      publication: publication,
+      device: device,
+      rootCount: 7,
+      developmentalCapabilityCodes: capabilityCodes
+    )
+    let ablated = try runAcceptedScenario(
+      paths: paths,
+      contactPath: paths.contacts,
+      compiled: compiled,
+      publication: publication,
+      device: device,
+      rootCount: 7,
+      developmentalCapabilityCodes: capabilityCodes,
+      activeSensingCommandScale: 0
+    )
+    XCTAssertGreaterThan(abs(try XCTUnwrap(intact.activeVisionCommands.last)), 0)
+    XCTAssertEqual(ablated.activeVisionCommands, [Float](repeating: 0, count: 7))
+    XCTAssertEqual(ablated.activeVisionConfidences, [Float](repeating: 0, count: 7))
+    XCTAssertEqual(
+      intact.motorExcitationsByGeneration,
+      ablated.motorExcitationsByGeneration
+    )
+    XCTAssertEqual(
+      intact.descendingSomaticByGeneration,
+      ablated.descendingSomaticByGeneration
+    )
+    XCTAssertEqual(
+      Array(intact.visionDepthValidCounts.prefix(6)),
+      Array(ablated.visionDepthValidCounts.prefix(6))
+    )
+    XCTAssertEqual(
+      Array(intact.visionGeometryValidCounts.prefix(6)),
+      Array(ablated.visionGeometryValidCounts.prefix(6))
+    )
+    let intactDepth = try XCTUnwrap(intact.visionDepthValidCounts.last)
+    let ablatedDepth = try XCTUnwrap(ablated.visionDepthValidCounts.last)
+    let intactGeometry = try XCTUnwrap(intact.visionGeometryValidCounts.last)
+    let ablatedGeometry = try XCTUnwrap(ablated.visionGeometryValidCounts.last)
+    XCTAssertGreaterThan(intactDepth, ablatedDepth)
+    XCTAssertGreaterThan(intactGeometry, ablatedGeometry)
+    for modality in compiled.species.senses.map(\.modality) where modality != .vision {
+      XCTAssertEqual(
+        intact.finalSensorValuesByModality[modality],
+        ablated.finalSensorValuesByModality[modality],
+        "active-gaze command ablation perturbed nonvisual \(modality)"
+      )
+    }
+    if ProcessInfo.processInfo.environment["NUMANX_GATE_B_EVIDENCE"] == "1" {
+      print(
+        "gate_b_gaze_search_benefit=pass depth=\(ablatedDepth)->\(intactDepth) "
+          + "geometry=\(ablatedGeometry)->\(intactGeometry) "
+          + "nonvisual=byte_exact"
+      )
+    }
+  }
+
   func testGateBExternalTaskOptionAdmission() throws {
     let paths = try bridgePaths()
     guard let device = MTLCreateSystemDefaultDevice(),
@@ -1361,7 +1442,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     device: any MTLDevice,
     externalGoal: ActiveGoal? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
-    developmentalIntentFingerprintXor: UInt64 = 0
+    developmentalIntentFingerprintXor: UInt64 = 0,
+    activeSensingCommandScale: Float = 1
   ) throws -> (
     physical: MetalNumanXBridgeV1PreparedRoot,
     aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot,
@@ -1379,7 +1461,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       device: device,
       externalGoal: externalGoal,
       developmentalCapabilityCodes: developmentalCapabilityCodes,
-      developmentalIntentFingerprintXor: developmentalIntentFingerprintXor
+      developmentalIntentFingerprintXor: developmentalIntentFingerprintXor,
+      activeSensingCommandScale: activeSensingCommandScale
     )
     let physical = staged.physical
     let prepared = staged.prepared
@@ -1454,6 +1537,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let descendingSomaticByGeneration: [[Float]]
     let activeVisionCommands: [Float]
     let activeVisionConfidences: [Float]
+    let visionDepthValidCounts: [Int]
+    let visionGeometryValidCounts: [Int]
   }
 
   private enum ClosedLoopSensorIntervention {
@@ -1471,7 +1556,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     externalGoal: ((UInt64) throws -> ActiveGoal)? = nil,
     sensorIntervention: ClosedLoopSensorIntervention? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
-    developmentalIntentFingerprintXor: UInt64 = 0
+    developmentalIntentFingerprintXor: UInt64 = 0,
+    activeSensingCommandScale: Float = 1
   ) throws -> AcceptedScenario {
     guard rootCount > 0 else {
       throw TissueError.transaction("Gate B scenario requires accepted roots")
@@ -1522,6 +1608,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     var descendingSomaticByGeneration: [[Float]] = []
     var activeVisionCommands: [Float] = []
     var activeVisionConfidences: [Float] = []
+    var visionDepthValidCounts: [Int] = []
+    var visionGeometryValidCounts: [Int] = []
     for controlStep in UInt64(1)...rootCount {
       let transaction = try brain.beginControl(
         controlStepIdentifier: controlStep,
@@ -1565,7 +1653,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           device: device,
           externalGoal: try externalGoal?(controlStep),
           developmentalCapabilityCodes: developmentalCapabilityCodes,
-          developmentalIntentFingerprintXor: developmentalIntentFingerprintXor
+          developmentalIntentFingerprintXor: developmentalIntentFingerprintXor,
+          activeSensingCommandScale: activeSensingCommandScale
         )
         aggregate = published.aggregate
         candidateSensorFingerprints.append(
@@ -1583,6 +1672,20 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         descendingSomaticByGeneration.append(published.descendingSomatic)
         activeVisionCommands.append(published.activeVisionCommand)
         activeVisionConfidences.append(published.activeVisionConfidence)
+        let vision = try XCTUnwrap(
+          aggregate?.channels.first { $0.modality == .vision }
+        )
+        let visionValidity = try qualificationUInt32s(
+          from: try qualificationReadback(
+            try XCTUnwrap(vision.validity), device: device
+          )
+        )
+        visionDepthValidCounts.append(
+          visionValidity.count { ($0 & 0x08) != 0 }
+        )
+        visionGeometryValidCounts.append(
+          visionValidity.count { ($0 & 0x70) == 0x70 }
+        )
       } catch {
         throw TissueError.transaction(
           "Gate B scenario \(contactPath) root \(controlStep) failed: \(error)"
@@ -1602,7 +1705,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       motorExcitationsByGeneration: motorExcitationsByGeneration,
       descendingSomaticByGeneration: descendingSomaticByGeneration,
       activeVisionCommands: activeVisionCommands,
-      activeVisionConfidences: activeVisionConfidences
+      activeVisionConfidences: activeVisionConfidences,
+      visionDepthValidCounts: visionDepthValidCounts,
+      visionGeometryValidCounts: visionGeometryValidCounts
     )
   }
 
@@ -1909,7 +2014,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     device: any MTLDevice,
     externalGoal: ActiveGoal? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
-    developmentalIntentFingerprintXor: UInt64 = 0
+    developmentalIntentFingerprintXor: UInt64 = 0,
+    activeSensingCommandScale: Float = 1
   ) throws -> (
     physical: MetalNumanXBridgeV1PreparedRoot,
     prepared: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
@@ -1924,6 +2030,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       transaction,
       numanXSensors: sensors,
       externalGoal: externalGoal,
+      activeSensingCommandScale: activeSensingCommandScale,
       signal: decisionPoint
     )
     let motor = try brain.submitNumanXMotorCandidate(

@@ -78,7 +78,7 @@ private struct DecisionUniforms {
   var somaticEffectorBeliefCount: UInt32 = 0
   var activeSensingEfficacyOffset: UInt64 = 0
   var actuatorCommandKind: UInt32 = 0
-  var reservedMotorABI: UInt32 = 0
+  var activeSensingCommandScaleBits: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -676,6 +676,24 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal? = nil
   ) throws -> OutputView {
+    try encode(
+      encoder: encoder,
+      transaction: transaction,
+      timestamp: timestamp,
+      rawSensorViews: rawSensorViews,
+      externalGoal: externalGoal,
+      activeSensingCommandScale: 1
+    )
+  }
+
+  func encode(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp,
+    rawSensorViews: [MetalRawSensorBufferView],
+    externalGoal: ActiveGoal?,
+    activeSensingCommandScale: Float
+  ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
     let sortedRawSensorViews = rawSensorViews.sorted {
       $0.modality.rawValue < $1.modality.rawValue
@@ -694,7 +712,17 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         "decision policy observations do not cover the current sensorium"
       )
     }
-    var uniforms = try makeUniforms(timestamp: timestamp)
+    guard activeSensingCommandScale.isFinite,
+      (0...1).contains(activeSensingCommandScale)
+    else {
+      throw TissueError.transaction(
+        "active-sensing command scale must be finite and normalized"
+      )
+    }
+    var uniforms = try makeUniforms(
+      timestamp: timestamp,
+      activeSensingCommandScale: activeSensingCommandScale
+    )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
       uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
@@ -865,7 +893,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
   }
 
-  private func makeUniforms(timestamp: BrainTimestamp) throws -> DecisionUniforms {
+  private func makeUniforms(
+    timestamp: BrainTimestamp,
+    activeSensingCommandScale: Float
+  ) throws -> DecisionUniforms {
     let recurrent = arena.layout.section(.regionalRecurrent)
     let workspace = arena.layout.section(.workspaceContent)
     let workspaceMetadata = arena.layout.section(.workspaceMetadata)
@@ -1017,7 +1048,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         arena.layout.section(.activeSensingEfficacy).byteOffset
       ),
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
-      reservedMotorABI: 0
+      activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern
     )
   }
 

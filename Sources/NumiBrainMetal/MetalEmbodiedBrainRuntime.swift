@@ -820,6 +820,26 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     waitFor waitPoint: MetalSharedEventPoint? = nil,
     signal completionPoint: MetalSharedEventPoint
   ) throws -> DecisionSubmissionTicket {
+    try submitInferAndDecide(
+      transaction: transaction,
+      numanXSensors: numanXSensors,
+      regionalRecurrentInput: regionalRecurrentInput,
+      externalGoal: externalGoal,
+      activeSensingCommandScale: 1,
+      waitFor: waitPoint,
+      signal: completionPoint
+    )
+  }
+
+  func submitInferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    numanXSensors: NumanXSensorPacketLease,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    externalGoal: ActiveGoal? = nil,
+    activeSensingCommandScale: Float,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> DecisionSubmissionTicket {
     let packet = numanXSensors.packet
     guard packet.transactionFingerprint == transaction.jointToken.fingerprint,
       !packet.isAcceptedState,
@@ -838,6 +858,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: numanXSensors.rawSensors,
       regionalRecurrentInput: regionalRecurrentInput,
       externalGoal: externalGoal,
+      activeSensingCommandScale: activeSensingCommandScale,
       waitFor: waitPoint,
       signal: completionPoint,
       retainedInputs: [numanXSensors]
@@ -857,6 +878,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: rawSensors,
       regionalRecurrentInput: regionalRecurrentInput,
       externalGoal: externalGoal,
+      activeSensingCommandScale: 1,
       waitFor: waitPoint,
       signal: completionPoint,
       retainedInputs: rawSensors
@@ -868,6 +890,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     rawSensors: [MetalRawSensorBufferLease],
     regionalRecurrentInput: MetalRegionalRecurrentBufferView?,
     externalGoal: ActiveGoal?,
+    activeSensingCommandScale: Float,
     waitFor waitPoint: MetalSharedEventPoint?,
     signal completionPoint: MetalSharedEventPoint,
     retainedInputs: [AnyObject]
@@ -964,7 +987,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         transaction: transaction.agentStateToken,
         timestamp: transaction.jointToken.committedTimestamp,
         rawSensorViews: rawSensors.map(\.view),
-        externalGoal: externalGoal
+        externalGoal: externalGoal,
+        activeSensingCommandScale: activeSensingCommandScale
       )
       let decision = try makeDecisionBufferView(
         transaction: transaction,

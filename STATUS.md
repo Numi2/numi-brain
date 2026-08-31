@@ -85,20 +85,25 @@ payload, and replays every published sensor byte exactly. A rejected fifth-root
 claim does not unlock gaze one root early, and accepted roots carrying mutated
 intent fingerprints remain immature. These are host-authored capability claims,
 not autonomous capability discovery or a learned competence verifier. The
-gimbal is ideal and zero-reaction, not coupled ocular/neck dynamics, and a
-predeclared gaze command-ablation task benefit is still absent. That task gap
-and the failed interoceptive benefit criterion keep Gate B open.
+gimbal is ideal and zero-reaction, not coupled ocular/neck dynamics. A
+command-only ablation on the seventh root leaves the 416-muscle command,
+descending somatic output, and every nonvisual sensor byte unchanged, while
+autonomous gaze raises valid depth coverage from 718 to 864 pixels and valid
+geometry from 720 to 864. Active sensing therefore passes its predeclared
+physical search-coverage criterion. The failed interoceptive benefit criterion
+is the remaining measured Gate B blocker.
 
-Qualification is split by resource envelope: the complete 149-test package
-passes with zero failures and six intentionally unconfigured bridge/stress
-skips in 58.876 seconds;
+Qualification is split by resource envelope: the complete 150-test package
+passes with zero failures and seven intentionally unconfigured bridge/stress
+skips in 58.763 seconds;
 the bounded real external-task plus publication/retry E2E passes 2/2 in 15.514
 seconds; the accepted-maturation/replay, rejected-root, and malformed-intent
 physical-gaze proofs pass independently in 20.181, 7.889, and 7.176 seconds;
+the paired command-ablation search proof passes in 13.703 seconds;
 and the six explicit 49-root modality cohorts pass independently in
 50.286–50.627 seconds each. Strict Developmental and Decision Metal checks pass,
 the 40-test ABI4/provisional matrix passes, and a fresh production build succeeds
-in 54.97 seconds. These timings are orchestration telemetry, not control-loop
+in 54.67 seconds. These timings are orchestration telemetry, not control-loop
 latency or throughput measurements.
 
 ## Joint transaction foundation
