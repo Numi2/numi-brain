@@ -124,20 +124,33 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
   private func results(
     failingAxis: BrainPolicyQualificationAxis? = nil
   ) throws -> [BrainPolicyQualificationResult] {
-    try BrainPolicyQualificationAxis.allCases.enumerated().map { index, axis in
-      try BrainPolicyQualificationResult(
+    let architecture = try architecture(publication: learnedPublication())
+    return try BrainPolicyQualificationAxis.allCases.enumerated().map { index, axis in
+      let requirements = BrainPolicyGateCMetricContract.requirements(
+        for: axis,
+        architecture: architecture
+      )
+      return try BrainPolicyQualificationResult(
         axis: axis,
         evaluationArtifactSHA256: sha(index + 4),
         sampleCount: 128,
-        metrics: [
-          try BrainPolicyQualificationMetric(
-            identifier: "\(axis.rawValue)-score",
-            unit: "ratio",
-            value: axis == failingAxis ? 0.4 : 0.9,
-            threshold: 0.8,
-            direction: .atLeast
+        metrics: try requirements.map { requirement in
+          let failing = axis == failingAxis
+          let delta = max(0.1, abs(requirement.threshold) * 0.1)
+          let value =
+            failing
+            ? (requirement.direction == .atLeast
+              ? requirement.threshold - delta
+              : requirement.threshold + delta)
+            : requirement.threshold
+          return try BrainPolicyQualificationMetric(
+            identifier: requirement.identifier,
+            unit: requirement.unit,
+            value: value,
+            threshold: requirement.threshold,
+            direction: requirement.direction
           )
-        ]
+        }
       )
     }
   }
@@ -199,6 +212,78 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     try failed.validate()
     XCTAssertFalse(failed.isGateCEvidenceManifestComplete)
     XCTAssertThrowsError(try failed.validateGateCEvidenceManifest())
+
+    var mislabeled = try results()
+    let index = try XCTUnwrap(mislabeled.firstIndex(where: { $0.axis == .crossTask }))
+    mislabeled[index] = try BrainPolicyQualificationResult(
+      axis: .crossTask,
+      evaluationArtifactSHA256: sha(14),
+      sampleCount: 128,
+      metrics: [
+        try BrainPolicyQualificationMetric(
+          identifier: "score",
+          unit: "ratio",
+          value: 1,
+          threshold: 0,
+          direction: .atLeast
+        )
+      ]
+    )
+    let relabeled = try package(results: mislabeled)
+    try relabeled.validate()
+    XCTAssertThrowsError(try relabeled.validateGateCEvidenceManifest())
+  }
+
+  func testBinaryAUROCIsRecomputedFromRankedLabeledObservations() throws {
+    let observations = try [
+      BrainPolicyMetricObservation(
+        sampleSHA256: sha(1),
+        value: 0.1,
+        referenceClass: 0
+      ),
+      BrainPolicyMetricObservation(
+        sampleSHA256: sha(2),
+        value: 0.8,
+        referenceClass: 0
+      ),
+      BrainPolicyMetricObservation(
+        sampleSHA256: sha(3),
+        value: 0.7,
+        referenceClass: 1
+      ),
+      BrainPolicyMetricObservation(
+        sampleSHA256: sha(4),
+        value: 0.9,
+        referenceClass: 1
+      ),
+    ]
+    let evidence = try BrainPolicyQualificationMetricEvidence(
+      identifier: "ood_auroc",
+      unit: "ratio",
+      reducer: .binaryAUROC,
+      threshold: 0.9,
+      direction: .atLeast,
+      observations: observations
+    )
+    XCTAssertEqual(evidence.reducedValue, 0.75, accuracy: 0)
+
+    XCTAssertThrowsError(
+      try BrainPolicyQualificationMetricEvidence(
+        identifier: "ood_auroc",
+        unit: "ratio",
+        reducer: .binaryAUROC,
+        threshold: 0.9,
+        direction: .atLeast,
+        observations: [
+          try BrainPolicyMetricObservation(sampleSHA256: sha(1), value: 0.1),
+          try BrainPolicyMetricObservation(
+            sampleSHA256: sha(2),
+            value: 0.9,
+            referenceClass: 1
+          ),
+        ]
+      )
+    )
   }
 
   func testPackageRejectsSeedTamperingAndSplitAlias() throws {
@@ -281,7 +366,9 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
 
   private func evidenceFixture(
     overlapSplits: Bool = false,
-    foreignMetricSample: Bool = false
+    foreignMetricSample: Bool = false,
+    provenanceDrift: Bool = false,
+    omitRequiredReject: Bool = false
   ) throws -> EvidenceFixture {
     let directory = FileManager.default.temporaryDirectory.appending(
       path: UUID().uuidString,
@@ -372,21 +459,55 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       if foreignMetricSample, axis == .crossTask {
         sampleHashes[0] = BrainPolicyEvidenceArtifact.sha256(Data("foreign".utf8))
       }
-      let metricEvidence = try BrainPolicyQualificationMetricEvidence(
-        identifier: "\(axis.rawValue)-success",
-        unit: "ratio",
-        reducer: .mean,
-        threshold: 0.8,
-        direction: .atLeast,
-        observations: try sampleHashes.map {
-          try BrainPolicyMetricObservation(sampleSHA256: $0, value: 1)
-        }
+      let requirements = BrainPolicyGateCMetricContract.requirements(
+        for: axis,
+        architecture: architecture
       )
+      let metricEvidence = try requirements.map { requirement in
+        let passingValue =
+          requirement.direction == .atLeast
+          ? requirement.threshold : min(requirement.threshold, 1)
+        let observations: [BrainPolicyMetricObservation]
+        if requirement.reducer == .binaryAUROC {
+          observations = try sampleHashes.enumerated().map { index, sampleHash in
+            try BrainPolicyMetricObservation(
+              sampleSHA256: sampleHash,
+              value: index == 0 ? 0 : 1,
+              referenceClass: index == 0 ? 0 : 1
+            )
+          }
+        } else {
+          observations = try sampleHashes.map {
+            try BrainPolicyMetricObservation(
+              sampleSHA256: $0,
+              value: passingValue
+            )
+          }
+        }
+        return try BrainPolicyQualificationMetricEvidence(
+          identifier: requirement.identifier,
+          unit: requirement.unit,
+          reducer: requirement.reducer,
+          threshold: requirement.threshold,
+          direction: requirement.direction,
+          observations: observations
+        )
+      }
       let evidence = try BrainPolicyQualificationEvidence(
         axis: axis,
+        executionKind: .authoritativeNumanX,
         modelWeightsSHA256: architecture.modelWeightsSHA256,
+        runtimeProgramFingerprint: provenanceDrift
+          ? architecture.runtimeProgramFingerprint &+ 1
+          : architecture.runtimeProgramFingerprint,
+        lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
+        hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
+        acceptedRootCount: UInt64(sampleHashes.count),
+        rejectedRootCount: !omitRequiredReject
+          && (axis == .uncertaintyAndOOD || axis == .hardSafetyRetention) ? 1 : 0,
+        commandFailureCount: 0,
         partitionIdentifiers: [partition.identifier],
-        metrics: [metricEvidence]
+        metrics: metricEvidence
       )
       _ = try BrainPolicyEvidenceArtifact.write(evidence.encoded(), to: directory)
       return try evidence.qualificationResult()
@@ -469,6 +590,24 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       try BrainFoundationPolicyEvidenceVerifier.verify(
         package: foreign.package,
         artifactDirectory: foreign.directory
+      )
+    )
+
+    let provenance = try evidenceFixture(provenanceDrift: true)
+    defer { try? FileManager.default.removeItem(at: provenance.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: provenance.package,
+        artifactDirectory: provenance.directory
+      )
+    )
+
+    let noReject = try evidenceFixture(omitRequiredReject: true)
+    defer { try? FileManager.default.removeItem(at: noReject.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: noReject.package,
+        artifactDirectory: noReject.directory
       )
     )
   }

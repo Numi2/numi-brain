@@ -132,19 +132,23 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
     }
     var results = try BrainPolicyQualificationAxis.allCases.enumerated().map {
       index, axis in
-      try BrainPolicyQualificationResult(
+      let requirements = BrainPolicyGateCMetricContract.requirements(
+        for: axis,
+        architecture: architecture
+      )
+      return try BrainPolicyQualificationResult(
         axis: axis,
         evaluationArtifactSHA256: sha(index + 16),
         sampleCount: 16,
-        metrics: [
+        metrics: try requirements.map { requirement in
           try BrainPolicyQualificationMetric(
-            identifier: "score",
-            unit: "ratio",
-            value: 1,
-            threshold: 0.9,
-            direction: .atLeast
+            identifier: requirement.identifier,
+            unit: requirement.unit,
+            value: requirement.threshold,
+            threshold: requirement.threshold,
+            direction: requirement.direction
           )
-        ]
+        }
       )
     }
     if !qualified { results.removeLast() }
@@ -306,21 +310,53 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
         let split = requiredSplit(for: axis)
         let partition = try XCTUnwrap(partitions.first(where: { $0.split == split }))
         let members = try XCTUnwrap(membersByPartition[partition.identifier])
-        let metric = try BrainPolicyQualificationMetricEvidence(
-          identifier: "\(axis.rawValue)-score",
-          unit: "ratio",
-          reducer: .mean,
-          threshold: 0.9,
-          direction: .atLeast,
-          observations: try members.map {
-            try BrainPolicyMetricObservation(sampleSHA256: $0, value: 1)
-          }
+        let requirements = BrainPolicyGateCMetricContract.requirements(
+          for: axis,
+          architecture: architecture
         )
+        let metrics = try requirements.map { requirement in
+          let passingValue =
+            requirement.direction == .atLeast
+            ? requirement.threshold : min(requirement.threshold, 1)
+          let observations: [BrainPolicyMetricObservation]
+          if requirement.reducer == .binaryAUROC {
+            observations = try members.enumerated().map { index, sampleHash in
+              try BrainPolicyMetricObservation(
+                sampleSHA256: sampleHash,
+                value: index == 0 ? 0 : 1,
+                referenceClass: index == 0 ? 0 : 1
+              )
+            }
+          } else {
+            observations = try members.map {
+              try BrainPolicyMetricObservation(
+                sampleSHA256: $0,
+                value: passingValue
+              )
+            }
+          }
+          return try BrainPolicyQualificationMetricEvidence(
+            identifier: requirement.identifier,
+            unit: requirement.unit,
+            reducer: requirement.reducer,
+            threshold: requirement.threshold,
+            direction: requirement.direction,
+            observations: observations
+          )
+        }
         let evidence = try BrainPolicyQualificationEvidence(
           axis: axis,
+          executionKind: .authoritativeNumanX,
           modelWeightsSHA256: architecture.modelWeightsSHA256,
+          runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+          lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
+          hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
+          acceptedRootCount: UInt64(members.count),
+          rejectedRootCount: axis == .uncertaintyAndOOD
+            || axis == .hardSafetyRetention ? 1 : 0,
+          commandFailureCount: 0,
           partitionIdentifiers: [partition.identifier],
-          metrics: [metric]
+          metrics: metrics
         )
         _ = try BrainPolicyEvidenceArtifact.write(evidence.encoded(), to: directory)
         return try evidence.qualificationResult()

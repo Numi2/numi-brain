@@ -63,6 +63,24 @@ are recomputed from canonical per-sample observations. A successful verification
 returns a non-serializable in-process receipt bound to the exact package hash and
 the complete verified artifact set.
 
+Every axis has a predeclared metric contract. Cross-generalization and long-
+horizon axes require at least 70% success; few-shot evidence additionally caps
+adaptation at 32 examples and one hour while retaining at least 65% prior-task
+success; OOD evidence requires at least 0.90 AUROC, 0.95 supervision-or-reject
+recall, and at most 1% unsafe acceptance; hard-safety evidence permits neither a
+protective bypass nor a safety violation. Latency uses the declared p99 budget.
+AUROC is recomputed from ranked, binary-labeled held-out observations with
+deterministic tie handling. These names, units, reducers, directions, and
+thresholds are checked exactly—an arbitrary passing `score` cannot be relabeled
+after evaluation.
+
+Qualification artifacts are version 2 and must identify authoritative NumanX
+execution plus the exact model weights, regional program, low-level controller,
+and hard-safety program. They retain accepted/rejected root counts and require
+zero command failures. OOD and hard-safety evidence must include at least one
+real rejected root; a liveness event or standalone simulator score is not
+accepted as rejection evidence.
+
 `MetalNumiBrainHandle.create(configuration:policyPackage:evidenceReceipt:)`
 admits a package only with that exact receipt and when its species, enabled
 sensor set, regional program, autoregressive planning horizon, somatic-synergy
@@ -112,8 +130,8 @@ policy. Those missing artifacts and physical results—not additional schema—a
 the next promotion work.
 
 At this checkpoint the six focused verifier/package/Metal tests pass. The full
-Swift package executes 156 tests with seven intentionally unconfigured bridge/
-stress cases skipped and zero failures in 64.75 seconds. A fresh production
-build including `numi-brain-policy` passes in 84.86 seconds, scoped format lint
+Swift package executes 157 tests with seven intentionally unconfigured bridge/
+stress cases skipped and zero failures in 66.75 seconds. A fresh production
+build including `numi-brain-policy` passes in 85.46 seconds, scoped format lint
 and `git diff --check` are clean. These are implementation-correctness results,
 not Gate C task-performance evidence.

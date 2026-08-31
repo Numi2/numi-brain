@@ -56,21 +56,35 @@ public enum BrainPolicyMetricReducer: String, Codable, CaseIterable, Sendable {
   case minimum
   case maximum
   case percentile99
+  case binaryAUROC
+}
+
+@frozen
+public enum BrainPolicyQualificationExecutionKind: String, Codable, Sendable {
+  case authoritativeNumanX
 }
 
 @frozen
 public struct BrainPolicyMetricObservation: Codable, Equatable, Sendable {
   public let sampleSHA256: String
   public let value: Double
+  public let referenceClass: UInt32?
 
-  public init(sampleSHA256: String, value: Double) throws {
-    guard BrainPolicyEvidenceArtifact.isSHA256(sampleSHA256), value.isFinite else {
+  public init(
+    sampleSHA256: String,
+    value: Double,
+    referenceClass: UInt32? = nil
+  ) throws {
+    guard BrainPolicyEvidenceArtifact.isSHA256(sampleSHA256), value.isFinite,
+      referenceClass == nil || referenceClass == 0 || referenceClass == 1
+    else {
       throw BrainRuntimeError.invalidParameterVersion(
         "policy metric observation is invalid"
       )
     }
     self.sampleSHA256 = sampleSHA256
     self.value = value
+    self.referenceClass = referenceClass
   }
 }
 
@@ -97,7 +111,8 @@ public struct BrainPolicyQualificationMetricEvidence: Codable, Equatable, Sendab
     guard !identifier.isEmpty, !unit.isEmpty, threshold.isFinite,
       !canonicalObservations.isEmpty,
       Set(canonicalObservations.map(\.sampleSHA256)).count
-        == canonicalObservations.count
+        == canonicalObservations.count,
+      Self.validLabels(canonicalObservations, for: reducer)
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "policy qualification metric evidence is invalid"
@@ -124,6 +139,47 @@ public struct BrainPolicyQualificationMetricEvidence: Codable, Equatable, Sendab
       let sorted = observations.map(\.value).sorted()
       let rank = Int(ceil(Double(sorted.count) * 0.99)) - 1
       return sorted[max(0, min(rank, sorted.count - 1))]
+    case .binaryAUROC:
+      let sorted = observations.sorted {
+        if $0.value != $1.value { return $0.value < $1.value }
+        return $0.sampleSHA256 < $1.sampleSHA256
+      }
+      var negativesBefore = 0
+      var favorablePairs = 0.0
+      var index = 0
+      while index < sorted.count {
+        var groupEnd = index + 1
+        while groupEnd < sorted.count,
+          sorted[groupEnd].value == sorted[index].value
+        {
+          groupEnd += 1
+        }
+        let group = sorted[index..<groupEnd]
+        let positives = group.count(where: { $0.referenceClass == 1 })
+        let negatives = group.count - positives
+        favorablePairs +=
+          Double(positives * negativesBefore)
+          + 0.5 * Double(positives * negatives)
+        negativesBefore += negatives
+        index = groupEnd
+      }
+      let positiveCount = observations.count(where: { $0.referenceClass == 1 })
+      let negativeCount = observations.count - positiveCount
+      return favorablePairs / Double(positiveCount * negativeCount)
+    }
+  }
+
+  private static func validLabels(
+    _ observations: [BrainPolicyMetricObservation],
+    for reducer: BrainPolicyMetricReducer
+  ) -> Bool {
+    switch reducer {
+    case .binaryAUROC:
+      let labels = observations.compactMap(\.referenceClass)
+      return labels.count == observations.count
+        && labels.contains(0) && labels.contains(1)
+    case .mean, .minimum, .maximum, .percentile99:
+      return observations.allSatisfy { $0.referenceClass == nil }
     }
   }
 
@@ -157,17 +213,31 @@ public struct BrainPolicyQualificationMetricEvidence: Codable, Equatable, Sendab
 
 @frozen
 public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let axis: BrainPolicyQualificationAxis
+  public let executionKind: BrainPolicyQualificationExecutionKind
   public let modelWeightsSHA256: String
+  public let runtimeProgramFingerprint: UInt64
+  public let lowLevelControllerFingerprint: UInt64
+  public let hardSafetyProgramFingerprint: UInt64
+  public let acceptedRootCount: UInt64
+  public let rejectedRootCount: UInt64
+  public let commandFailureCount: UInt64
   public let partitionIdentifiers: [String]
   public let metrics: [BrainPolicyQualificationMetricEvidence]
 
   public init(
     axis: BrainPolicyQualificationAxis,
+    executionKind: BrainPolicyQualificationExecutionKind,
     modelWeightsSHA256: String,
+    runtimeProgramFingerprint: UInt64,
+    lowLevelControllerFingerprint: UInt64,
+    hardSafetyProgramFingerprint: UInt64,
+    acceptedRootCount: UInt64,
+    rejectedRootCount: UInt64,
+    commandFailureCount: UInt64,
     partitionIdentifiers: [String],
     metrics: [BrainPolicyQualificationMetricEvidence]
   ) throws {
@@ -175,6 +245,11 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     let canonicalMetrics = metrics.sorted { $0.identifier < $1.identifier }
     let sampleSets = canonicalMetrics.map { Set($0.observations.map(\.sampleSHA256)) }
     guard BrainPolicyEvidenceArtifact.isSHA256(modelWeightsSHA256),
+      runtimeProgramFingerprint > 0,
+      lowLevelControllerFingerprint > 0,
+      hardSafetyProgramFingerprint > 0,
+      acceptedRootCount > 0,
+      commandFailureCount == 0,
       !canonicalPartitions.isEmpty,
       Set(canonicalPartitions).count == canonicalPartitions.count,
       !canonicalMetrics.isEmpty,
@@ -187,7 +262,14 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     }
     self.formatVersion = Self.formatVersion
     self.axis = axis
+    self.executionKind = executionKind
     self.modelWeightsSHA256 = modelWeightsSHA256
+    self.runtimeProgramFingerprint = runtimeProgramFingerprint
+    self.lowLevelControllerFingerprint = lowLevelControllerFingerprint
+    self.hardSafetyProgramFingerprint = hardSafetyProgramFingerprint
+    self.acceptedRootCount = acceptedRootCount
+    self.rejectedRootCount = rejectedRootCount
+    self.commandFailureCount = commandFailureCount
     self.partitionIdentifiers = canonicalPartitions
     self.metrics = canonicalMetrics
   }
@@ -227,7 +309,14 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     guard
       try Self(
         axis: axis,
+        executionKind: executionKind,
         modelWeightsSHA256: modelWeightsSHA256,
+        runtimeProgramFingerprint: runtimeProgramFingerprint,
+        lowLevelControllerFingerprint: lowLevelControllerFingerprint,
+        hardSafetyProgramFingerprint: hardSafetyProgramFingerprint,
+        acceptedRootCount: acceptedRootCount,
+        rejectedRootCount: rejectedRootCount,
+        commandFailureCount: commandFailureCount,
         partitionIdentifiers: partitionIdentifiers,
         metrics: metrics
       ) == self
@@ -446,6 +535,20 @@ public enum BrainFoundationPolicyEvidenceVerifier {
         directory: artifactDirectory
       )
       let evidence = try BrainPolicyQualificationEvidence.decode(data)
+      let requirements = BrainPolicyGateCMetricContract.requirements(
+        for: result.axis,
+        architecture: package.architecture
+      ).sorted { $0.identifier < $1.identifier }
+      let metricContractsValid =
+        evidence.metrics.count == requirements.count
+        && zip(evidence.metrics, requirements).allSatisfy {
+          metric, requirement in
+          metric.identifier == requirement.identifier
+            && metric.unit == requirement.unit
+            && metric.reducer == requirement.reducer
+            && metric.threshold == requirement.threshold
+            && metric.direction == requirement.direction
+        }
       let allowedSamples = evidence.partitionIdentifiers.reduce(into: Set<String>()) {
         result, identifier in
         if let membership = memberships[identifier] {
@@ -456,7 +559,20 @@ public enum BrainFoundationPolicyEvidenceVerifier {
         evidence.metrics.first?.observations.map(\.sampleSHA256) ?? []
       )
       guard evidence.axis == result.axis,
+        evidence.executionKind == .authoritativeNumanX,
         evidence.modelWeightsSHA256 == package.architecture.modelWeightsSHA256,
+        evidence.runtimeProgramFingerprint
+          == package.architecture.runtimeProgramFingerprint,
+        evidence.lowLevelControllerFingerprint
+          == package.architecture.lowLevelControllerFingerprint,
+        evidence.hardSafetyProgramFingerprint
+          == package.architecture.hardSafetyProgramFingerprint,
+        evidence.acceptedRootCount > 0,
+        evidence.commandFailureCount == 0,
+        result.axis != .uncertaintyAndOOD
+          && result.axis != .hardSafetyRetention
+          || evidence.rejectedRootCount > 0,
+        metricContractsValid,
         try evidence.qualificationResult() == result,
         evidence.partitionIdentifiers.allSatisfy({
           partitionsByIdentifier[$0] != nil

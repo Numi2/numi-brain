@@ -244,7 +244,8 @@ The first Gate C production boundary is now executable but is not a promotion:
 species/runtime/controller/safety identities, dataset and split provenance, and
 all required evidence axes into a deterministic content-addressed `.nbpolicy`.
 The evidence verifier streams retained artifacts, proves split disjointness,
-recomputes metrics, and issues an in-process receipt bound to the exact package.
+recomputes predeclared axis-specific metrics, requires authoritative NumanX
+root provenance, and issues an in-process receipt bound to the exact package.
 The Metal factory requires that receipt and rejects seeds, sensor/program/
 controller drift, unsupported action-generation geometry, and model-family/
 revision/goal/precision/uncertainty metadata that does not name its exact
