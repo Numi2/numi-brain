@@ -133,6 +133,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
   private let moduleIdentifierBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
   private let dummyEvidenceBuffer: any MTLBuffer
+  private let unconditionalAcceptanceGateBuffer: any MTLBuffer
   private let capabilityCodeCount: Int
 
   public init(
@@ -228,7 +229,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain developmental-state arguments"
-    descriptor.maxBufferBindCount = 6
+    descriptor.maxBufferBindCount = 8
     descriptor.initializeBindings = true
     let stageBytes = stageRecords.count * MemoryLayout<DevelopmentalStageRecord>.stride
     let capabilityBytes = max(
@@ -256,6 +257,10 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       let dummyEvidenceBuffer = device.makeBuffer(
         length: MetalDevelopmentalCapabilityEvidenceRecord.byteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+        length: 128,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate developmental-state bindings")
@@ -278,6 +283,9 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       repeating: 0,
       count: dummyEvidenceBuffer.length
     )
+    unconditionalAcceptanceGateBuffer.contents().storeBytes(
+      of: UInt32(1), as: UInt32.self
+    )
     stageBuffer.label = "NumiBrain immutable developmental stages"
     capabilityCodeBuffer.label = "NumiBrain immutable capability gate codes"
     moduleIdentifierBuffer.label = "NumiBrain developmental module identifiers"
@@ -296,13 +304,14 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     self.moduleIdentifierBuffer = moduleIdentifierBuffer
     self.uniformBuffer = uniformBuffer
     self.dummyEvidenceBuffer = dummyEvidenceBuffer
+    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
     self.capabilityCodeCount = capabilityCodes.count
   }
 
   public var residencyAllocations: [any MTLAllocation] {
     [
       stageBuffer, capabilityCodeBuffer, moduleIdentifierBuffer,
-      uniformBuffer, dummyEvidenceBuffer,
+      uniformBuffer, dummyEvidenceBuffer, unconditionalAcceptanceGateBuffer,
     ]
   }
 
@@ -332,7 +341,9 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     deltaMicroseconds: UInt64,
-    evidence: MetalDevelopmentalEvidenceBufferLease?
+    evidence: MetalDevelopmentalEvidenceBufferLease?,
+    acceptanceGateGPUAddress: UInt64? = nil,
+    acceptanceGateResultGPUAddress: UInt64? = nil
   ) throws {
     if let evidence {
       guard evidence.view.timestamp == acceptedPhysicsState.acceptedTimestamp,
@@ -350,7 +361,9 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
       deltaMicroseconds: deltaMicroseconds,
       acceptedPhysicsStateFingerprint: acceptedPhysicsState.fingerprint,
-      evidence: evidence
+      evidence: evidence,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
     dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
@@ -371,12 +384,42 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     )
   }
 
+  func encodeAcceptedProgressAuthoritativeGate(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    acceptanceGateGPUAddress: UInt64,
+    acceptanceGateResultGPUAddress: UInt64
+  ) throws {
+    try bind(
+      transaction: transaction,
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      acceptedPhysicsStateFingerprint: 0,
+      evidence: nil,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+    dispatch(encoder, pipeline: initializePipeline, count: 1)
+    barrier(encoder)
+    dispatch(encoder, pipeline: advancePipeline, count: 1)
+    barrier(encoder)
+    dispatch(
+      encoder,
+      pipeline: maturationPipeline,
+      count: species.enabledModuleIdentifiers.count
+    )
+  }
+
   private func bind(
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
     acceptedPhysicsStateFingerprint: UInt64,
-    evidence: MetalDevelopmentalEvidenceBufferLease?
+    evidence: MetalDevelopmentalEvidenceBufferLease?,
+    acceptanceGateGPUAddress: UInt64? = nil,
+    acceptanceGateResultGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     var uniforms = DevelopmentalUniforms(
@@ -416,6 +459,15 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     argumentTable.setAddress(
       evidence?.view.gpuAddress ?? dummyEvidenceBuffer.gpuAddress,
       index: 5
+    )
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 6
+    )
+    argumentTable.setAddress(
+      acceptanceGateResultGPUAddress
+        ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 7
     )
   }
 

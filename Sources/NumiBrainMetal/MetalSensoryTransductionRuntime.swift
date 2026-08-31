@@ -170,6 +170,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let dummyInputBuffer: any MTLBuffer
   private let dummyValidityBuffer: any MTLBuffer
+  private let unconditionalAcceptanceGateBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -281,7 +282,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain sensory transduction arguments"
-    argumentDescriptor.maxBufferBindCount = 20
+    argumentDescriptor.maxBufferBindCount = 21
     argumentDescriptor.initializeBindings = true
     let descriptorByteCount = max(
       descriptors.count * MemoryLayout<SensoryDescriptorRecord>.stride,
@@ -311,6 +312,10 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       let dummyValidityBuffer = device.makeBuffer(
         length: MemoryLayout<UInt32>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+        length: MemoryLayout<UInt32>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate sensory transduction bindings")
@@ -330,6 +335,9 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     }
     dummyInputBuffer.contents().storeBytes(of: Float(0), as: Float.self)
     dummyValidityBuffer.contents().storeBytes(of: UInt32.max, as: UInt32.self)
+    unconditionalAcceptanceGateBuffer.contents().storeBytes(
+      of: UInt32(1), as: UInt32.self
+    )
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.sensory, minimumScalarCount: 8),
       index: 11
@@ -352,12 +360,13 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.dummyInputBuffer = dummyInputBuffer
     self.dummyValidityBuffer = dummyValidityBuffer
+    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
     [
       descriptorBuffer, ruleBuffer, uniformBuffer, dummyInputBuffer,
-      dummyValidityBuffer,
+      dummyValidityBuffer, unconditionalAcceptanceGateBuffer,
     ]
   }
 
@@ -370,7 +379,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     controlStepIdentifier: UInt64,
     randomCounterGeneration: UInt64,
     targetTimestamp: BrainTimestamp,
-    deltaMicroseconds: UInt32
+    deltaMicroseconds: UInt32,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws -> Result {
     guard transaction.layoutFingerprint == arena.layout.fingerprint,
       deltaMicroseconds > 0,
@@ -447,6 +457,10 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(descriptorBuffer.gpuAddress, index: 1)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 2)
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 20
+    )
     for modality in SensoryModality.allCases {
       argumentTable.setAddress(
         viewByModality[modality]?.gpuAddress ?? dummyInputBuffer.gpuAddress,

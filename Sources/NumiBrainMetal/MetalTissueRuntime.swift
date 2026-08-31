@@ -6,6 +6,7 @@ import NumiBrainCore
 private struct ProtectiveCommandUniforms {
   var brainGeneration: UInt64 = 0
   var motorProfileFingerprint: UInt64 = 0
+  var sampleTimestampMicroseconds: UInt64 = 0
   var moduleCount: UInt32 = 0
   var muscleCount: UInt32 = 0
   var environmentIdentifier: UInt32 = 0
@@ -359,10 +360,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public final class NumanXMotorBufferLease: @unchecked Sendable {
     public let output: ProtectiveMotorOutputBufferView
 
-    private let headerBuffer: any MTLBuffer
-    private let excitationBuffer: any MTLBuffer
-    private let autonomicBuffer: any MTLBuffer
-    private let activeSensingBuffer: any MTLBuffer
+    let headerBuffer: any MTLBuffer
+    let excitationBuffer: any MTLBuffer
+    let autonomicBuffer: any MTLBuffer
+    let activeSensingBuffer: any MTLBuffer
 
     fileprivate init(
       output: ProtectiveMotorOutputBufferView,
@@ -395,6 +396,69 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
   }
 
+  /// One nonblocking decision-to-motor submission. The ticket retains every
+  /// exact output allocation, its immutable 152-byte candidate identity, the
+  /// upstream decision gate, and the fresh per-attempt motor gate. A reached
+  /// event proves liveness only; NumanX must validate `motorReadyGate` before
+  /// consuming any output range.
+  public final class NumanXMotorSubmissionTicket: @unchecked Sendable {
+    public let fastSystems: FastSystemResult
+    public let candidate: NumanXMotorCandidate
+    public let buffers: NumanXMotorBufferLease
+    public let decisionReadyGate: MetalNumanXDecisionReadyGateLease
+    public let motorReadyGate: MetalNumanXMotorReadyGateLease
+    public let waitPoint: MetalSharedEventPoint
+    public let completionPoint: MetalSharedEventPoint
+
+    private let owner: MetalTissueRuntime
+    let identifier: UUID
+    let feedbackState: MetalAsyncFeedbackState
+    let resources: MetalAsyncCommandResources
+    let motorEvaluation: MetalNumanXMotorReadyEvaluation
+
+    init(
+      identifier: UUID,
+      owner: MetalTissueRuntime,
+      fastSystems: FastSystemResult,
+      candidate: NumanXMotorCandidate,
+      buffers: NumanXMotorBufferLease,
+      waitPoint: MetalSharedEventPoint,
+      completionPoint: MetalSharedEventPoint,
+      feedbackState: MetalAsyncFeedbackState,
+      resources: MetalAsyncCommandResources,
+      motorEvaluation: MetalNumanXMotorReadyEvaluation
+    ) {
+      self.identifier = identifier
+      self.owner = owner
+      self.fastSystems = fastSystems
+      self.candidate = candidate
+      self.buffers = buffers
+      self.decisionReadyGate = motorEvaluation.decisionEvaluation.lease
+      self.motorReadyGate = motorEvaluation.lease
+      self.waitPoint = waitPoint
+      self.completionPoint = completionPoint
+      self.feedbackState = feedbackState
+      self.resources = resources
+      self.motorEvaluation = motorEvaluation
+    }
+
+    public var hasCompleted: Bool { feedbackState.hasCompleted }
+
+    public func completionFeedbackIfAvailable() throws
+      -> MetalGPUCompletionFeedback?
+    {
+      try feedbackState.poll()
+    }
+
+    /// Diagnostic/teardown boundary only. Production physical work waits on
+    /// `completionPoint` and validates the motor gate without a host wait.
+    public func waitUntilCompleted(
+      timeoutMilliseconds: UInt64 = 30_000
+    ) throws -> MetalGPUCompletionFeedback {
+      try feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
+    }
+  }
+
   public struct Submission: Equatable, Sendable, Codable {
     public let parameterVersionFingerprint: UInt64
     public let attemptedSubsteps: Int
@@ -414,6 +478,63 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
     public var gpuDurationSeconds: Double {
       max(gpuEndSeconds - gpuStartSeconds, 0)
+    }
+  }
+
+  /// Ownership-safe fast-root preparation. The command waits and signals only
+  /// on GPU timelines; its shadow buffers remain quarantined until the ticket
+  /// is explicitly resolved after owner proposal, Brain ACK, physical apply,
+  /// and publication-fence release.
+  public final class ProvisionalFastRootSubmissionTicket: @unchecked Sendable {
+    public let provisional: BrainProvisionalPhysicsAcceptance
+    public let waitPoint: MetalSharedEventPoint
+    public let completionPoint: MetalSharedEventPoint
+
+    private let owner: MetalTissueRuntime
+    let identifier: UUID
+    fileprivate let feedbackState: MetalAsyncFeedbackState
+    fileprivate let resources: MetalAsyncCommandResources
+    fileprivate let prepared: PreparedProvisionalFastRoot
+
+    fileprivate init(
+      identifier: UUID,
+      owner: MetalTissueRuntime,
+      waitPoint: MetalSharedEventPoint,
+      completionPoint: MetalSharedEventPoint,
+      feedbackState: MetalAsyncFeedbackState,
+      resources: MetalAsyncCommandResources,
+      prepared: PreparedProvisionalFastRoot
+    ) {
+      self.identifier = identifier
+      self.owner = owner
+      self.waitPoint = waitPoint
+      self.completionPoint = completionPoint
+      self.feedbackState = feedbackState
+      self.resources = resources
+      self.prepared = prepared
+      provisional = prepared.provisional
+    }
+
+    public var hasCompleted: Bool { feedbackState.hasCompleted }
+
+    public func completionFeedbackIfAvailable() throws
+      -> MetalGPUCompletionFeedback?
+    {
+      try feedbackState.poll()
+    }
+
+    func registerTerminalFeedbackHandler(
+      _ handler: @escaping @Sendable () -> Void
+    ) throws {
+      try feedbackState.registerCompletionHandler(handler)
+    }
+
+    /// Explicit diagnostic/teardown boundary. Production publication does not
+    /// call this host wait; it is ordered by the later joint-close events.
+    public func waitUntilCompleted(
+      timeoutMilliseconds: UInt64 = 30_000
+    ) throws -> MetalGPUCompletionFeedback {
+      try feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
     }
   }
 
@@ -502,8 +623,150 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     fileprivate let protectiveMuscleSelection: LocalizedProtectiveMuscleSelection?
   }
 
+  /// Host-preflighted publication metadata for a device-timeline physical
+  /// candidate. It contains no physical content digest and is not a commit
+  /// receipt. The final owner token must still bind before publication.
+  struct PreparedProvisionalFastRoot: Sendable {
+    let provisional: BrainProvisionalPhysicsAcceptance
+    let commitPlan: BrainProvisionalJointCommitPlan
+    let transactionToken: BrainJointTransactionToken
+    fileprivate let root: PreparedRootPublication
+    fileprivate let fastPrepareGate: NumanXFastPrepareGateResources
+  }
+
+  fileprivate final class NumanXFastPrepareGateResources: @unchecked Sendable {
+    let lease: MetalNumanXFastPrepareStatusLease
+    let provisional: BrainProvisionalPhysicsAcceptance
+    let statusBuffer: any MTLBuffer
+    let successBuffer: any MTLBuffer
+    private let failureRecord: Data
+
+    init(
+      device: any MTLDevice,
+      readyPoint: MetalSharedEventPoint,
+      provisional: BrainProvisionalPhysicsAcceptance,
+      fastProgramFingerprint: UInt64
+    ) throws {
+      guard MemoryLayout<NBNumanXFastPrepareStatusGPU>.stride
+          == Int(NB_NUMANX_FAST_PREPARE_STATUS_BYTE_COUNT),
+        let statusBuffer = device.makeBuffer(
+          length: Int(NB_NUMANX_FAST_PREPARE_STATUS_BYTE_COUNT),
+          options: [.storageModeShared, .hazardTrackingModeTracked]
+        ),
+        let successBuffer = device.makeBuffer(
+          length: Int(NB_NUMANX_FAST_PREPARE_STATUS_BYTE_COUNT),
+          options: [.storageModeShared, .hazardTrackingModeTracked]
+        )
+      else {
+        throw TissueError.metal("failed to allocate NumanX fast-prepare gate")
+      }
+      var pending = Self.makeRecord(
+        status: UInt32(NB_NUMANX_FAST_PREPARE_PENDING.rawValue),
+        provisional: provisional,
+        fastProgramFingerprint: fastProgramFingerprint
+      )
+      var success = Self.makeRecord(
+        status: UInt32(NB_NUMANX_FAST_PREPARE_SUCCESS.rawValue),
+        provisional: provisional,
+        fastProgramFingerprint: fastProgramFingerprint
+      )
+      var failure = Self.makeRecord(
+        status: UInt32(NB_NUMANX_FAST_PREPARE_FAILURE.rawValue),
+        provisional: provisional,
+        fastProgramFingerprint: fastProgramFingerprint
+      )
+      withUnsafeBytes(of: &pending) { bytes in
+        statusBuffer.contents().copyMemory(
+          from: bytes.baseAddress!, byteCount: bytes.count
+        )
+      }
+      withUnsafeBytes(of: &success) { bytes in
+        successBuffer.contents().copyMemory(
+          from: bytes.baseAddress!, byteCount: bytes.count
+        )
+      }
+      failureRecord = withUnsafeBytes(of: &failure) { Data($0) }
+      statusBuffer.label = "NumiBrain fast-prepare status"
+      successBuffer.label = "NumiBrain fast-prepare success template"
+      self.statusBuffer = statusBuffer
+      self.successBuffer = successBuffer
+      self.provisional = provisional
+      lease = try MetalNumanXFastPrepareStatusLease(
+        buffer: statusBuffer,
+        readyPoint: readyPoint,
+        fastProgramFingerprint: fastProgramFingerprint
+      )
+    }
+
+    func encodeSuccess(_ encoder: any MTL4ComputeCommandEncoder) {
+      encoder.copy(
+        sourceBuffer: successBuffer,
+        sourceOffset: 0,
+        destinationBuffer: statusBuffer,
+        destinationOffset: 0,
+        size: Int(NB_NUMANX_FAST_PREPARE_STATUS_BYTE_COUNT)
+      )
+    }
+
+    func recordFailure() {
+      failureRecord.withUnsafeBytes { bytes in
+        statusBuffer.contents().copyMemory(
+          from: bytes.baseAddress!, byteCount: bytes.count
+        )
+      }
+    }
+
+    private static func makeRecord(
+      status: UInt32,
+      provisional: BrainProvisionalPhysicsAcceptance,
+      fastProgramFingerprint: UInt64
+    ) -> NBNumanXFastPrepareStatusGPU {
+      var record = NBNumanXFastPrepareStatusGPU()
+      record.abiVersion = UInt32(NB_NUMANX_FAST_PREPARE_STATUS_ABI_VERSION)
+      record.structBytes = UInt32(NB_NUMANX_FAST_PREPARE_STATUS_BYTE_COUNT)
+      record.status = status
+      record.environment = provisional.environmentIdentifier
+      record.controlStep = provisional.controlStep
+      record.substepIndex = provisional.substepIndex
+      record.physicsSubstepCount = 1
+      record.reserved0 = 0
+      record.fastProgramFingerprint = fastProgramFingerprint
+      record.transactionFingerprint = provisional.transactionFingerprint
+      record.substepFingerprint = provisional.substepFingerprint
+      record.expectedPhysicsGeneration = provisional.expectedPhysicsGeneration
+      record.shadowGeneration = provisional.shadowGeneration
+      record.acceptedTimestampMicroseconds = provisional.acceptedTimestamp.rawValue
+      record.gateFingerprint = withUnsafeBytes(of: &record) { bytes in
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in bytes.prefix(120) {
+          hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        return hash == 0 ? 14_695_981_039_346_656_037 : hash
+      }
+      return record
+    }
+  }
+
+  private enum NumanXFastProofSemantic {
+    static let checkpointDomain: UInt64 = 0x4e42_4653_0000_0000
+    static let rootManifest: UInt64 = 0x4e42_4653_ffff_ffff
+
+    static func checkpoint(_ kind: MetalTissueCheckpointBufferKind) -> UInt64 {
+      checkpointDomain | UInt64(kind.rawValue)
+    }
+  }
+
+  /// Fixed little-endian words make host-owned continuation metadata part of
+  /// the same deterministic device digest as the pending fast buffers. The
+  /// final word is an integrity fingerprint over the preceding words; it is
+  /// replay evidence on the trusted same-device timeline, not authentication.
+  private static let numanXFastRootManifestWordCount = 64
+
   public let deviceName: String
   public let deviceRegistryID: UInt64
+  /// Exact fast Metal source/configuration identity bound into the NumanX
+  /// fast-prepare status gate and, transitively, the Brain commit witness.
+  public let numanXFastProgramFingerprint: UInt64
   public let width: Int
   public let height: Int
   public let parameters: TissueParameters
@@ -546,6 +809,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let bodySchemaPipeline: any MTLComputePipelineState
   private let fastCerebellarPipeline: any MTLComputePipelineState
   private let fastAutonomicPipeline: any MTLComputePipelineState
+  private let numanXMotorReadyRuntime: MetalNumanXMotorReadyRuntime
   private let argumentTable: any MTL4ArgumentTable
   private let eventArgumentTable: any MTL4ArgumentTable
   private let receptorInterruptArgumentTable: any MTL4ArgumentTable
@@ -712,6 +976,20 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private var pendingSchedulerInitialized = false
   private var hasCommittedSchedulerResult = false
   private var pendingJointTransaction: BrainJointTransaction?
+  private var preparedProvisionalFastRoot: PreparedProvisionalFastRoot?
+  private struct ActiveProvisionalFastRootSubmission {
+    let identifier: UUID
+    let feedbackState: MetalAsyncFeedbackState
+    let resources: MetalAsyncCommandResources
+  }
+  private var activeProvisionalFastRootSubmission:
+    ActiveProvisionalFastRootSubmission?
+  private struct ActiveNumanXMotorSubmission {
+    let identifier: UUID
+    let feedbackState: MetalAsyncFeedbackState
+    let resources: MetalAsyncCommandResources
+  }
+  private var activeNumanXMotorSubmission: ActiveNumanXMotorSubmission?
   private var descendingSomaticTransactionFingerprint: UInt64?
   private var stagedFastCPGTransactionFingerprint: UInt64?
   private var stagedFastCPGOscillatorCount: Int = 0
@@ -998,6 +1276,36 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("NeuralTissue.metal is missing from package resources")
     }
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let structureHash = structure.stableHash()
+    let delayFieldHash = delayField.stableHash()
+    let connectomeHash = connectome.stableHash()
+    let eventScheduleHash = eventSchedule.stableHash()
+    let numanXFastProgramFingerprint = Self.makeNumanXFastProgramFingerprint(
+      metalSource: source,
+      structureHash: structureHash,
+      delayFieldHash: delayFieldHash,
+      connectomeHash: connectomeHash,
+      eventScheduleHash: eventScheduleHash,
+      width: initialState.width,
+      height: initialState.height,
+      randomContext: randomContext,
+      parameterVersion: parameterVersion,
+      scheduleFingerprint: brainSchedule.fingerprint,
+      regionalProgramFingerprint: regionalTokenProgram.fingerprint,
+      sharedParameterFingerprint: sharedParameterBank.artifactFingerprint,
+      protectiveMotorProfileFingerprint: protectiveMotorProfile.fingerprint,
+      attachmentCatalogFingerprint:
+        requestedNumanXMuscleAttachmentCatalog?.fingerprint ?? 0,
+      somaticSynergyFingerprint: somaticSynergyCatalog.fingerprint,
+      bodyLoadFieldDynamics: bodyLoadFieldDynamics,
+      bodySchemaDynamics: bodySchemaDynamics,
+      maxEncodedSubsteps: maxEncodedSubsteps,
+      maxSchedulerEvents: maxSchedulerEvents,
+      maxSchedulerInvocations: maxSchedulerInvocations
+    )
+    guard numanXFastProgramFingerprint != 0 else {
+      throw TissueError.metal("NumanX fast program fingerprint is zero")
+    }
     let compileOptions = MTLCompileOptions()
     compileOptions.languageVersion = .version4_0
     compileOptions.mathMode = .safe
@@ -1239,6 +1547,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("failed to create the fast-autonomic argument table")
     }
+    let numanXMotorReadyRuntime = try MetalNumanXMotorReadyRuntime(device: device)
 
     let stateByteCount = initialState.count * MemoryLayout<TissueCell>.stride
     let stateBuffers: [any MTLBuffer] = try (0..<3).map { index in
@@ -2254,14 +2563,16 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.device = device
     self.deviceName = device.name
     self.deviceRegistryID = device.registryID
+    self.numanXFastProgramFingerprint = numanXFastProgramFingerprint
+    self.numanXMotorReadyRuntime = numanXMotorReadyRuntime
     self.width = initialState.width
     self.height = initialState.height
     self.parameters = parameters
     self.stimulus = stimulus
-    self.structureHash = structure.stableHash()
-    self.delayFieldHash = delayField.stableHash()
-    self.connectomeHash = connectome.stableHash()
-    self.eventScheduleHash = eventSchedule.stableHash()
+    self.structureHash = structureHash
+    self.delayFieldHash = delayFieldHash
+    self.connectomeHash = connectomeHash
+    self.eventScheduleHash = eventScheduleHash
     self.eventSchedule = eventSchedule
     self.randomContext = randomContext
     self.brainSchedule = brainSchedule
@@ -3383,6 +3694,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     targetTimestamp: BrainTimestamp
   ) throws -> BrainJointTransaction {
     guard pendingRootShadowIndex == nil, pendingJointTransaction == nil,
+      preparedProvisionalFastRoot == nil,
+      activeProvisionalFastRootSubmission == nil,
       interactiveJointRoot == nil
     else {
       throw TissueError.transaction("commit or abort the pending Metal root first")
@@ -3449,6 +3762,366 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     writeFastCPGUniforms(timestamp: committedTimestamp)
     return transaction.token
+  }
+
+  private func validateAsyncDescendingSomaticCommand(
+    _ lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    for transaction: BrainJointTransactionToken
+  ) throws -> Int {
+    let (recordBytes, recordOverflow) =
+      lease.decision.receptorEventMaximumCount.multipliedReportingOverflow(
+        by: Self.cognitiveEventRecordStride
+      )
+    let (queueBytes, queueOverflow) =
+      Self.cognitiveEventQueueHeaderStride.addingReportingOverflow(recordBytes)
+    guard let root = interactiveJointRoot,
+      root.transaction.token == transaction,
+      root.candidate == nil,
+      activeNumanXMotorSubmission == nil,
+      lease.decision.transactionFingerprint == transaction.fingerprint,
+      lease.decision.shadowGeneration == transaction.shadowGeneration,
+      lease.decision.somaticOutputCount == protectiveMotorProfile.channels.count,
+      lease.decision.somaticOutputByteCount == protectiveMuscleExcitationByteCount,
+      lease.decision.regionalMaturationCount == brainSchedule.modules.count,
+      lease.decision.regionalMaturationByteCount == developmentalMaturationByteCount,
+      lease.decision.regionalPlasticModulationCount == brainSchedule.modules.count,
+      lease.decision.regionalPlasticModulationByteCount
+        == regionalPlasticModulationByteCount,
+      lease.decision.fastPlasticityByteCount
+        == lease.decision.fastPlasticityCount
+          * MetalAgentStateLayout.fastPlasticityStride,
+      lease.decision.fastPlasticityByteCount <= fastPlasticityByteCount,
+      lease.decision.cpgStateByteCount
+        == lease.decision.cpgStateCount * Self.fastCPGStateStride,
+      lease.decision.cpgStateByteCount <= fastCPGStateCapacityByteCount,
+      lease.decision.cpgStateCount <= Self.maximumFastCPGOscillatorCount,
+      lease.decision.cpgSynergyCount == Int(somaticSynergyCatalog.synergyCount),
+      lease.decision.cpgSynergyCount > 0,
+      boundFastReflexSpeciesFingerprint == lease.speciesTemplateFingerprint,
+      lease.decision.reflexStateCount == boundFastReflexRuleCount,
+      lease.decision.reflexStateByteCount
+        == lease.decision.reflexStateCount * Self.fastReflexStateStride,
+      lease.decision.reflexStateByteCount <= fastReflexStateCapacityByteCount,
+      lease.decision.fastCerebellarStateCount
+        == protectiveMotorProfile.channels.count,
+      lease.decision.fastCerebellarStateByteCount == fastCerebellarStateByteCount,
+      lease.decision.motorCommandCount == protectiveMotorProfile.channels.count,
+      lease.decision.autonomicCommandCount == boundFastAutonomicChannelCount,
+      lease.decision.fastAutonomicStateCount == boundFastAutonomicChannelCount,
+      lease.decision.fastAutonomicStateByteCount
+        == boundFastAutonomicChannelCount * Self.fastAutonomicStateStride,
+      lease.decision.activeSensingCommandCount == boundActiveSensingChannelCount,
+      !recordOverflow, !queueOverflow,
+      lease.decision.receptorEventMaximumCount <= maxSchedulerEvents,
+      lease.decision.receptorEventMaximumCount <= Self.maximumCognitiveEventCount,
+      queueBytes <= stagedCognitiveEventQueueByteCount,
+      lease.descendingBaselineSourceOffset <= lease.buffer.length,
+      protectiveMuscleExcitationByteCount
+        <= lease.buffer.length - lease.descendingBaselineSourceOffset,
+      lease.maturationSourceOffset <= lease.buffer.length,
+      developmentalMaturationByteCount
+        <= lease.buffer.length - lease.maturationSourceOffset,
+      lease.plasticModulationSourceOffset <= lease.buffer.length,
+      regionalPlasticModulationByteCount
+        <= lease.buffer.length - lease.plasticModulationSourceOffset,
+      lease.fastPlasticitySourceOffset <= lease.buffer.length,
+      lease.decision.fastPlasticityByteCount
+        <= lease.buffer.length - lease.fastPlasticitySourceOffset,
+      lease.cpgStateSourceOffset <= lease.buffer.length,
+      lease.decision.cpgStateByteCount
+        <= lease.buffer.length - lease.cpgStateSourceOffset,
+      lease.reflexStateSourceOffset <= lease.buffer.length,
+      lease.decision.reflexStateByteCount
+        <= lease.buffer.length - lease.reflexStateSourceOffset,
+      lease.fastCerebellarStateSourceOffset <= lease.buffer.length,
+      fastCerebellarStateByteCount
+        <= lease.buffer.length - lease.fastCerebellarStateSourceOffset,
+      lease.motorCommandSourceOffset <= lease.buffer.length,
+      stagedMotorCommandByteCount
+        <= lease.buffer.length - lease.motorCommandSourceOffset,
+      lease.autonomicSourceOffset <= lease.buffer.length,
+      boundFastAutonomicChannelCount * Self.autonomicCommandStride
+        <= lease.buffer.length - lease.autonomicSourceOffset,
+      lease.fastAutonomicStateSourceOffset <= lease.buffer.length,
+      lease.decision.fastAutonomicStateByteCount
+        <= lease.buffer.length - lease.fastAutonomicStateSourceOffset,
+      lease.activeSensingSourceOffset <= lease.buffer.length,
+      boundActiveSensingChannelCount * Self.activeSensingCommandStride
+        <= lease.buffer.length - lease.activeSensingSourceOffset,
+      lease.receptorEventQueueSourceOffset <= lease.buffer.length,
+      queueBytes <= lease.buffer.length - lease.receptorEventQueueSourceOffset
+    else {
+      throw TissueError.transaction(
+        "async descending command is stale or incompatible with this NumanX root"
+      )
+    }
+    return queueBytes
+  }
+
+  private func encodeAsyncDescendingSomaticCommand(
+    _ encoder: any MTL4ComputeCommandEncoder,
+    lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    cognitiveEventQueueBytes: Int,
+    initialMotorStateIndex: Int
+  ) {
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.descendingBaselineSourceOffset,
+      destinationBuffer: descendingSomaticBuffer,
+      destinationOffset: 0,
+      size: protectiveMuscleExcitationByteCount
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.maturationSourceOffset,
+      destinationBuffer: stagedRegionalMaturationBuffer,
+      destinationOffset: 0,
+      size: developmentalMaturationByteCount
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.plasticModulationSourceOffset,
+      destinationBuffer: stagedRegionalPlasticModulationBuffer,
+      destinationOffset: 0,
+      size: regionalPlasticModulationByteCount
+    )
+    encoder.copy(
+      sourceBuffer: defaultFastPlasticityBuffer,
+      sourceOffset: 0,
+      destinationBuffer: stagedFastPlasticityBuffer,
+      destinationOffset: 0,
+      size: MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride
+        + fastPlasticityByteCount
+    )
+    if lease.decision.fastPlasticityByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.fastPlasticitySourceOffset,
+        destinationBuffer: stagedFastPlasticityBuffer,
+        destinationOffset: MemoryLayout<TissueRegionalPlasticBasisUniforms>.stride,
+        size: lease.decision.fastPlasticityByteCount
+      )
+    }
+    if lease.decision.cpgStateByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.cpgStateSourceOffset,
+        destinationBuffer: stagedFastCPGStateBuffer,
+        destinationOffset: 0,
+        size: lease.decision.cpgStateByteCount
+      )
+    }
+    if lease.decision.reflexStateByteCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.reflexStateSourceOffset,
+        destinationBuffer: stagedFastReflexStateBuffer,
+        destinationOffset: 0,
+        size: lease.decision.reflexStateByteCount
+      )
+    }
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.fastCerebellarStateSourceOffset,
+      destinationBuffer: baselineFastCerebellarStateBuffer,
+      destinationOffset: 0,
+      size: fastCerebellarStateByteCount
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.fastCerebellarStateSourceOffset,
+      destinationBuffer: stagedFastCerebellarStateBuffer,
+      destinationOffset: 0,
+      size: fastCerebellarStateByteCount
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.motorCommandSourceOffset,
+      destinationBuffer: stagedMotorCommandBuffer,
+      destinationOffset: 0,
+      size: stagedMotorCommandByteCount
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.autonomicSourceOffset,
+      destinationBuffer: baselineFastAutonomicCommandBuffer,
+      destinationOffset: 0,
+      size: boundFastAutonomicChannelCount * Self.autonomicCommandStride
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.fastAutonomicStateSourceOffset,
+      destinationBuffer: baselineFastAutonomicStateBuffer,
+      destinationOffset: 0,
+      size: lease.decision.fastAutonomicStateByteCount
+    )
+    if boundActiveSensingChannelCount > 0 {
+      encoder.copy(
+        sourceBuffer: lease.buffer,
+        sourceOffset: lease.activeSensingSourceOffset,
+        destinationBuffer: stagedActiveSensingCommandBuffer,
+        destinationOffset: 0,
+        size: boundActiveSensingChannelCount * Self.activeSensingCommandStride
+      )
+    }
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.receptorEventQueueSourceOffset,
+      destinationBuffer: stagedCognitiveEventQueueBuffer,
+      destinationOffset: 0,
+      size: cognitiveEventQueueBytes
+    )
+    encoder.copy(
+      sourceBuffer: lease.buffer,
+      sourceOffset: lease.fastAutonomicStateSourceOffset,
+      destinationBuffer: stagedFastAutonomicStateBuffer,
+      destinationOffset: 0,
+      size: lease.decision.fastAutonomicStateByteCount
+    )
+    encoder.copy(
+      sourceBuffer: protectiveCommandBuffers[committedSchedulerClockIndex],
+      sourceOffset: 0,
+      destinationBuffer: protectiveCommandBuffers[initialMotorStateIndex],
+      destinationOffset: 0,
+      size: ProtectiveMotorCommand.byteCount
+    )
+    encoder.barrier(
+      afterEncoderStages: .blit,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    receptorInterruptArgumentTable.setAddress(
+      receptorEventTransductionUniformBuffer.gpuAddress, index: 0
+    )
+    receptorInterruptArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+    receptorInterruptArgumentTable.setAddress(
+      schedulerEventUploadBuffer.gpuAddress, index: 2
+    )
+    receptorInterruptArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress, index: 3
+    )
+    receptorInterruptArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress, index: 4
+    )
+    receptorInterruptArgumentTable.setAddress(
+      stagedCognitiveEventQueueBuffer.gpuAddress, index: 5
+    )
+    encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
+    encoder.setArgumentTable(receptorInterruptArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    fastAutonomicArgumentTable.setAddress(
+      fastAutonomicUniformBuffer.gpuAddress, index: 0
+    )
+    fastAutonomicArgumentTable.setAddress(
+      baselineFastAutonomicCommandBuffer.gpuAddress, index: 1
+    )
+    fastAutonomicArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress, index: 2
+    )
+    fastAutonomicArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress, index: 3
+    )
+    fastAutonomicArgumentTable.setAddress(
+      baselineFastAutonomicStateBuffer.gpuAddress, index: 4
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastAutonomicStateBuffer.gpuAddress, index: 5
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastAutonomicOutputBuffer.gpuAddress, index: 6
+    )
+    fastAutonomicArgumentTable.setAddress(
+      stagedFastCPGStateBuffer.gpuAddress, index: 7
+    )
+    fastAutonomicArgumentTable.setAddress(
+      fastAutonomicChannelDescriptorBuffer.gpuAddress, index: 8
+    )
+    encoder.setComputePipelineState(fastAutonomicPipeline)
+    encoder.setArgumentTable(fastAutonomicArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(
+        width: boundFastAutonomicChannelCount, height: 1, depth: 1
+      ),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveCommandBuffers[initialMotorStateIndex].gpuAddress, index: 0
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveMotorProfileBuffer.gpuAddress, index: 1
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveCommandUniformBuffer.gpuAddress, index: 2
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveMotorOutputHeaderBuffers[initialMotorStateIndex].gpuAddress,
+      index: 3
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveMuscleExcitationBuffers[initialMotorStateIndex].gpuAddress,
+      index: 4
+    )
+    protectiveMotorArgumentTable.setAddress(
+      protectiveSourceInhibitionMaskBuffer.gpuAddress, index: 5
+    )
+    protectiveMotorArgumentTable.setAddress(
+      bodyLoadFieldUniformBuffer.gpuAddress, index: 6
+    )
+    protectiveMotorArgumentTable.setAddress(
+      bodyLoadFieldStateBuffers[committedBodyLoadFieldStateIndex].gpuAddress,
+      index: 7
+    )
+    protectiveMotorArgumentTable.setAddress(
+      muscleAttachmentBuffer.gpuAddress, index: 8
+    )
+    protectiveMotorArgumentTable.setAddress(
+      bodySchemaStateBuffers[committedBodyLoadFieldStateIndex].gpuAddress,
+      index: 9
+    )
+    protectiveMotorArgumentTable.setAddress(
+      descendingSomaticBuffer.gpuAddress, index: 10
+    )
+    protectiveMotorArgumentTable.setAddress(
+      fastCPGUniformBuffer.gpuAddress, index: 11
+    )
+    protectiveMotorArgumentTable.setAddress(
+      stagedFastCPGStateBuffer.gpuAddress, index: 12
+    )
+    protectiveMotorArgumentTable.setAddress(
+      transducedSchedulerEventBuffer.gpuAddress, index: 13
+    )
+    protectiveMotorArgumentTable.setAddress(
+      receptorEventTransductionResultBuffer.gpuAddress, index: 14
+    )
+    protectiveMotorArgumentTable.setAddress(
+      fastReflexRuleBuffer.gpuAddress, index: 15
+    )
+    protectiveMotorArgumentTable.setAddress(
+      stagedFastReflexStateBuffer.gpuAddress, index: 16
+    )
+    protectiveMotorArgumentTable.setAddress(
+      stagedFastCerebellarStateBuffer.gpuAddress, index: 17
+    )
+    protectiveMotorArgumentTable.setAddress(
+      somaticActuatorDescriptorBuffer.gpuAddress, index: 18
+    )
+    protectiveMotorArgumentTable.setAddress(
+      somaticSynergyDecoderBuffer.gpuAddress, index: 19
+    )
+    encoder.setComputePipelineState(protectiveMotorPipeline)
+    encoder.setArgumentTable(protectiveMotorArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
   }
 
   /// Copies the high-level brain's contiguous somatic and autonomic commands
@@ -3550,7 +4223,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         <= lease.buffer.length - lease.receptorEventQueueSourceOffset
     else {
       throw TissueError.transaction(
-        "descending somatic command is stale or incompatible with the NumanX motor profile"
+        "descending somatic command is stale or incompatible with the NumanX motor profile "
+          + "[tx=\(lease.decision.transactionFingerprint)/\(transaction.fingerprint), "
+          + "shadow=\(lease.decision.shadowGeneration)/\(transaction.shadowGeneration), "
+          + "somatic=\(lease.decision.somaticOutputCount):\(lease.decision.somaticOutputByteCount)/\(protectiveMotorProfile.channels.count):\(protectiveMuscleExcitationByteCount), "
+          + "maturation=\(lease.decision.regionalMaturationCount):\(lease.decision.regionalMaturationByteCount)/\(brainSchedule.modules.count):\(developmentalMaturationByteCount), "
+          + "plastic=\(lease.decision.fastPlasticityCount):\(lease.decision.fastPlasticityByteCount)/\(fastPlasticityByteCount), "
+          + "cpg=\(lease.decision.cpgStateCount):\(lease.decision.cpgStateByteCount):\(lease.decision.cpgSynergyCount), "
+          + "reflex=\(lease.decision.reflexStateCount):\(lease.decision.reflexStateByteCount)/\(boundFastReflexRuleCount), "
+          + "cerebellar=\(lease.decision.fastCerebellarStateCount):\(lease.decision.fastCerebellarStateByteCount)/\(fastCerebellarStateByteCount), "
+          + "autonomic=\(lease.decision.autonomicCommandCount):\(lease.decision.fastAutonomicStateCount):\(lease.decision.fastAutonomicStateByteCount)/\(boundFastAutonomicChannelCount), "
+          + "activeSensing=\(lease.decision.activeSensingCommandCount)/\(boundActiveSensingChannelCount), "
+          + "events=\(lease.decision.receptorEventMaximumCount)/\(maxSchedulerEvents)]"
       )
     }
     let descriptor = MTLResidencySetDescriptor()
@@ -3584,7 +4268,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       consumeInterruptEvents: true
     )
     writeProtectiveCommandUniforms(
-      brainGeneration: transaction.shadowGeneration
+      brainGeneration: transaction.shadowGeneration,
+      timestamp: lease.decision.decisionTimestamp
     )
     let initialMotorStateIndex = 1 - committedSchedulerClockIndex
     _ = try submit(
@@ -3876,6 +4561,445 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       lease.decision.receptorEventMaximumCount
   }
 
+  func makeOwnedNumanXMotorTimeline() throws -> (
+    decision: MetalSharedEventPoint,
+    motor: MetalSharedEventPoint
+  ) {
+    guard let event = device.makeSharedEvent() else {
+      throw TissueError.metal("failed to allocate Brain-owned NumanX motor timeline")
+    }
+    event.label = "NumiBrain NumanX decision-to-motor timeline"
+    return (
+      try MetalSharedEventPoint(event: event, value: 1),
+      try MetalSharedEventPoint(event: event, value: 2)
+    )
+  }
+
+  /// Submits the first fast physical candidate directly behind an asynchronous
+  /// cognitive decision. This path contains no semaphore wait: it waits on the
+  /// decision event in the Brain-owned queue, validates the exact decision gate,
+  /// stages all descending ranges, advances fast tissue, and publishes a fresh
+  /// per-attempt motor gate before feedback advances liveness.
+  func submitNumanXMotorCandidate(
+    commandLease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    decisionEvaluation: MetalNumanXDecisionReadyEvaluation,
+    transaction: BrainJointTransactionToken,
+    candidateDurationMicroseconds: UInt64,
+    waitFor decisionReadyPoint: MetalSharedEventPoint,
+    signal motorReadyPoint: MetalSharedEventPoint,
+    brainProgramFingerprint: UInt64
+  ) throws -> NumanXMotorSubmissionTicket {
+    guard activeNumanXMotorSubmission == nil,
+      (commandLease.buffer as AnyObject)
+        === (decisionEvaluation.sourceBuffer as AnyObject),
+      commandLease.buffer.device.registryID == device.registryID,
+      (decisionEvaluation.lease.readyPoint.event as AnyObject)
+        === (decisionReadyPoint.event as AnyObject),
+      decisionEvaluation.lease.readyPoint.value == decisionReadyPoint.value,
+      decisionEvaluation.transaction == transaction,
+      decisionEvaluation.expected.brainProgramFingerprint
+        == brainProgramFingerprint
+    else {
+      throw TissueError.transaction(
+        "a NumanX motor submission is active or its decision gate is stale"
+      )
+    }
+    try MetalSharedEventPoint.validateProgression(
+      wait: decisionReadyPoint,
+      signal: motorReadyPoint,
+      device: device
+    )
+    let cognitiveEventQueueBytes = try validateAsyncDescendingSomaticCommand(
+      commandLease,
+      for: transaction
+    )
+    guard var root = interactiveJointRoot else {
+      throw TissueError.transaction("begin interactive joint control first")
+    }
+    guard root.candidate == nil,
+      root.transaction.acceptedSubstepCount == 0
+    else {
+      throw TissueError.transaction(
+        "async NumanX motor handoff requires the sole root physical substep"
+      )
+    }
+    let nominalDuration = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    guard candidateDurationMicroseconds > 0,
+      candidateDurationMicroseconds <= nominalDuration
+    else {
+      throw TissueError.transaction(
+        "async motor candidate duration exceeds the nominal tissue step"
+      )
+    }
+    var prospectiveTransaction = root.transaction
+    let substep = try prospectiveTransaction.beginPhysicsSubstep(
+      durationMicroseconds: candidateDurationMicroseconds
+    )
+    guard substep.substepIndex == 0,
+      substep.candidateTimestamp <= prospectiveTransaction.token.targetTimestamp,
+      substep.startTimestamp == root.acceptedTimestamp
+    else {
+      throw TissueError.transaction("async motor candidate has invalid physical time")
+    }
+    let (nextHistoryStep, historyOverflow) = root.historyStep.addingReportingOverflow(1)
+    guard !historyOverflow else {
+      throw TissueError.transaction("interactive tissue history step overflows UInt64")
+    }
+    let historyWriteSlot = Int(
+      nextHistoryStep % UInt64(TissueDelayField.historyCapacity)
+    )
+    let currentOwner = (root.historyOwnerMask >> UInt32(historyWriteSlot)) & 1
+    let historyWritePlane = currentOwner ^ 1
+    var prospectiveTimestamps = root.relayHistoryTimestamps
+    prospectiveTimestamps[historyWriteSlot] = substep.candidateTimestamp.rawValue
+    try validateRelayHistoryCoverage(
+      at: substep.candidateTimestamp,
+      timestamps: prospectiveTimestamps
+    )
+    let destination = destinationIndex(rootShadowIndex: root.rootShadowIndex)
+    let initialMotorStateIndex = 1 - committedSchedulerClockIndex
+    let timestepMilliseconds = Float(Double(candidateDurationMicroseconds) / 1_000)
+    let tissueUniforms = TissueUniforms.encode(
+      width: width,
+      height: height,
+      timeMilliseconds: Float(Double(root.acceptedTimestamp.rawValue) / 1_000),
+      parameters: parameters,
+      stimulus: stimulus,
+      historyStep: UInt32(root.historyStep % UInt64(TissueDelayField.historyCapacity)),
+      historyOwnerMask: root.historyOwnerMask,
+      historyWriteSlot: UInt32(historyWriteSlot),
+      historyWritePlane: historyWritePlane,
+      eventCount: eventSchedule.eventCount,
+      randomContext: randomContext,
+      acceptedStep: root.historyStep,
+      timestepMilliseconds: timestepMilliseconds,
+      currentTimestamp: root.acceptedTimestamp,
+      candidateTimestamp: substep.candidateTimestamp
+    )
+    writeCognitiveEventTransductionUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      maximumEventCount: commandLease.decision.receptorEventMaximumCount
+    )
+    writeFastCPGUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      oscillatorCount: commandLease.decision.cpgStateCount,
+      synergyCount: commandLease.decision.cpgSynergyCount,
+      consumeInterruptEvents: true,
+      resetReflexRootActivation: true
+    )
+    writeFastAutonomicUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      baselineTimestamp: commandLease.decision.decisionTimestamp,
+      oscillatorCount: commandLease.decision.cpgStateCount,
+      consumeInterruptEvents: true
+    )
+    writeProtectiveCommandUniforms(
+      brainGeneration: transaction.shadowGeneration,
+      timestamp: root.acceptedTimestamp
+    )
+    guard let uniformAttempt = Int(exactly: substep.attemptIndex),
+      uniformAttempt < maxEncodedSubsteps
+    else {
+      throw TissueError.transaction(
+        "async NumanX retry exceeds the retained tissue uniform capacity"
+      )
+    }
+    let (uniformByteOffset, uniformOffsetOverflow) =
+      uniformAttempt.multipliedReportingOverflow(by: TissueUniforms.byteCount)
+    guard !uniformOffsetOverflow,
+      uniformByteOffset <= uniformBuffer.length,
+      TissueUniforms.byteCount <= uniformBuffer.length - uniformByteOffset
+    else {
+      throw TissueError.transaction("async NumanX uniform range overflowed")
+    }
+    writeUniforms(tissueUniforms, attempt: uniformAttempt)
+    let uniformGPUAddress = uniformBuffer.gpuAddress + UInt64(uniformByteOffset)
+
+    // This async path is causally downstream of the current decision shadow,
+    // including on the first root. Its motor identity therefore starts at the
+    // exact physical substep timestamp and carries the shadow generation; the
+    // legacy synchronous path retains its base-generation first-candidate ABI.
+    let protectiveTimestamp = root.acceptedTimestamp
+    let protectiveCommandGeneration = transaction.shadowGeneration
+    let protectiveMotorGeneration = transaction.shadowGeneration
+    let fastSystems = FastSystemResult(
+      substep: substep,
+      speciesTemplateFingerprint: boundFastReflexSpeciesFingerprint ?? 0,
+      compiledSpeciesTemplateFingerprint:
+        boundCompiledSpeciesTemplateFingerprint ?? 0,
+      protectiveCommand: ProtectiveCommandBufferView(
+        gpuAddress: protectiveCommandBuffers[initialMotorStateIndex].gpuAddress,
+        byteCount: ProtectiveMotorCommand.byteCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveCommandGeneration
+      ),
+      protectiveMotorOutput: ProtectiveMotorOutputBufferView(
+        headerGPUAddress:
+          protectiveMotorOutputHeaderBuffers[initialMotorStateIndex].gpuAddress,
+        muscleExcitationGPUAddress:
+          protectiveMuscleExcitationBuffers[initialMotorStateIndex].gpuAddress,
+        headerByteCount: ProtectiveMotorOutput.headerByteCount,
+        muscleExcitationByteCount: protectiveMuscleExcitationByteCount,
+        muscleCount: protectiveMotorProfile.channels.count,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration,
+        profileFingerprint: protectiveMotorProfile.fingerprint,
+        actuatorCommandKind: boundActuatorCommandKind
+      ),
+      fastAutonomicOutput: FastAutonomicOutputBufferView(
+        gpuAddress: stagedFastAutonomicOutputBuffer.gpuAddress,
+        byteCount: boundFastAutonomicChannelCount * Self.autonomicCommandStride,
+        channelCount: boundFastAutonomicChannelCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration
+      ),
+      activeSensingOutput: ActiveSensingOutputBufferView(
+        gpuAddress: stagedActiveSensingCommandBuffer.gpuAddress,
+        byteCount: boundActiveSensingChannelCount * Self.activeSensingCommandStride,
+        channelCount: boundActiveSensingChannelCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration
+      ),
+      gpuStartSeconds: 0,
+      gpuEndSeconds: 0
+    )
+    let buffers = NumanXMotorBufferLease(
+      output: fastSystems.protectiveMotorOutput,
+      headerBuffer: protectiveMotorOutputHeaderBuffers[initialMotorStateIndex],
+      excitationBuffer: protectiveMuscleExcitationBuffers[initialMotorStateIndex],
+      autonomicBuffer: stagedFastAutonomicOutputBuffer,
+      activeSensingBuffer: stagedActiveSensingCommandBuffer
+    )
+    let candidate = try NumanXMotorCandidate(
+      transaction: transaction,
+      fastSystems: fastSystems,
+      usesDecisionShadow: true
+    )
+    let motorEvaluation = try numanXMotorReadyRuntime.makeMotorEvaluation(
+      device: device,
+      candidate: candidate,
+      substep: substep,
+      transaction: transaction,
+      decisionEvaluation: decisionEvaluation,
+      readyPoint: motorReadyPoint,
+      brainProgramFingerprint: brainProgramFingerprint,
+      fastProgramFingerprint: numanXFastProgramFingerprint
+    )
+    let dynamicResidency = try numanXMotorReadyRuntime.makeResidencySet(
+      device: device,
+      label: "NumiBrain NumanX async motor residency",
+      allocations: motorEvaluation.residencyAllocations
+    )
+    var residencyTransferred = false
+    defer {
+      if !residencyTransferred { dynamicResidency.endResidency() }
+    }
+    guard let allocator = device.makeCommandAllocator(),
+      let submissionBuffer = device.makeCommandBuffer()
+    else {
+      throw TissueError.metal("failed to allocate async NumanX motor resources")
+    }
+    submissionBuffer.beginCommandBuffer(allocator: allocator)
+    submissionBuffer.useResidencySet(residencySet)
+    submissionBuffer.useResidencySet(dynamicResidency)
+    guard let encoder = submissionBuffer.makeComputeCommandEncoder() else {
+      submissionBuffer.endCommandBuffer()
+      throw TissueError.metal("failed to encode async NumanX motor candidate")
+    }
+    encoder.label = "NumiBrain async decision to NumanX motor candidate"
+    encodeAsyncDescendingSomaticCommand(
+      encoder,
+      lease: commandLease,
+      cognitiveEventQueueBytes: cognitiveEventQueueBytes,
+      initialMotorStateIndex: initialMotorStateIndex
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    eventArgumentTable.setAddress(uniformGPUAddress, index: 0)
+    eventArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+    eventArgumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 2)
+    encoder.setComputePipelineState(eventCompactionPipeline)
+    encoder.setArgumentTable(eventArgumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    argumentTable.setAddress(stateBuffers[root.rootShadowIndex].gpuAddress, index: 0)
+    argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
+    argumentTable.setAddress(uniformGPUAddress, index: 2)
+    argumentTable.setAddress(structureBuffer.gpuAddress, index: 3)
+    argumentTable.setAddress(delayBuffer.gpuAddress, index: 4)
+    argumentTable.setAddress(relayHistoryBuffer.gpuAddress, index: 5)
+    argumentTable.setAddress(relayScratchBuffer.gpuAddress, index: 6)
+    argumentTable.setAddress(projectionOffsetBuffer.gpuAddress, index: 7)
+    argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
+    argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
+    argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+    argumentTable.setAddress(relayHistoryTimestampBuffer.gpuAddress, index: 11)
+    encoder.setComputePipelineState(tissuePipeline)
+    encoder.setArgumentTable(argumentTable)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
+      threadsPerThreadgroup: threadgroupSize()
+    )
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    do {
+      try numanXMotorReadyRuntime.encodeMotor(
+        encoder: encoder,
+        evaluation: motorEvaluation,
+        buffers: buffers,
+        descendingSomaticBuffer: descendingSomaticBuffer,
+        descendingAutonomicBuffer: baselineFastAutonomicCommandBuffer
+      )
+    } catch {
+      encoder.endEncoding()
+      submissionBuffer.endCommandBuffer()
+      throw error
+    }
+    encoder.endEncoding()
+    submissionBuffer.endCommandBuffer()
+
+    root.transaction = prospectiveTransaction
+    root.candidate = InteractiveCandidate(
+      substep: substep,
+      destinationIndex: destination,
+      historyWriteSlot: historyWriteSlot,
+      historyWritePlane: historyWritePlane,
+      motorStateIndex: initialMotorStateIndex
+    )
+    interactiveJointRoot = root
+    descendingSomaticTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGOscillatorCount = commandLease.decision.cpgStateCount
+    stagedFastCPGSynergyCount = commandLease.decision.cpgSynergyCount
+    stagedCognitiveEventTransactionFingerprint = transaction.fingerprint
+    stagedCognitiveEventMaximumCount =
+      commandLease.decision.receptorEventMaximumCount
+
+    let feedbackState = MetalAsyncFeedbackState()
+    let resources = MetalAsyncCommandResources(
+      allocator: allocator,
+      commandBuffer: submissionBuffer,
+      residencySets: [dynamicResidency]
+    )
+    residencyTransferred = true
+    let identifier = UUID()
+    activeNumanXMotorSubmission = ActiveNumanXMotorSubmission(
+      identifier: identifier,
+      feedbackState: feedbackState,
+      resources: resources
+    )
+    commandQueue.waitForEvent(
+      decisionReadyPoint.event,
+      value: decisionReadyPoint.value
+    )
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { feedback in
+      if feedback.error != nil || !motorEvaluation.hasValidSuccess() {
+        motorEvaluation.markFailure()
+      }
+      feedbackState.record(feedback, label: "NumiBrain NumanX motor candidate")
+      if motorReadyPoint.event.signaledValue < motorReadyPoint.value {
+        motorReadyPoint.event.signaledValue = motorReadyPoint.value
+      }
+      _ = resources
+      _ = self
+    }
+    commandQueue.commit([submissionBuffer], options: options)
+    return NumanXMotorSubmissionTicket(
+      identifier: identifier,
+      owner: self,
+      fastSystems: fastSystems,
+      candidate: candidate,
+      buffers: buffers,
+      waitPoint: decisionReadyPoint,
+      completionPoint: motorReadyPoint,
+      feedbackState: feedbackState,
+      resources: resources,
+      motorEvaluation: motorEvaluation
+    )
+  }
+
+  /// Releases only terminal command resources. A nil result is a nonblocking
+  /// indication that ownership must remain quarantined.
+  func reapNumanXMotorSubmissionIfCompleted(
+    _ ticket: NumanXMotorSubmissionTicket
+  ) throws -> MetalGPUCompletionFeedback? {
+    guard let active = activeNumanXMotorSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources
+    else {
+      throw TissueError.transaction("NumanX motor submission ticket is stale")
+    }
+    let feedback: MetalGPUCompletionFeedback
+    do {
+      guard let available = try ticket.feedbackState.poll() else { return nil }
+      feedback = available
+    } catch {
+      active.resources.release()
+      activeNumanXMotorSubmission = nil
+      throw error
+    }
+    guard ticket.motorEvaluation.hasValidSuccess() else {
+      active.resources.release()
+      activeNumanXMotorSubmission = nil
+      throw TissueError.transaction("NumanX motor-ready gate rejected the candidate")
+    }
+    if var root = interactiveJointRoot,
+      root.candidate?.substep == ticket.fastSystems.substep
+    {
+      root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartSeconds
+      root.lastGPUEndSeconds = feedback.gpuEndSeconds
+      interactiveJointRoot = root
+    }
+    active.resources.release()
+    activeNumanXMotorSubmission = nil
+    return feedback
+  }
+
+  /// Explicit timeout-aware diagnostic teardown. A timeout is not cancellation:
+  /// the ticket remains the sole outstanding owner until Metal publishes
+  /// terminal feedback.
+  func waitAndReapNumanXMotorSubmission(
+    _ ticket: NumanXMotorSubmissionTicket,
+    timeoutMilliseconds: UInt64
+  ) throws -> MetalGPUCompletionFeedback {
+    guard let active = activeNumanXMotorSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState
+    else {
+      throw TissueError.transaction("NumanX motor submission ticket is stale")
+    }
+    do {
+      _ = try ticket.feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
+    } catch {
+      if ticket.feedbackState.hasCompleted {
+        active.resources.release()
+        activeNumanXMotorSubmission = nil
+      }
+      throw error
+    }
+    guard let feedback = try reapNumanXMotorSubmissionIfCompleted(ticket) else {
+      throw TissueError.metal("NumanX motor feedback disappeared after completion")
+    }
+    return feedback
+  }
+
   /// Advances one neural tissue candidate without publishing it. Corrected
   /// durations may shrink from the nominal tissue step; local and sparse
   /// conduction still resolve against accepted physical timestamps.
@@ -4149,6 +5273,771 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     root.lastGPUEndSeconds = feedback.gpuEndTime
     hasCommittedSchedulerResult = false
     interactiveJointRoot = root
+  }
+
+  /// Encodes the one-substep accepted fast prefix and root finalization into
+  /// a caller-owned Metal 4 command buffer without requiring a host-known
+  /// physical digest. Every fallible host identity/layout/generation check is
+  /// completed before this method emits its first GPU write. All resulting
+  /// pointers remain pending until a later canonical owner token is bound and
+  /// the paired fast+cognitive publication primitive runs.
+  fileprivate func encodeProvisionalAcceptedFastRoot(
+    encoder: any MTL4ComputeCommandEncoder,
+    for substep: BrainJointSubstepToken,
+    fastPrepareGate: NumanXFastPrepareGateResources
+  ) throws -> PreparedProvisionalFastRoot {
+    guard preparedProvisionalFastRoot == nil,
+      pendingJointTransaction == nil,
+      pendingRootShadowIndex == nil,
+      var root = interactiveJointRoot,
+      let candidate = root.candidate,
+      candidate.substep == substep
+    else {
+      throw TissueError.transaction(
+        "stale, duplicate, or already-pending provisional fast root"
+      )
+    }
+
+    var transaction = root.transaction
+    let provisional = try transaction.prepareProvisionalPhysicsAcceptance(
+      for: substep
+    )
+    guard fastPrepareGate.provisional == provisional,
+      fastPrepareGate.lease.fastProgramFingerprint
+        == numanXFastProgramFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX fast-prepare gate does not match the provisional root"
+      )
+    }
+    let commitPlan = try transaction.preflightProvisionalCommit(provisional)
+    let token = transaction.token
+    let (expectedPhysicsGeneration, physicsGenerationOverflow) =
+      token.basePhysicsGeneration.addingReportingOverflow(1)
+    guard token.baseBrainGeneration == committedSchedulerGeneration,
+      token.randomCounterGeneration == committedStep,
+      token.parameterVersionFingerprint == parameterVersion.fingerprint,
+      token.environmentIdentifier == schedulerEnvironmentIdentifier,
+      root.historyStep == committedStep,
+      root.acceptedTimestamp == token.committedTimestamp,
+      provisional.acceptedTimestamp == token.targetTimestamp,
+      !physicsGenerationOverflow,
+      provisional.expectedPhysicsGeneration == expectedPhysicsGeneration
+    else {
+      throw TissueError.transaction(
+        "provisional fast root is stale for the committed tissue generation"
+      )
+    }
+    let (nextHistoryStep, historyOverflow) =
+      root.historyStep.addingReportingOverflow(1)
+    guard !historyOverflow else {
+      throw TissueError.transaction("provisional fast history step overflows UInt64")
+    }
+    var relayHistoryTimestamps = root.relayHistoryTimestamps
+    relayHistoryTimestamps[candidate.historyWriteSlot] =
+      provisional.acceptedTimestamp.rawValue
+    try validateRelayHistoryCoverage(
+      at: provisional.acceptedTimestamp,
+      timestamps: relayHistoryTimestamps
+    )
+    try validateLocalizedMuscleLoadObservations([])
+    if let numanXMuscleAttachmentCatalog {
+      try numanXMuscleAttachmentCatalog.validate(profile: protectiveMotorProfile)
+    }
+    try writeProtectiveSourceInhibitionMask(
+      observations: [],
+      targetTimestamp: provisional.acceptedTimestamp
+    )
+    let schedulerWindow = try prepareSchedulerWindow(
+      startTime: token.committedTimestamp,
+      targetTime: provisional.acceptedTimestamp,
+      events: []
+    )
+    guard committedRegionalStateIndex == schedulerWindow.inputClockIndex,
+      schedulerWindow.targetTime == token.targetTimestamp,
+      schedulerWindow.initialize == (committedSchedulerTime == nil)
+    else {
+      throw TissueError.transaction(
+        "provisional fast scheduler shadow diverged from the joint root"
+      )
+    }
+    let (nextSchedulerGeneration, schedulerGenerationOverflow) =
+      committedSchedulerGeneration.addingReportingOverflow(1)
+    guard !schedulerGenerationOverflow else {
+      throw TissueError.transaction("scheduler generation overflow")
+    }
+    writeFastCPGUniforms(
+      timestamp: provisional.acceptedTimestamp,
+      consumeInterruptEvents: true
+    )
+    writeFastAutonomicUniforms(
+      timestamp: provisional.acceptedTimestamp,
+      baselineTimestamp: token.committedTimestamp,
+      consumeInterruptEvents: true
+    )
+
+    // No throwing work is permitted below this point until all device writes
+    // have been encoded and the pending host metadata has been installed.
+    encoder.copy(
+      sourceBuffer: protectiveMuscleExcitationBuffers[candidate.motorStateIndex],
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedSomaticOutputBuffer,
+      destinationOffset: 0,
+      size: protectiveMuscleExcitationByteCount
+    )
+    encoder.copy(
+      sourceBuffer: stagedFastAutonomicOutputBuffer,
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedAutonomicOutputBuffer,
+      destinationOffset: 0,
+      size: fastAutonomicCommandByteCount
+    )
+    encoder.copy(
+      sourceBuffer: stagedActiveSensingCommandBuffer,
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedActiveSensingOutputBuffer,
+      destinationOffset: 0,
+      size: activeSensingCommandByteCount
+    )
+    encoder.barrier(
+      afterEncoderStages: .blit,
+      beforeEncoderStages: .dispatch,
+      visibilityOptions: .device
+    )
+    encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    encoder.barrier(
+      afterEncoderStages: .dispatch,
+      beforeEncoderStages: .blit,
+      visibilityOptions: .device
+    )
+    fastPrepareGate.encodeSuccess(encoder)
+
+    let preparedRoot = PreparedRootPublication(
+      committedIndex: candidate.destinationIndex,
+      committedHistoryOwnerMask: settingHistoryOwner(
+        mask: root.historyOwnerMask,
+        slot: candidate.historyWriteSlot,
+        owner: candidate.historyWritePlane
+      ),
+      committedRelayHistoryTimestamps: relayHistoryTimestamps,
+      committedStep: nextHistoryStep,
+      committedSchedulerClockIndex: schedulerWindow.outputClockIndex,
+      committedRegionalStateIndex: schedulerWindow.outputClockIndex,
+      committedSchedulerTime: schedulerWindow.targetTime,
+      committedSchedulerGeneration: nextSchedulerGeneration
+    )
+    let prepared = PreparedProvisionalFastRoot(
+      provisional: provisional,
+      commitPlan: commitPlan,
+      transactionToken: token,
+      root: preparedRoot,
+      fastPrepareGate: fastPrepareGate
+    )
+    root.transaction = transaction
+    root.rootShadowIndex = candidate.destinationIndex
+    root.historyOwnerMask = preparedRoot.committedHistoryOwnerMask
+    root.historyStep = nextHistoryStep
+    root.relayHistoryTimestamps = relayHistoryTimestamps
+    root.acceptedTimestamp = provisional.acceptedTimestamp
+    root.candidate = nil
+    root.fastSchedulerWindow = schedulerWindow
+
+    pendingRootShadowIndex = preparedRoot.committedIndex
+    pendingRootShadowOwnerMask = preparedRoot.committedHistoryOwnerMask
+    pendingRootShadowStep = preparedRoot.committedStep
+    pendingRelayHistoryTimestamps = preparedRoot.committedRelayHistoryTimestamps
+    pendingSchedulerClockIndex = preparedRoot.committedSchedulerClockIndex
+    pendingSchedulerTargetTime = preparedRoot.committedSchedulerTime
+    pendingRegionalStateIndex = preparedRoot.committedRegionalStateIndex
+    pendingSchedulerInitialized = schedulerWindow.initialize
+    pendingJointTransaction = transaction
+    preparedProvisionalFastRoot = prepared
+    hasCommittedSchedulerResult = false
+    interactiveJointRoot = nil
+    return prepared
+  }
+
+  /// Submits the provisional accepted fast prefix on this Brain-owned MTL4
+  /// queue. Submission never blocks the host: the queue waits for physical
+  /// preparation and signals a distinct fast-prepared point for cognitive
+  /// consequence/end-witness work.
+  public func submitProvisionalAcceptedFastRoot(
+    for substep: BrainJointSubstepToken,
+    waitFor physicalPreparedPoint: MetalSharedEventPoint,
+    signal fastPreparedPoint: MetalSharedEventPoint
+  ) throws -> ProvisionalFastRootSubmissionTicket {
+    guard activeProvisionalFastRootSubmission == nil else {
+      throw TissueError.transaction(
+        "a provisional fast-root GPU submission is already outstanding"
+      )
+    }
+    try physicalPreparedPoint.validate(for: device)
+    try fastPreparedPoint.validate(for: device)
+    if (physicalPreparedPoint.event as AnyObject)
+      === (fastPreparedPoint.event as AnyObject)
+    {
+      guard fastPreparedPoint.value > physicalPreparedPoint.value else {
+        throw TissueError.transaction(
+          "fast-prepared signal must advance beyond its physical wait"
+        )
+      }
+    }
+    guard let root = interactiveJointRoot,
+      root.candidate?.substep == substep
+    else {
+      throw TissueError.transaction(
+        "there is no matching provisional fast candidate"
+      )
+    }
+    var previewTransaction = root.transaction
+    let previewProvisional = try previewTransaction
+      .prepareProvisionalPhysicsAcceptance(for: substep)
+    let fastPrepareGate = try NumanXFastPrepareGateResources(
+      device: device,
+      readyPoint: fastPreparedPoint,
+      provisional: previewProvisional,
+      fastProgramFingerprint: numanXFastProgramFingerprint
+    )
+    let gateResidencyDescriptor = MTLResidencySetDescriptor()
+    gateResidencyDescriptor.label = "NumiBrain fast-prepare gate residency"
+    gateResidencyDescriptor.initialCapacity = 2
+    let gateResidency: any MTLResidencySet
+    do {
+      gateResidency = try device.makeResidencySet(
+        descriptor: gateResidencyDescriptor
+      )
+    } catch {
+      throw TissueError.metal(
+        "failed to retain NumanX fast-prepare gate: \(error)"
+      )
+    }
+    gateResidency.addAllocation(fastPrepareGate.statusBuffer)
+    gateResidency.addAllocation(fastPrepareGate.successBuffer)
+    gateResidency.commit()
+    gateResidency.requestResidency()
+    var gateResidencyTransferred = false
+    defer {
+      if !gateResidencyTransferred { gateResidency.endResidency() }
+    }
+    guard let allocator = device.makeCommandAllocator(),
+      let submissionBuffer = device.makeCommandBuffer()
+    else {
+      throw TissueError.metal("failed to allocate provisional fast-root command resources")
+    }
+    submissionBuffer.beginCommandBuffer(allocator: allocator)
+    submissionBuffer.useResidencySet(residencySet)
+    submissionBuffer.useResidencySet(gateResidency)
+    guard let encoder = submissionBuffer.makeComputeCommandEncoder() else {
+      submissionBuffer.endCommandBuffer()
+      throw TissueError.metal("failed to encode provisional accepted fast root")
+    }
+    encoder.label = "NumiBrain provisional accepted fast root"
+
+    let prepared: PreparedProvisionalFastRoot
+    var encoderEnded = false
+    var commandEnded = false
+    do {
+      prepared = try encodeProvisionalAcceptedFastRoot(
+        encoder: encoder,
+        for: substep,
+        fastPrepareGate: fastPrepareGate
+      )
+      encoder.endEncoding()
+      encoderEnded = true
+      submissionBuffer.endCommandBuffer()
+      commandEnded = true
+      try MetalSharedEventPoint.validateProgression(
+        wait: physicalPreparedPoint,
+        signal: fastPreparedPoint,
+        device: device
+      )
+    } catch {
+      if !encoderEnded { encoder.endEncoding() }
+      if !commandEnded { submissionBuffer.endCommandBuffer() }
+      if pendingRootShadowIndex != nil {
+        try? abortRootTransaction()
+      }
+      throw error
+    }
+
+    let feedbackState = MetalAsyncFeedbackState()
+    let resources = MetalAsyncCommandResources(
+      allocator: allocator,
+      commandBuffer: submissionBuffer,
+      residencySets: [gateResidency]
+    )
+    gateResidencyTransferred = true
+    let identifier = UUID()
+    activeProvisionalFastRootSubmission = ActiveProvisionalFastRootSubmission(
+      identifier: identifier,
+      feedbackState: feedbackState,
+      resources: resources
+    )
+    commandQueue.waitForEvent(
+      physicalPreparedPoint.event,
+      value: physicalPreparedPoint.value
+    )
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { feedback in
+      if feedback.error != nil {
+        fastPrepareGate.recordFailure()
+        // Liveness only. The owner proposal/ACK/apply validators remain
+        // authoritative, so this cannot turn failed shadow bytes into state.
+        if fastPreparedPoint.event.signaledValue < fastPreparedPoint.value {
+          fastPreparedPoint.event.signaledValue = fastPreparedPoint.value
+        }
+      }
+      feedbackState.record(
+        feedback,
+        label: "NumiBrain provisional accepted fast root"
+      )
+      _ = resources
+      _ = self
+    }
+    commandQueue.commit([submissionBuffer], options: options)
+    commandQueue.signalEvent(
+      fastPreparedPoint.event,
+      value: fastPreparedPoint.value
+    )
+    return ProvisionalFastRootSubmissionTicket(
+      identifier: identifier,
+      owner: self,
+      waitPoint: physicalPreparedPoint,
+      completionPoint: fastPreparedPoint,
+      feedbackState: feedbackState,
+      resources: resources,
+      prepared: prepared
+    )
+  }
+
+  func ownsOutstandingProvisionalFastRootSubmission(_ identifier: UUID) -> Bool {
+    activeProvisionalFastRootSubmission?.identifier == identifier
+  }
+
+  /// Builds the private fast half of the Brain end-witness source list. These
+  /// are the exact mutable GPU arenas that would become authoritative at root
+  /// publication, plus a fixed manifest for host-owned continuation metadata.
+  /// The returned owners are retained by the low-level prepare request; no
+  /// candidate address is surfaced by the high-level complete-brain ticket.
+  func makeNumanXPreparedFastStateSources(
+    for ticket: ProvisionalFastRootSubmissionTicket
+  ) throws -> [MetalNumanXBrainFastStateSource] {
+    guard let active = activeProvisionalFastRootSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources,
+      let prepared = preparedProvisionalFastRoot,
+      prepared.provisional == ticket.provisional,
+      prepared.transactionToken.fingerprint
+        == ticket.provisional.transactionFingerprint,
+      pendingJointTransaction?.token == prepared.transactionToken,
+      let boundFastReflexSpeciesFingerprint,
+      let boundCompiledSpeciesTemplateFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX fast proof requires the exact bound provisional root"
+      )
+    }
+
+    let bindings = checkpointBindings(
+      tissueIndex: prepared.root.committedIndex,
+      schedulerIndex: prepared.root.committedSchedulerClockIndex,
+      regionalIndex: prepared.root.committedRegionalStateIndex,
+      bodyLoadIndex: prepared.root.committedRegionalStateIndex
+    ).filter { $0.size > 0 }
+    guard bindings.count < MetalNumanXBrainCommitPrepareRequest
+      .maximumFastStateSourceCount
+    else {
+      throw TissueError.transaction("NumanX fast proof source capacity exceeded")
+    }
+
+    let manifest = try makeNumanXFastRootManifestBuffer(
+      prepared: prepared,
+      stateSourceCount: bindings.count,
+      boundFastReflexSpeciesFingerprint: boundFastReflexSpeciesFingerprint,
+      boundCompiledSpeciesTemplateFingerprint:
+        boundCompiledSpeciesTemplateFingerprint
+    )
+    var sources = try bindings.map { binding in
+      guard binding.size <= binding.buffer.length else {
+        throw TissueError.transaction(
+          "NumanX fast proof binding exceeds its retained arena"
+        )
+      }
+      return try MetalNumanXBrainFastStateSource(
+        buffer: binding.buffer,
+        byteCount: binding.size,
+        semanticIdentifier: NumanXFastProofSemantic.checkpoint(binding.kind)
+      )
+    }
+    sources.append(
+      try MetalNumanXBrainFastStateSource(
+        buffer: manifest,
+        byteCount: manifest.length,
+        semanticIdentifier: NumanXFastProofSemantic.rootManifest
+      )
+    )
+    return sources
+  }
+
+  func numanXFastPrepareStatus(
+    for ticket: ProvisionalFastRootSubmissionTicket
+  ) throws -> MetalNumanXFastPrepareStatusLease {
+    guard let active = activeProvisionalFastRootSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources,
+      let prepared = preparedProvisionalFastRoot,
+      prepared.provisional == ticket.provisional,
+      prepared.fastPrepareGate.provisional == ticket.provisional,
+      prepared.fastPrepareGate.lease.fastProgramFingerprint
+        == numanXFastProgramFingerprint,
+      (prepared.fastPrepareGate.lease.readyPoint.event as AnyObject)
+        === (ticket.completionPoint.event as AnyObject),
+      prepared.fastPrepareGate.lease.readyPoint.value
+        == ticket.completionPoint.value
+    else {
+      throw TissueError.transaction(
+        "NumanX fast-prepare status lease is stale"
+      )
+    }
+    return prepared.fastPrepareGate.lease
+  }
+
+  /// Allocates one compact shared coordination record on the exact fast/cognitive
+  /// device. The ABI4 owner validates and retains these ranges before physical
+  /// preparation; they are never candidate-state payloads.
+  func makeNumanXCoordinationRecordBuffer(
+    byteCount: Int,
+    label: String,
+    readyPoint: MetalSharedEventPoint? = nil,
+    after precedingPoint: MetalSharedEventPoint? = nil
+  ) throws -> any MTLBuffer {
+    guard byteCount == 128 else {
+      throw TissueError.transaction(
+        "NumanX coordination records must use the frozen 128-byte ABI"
+      )
+    }
+    if let readyPoint {
+      try MetalSharedEventPoint.validateProgression(
+        wait: precedingPoint,
+        signal: readyPoint,
+        device: device
+      )
+    } else if precedingPoint != nil {
+      throw TissueError.transaction(
+        "NumanX coordination ordering requires a terminal ready point"
+      )
+    }
+    guard let buffer = device.makeBuffer(
+      length: byteCount,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ), buffer.gpuAddress > 0 else {
+      throw TissueError.metal("failed to allocate \(label)")
+    }
+    buffer.label = label
+    return buffer
+  }
+
+  private func makeNumanXFastRootManifestBuffer(
+    prepared: PreparedProvisionalFastRoot,
+    stateSourceCount: Int,
+    boundFastReflexSpeciesFingerprint: UInt64,
+    boundCompiledSpeciesTemplateFingerprint: UInt64
+  ) throws -> any MTLBuffer {
+    let wordCount = Self.numanXFastRootManifestWordCount
+    let byteCount = wordCount * MemoryLayout<UInt64>.stride
+    guard let committedIndex = UInt64(exactly: prepared.root.committedIndex),
+      let schedulerIndex = UInt64(
+        exactly: prepared.root.committedSchedulerClockIndex
+      ),
+      let regionalIndex = UInt64(
+        exactly: prepared.root.committedRegionalStateIndex
+      ),
+      let sourceCount = UInt64(exactly: stateSourceCount),
+      let historyCapacity = UInt64(exactly: historyCapacity),
+      let width = UInt64(exactly: width),
+      let height = UInt64(exactly: height),
+      let manifest = device.makeBuffer(
+        length: byteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.metal("failed to allocate bounded NumanX fast manifest")
+    }
+
+    func pack(_ low: UInt32, _ high: UInt32) -> UInt64 {
+      UInt64(low) | (UInt64(high) << 32)
+    }
+    var words = [UInt64](repeating: 0, count: wordCount)
+    words[0] = 0x4e55_4d49_4641_5354  // "NUMIFAST"
+    words[1] = 1
+    words[2] = UInt64(byteCount)
+    words[3] = UInt64(prepared.provisional.environmentIdentifier)
+    words[4] = UInt64(prepared.provisional.controlStep)
+    words[5] = prepared.provisional.transactionFingerprint
+    words[6] = prepared.provisional.substepFingerprint
+    words[7] = prepared.provisional.acceptedTimestamp.rawValue
+    words[8] = prepared.provisional.expectedPhysicsGeneration
+    words[9] = prepared.provisional.shadowGeneration
+    words[10] = committedIndex
+    words[11] = UInt64(prepared.root.committedHistoryOwnerMask)
+    words[12] = prepared.root.committedStep
+    words[13] = schedulerIndex
+    words[14] = regionalIndex
+    words[15] = prepared.root.committedSchedulerTime.rawValue
+    words[16] = prepared.root.committedSchedulerGeneration
+    words[17] = sourceCount
+    words[18] = width
+    words[19] = height
+    words[20] = historyCapacity
+    words[21] = parameterVersion.fingerprint
+    words[22] = brainSchedule.fingerprint
+    words[23] = regionalTokenProgram.fingerprint
+    words[24] = sharedParameterBank.artifactFingerprint
+    words[25] = protectiveMotorProfile.fingerprint
+    words[26] = numanXMuscleAttachmentCatalog?.fingerprint ?? 0
+    words[27] = somaticSynergyCatalog.fingerprint
+    words[28] = Self.numanXStableStringFingerprint(structureHash)
+    words[29] = Self.numanXStableStringFingerprint(delayFieldHash)
+    words[30] = Self.numanXStableStringFingerprint(connectomeHash)
+    words[31] = Self.numanXStableStringFingerprint(eventScheduleHash)
+    words[32] = pack(randomContext.seed, randomContext.environmentIdentifier)
+    words[33] = pack(randomContext.episodeIdentifier, randomContext.moduleIdentifier)
+    words[34] = boundFastReflexSpeciesFingerprint
+    words[35] = boundCompiledSpeciesTemplateFingerprint
+    words[36] = pack(
+      bodyLoadFieldDynamics.persistenceMicroseconds,
+      bodyLoadFieldDynamics.decayMicroseconds
+    )
+    words[37] = pack(
+      bodySchemaDynamics.forceScaleNewtons.bitPattern,
+      bodySchemaDynamics.loadTimeConstantMicroseconds
+    )
+    words[38] = pack(
+      bodySchemaDynamics.initialVariance.bitPattern,
+      bodySchemaDynamics.maximumVariance.bitPattern
+    )
+    words[39] = pack(
+      bodySchemaDynamics.processVariancePerSecond.bitPattern,
+      bodySchemaDynamics.observationVariance.bitPattern
+    )
+    words[40] = pack(
+      bodySchemaDynamics.vulnerabilityGainPerSecond.bitPattern,
+      bodySchemaDynamics.recoveryPerSecond.bitPattern
+    )
+    words[41] = UInt64(bodySchemaDynamics.uncertaintyRiskWeight.bitPattern)
+    words[42] = pack(
+      UInt32(boundFastReflexRuleCount), UInt32(boundFastAutonomicChannelCount)
+    )
+    words[43] = pack(
+      UInt32(boundActiveSensingChannelCount),
+      UInt32(boundActuatorCommandKind.rawValue)
+    )
+    words[44] = prepared.transactionToken.randomCounterGeneration
+    words[45] = prepared.transactionToken.baseBrainGeneration
+    words[46] = prepared.transactionToken.basePhysicsGeneration
+    words[47] = prepared.transactionToken.episodeIdentifier
+    words[wordCount - 1] = Self.numanXStableWordFingerprint(
+      words.dropLast()
+    )
+
+    let littleEndianWords = words.map(\.littleEndian)
+    littleEndianWords.withUnsafeBytes { bytes in
+      manifest.contents().copyMemory(
+        from: bytes.baseAddress!, byteCount: bytes.count
+      )
+    }
+    manifest.label = "NumiBrain private prepared-fast root manifest"
+    return manifest
+  }
+
+  private static func makeNumanXFastProgramFingerprint(
+    metalSource: String,
+    structureHash: String,
+    delayFieldHash: String,
+    connectomeHash: String,
+    eventScheduleHash: String,
+    width: Int,
+    height: Int,
+    randomContext: TissueRandomContext,
+    parameterVersion: BrainParameterVersion,
+    scheduleFingerprint: UInt64,
+    regionalProgramFingerprint: UInt64,
+    sharedParameterFingerprint: UInt64,
+    protectiveMotorProfileFingerprint: UInt64,
+    attachmentCatalogFingerprint: UInt64,
+    somaticSynergyFingerprint: UInt64,
+    bodyLoadFieldDynamics: BodyLoadFieldDynamics,
+    bodySchemaDynamics: BodySchemaPosteriorDynamics,
+    maxEncodedSubsteps: Int,
+    maxSchedulerEvents: Int,
+    maxSchedulerInvocations: Int
+  ) -> UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    func mixByte(_ byte: UInt8) {
+      hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+    }
+    func mixUInt32(_ value: UInt32) {
+      for shift in stride(from: 0, to: 32, by: 8) {
+        mixByte(UInt8(truncatingIfNeeded: value >> UInt32(shift)))
+      }
+    }
+    func mixUInt64(_ value: UInt64) {
+      for shift in stride(from: 0, to: 64, by: 8) {
+        mixByte(UInt8(truncatingIfNeeded: value >> UInt64(shift)))
+      }
+    }
+    func mixString(_ value: String) {
+      mixUInt64(UInt64(value.utf8.count))
+      value.utf8.forEach(mixByte)
+    }
+
+    mixString("NumiBrain.FastPrepare.Program.v1")
+    mixString(metalSource)
+    mixUInt32(4)  // MSL 4.0
+    mixUInt32(1)  // safe math
+    mixUInt32(1)  // precise floating-point functions
+    [
+      "neural_tissue_step",
+      "compact_receptor_events",
+      "transduce_receptor_interrupts",
+      "schedule_due_modules",
+      "advance_due_regional_tokens",
+      "derive_protective_command",
+      "map_protective_motor_output",
+      "materialize_body_load_field",
+      "adapt_fast_cerebellar_load_correction",
+      "advance_body_schema",
+      "advance_fast_autonomic_output",
+    ].forEach(mixString)
+    mixString(structureHash)
+    mixString(delayFieldHash)
+    mixString(connectomeHash)
+    mixString(eventScheduleHash)
+    mixUInt64(UInt64(width))
+    mixUInt64(UInt64(height))
+    mixUInt32(randomContext.seed)
+    mixUInt32(randomContext.environmentIdentifier)
+    mixUInt32(randomContext.episodeIdentifier)
+    mixUInt32(randomContext.moduleIdentifier)
+    mixUInt64(parameterVersion.fingerprint)
+    mixUInt64(scheduleFingerprint)
+    mixUInt64(regionalProgramFingerprint)
+    mixUInt64(sharedParameterFingerprint)
+    mixUInt64(protectiveMotorProfileFingerprint)
+    mixUInt64(attachmentCatalogFingerprint)
+    mixUInt64(somaticSynergyFingerprint)
+    mixUInt32(bodyLoadFieldDynamics.persistenceMicroseconds)
+    mixUInt32(bodyLoadFieldDynamics.decayMicroseconds)
+    mixUInt32(bodySchemaDynamics.forceScaleNewtons.bitPattern)
+    mixUInt32(bodySchemaDynamics.loadTimeConstantMicroseconds)
+    mixUInt32(bodySchemaDynamics.initialVariance.bitPattern)
+    mixUInt32(bodySchemaDynamics.maximumVariance.bitPattern)
+    mixUInt32(bodySchemaDynamics.processVariancePerSecond.bitPattern)
+    mixUInt32(bodySchemaDynamics.observationVariance.bitPattern)
+    mixUInt32(bodySchemaDynamics.vulnerabilityGainPerSecond.bitPattern)
+    mixUInt32(bodySchemaDynamics.recoveryPerSecond.bitPattern)
+    mixUInt32(bodySchemaDynamics.uncertaintyRiskWeight.bitPattern)
+    mixUInt64(UInt64(maxEncodedSubsteps))
+    mixUInt64(UInt64(maxSchedulerEvents))
+    mixUInt64(UInt64(maxSchedulerInvocations))
+    return hash == 0 ? 14_695_981_039_346_656_037 : hash
+  }
+
+  private static func numanXStableStringFingerprint(_ value: String) -> UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for byte in value.utf8 {
+      hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+    }
+    return hash == 0 ? 14_695_981_039_346_656_037 : hash
+  }
+
+  private static func numanXStableWordFingerprint<C: Collection>(
+    _ words: C
+  ) -> UInt64 where C.Element == UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    for word in words {
+      for shift in stride(from: 0, to: 64, by: 8) {
+        hash = (hash ^ ((word >> UInt64(shift)) & 0xff))
+          &* 1_099_511_628_211
+      }
+    }
+    return hash == 0 ? 14_695_981_039_346_656_037 : hash
+  }
+
+  /// Reaps an already device-ordered fast submission after the later joint
+  /// close has resolved it. This never waits and never publishes pointers.
+  func releaseResolvedProvisionalFastRootSubmission(
+    _ ticket: ProvisionalFastRootSubmissionTicket
+  ) {
+    guard let active = activeProvisionalFastRootSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources
+    else {
+      preconditionFailure("provisional fast-root ticket is stale")
+    }
+    active.resources.release()
+    activeProvisionalFastRootSubmission = nil
+  }
+
+  /// Device-ordered reject/error resolution. The later owner close event
+  /// proves the fast queue can no longer touch this shadow, so teardown needs
+  /// no host wait. Exact ownership preconditions make the metadata discard a
+  /// nonthrowing counterpart to accepted atomic publication.
+  func discardResolvedProvisionalFastRootSubmission(
+    _ ticket: ProvisionalFastRootSubmissionTicket
+  ) {
+    guard let active = activeProvisionalFastRootSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources,
+      preparedProvisionalFastRoot?.provisional == ticket.provisional,
+      pendingJointTransaction != nil,
+      pendingRootShadowIndex != nil
+    else {
+      preconditionFailure("provisional fast-root rejection ticket is stale")
+    }
+    active.resources.release()
+    activeProvisionalFastRootSubmission = nil
+    do {
+      try abortRootTransaction()
+    } catch {
+      preconditionFailure(
+        "preflighted provisional fast-root rejection failed: \(error)"
+      )
+    }
+  }
+
+  /// Explicit rejection/error teardown. A host timeout is not cancellation;
+  /// the ticket and all shadow ownership remain quarantined until actual Metal
+  /// feedback proves the queue is no longer waiting or executing.
+  public func abortProvisionalAcceptedFastRootSubmission(
+    _ ticket: ProvisionalFastRootSubmissionTicket,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    guard let active = activeProvisionalFastRootSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState
+    else {
+      throw TissueError.transaction("provisional fast-root ticket is stale")
+    }
+    do {
+      _ = try ticket.feedbackState.wait(
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+    } catch {
+      if ticket.feedbackState.hasCompleted {
+        active.resources.release()
+        activeProvisionalFastRootSubmission = nil
+        try? abortRootTransaction()
+      }
+      throw error
+    }
+    active.resources.release()
+    activeProvisionalFastRootSubmission = nil
+    try abortRootTransaction()
   }
 
   /// Lends the private protective-output allocations to the physical runtime
@@ -4797,6 +6686,47 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard var transaction = pendingJointTransaction else {
       throw TissueError.transaction("there is no joint Metal root to commit")
     }
+    return try makePreparedJointRootCommit(
+      transaction: &transaction,
+      root: prepareRootPublication()
+    )
+  }
+
+  /// Binds the canonical token validated before the later Brain ACK and
+  /// completes receipt construction against an already-preflighted fast root.
+  /// A rejected/stale token leaves every committed pointer untouched.
+  func prepareProvisionalJointRootTransactionCommit(
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    provisional: BrainProvisionalPhysicsAcceptance
+  ) throws -> PreparedJointRootCommit {
+    guard var transaction = pendingJointTransaction,
+      let prepared = preparedProvisionalFastRoot,
+      prepared.provisional == provisional,
+      prepared.commitPlan.transactionFingerprint == transaction.token.fingerprint,
+      prepared.commitPlan.substepFingerprint == provisional.substepFingerprint,
+      prepared.commitPlan.expectedPhysicsGeneration
+        == acceptedPhysicsState.physicsGeneration,
+      prepared.transactionToken == transaction.token,
+      transaction.provisionalPhysicsAcceptance == provisional
+    else {
+      throw TissueError.transaction(
+        "there is no matching provisional fast root to finalize"
+      )
+    }
+    try transaction.bindAcceptedPhysicsState(
+      acceptedPhysicsState,
+      to: provisional
+    )
+    return try makePreparedJointRootCommit(
+      transaction: &transaction,
+      root: prepared.root
+    )
+  }
+
+  private func makePreparedJointRootCommit(
+    transaction: inout BrainJointTransaction,
+    root: PreparedRootPublication
+  ) throws -> PreparedJointRootCommit {
     let receipt = try transaction.commit()
     let localizedMuscleLoadObservations = transaction.resolutions.lazy
       .filter(\.isAccepted)
@@ -4827,7 +6757,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     return PreparedJointRootCommit(
       receipt: receipt,
-      root: try prepareRootPublication(),
+      root: root,
       localizedObservations: localizedObservations,
       bodyLoadFrame: bodyLoadFrame,
       protectiveMuscleSelection: protectiveMuscleSelection
@@ -4844,6 +6774,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     latestCommittedBodyLoadFrame = prepared.bodyLoadFrame
     latestCommittedProtectiveMuscleSelection = prepared.protectiveMuscleSelection
     pendingJointTransaction = nil
+    preparedProvisionalFastRoot = nil
   }
 
   private func validateLocalizedMuscleLoadObservations(
@@ -4940,10 +6871,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
   }
 
-  private func writeProtectiveCommandUniforms(brainGeneration: UInt64) {
+  private func writeProtectiveCommandUniforms(
+    brainGeneration: UInt64,
+    timestamp: BrainTimestamp
+  ) {
     var uniforms = ProtectiveCommandUniforms(
       brainGeneration: brainGeneration,
       motorProfileFingerprint: protectiveMotorProfile.fingerprint,
+      sampleTimestampMicroseconds: timestamp.rawValue,
       moduleCount: UInt32(brainSchedule.modules.count),
       muscleCount: UInt32(protectiveMotorProfile.channels.count),
       environmentIdentifier: schedulerEnvironmentIdentifier,
@@ -5113,6 +7048,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   public func abortRootTransaction() throws {
+    guard activeProvisionalFastRootSubmission == nil else {
+      throw TissueError.transaction(
+        "resolve the outstanding provisional fast-root GPU ticket before abort"
+      )
+    }
     var jointTransaction = pendingJointTransaction
     try discardRootTransaction()
     if jointTransaction != nil {
@@ -5242,6 +7182,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingRegionalStateIndex = nil
     pendingSchedulerInitialized = false
     pendingJointTransaction = nil
+    preparedProvisionalFastRoot = nil
     interactiveJointRoot = nil
     hasCommittedSchedulerResult = false
     descendingSomaticTransactionFingerprint = nil
@@ -5495,6 +7436,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     pendingSchedulerTargetTime = nil
     pendingRegionalStateIndex = nil
     pendingSchedulerInitialized = false
+    preparedProvisionalFastRoot = nil
     hasCommittedSchedulerResult = false
   }
 
@@ -6698,7 +8640,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard !protectiveGenerationOverflow else {
       throw TissueError.transaction("protective command generation overflows UInt64")
     }
-    writeProtectiveCommandUniforms(brainGeneration: protectiveGeneration)
+    writeProtectiveCommandUniforms(
+      brainGeneration: protectiveGeneration,
+      timestamp: targetTime
+    )
     let outputClockIndex = 1 - committedSchedulerClockIndex
     return PreparedSchedulerWindow(
       targetTime: targetTime,

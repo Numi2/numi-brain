@@ -1,4 +1,5 @@
 import Foundation
+@preconcurrency import Metal
 import NumiBrainCore
 
 @available(macOS 26.0, *)
@@ -22,6 +23,8 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   private let runtime: MetalAgentStateRuntime
   private let lock = NSLock()
   private var preparedCommit: MetalAgentStateRuntime.PreparedCommit?
+  private var preparedGPUStateFinish:
+    MetalAgentStateRuntime.PreparedGPUStateFinish?
   private var acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
 
   public init(
@@ -114,6 +117,64 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     status = .gpuStateFinished
   }
 
+  /// Preflights arena/layout/generation and encodes journal validation before
+  /// the NumanX Brain end witness. It does not claim physical acceptance and
+  /// does not mark the cognitive shadow finished.
+  func encodeProvisionalGPUStateFinish(
+    encoder: any MTL4ComputeCommandEncoder,
+    provisional: BrainProvisionalPhysicsAcceptance
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try require(.open)
+    let (expectedPhysicsGeneration, physicsGenerationOverflow) =
+      jointToken.basePhysicsGeneration.addingReportingOverflow(1)
+    guard preparedGPUStateFinish == nil,
+      provisional.environmentIdentifier == jointToken.environmentIdentifier,
+      provisional.transactionFingerprint == jointToken.fingerprint,
+      provisional.acceptedTimestamp == jointToken.targetTimestamp,
+      provisional.shadowGeneration == agentStateToken.shadowGeneration,
+      !physicsGenerationOverflow,
+      provisional.expectedPhysicsGeneration == expectedPhysicsGeneration,
+      UInt32(exactly: jointToken.controlStepIdentifier) == provisional.controlStep
+    else {
+      throw TissueError.transaction(
+        "provisional cognitive finish does not match the joint root"
+      )
+    }
+    preparedGPUStateFinish = try runtime.encodeProvisionalMemoryJournalValidation(
+      encoder: encoder,
+      transaction: agentStateToken
+    )
+  }
+
+  /// Binds the already GPU-validated canonical token and performs only the
+  /// prevalidated host metadata flip that makes `prepareCommit` legal.
+  func finishProvisionalGPUState(
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    provisional: BrainProvisionalPhysicsAcceptance
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try require(.open)
+    guard let preparedGPUStateFinish,
+      provisional.transactionFingerprint == jointToken.fingerprint,
+      acceptedPhysicsState.transactionFingerprint == jointToken.fingerprint,
+      acceptedPhysicsState.substepFingerprint == provisional.substepFingerprint,
+      acceptedPhysicsState.environmentIdentifier == provisional.environmentIdentifier,
+      acceptedPhysicsState.acceptedTimestamp == provisional.acceptedTimestamp,
+      acceptedPhysicsState.physicsGeneration == provisional.expectedPhysicsGeneration
+    else {
+      throw TissueError.transaction(
+        "owner-validated physical token does not match cognitive preflight"
+      )
+    }
+    runtime.publishProvisionalGPUStateFinish(preparedGPUStateFinish)
+    self.preparedGPUStateFinish = nil
+    acceptedPhysicsTokenFingerprint = acceptedPhysicsState.fingerprint
+    status = .gpuStateFinished
+  }
+
   public func commit(with receipt: BrainJointCommitToken) throws {
     try prepareCommit(with: receipt)
     publishPreparedCommit()
@@ -161,6 +222,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     }
     try runtime.abort(transaction: agentStateToken)
     acceptedPhysicsTokenFingerprint = nil
+    preparedGPUStateFinish = nil
     preparedCommit = nil
     acceptedFastMotorState = nil
     status = .aborted

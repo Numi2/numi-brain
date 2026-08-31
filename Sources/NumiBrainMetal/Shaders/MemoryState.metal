@@ -486,6 +486,31 @@ struct NBCommittedTransitionUniforms {
   uint teacher_flags;
 };
 
+struct NBAcceptedPhysicsStateToken {
+  ulong transaction_fingerprint;
+  ulong substep_fingerprint;
+  ulong physics_state_fingerprint;
+  ulong accepted_timestamp_microseconds;
+  ulong physics_generation;
+  uint environment_identifier;
+  uint flags;
+  ulong reserved;
+  ulong token_fingerprint;
+};
+
+struct NBAcceptedPhysicsGateResult {
+  uint version;
+  uint status;
+  ulong expected_transaction_fingerprint;
+  ulong observed_transaction_fingerprint;
+  ulong expected_substep_fingerprint;
+  ulong observed_substep_fingerprint;
+  ulong computed_token_fingerprint;
+  ulong observed_token_fingerprint;
+  ulong reserved;
+  NBAcceptedPhysicsStateToken accepted_token;
+};
+
 struct NBRegionalTokenLayoutRecord {
   uint scalar_offset;
   uint scalar_count;
@@ -2811,8 +2836,10 @@ kernel void reconsolidate_retrieved_memory(
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryReconsolidationUniforms &uniforms [[buffer(3)]],
   device const float *memory_parameters [[buffer(6)]],
+  device const uint *acceptance_gate [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= min(uniforms.maximum_results, 4u)) return;
   if (journal->base_generation != uniforms.base_generation
       || journal->shadow_generation != uniforms.shadow_generation
@@ -3284,8 +3311,10 @@ kernel void advance_prospective_memory(
   device const uchar *persistent_memory [[buffer(1)]],
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBProspectiveLifecycleUniforms &uniforms [[buffer(3)]],
+  device const uint *acceptance_gate [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.recurrent_scalar_count == 0u
       || uniforms.prospective_capacity == 0u) return;
   if (journal->base_generation != uniforms.base_generation
@@ -3530,8 +3559,10 @@ kernel void consolidate_lived_memory_during_rest(
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryConsolidationUniforms &uniforms [[buffer(3)]],
   device const float *memory_parameters [[buffer(6)]],
+  device const uint *acceptance_gate [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.active_episode_capacity == 0u
       || uniforms.semantic_capacity == 0u
       || uniforms.semantic_relation_capacity == 0u
@@ -4736,8 +4767,11 @@ kernel void journal_committed_learning_transition(
   constant NBCommittedTransitionUniforms &uniforms [[buffer(4)]],
   device const float *teacher_state [[buffer(5)]],
   device const NBRegionalTokenLayoutRecord *regional_layouts [[buffer(7)]],
+  device const uint *acceptance_gate [[buffer(8)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(9)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.recurrent_scalar_count == 0u
       || uniforms.observation_count == 0u || uniforms.action_count == 0u
       || uniforms.transition_capacity == 0u
@@ -4840,7 +4874,9 @@ kernel void journal_committed_learning_transition(
   record.end_timestamp_microseconds = uniforms.target_timestamp_microseconds;
   record.parameter_version_fingerprint = uniforms.parameter_version_fingerprint;
   record.source_generation = uniforms.shadow_generation;
-  record.physics_state_fingerprint = uniforms.physics_state_fingerprint;
+  record.physics_state_fingerprint = uniforms.physics_state_fingerprint != 0ul
+    ? uniforms.physics_state_fingerprint
+    : acceptance_result->accepted_token.physics_state_fingerprint;
   record.active_goal_identifier = control->active_goal_identifier;
   record.active_option_identifier = control->active_option_identifier;
   record.format_version = NB_COMMITTED_TRANSITION_RECORD_VERSION;
@@ -5428,8 +5464,10 @@ kernel void journal_committed_counterfactual_rollouts(
   device const uchar *persistent_memory [[buffer(2)]],
   device NBMemoryJournalHeader *journal [[buffer(3)]],
   constant NBCounterfactualLearningUniforms &uniforms [[buffer(4)]],
+  device const uint *acceptance_gate [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.candidate_capacity == 0u
       || uniforms.plan_capacity == 0u
       || uniforms.maximum_planning_horizon == 0u
@@ -5557,8 +5595,10 @@ kernel void segment_and_journal_episode(
   device NBMemoryJournalHeader *journal [[buffer(2)]],
   constant NBMemoryUniforms &uniforms [[buffer(3)]],
   device const float *memory_parameters [[buffer(6)]],
+  device const uint *acceptance_gate [[buffer(8)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.active_episode_capacity == 0u) return;
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset

@@ -13,6 +13,7 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
 
   public let transactionFingerprint: UInt64
   public let substepFingerprint: UInt64
+  public let usesDecisionShadow: Bool
   public let acceptedBrainTimestamp: BrainTimestamp
   public let brainGeneration: UInt64
   public let speciesTemplateFingerprint: UInt64
@@ -42,7 +43,8 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
 
   public init(
     transaction: BrainJointTransactionToken,
-    fastSystems: MetalTissueRuntime.FastSystemResult
+    fastSystems: MetalTissueRuntime.FastSystemResult,
+    usesDecisionShadow: Bool = false
   ) throws {
     let output = fastSystems.protectiveMotorOutput
     let autonomic = fastSystems.fastAutonomicOutput
@@ -66,6 +68,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     var record = NBNumanXMotorCandidate()
     record.format_version = Self.formatVersion
     record.flags = UInt32(NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID)
+      | (usesDecisionShadow
+        ? UInt32(NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW)
+        : 0)
     record.transaction_fingerprint = transaction.fingerprint
     record.substep_fingerprint = fastSystems.substep.fingerprint
     record.accepted_brain_timestamp_microseconds = output.timestamp.rawValue
@@ -149,6 +154,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
   private init(unchecked record: NBNumanXMotorCandidate) {
     transactionFingerprint = record.transaction_fingerprint
     substepFingerprint = record.substep_fingerprint
+    usesDecisionShadow =
+      (record.flags
+        & UInt32(NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW)) != 0
     acceptedBrainTimestamp = BrainTimestamp(
       microseconds: record.accepted_brain_timestamp_microseconds
     )
@@ -180,6 +188,9 @@ public struct NumanXMotorCandidate: Equatable, Hashable, Sendable {
     var record = NBNumanXMotorCandidate()
     record.format_version = Self.formatVersion
     record.flags = UInt32(NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID)
+      | (usesDecisionShadow
+        ? UInt32(NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW)
+        : 0)
     record.transaction_fingerprint = transactionFingerprint
     record.substep_fingerprint = substepFingerprint
     record.accepted_brain_timestamp_microseconds = acceptedBrainTimestamp.rawValue

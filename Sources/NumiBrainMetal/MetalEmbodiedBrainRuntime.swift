@@ -69,6 +69,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   @frozen
   public struct AcceptedConsequenceView: Equatable, Sendable {
+    /// These GPU addresses name candidate-only unpublished shadow storage. They
+    /// are never physical, cognitive, or host publication authority.
     public let transactionFingerprint: UInt64
     public let shadowGeneration: UInt64
     public let acceptedPhysicsTokenFingerprint: UInt64
@@ -83,6 +85,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     public var gpuDurationSeconds: Double {
       max(gpuEndSeconds - gpuStartSeconds, 0)
     }
+  }
+
+  /// Host publication result for the authoritative device-token path. The
+  /// accepted token is reconstructed only from the compact GPU gate result.
+  @frozen
+  public struct AcceptedConsequenceCompletion: Sendable {
+    public let feedback: MetalGPUCompletionFeedback
+    public let acceptedPhysicsState: AcceptedPhysicsStateToken
+    public let consequence: AcceptedConsequenceView
   }
 
   /// Retains the private shadow generation while NumanX or the fast tissue
@@ -180,6 +191,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let regionalProgramFingerprint: UInt64
   public let scheduleFingerprint: UInt64
   public let somaticSynergyCatalogFingerprint: UInt64
+  public let numanXBrainProgramFingerprint: UInt64
   public let sharedParameterBank: MetalSharedParameterBank
   public let agentStateRuntime: MetalAgentStateRuntime
   public let sensoryRuntime: MetalSensoryTransductionRuntime
@@ -191,12 +203,48 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   private let device: any MTLDevice
   private let species: SpeciesTemplate
+  private let acceptedPhysicsGateRuntime: MetalAcceptedPhysicsGateRuntime
+  private let numanXHumanMatterRuntime: MetalNumanXHumanMatterBrainRuntime
+  private let numanXMotorReadyRuntime: MetalNumanXMotorReadyRuntime
   let boundCompiledSpeciesTemplate: CompiledSpeciesTemplate
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
   private let residencySet: any MTLResidencySet
   private let lock = NSLock()
+
+  private enum AsyncSubmissionKind {
+    case decision
+    case acceptedConsequence
+  }
+
+  private final class ActiveAsyncSubmission: @unchecked Sendable {
+    let identifier: UUID
+    let kind: AsyncSubmissionKind
+    let transactionFingerprint: UInt64
+    let feedbackState: MetalAsyncFeedbackState
+    let resources: MetalAsyncCommandResources
+    let retainedInputs: [AnyObject]
+    var abortRequested = false
+
+    init(
+      identifier: UUID,
+      kind: AsyncSubmissionKind,
+      transactionFingerprint: UInt64,
+      feedbackState: MetalAsyncFeedbackState,
+      resources: MetalAsyncCommandResources,
+      retainedInputs: [AnyObject]
+    ) {
+      self.identifier = identifier
+      self.kind = kind
+      self.transactionFingerprint = transactionFingerprint
+      self.feedbackState = feedbackState
+      self.resources = resources
+      self.retainedInputs = retainedInputs
+    }
+  }
+
+  private var activeAsyncSubmission: ActiveAsyncSubmission?
 
   var boundSpeciesTemplate: SpeciesTemplate { species }
 
@@ -296,6 +344,25 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       muscleAttachmentCatalog: muscleAttachmentCatalog,
       sharedParameters: sharedParameterBank
     )
+    let acceptedPhysicsGateRuntime = try MetalAcceptedPhysicsGateRuntime(
+      device: device
+    )
+    let numanXMotorReadyRuntime = try MetalNumanXMotorReadyRuntime(device: device)
+    let numanXHumanMatterRuntime = try MetalNumanXHumanMatterBrainRuntime(
+      device: device,
+      immutableFingerprints: [
+        ("species", species.fingerprint),
+        ("compiledSpecies", compiledSpeciesTemplate.fingerprint),
+        ("parameterVersion", parameterVersion.fingerprint),
+        ("regionalProgram", regionalProgram.fingerprint),
+        ("schedule", regionalProgram.scheduleFingerprint),
+        ("hotLayout", agentStateRuntime.arena.layout.fingerprint),
+        ("memoryLayout", agentStateRuntime.arena.memoryLayout.fingerprint),
+        ("sharedParameterArtifact", sharedParameterBank.artifactFingerprint),
+        ("sensoryProfile", sensoryProfile.fingerprint),
+        ("somaticSynergyCatalog", somaticSynergyCatalog.fingerprint),
+      ]
+    )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain embodied cognitive residency"
     residencyDescriptor.initialCapacity =
@@ -347,6 +414,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.regionalProgramFingerprint = regionalProgram.fingerprint
     self.scheduleFingerprint = regionalProgram.scheduleFingerprint
     self.somaticSynergyCatalogFingerprint = somaticSynergyCatalog.fingerprint
+    self.numanXBrainProgramFingerprint = numanXHumanMatterRuntime.programFingerprint
     self.sharedParameterBank = sharedParameterBank
     self.agentStateRuntime = agentStateRuntime
     self.sensoryRuntime = sensoryRuntime
@@ -357,6 +425,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.memoryRuntime = memoryRuntime
     self.device = device
     self.species = species
+    self.acceptedPhysicsGateRuntime = acceptedPhysicsGateRuntime
+    self.numanXHumanMatterRuntime = numanXHumanMatterRuntime
+    self.numanXMotorReadyRuntime = numanXMotorReadyRuntime
     self.boundCompiledSpeciesTemplate = compiledSpeciesTemplate
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
@@ -551,10 +622,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   ) throws -> DecisionBufferView {
     lock.lock()
     defer { lock.unlock() }
-    guard transaction.status == .open,
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
       transaction.jointToken.parameterVersionFingerprint == parameterVersionFingerprint
     else {
-      throw TissueError.transaction("embodied control transaction is not open")
+      throw TissueError.transaction(
+        "embodied control transaction is not open or owns an async submission"
+      )
     }
     let duration =
       transaction.jointToken.targetTimestamp.rawValue
@@ -701,7 +775,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         regionalPlasticModulationCount: plasticModulation.elementCount,
         fastPlasticityGPUAddress:
           hot.outputGPUAddress + UInt64(fastPlasticity.byteOffset),
-        fastPlasticityByteCount: fastPlasticity.byteCount,
+        fastPlasticityByteCount:
+          fastPlasticity.elementCount * fastPlasticity.elementStride,
         fastPlasticityCount: fastPlasticity.elementCount,
         cpgStateGPUAddress: hot.outputGPUAddress + UInt64(cpgState.byteOffset),
         cpgStateByteCount: species.cpg.oscillators.count
@@ -714,11 +789,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         reflexStateCount: reflexStateCount,
         fastCerebellarStateGPUAddress:
           hot.outputGPUAddress + UInt64(fastCerebellarState.byteOffset),
-        fastCerebellarStateByteCount: fastCerebellarState.byteCount,
+        fastCerebellarStateByteCount:
+          fastCerebellarState.elementCount * fastCerebellarState.elementStride,
         fastCerebellarStateCount: fastCerebellarState.elementCount,
         fastAutonomicStateGPUAddress:
           hot.outputGPUAddress + UInt64(fastAutonomicState.byteOffset),
-        fastAutonomicStateByteCount: fastAutonomicState.byteCount,
+        fastAutonomicStateByteCount:
+          fastAutonomicState.elementCount * fastAutonomicState.elementStride,
         fastAutonomicStateCount: fastAutonomicState.elementCount,
         gpuStartSeconds: feedback.gpuStartTime,
         gpuEndSeconds: feedback.gpuEndTime
@@ -729,10 +806,396 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Encodes one cognitive decision and places it on a caller-owned shared GPU
+  /// timeline without waiting for Metal feedback on the host. The returned
+  /// ticket retains the complete shadow state and every zero-copy sensor lease.
+  /// Call `finishDecisionSubmission` after the completion point (or its explicit
+  /// host wait) has been observed; call `abortDecisionSubmission` on rejection.
+  public func submitInferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    numanXSensors: NumanXSensorPacketLease,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    externalGoal: ActiveGoal? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> DecisionSubmissionTicket {
+    let packet = numanXSensors.packet
+    guard packet.transactionFingerprint == transaction.jointToken.fingerprint,
+      !packet.isAcceptedState,
+      packet.deliveryTimestamp == transaction.jointToken.committedTimestamp,
+      packet.physicsGeneration == transaction.jointToken.basePhysicsGeneration,
+      packet.environmentIdentifier == transaction.jointToken.environmentIdentifier,
+      packet.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      packet.sensoryProfileFingerprint == sensoryRuntime.profileFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX committed sensor packet does not belong to this control root"
+      )
+    }
+    return try submitInferAndDecide(
+      transaction: transaction,
+      rawSensors: numanXSensors.rawSensors,
+      regionalRecurrentInput: regionalRecurrentInput,
+      externalGoal: externalGoal,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: [numanXSensors]
+    )
+  }
+
+  public func submitInferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    rawSensors: [MetalRawSensorBufferLease],
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    externalGoal: ActiveGoal? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> DecisionSubmissionTicket {
+    try submitInferAndDecide(
+      transaction: transaction,
+      rawSensors: rawSensors,
+      regionalRecurrentInput: regionalRecurrentInput,
+      externalGoal: externalGoal,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: rawSensors
+    )
+  }
+
+  private func submitInferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    rawSensors: [MetalRawSensorBufferLease],
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView?,
+    externalGoal: ActiveGoal?,
+    waitFor waitPoint: MetalSharedEventPoint?,
+    signal completionPoint: MetalSharedEventPoint,
+    retainedInputs: [AnyObject]
+  ) throws -> DecisionSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
+      transaction.jointToken.parameterVersionFingerprint == parameterVersionFingerprint
+    else {
+      throw TissueError.transaction(
+        "embodied control transaction is not open or already owns an async submission"
+      )
+    }
+    try MetalSharedEventPoint.validateProgression(
+      wait: waitPoint,
+      signal: completionPoint,
+      device: device
+    )
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("embodied control interval exceeds sensory ABI")
+    }
+    let dynamicResidency = try makeDynamicSensorResidency(rawSensors)
+    var decisionGateResidency: (any MTLResidencySet)?
+    do {
+      guard let allocator = device.makeCommandAllocator(),
+        let submissionBuffer = device.makeCommandBuffer()
+      else {
+        throw TissueError.metal("failed to allocate async embodied command resources")
+      }
+      submissionBuffer.beginCommandBuffer(allocator: allocator)
+      submissionBuffer.useResidencySet(residencySet)
+      if let dynamicResidency {
+        submissionBuffer.useResidencySet(dynamicResidency)
+      }
+      guard let encoder = submissionBuffer.makeComputeCommandEncoder() else {
+        submissionBuffer.endCommandBuffer()
+        throw TissueError.metal("failed to encode async embodied cognitive control")
+      }
+      encoder.label = "NumiBrain async receptor to cognitive decision"
+      try developmentalRuntime.encodeCurrentStage(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      let sensory = try sensoryRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        rawSensorViews: rawSensors.map(\.view),
+        environmentIdentifier: transaction.jointToken.environmentIdentifier,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+        targetTimestamp: transaction.jointToken.committedTimestamp,
+        deltaMicroseconds: UInt32(duration)
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try cognitiveRuntime.encodeAcceptedCognitiveStep(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: transaction.jointToken.committedTimestamp,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity,
+        regionalRecurrentInput: regionalRecurrentInput
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeRetrieval(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      let decisionOutput = try decisionRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: transaction.jointToken.committedTimestamp,
+        externalGoal: externalGoal
+      )
+      let decision = try makeDecisionBufferView(
+        transaction: transaction,
+        sensory: sensory,
+        decision: decisionOutput,
+        feedback: nil
+      )
+      let commandLease = try borrowNumanXSomaticBuffer(
+        for: decision,
+        transaction: transaction
+      )
+      let decisionGateEvaluation = try numanXMotorReadyRuntime
+        .makeDecisionEvaluation(
+          device: device,
+          commandLease: commandLease,
+          transaction: transaction.jointToken,
+          readyPoint: completionPoint,
+          compiledSpeciesTemplateFingerprint: compiledSpeciesTemplateFingerprint,
+          parameterVersionFingerprint: parameterVersionFingerprint,
+          regionalProgramFingerprint: regionalProgramFingerprint,
+          scheduleFingerprint: scheduleFingerprint,
+          brainProgramFingerprint: numanXBrainProgramFingerprint
+        )
+      let gateResidency = try numanXMotorReadyRuntime.makeResidencySet(
+        device: device,
+        label: "NumiBrain NumanX decision-ready residency",
+        allocations: decisionGateEvaluation.residencyAllocations
+      )
+      decisionGateResidency = gateResidency
+      submissionBuffer.useResidencySet(gateResidency)
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      numanXMotorReadyRuntime.encodeDecision(
+        encoder: encoder,
+        evaluation: decisionGateEvaluation
+      )
+      encoder.endEncoding()
+      submissionBuffer.endCommandBuffer()
+
+      let feedbackState = MetalAsyncFeedbackState()
+      var residencySets = dynamicResidency.map { [$0] } ?? []
+      residencySets.append(gateResidency)
+      let resources = MetalAsyncCommandResources(
+        allocator: allocator,
+        commandBuffer: submissionBuffer,
+        residencySets: residencySets
+      )
+      var allRetainedInputs = retainedInputs
+      allRetainedInputs.append(commandLease)
+      allRetainedInputs.append(decisionGateEvaluation)
+      let identifier = UUID()
+      activeAsyncSubmission = ActiveAsyncSubmission(
+        identifier: identifier,
+        kind: .decision,
+        transactionFingerprint: transaction.jointToken.fingerprint,
+        feedbackState: feedbackState,
+        resources: resources,
+        retainedInputs: allRetainedInputs
+      )
+      if let waitPoint {
+        commandQueue.waitForEvent(waitPoint.event, value: waitPoint.value)
+      }
+      let options = MTL4CommitOptions()
+      options.addFeedbackHandler { feedback in
+        if feedback.error != nil || !decisionGateEvaluation.hasValidSuccess() {
+          decisionGateEvaluation.markFailure()
+        }
+        feedbackState.record(feedback, label: "NumiBrain embodied cognitive control")
+        if completionPoint.event.signaledValue < completionPoint.value {
+          completionPoint.event.signaledValue = completionPoint.value
+        }
+        _ = resources
+        _ = self
+      }
+      commandQueue.commit([submissionBuffer], options: options)
+      return DecisionSubmissionTicket(
+        identifier: identifier,
+        owner: self,
+        decision: decision,
+        waitPoint: waitPoint,
+        completionPoint: completionPoint,
+        feedbackState: feedbackState,
+        decisionGateEvaluation: decisionGateEvaluation
+      )
+    } catch {
+      decisionGateResidency?.endResidency()
+      dynamicResidency?.endResidency()
+      try? transaction.abort()
+      throw error
+    }
+  }
+
+  /// Completes the explicit host side of an async decision without changing
+  /// joint publication. The returned feedback is measured Metal execution;
+  /// the ticket's decision addresses remain owned by the open transaction.
+  @discardableResult
+  public func finishDecisionSubmission(
+    _ ticket: DecisionSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> MetalGPUCompletionFeedback {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .decision,
+      active.transactionFingerprint == transaction.jointToken.fingerprint,
+      active.feedbackState === ticket.feedbackState,
+      !active.abortRequested,
+      transaction.status == .open
+    else {
+      throw TissueError.transaction("async decision ticket is stale or not owned here")
+    }
+    do {
+      let feedback = try ticket.feedbackState.wait(
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      guard ticket.decisionGateEvaluation.hasValidSuccess() else {
+        throw TissueError.transaction(
+          "NumanX decision-ready gate rejected the cognitive output"
+        )
+      }
+      active.resources.release()
+      activeAsyncSubmission = nil
+      return feedback
+    } catch {
+      // A host timeout is not a GPU cancellation. Keep every allocation and
+      // lease quarantined while the queue may still be waiting or executing.
+      // Only published Metal feedback proves it is safe to reap the command.
+      if ticket.feedbackState.hasCompleted {
+        active.resources.release()
+        activeAsyncSubmission = nil
+        try? transaction.abort()
+      }
+      throw error
+    }
+  }
+
+  /// Nonblocking coordinator boundary. A nil result retains the sole active
+  /// submission; a terminal failure releases its resources and aborts the
+  /// unpublished cognitive shadow.
+  func reapDecisionSubmissionIfCompleted(
+    _ ticket: DecisionSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction
+  ) throws -> MetalGPUCompletionFeedback? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .decision,
+      active.transactionFingerprint == transaction.jointToken.fingerprint,
+      active.feedbackState === ticket.feedbackState,
+      !active.abortRequested,
+      transaction.status == .open
+    else {
+      throw TissueError.transaction("async decision ticket is stale or not owned here")
+    }
+    let feedback: MetalGPUCompletionFeedback
+    do {
+      guard let available = try ticket.feedbackState.poll() else { return nil }
+      feedback = available
+      guard ticket.decisionGateEvaluation.hasValidSuccess() else {
+        throw TissueError.transaction(
+          "NumanX decision-ready gate rejected the cognitive output"
+        )
+      }
+    } catch {
+      active.resources.release()
+      activeAsyncSubmission = nil
+      if transaction.status == .open { try? transaction.abort() }
+      throw error
+    }
+    active.resources.release()
+    activeAsyncSubmission = nil
+    return feedback
+  }
+
+  public func abortDecisionSubmission(
+    _ ticket: DecisionSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .decision,
+      active.transactionFingerprint == transaction.jointToken.fingerprint
+    else {
+      throw TissueError.transaction("async decision ticket is stale or not owned here")
+    }
+    active.abortRequested = true
+    var completionError: Error?
+    do {
+      _ = try ticket.feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
+    } catch {
+      guard ticket.feedbackState.hasCompleted else {
+        // The logical abort is sticky, but its resources cannot be released
+        // until Metal reports that the queued work is no longer in flight.
+        throw error
+      }
+      completionError = error
+    }
+    active.resources.release()
+    activeAsyncSubmission = nil
+    if transaction.status == .open {
+      try transaction.abort()
+    }
+    if let completionError { throw completionError }
+  }
+
+  /// Coordinator-only quarantine probe. A true result means Metal has not
+  /// been safely reaped, so the complete-brain root must remain unavailable.
+  func ownsOutstandingSubmission(_ identifier: UUID) -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return activeAsyncSubmission?.identifier == identifier
+  }
+
   public func commit(
     transaction: MetalJointAgentStateTransaction,
     receipt: BrainJointCommitToken
   ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil else {
+      throw TissueError.transaction(
+        "finish or abort the async GPU submission before commit"
+      )
+    }
     try transaction.commit(with: receipt)
   }
 
@@ -740,6 +1203,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     transaction: MetalJointAgentStateTransaction,
     receipt: BrainJointCommitToken
   ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil else {
+      throw TissueError.transaction(
+        "finish or abort the async GPU submission before preparing commit"
+      )
+    }
     try transaction.prepareCommit(with: receipt)
   }
 
@@ -750,6 +1220,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   }
 
   public func abort(transaction: MetalJointAgentStateTransaction) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil else {
+      throw TissueError.transaction(
+        "use the async ticket abort contract while GPU work is outstanding"
+      )
+    }
     try transaction.abort()
   }
 
@@ -797,7 +1274,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   ) throws -> AcceptedConsequenceView {
     lock.lock()
     defer { lock.unlock() }
-    guard transaction.status == .open,
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
       acceptedPhysicsState.transactionFingerprint
         == transaction.jointToken.fingerprint,
       acceptedPhysicsState.acceptedTimestamp
@@ -988,6 +1466,892 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Encodes accepted sensory assimilation and memory journals onto an
+  /// externally composable shared-event timeline. The transaction remains
+  /// open until `finishAcceptedConsequenceSubmission` validates Metal feedback
+  /// and seals its GPU state.
+  public func submitAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    candidateSubstep: BrainJointSubstepToken,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    numanXSensors: NumanXSensorPacketLease,
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> AcceptedConsequenceSubmissionTicket {
+    let packet = numanXSensors.packet
+    guard packet.transactionFingerprint == transaction.jointToken.fingerprint,
+      packet.isAcceptedState,
+      packet.acceptedPhysicsTokenFingerprint == acceptedPhysicsState.fingerprint,
+      packet.deliveryTimestamp == acceptedPhysicsState.acceptedTimestamp,
+      packet.physicsGeneration == acceptedPhysicsState.physicsGeneration,
+      packet.environmentIdentifier == acceptedPhysicsState.environmentIdentifier,
+      packet.speciesTemplateFingerprint == speciesTemplateFingerprint,
+      packet.sensoryProfileFingerprint == sensoryRuntime.profileFingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX accepted sensor packet does not belong to this physical state"
+      )
+    }
+    var retainedInputs: [AnyObject] = [numanXSensors, acceptedPhysicsGate]
+    if let developmentalEvidence { retainedInputs.append(developmentalEvidence) }
+    if let teacherState { retainedInputs.append(teacherState) }
+    return try submitAcceptedConsequence(
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      candidateSubstep: candidateSubstep,
+      acceptedPhysicsGate: acceptedPhysicsGate,
+      rawSensors: numanXSensors.rawSensors,
+      acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
+      developmentalEvidence: developmentalEvidence,
+      teacherState: teacherState,
+      numanXRootPrepare: nil,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: retainedInputs
+    )
+  }
+
+  public func submitAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    candidateSubstep: BrainJointSubstepToken,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> AcceptedConsequenceSubmissionTicket {
+    var retainedInputs: [AnyObject] = [acceptedPhysicsGate]
+    retainedInputs.append(contentsOf: rawSensors)
+    if let developmentalEvidence { retainedInputs.append(developmentalEvidence) }
+    if let teacherState { retainedInputs.append(teacherState) }
+    return try submitAcceptedConsequence(
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      candidateSubstep: candidateSubstep,
+      acceptedPhysicsGate: acceptedPhysicsGate,
+      rawSensors: rawSensors,
+      acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
+      developmentalEvidence: developmentalEvidence,
+      teacherState: teacherState,
+      numanXRootPrepare: nil,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: retainedInputs
+    )
+  }
+
+  /// Production event-driven handoff. The host supplies only the immutable
+  /// root/substep relation and a retained GPU token lease; it does not know or
+  /// read the physical-state digest before submission.
+  public func submitAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    candidateSubstep: BrainJointSubstepToken,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> AcceptedConsequenceSubmissionTicket {
+    var retainedInputs: [AnyObject] = [acceptedPhysicsGate]
+    retainedInputs.append(contentsOf: rawSensors)
+    if let teacherState { retainedInputs.append(teacherState) }
+    return try submitAcceptedConsequence(
+      transaction: transaction,
+      acceptedPhysicsState: nil,
+      candidateSubstep: candidateSubstep,
+      acceptedPhysicsGate: acceptedPhysicsGate,
+      rawSensors: rawSensors,
+      acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
+      developmentalEvidence: nil,
+      teacherState: teacherState,
+      numanXRootPrepare: nil,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: retainedInputs
+    )
+  }
+
+  /// Owner-v2 production preparation. The distinct Brain commit witness is
+  /// encoded after every accepted-consequence writer. This overload does not
+  /// make the legacy start gate sufficient for publication.
+  public func submitAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    candidateSubstep: BrainJointSubstepToken,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    numanXRootPrepare: MetalNumanXBrainCommitPrepareRequest,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> AcceptedConsequenceSubmissionTicket {
+    var retainedInputs: [AnyObject] = [acceptedPhysicsGate]
+    retainedInputs.append(contentsOf: rawSensors)
+    if let teacherState { retainedInputs.append(teacherState) }
+    retainedInputs.append(contentsOf: numanXRootPrepare.fastStateSources)
+    return try submitAcceptedConsequence(
+      transaction: transaction,
+      acceptedPhysicsState: nil,
+      candidateSubstep: candidateSubstep,
+      acceptedPhysicsGate: acceptedPhysicsGate,
+      rawSensors: rawSensors,
+      acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
+      developmentalEvidence: nil,
+      teacherState: teacherState,
+      numanXRootPrepare: numanXRootPrepare,
+      waitFor: waitPoint,
+      signal: completionPoint,
+      retainedInputs: retainedInputs
+    )
+  }
+
+  private func submitAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken?,
+    candidateSubstep: BrainJointSubstepToken,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
+    teacherState: MetalTeacherStateBufferLease?,
+    numanXRootPrepare: MetalNumanXBrainCommitPrepareRequest?,
+    waitFor waitPoint: MetalSharedEventPoint?,
+    signal completionPoint: MetalSharedEventPoint,
+    retainedInputs baseRetainedInputs: [AnyObject]
+  ) throws -> AcceptedConsequenceSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
+      candidateSubstep.transactionFingerprint == transaction.jointToken.fingerprint,
+      candidateSubstep.candidateTimestamp == transaction.jointToken.targetTimestamp,
+      candidateSubstep.shadowGeneration == transaction.jointToken.shadowGeneration,
+      candidateSubstep.randomCounterGeneration
+        == transaction.jointToken.randomCounterGeneration,
+      acceptedPhysicsState == nil
+        || (acceptedPhysicsState!.transactionFingerprint
+          == transaction.jointToken.fingerprint
+          && acceptedPhysicsState!.substepFingerprint
+            == candidateSubstep.fingerprint
+          && acceptedPhysicsState!.acceptedTimestamp
+            == transaction.jointToken.targetTimestamp
+          && acceptedPhysicsState!.environmentIdentifier
+            == transaction.jointToken.environmentIdentifier)
+    else {
+      throw TissueError.transaction(
+        "accepted consequence does not finish the open embodied control root"
+      )
+    }
+    try MetalSharedEventPoint.validateProgression(
+      wait: waitPoint,
+      signal: completionPoint,
+      device: device
+    )
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("accepted control interval exceeds sensory ABI")
+    }
+    let acceptedTimestamp = candidateSubstep.candidateTimestamp
+    let acceptedFastMotorState = try transaction.borrowAcceptedFastMotorState()
+    let gateEvaluation = try acceptedPhysicsGateRuntime.makeEvaluation(
+      device: device,
+      lease: acceptedPhysicsGate,
+      transaction: transaction.jointToken,
+      substep: candidateSubstep
+    )
+    let numanXPrepareEvaluation: MetalNumanXBrainCommitPrepareEvaluation?
+    if let numanXRootPrepare {
+      let hotBuffer = try agentStateRuntime.arena.borrowShadowHotBuffer(
+        transaction: transaction.agentStateToken
+      )
+      let journalBuffer = try agentStateRuntime.arena.borrowShadowJournalBuffer(
+        transaction: transaction.agentStateToken
+      )
+      numanXPrepareEvaluation = try numanXHumanMatterRuntime.makePrepareEvaluation(
+        request: numanXRootPrepare,
+        transaction: transaction,
+        substep: candidateSubstep,
+        startGate: gateEvaluation,
+        hotBuffer: hotBuffer,
+        journalBuffer: journalBuffer,
+        fastPreparedPoint: waitPoint
+      )
+    } else {
+      numanXPrepareEvaluation = nil
+    }
+    let dynamicResidency = try makeDynamicAcceptedResidency(
+      sensors: rawSensors,
+      developmentalEvidence: developmentalEvidence,
+      teacherState: teacherState,
+      acceptedFastMotorState: acceptedFastMotorState,
+      gateEvaluation: gateEvaluation,
+      numanXPrepareEvaluation: numanXPrepareEvaluation
+    )
+    do {
+      guard let allocator = device.makeCommandAllocator(),
+        let submissionBuffer = device.makeCommandBuffer()
+      else {
+        throw TissueError.metal("failed to allocate async consequence resources")
+      }
+      submissionBuffer.beginCommandBuffer(allocator: allocator)
+      submissionBuffer.useResidencySet(residencySet)
+      if let dynamicResidency {
+        submissionBuffer.useResidencySet(dynamicResidency)
+      }
+      guard let encoder = submissionBuffer.makeComputeCommandEncoder() else {
+        submissionBuffer.endCommandBuffer()
+        throw TissueError.metal("failed to encode async accepted consequence")
+      }
+      encoder.label = "NumiBrain async accepted physical consequence"
+      acceptedPhysicsGateRuntime.encodeValidation(
+        encoder: encoder,
+        evaluation: gateEvaluation
+      )
+      if let acceptedFastMotorState {
+        try encodeAcceptedFastMotorStateImport(
+          encoder: encoder,
+          lease: acceptedFastMotorState,
+          transaction: transaction,
+          gateEvaluation: gateEvaluation
+        )
+        encoder.barrier(
+          afterEncoderStages: .dispatch,
+          beforeEncoderStages: .dispatch,
+          visibilityOptions: .device
+        )
+      }
+      let sensory = try sensoryRuntime.encode(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        rawSensorViews: rawSensors.map(\.view),
+        environmentIdentifier: transaction.jointToken.environmentIdentifier,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+        targetTimestamp: acceptedTimestamp,
+        deltaMicroseconds: UInt32(duration),
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try cognitiveRuntime.encodeAcceptedRegionalRecurrentIngest(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedTimestamp,
+        deltaMicroseconds: duration,
+        regionalRecurrentInput: acceptedRegionalRecurrentInput,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try acceptedConsequenceRuntime.encodeAuthoritativeGate(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        acceptedTimestamp: acceptedTimestamp,
+        acceptedTransactionFingerprint: transaction.jointToken.fingerprint,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity,
+        acceptedFastMotorState: acceptedFastMotorState,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
+        acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try cognitiveRuntime.encodeAcceptedBeliefAssimilation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedTimestamp,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      if let acceptedPhysicsState {
+        try developmentalRuntime.encodeAcceptedProgress(
+          encoder: encoder,
+          transaction: transaction.agentStateToken,
+          acceptedPhysicsState: acceptedPhysicsState,
+          deltaMicroseconds: duration,
+          evidence: developmentalEvidence,
+          acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
+          acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
+        )
+      } else {
+        try developmentalRuntime.encodeAcceptedProgressAuthoritativeGate(
+          encoder: encoder,
+          transaction: transaction.agentStateToken,
+          targetTimestamp: acceptedTimestamp,
+          deltaMicroseconds: duration,
+          acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
+          acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
+        )
+      }
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeAcceptedReconsolidation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedTimestamp,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeProspectiveLifecycle(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedTimestamp,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeRestConsolidation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedTimestamp,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeEpisodicSegmentation(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        timestamp: acceptedTimestamp,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeCommittedTransitionAuthoritativeGate(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        previousTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedTimestamp: acceptedTimestamp,
+        teacherState: teacherState,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
+        acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
+      )
+      encoder.barrier(
+        afterEncoderStages: .dispatch,
+        beforeEncoderStages: .dispatch,
+        visibilityOptions: .device
+      )
+      try memoryRuntime.encodeCommittedCounterfactuals(
+        encoder: encoder,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        sourceBeliefTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedTimestamp: acceptedTimestamp,
+        acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4
+      )
+      if let numanXPrepareEvaluation {
+        encoder.barrier(
+          afterEncoderStages: .dispatch,
+          beforeEncoderStages: .dispatch,
+          visibilityOptions: .device
+        )
+        try transaction.encodeProvisionalGPUStateFinish(
+          encoder: encoder,
+          provisional:
+            numanXPrepareEvaluation.request.provisionalPhysicsAcceptance
+        )
+        encoder.barrier(
+          afterEncoderStages: .dispatch,
+          beforeEncoderStages: .dispatch,
+          visibilityOptions: .device
+        )
+        numanXHumanMatterRuntime.encodePrepare(
+          encoder: encoder,
+          evaluation: numanXPrepareEvaluation
+        )
+      }
+      encoder.endEncoding()
+      submissionBuffer.endCommandBuffer()
+
+      let consequence = AcceptedConsequenceView(
+        transactionFingerprint: transaction.jointToken.fingerprint,
+        shadowGeneration: transaction.agentStateToken.shadowGeneration,
+        acceptedPhysicsTokenFingerprint: acceptedPhysicsState?.fingerprint ?? 0,
+        acceptedTimestamp: acceptedTimestamp,
+        sensoryObservationGPUAddress: sensory.observationGPUAddress,
+        sensoryObservationScalarCount: sensory.observationScalarCount,
+        receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
+        receptorEventCapacity: sensory.eventCapacity,
+        gpuStartSeconds: 0,
+        gpuEndSeconds: 0
+      )
+      let feedbackState = MetalAsyncFeedbackState()
+      let resources = MetalAsyncCommandResources(
+        allocator: allocator,
+        commandBuffer: submissionBuffer,
+        residencySets: dynamicResidency.map { [$0] } ?? []
+      )
+      var retainedInputs = baseRetainedInputs
+      if let acceptedFastMotorState { retainedInputs.append(acceptedFastMotorState) }
+      if let numanXPrepareEvaluation { retainedInputs.append(numanXPrepareEvaluation) }
+      let identifier = UUID()
+      activeAsyncSubmission = ActiveAsyncSubmission(
+        identifier: identifier,
+        kind: .acceptedConsequence,
+        transactionFingerprint: transaction.jointToken.fingerprint,
+        feedbackState: feedbackState,
+        resources: resources,
+        retainedInputs: retainedInputs
+      )
+      if let waitPoint {
+        commandQueue.waitForEvent(waitPoint.event, value: waitPoint.value)
+      }
+      let options = MTL4CommitOptions()
+      options.addFeedbackHandler { feedback in
+        if let numanXPrepareEvaluation {
+          if feedback.error != nil ||
+              !numanXPrepareEvaluation.hasValidPreparedWitness() {
+            // The kernel may have written a valid-looking witness before a
+            // later command-buffer fault. Publish a complete FAILURE record
+            // before the CPU liveness signal wakes an owner proposal wait.
+            numanXPrepareEvaluation.markWitnessPrepareFailed()
+          }
+          if completionPoint.event.signaledValue < completionPoint.value {
+            completionPoint.event.signaledValue = completionPoint.value
+          }
+        }
+        feedbackState.record(feedback, label: "NumiBrain accepted physical consequence")
+        _ = resources
+        _ = self
+      }
+      commandQueue.commit([submissionBuffer], options: options)
+      if numanXPrepareEvaluation == nil {
+        commandQueue.signalEvent(completionPoint.event, value: completionPoint.value)
+      }
+      return AcceptedConsequenceSubmissionTicket(
+        identifier: identifier,
+        owner: self,
+        consequence: consequence,
+        waitPoint: waitPoint,
+        completionPoint: completionPoint,
+        feedbackState: feedbackState,
+        gateEvaluation: gateEvaluation,
+        numanXPrepareEvaluation: numanXPrepareEvaluation
+      )
+    } catch {
+      dynamicResidency?.endResidency()
+      try? transaction.abort()
+      throw error
+    }
+  }
+
+  @discardableResult
+  public func finishAcceptedConsequenceSubmission(
+    _ ticket: AcceptedConsequenceSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> MetalGPUCompletionFeedback {
+    try finishAcceptedConsequenceSubmission(
+      ticket,
+      transaction: transaction,
+      expectedAcceptedPhysicsState: acceptedPhysicsState,
+      timeoutMilliseconds: timeoutMilliseconds
+    ).feedback
+  }
+
+  /// Finalizes the production GPU-token path. Only the 128-byte gate result is
+  /// read on the host; raw sensor and physical-state payloads stay device-side.
+  public func finishAcceptedConsequenceSubmission(
+    _ ticket: AcceptedConsequenceSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> AcceptedConsequenceCompletion {
+    try finishAcceptedConsequenceSubmission(
+      ticket,
+      transaction: transaction,
+      expectedAcceptedPhysicsState: nil,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  private func finishAcceptedConsequenceSubmission(
+    _ ticket: AcceptedConsequenceSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    expectedAcceptedPhysicsState: AcceptedPhysicsStateToken?,
+    timeoutMilliseconds: UInt64
+  ) throws -> AcceptedConsequenceCompletion {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .acceptedConsequence,
+      active.transactionFingerprint == transaction.jointToken.fingerprint,
+      active.feedbackState === ticket.feedbackState,
+      !active.abortRequested,
+      expectedAcceptedPhysicsState == nil
+        || ticket.consequence.acceptedPhysicsTokenFingerprint
+          == expectedAcceptedPhysicsState!.fingerprint,
+      ticket.numanXPrepareEvaluation == nil,
+      transaction.status == .open
+    else {
+      throw TissueError.transaction(
+        "async accepted-consequence ticket is stale or not owned here"
+      )
+    }
+    do {
+      let feedback = try ticket.feedbackState.wait(
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      let acceptedPhysicsState = try ticket.gateEvaluation.validateAcceptedResult()
+      guard expectedAcceptedPhysicsState == nil
+        || acceptedPhysicsState == expectedAcceptedPhysicsState
+      else {
+        throw TissueError.transaction(
+          "GPU accepted-physics token differs from the host compatibility proof"
+        )
+      }
+      try transaction.finishGPUState(acceptedPhysicsState: acceptedPhysicsState)
+      let consequence = AcceptedConsequenceView(
+        transactionFingerprint: ticket.consequence.transactionFingerprint,
+        shadowGeneration: ticket.consequence.shadowGeneration,
+        acceptedPhysicsTokenFingerprint: acceptedPhysicsState.fingerprint,
+        acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        sensoryObservationGPUAddress:
+          ticket.consequence.sensoryObservationGPUAddress,
+        sensoryObservationScalarCount:
+          ticket.consequence.sensoryObservationScalarCount,
+        receptorEventQueueGPUAddress:
+          ticket.consequence.receptorEventQueueGPUAddress,
+        receptorEventCapacity: ticket.consequence.receptorEventCapacity,
+        gpuStartSeconds: feedback.gpuStartSeconds,
+        gpuEndSeconds: feedback.gpuEndSeconds
+      )
+      active.resources.release()
+      ticket.gateEvaluation.releaseInputLease()
+      activeAsyncSubmission = nil
+      return AcceptedConsequenceCompletion(
+        feedback: feedback,
+        acceptedPhysicsState: acceptedPhysicsState,
+        consequence: consequence
+      )
+    } catch {
+      // Preserve the complete accepted-state dependency graph after a host
+      // timeout. Feedback failure is terminal and therefore safe to reap;
+      // absence of feedback means the GPU can still touch these allocations.
+      if ticket.feedbackState.hasCompleted {
+        active.resources.release()
+        ticket.gateEvaluation.releaseInputLease()
+        activeAsyncSubmission = nil
+        if transaction.status == .open { try? transaction.abort() }
+      }
+      throw error
+    }
+  }
+
+  /// Writes the ABI4 Brain ACK only after the mutation-free owner proposal and
+  /// the distinct host preflight record are both terminal and GPU-visible.
+  /// This internal SPI retains the unpublished cognitive prepare; it cannot
+  /// publish or mutate physical state.
+  func submitNumanXBrainAck(
+    prepared ticket: AcceptedConsequenceSubmissionTicket,
+    proposal: MetalNumanXHumanMatterProposalLease,
+    preflight: MetalNumanXHumanMatterBrainPreflightLease,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumanXHumanMatterBrainAckTicket {
+    lock.lock()
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .acceptedConsequence,
+      active.feedbackState === ticket.feedbackState,
+      !active.abortRequested,
+      ticket.numanXPrepareEvaluation != nil
+    else {
+      lock.unlock()
+      throw TissueError.transaction(
+        "NumanX Brain ACK requires the exact quarantined prepare ticket"
+      )
+    }
+    lock.unlock()
+    return try numanXHumanMatterRuntime.submitBrainAck(
+      preparedTicket: ticket,
+      proposal: proposal,
+      preflight: preflight,
+      signal: completionPoint
+    )
+  }
+
+  /// Validates the complete applied chain and canonical final token without
+  /// flipping cognitive, fast, journal, or physical publication state.
+  func validateNumanXAppliedRoot(
+    ack ticket: MetalNumanXHumanMatterBrainAckTicket,
+    applied lease: MetalNumanXHumanMatterAppliedLease,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumanXHumanMatterAppliedValidationTicket {
+    lock.lock()
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.preparedTicket.identifier,
+      active.kind == .acceptedConsequence,
+      active.feedbackState === ticket.preparedTicket.feedbackState,
+      !active.abortRequested,
+      ticket.preparedTicket.numanXPrepareEvaluation != nil
+    else {
+      lock.unlock()
+      throw TissueError.transaction(
+        "NumanX applied validation requires the exact quarantined prepare ticket"
+      )
+    }
+    lock.unlock()
+    return try numanXHumanMatterRuntime.submitAppliedValidation(
+      ackTicket: ticket,
+      applied: lease,
+      signal: completionPoint
+    )
+  }
+
+  public func abortAcceptedConsequenceSubmission(
+    _ ticket: AcceptedConsequenceSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .acceptedConsequence,
+      active.transactionFingerprint == transaction.jointToken.fingerprint
+    else {
+      throw TissueError.transaction(
+        "async accepted-consequence ticket is stale or not owned here"
+      )
+    }
+    active.abortRequested = true
+    var completionError: Error?
+    do {
+      _ = try ticket.feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
+    } catch {
+      guard ticket.feedbackState.hasCompleted else {
+        throw error
+      }
+      completionError = error
+    }
+    active.resources.release()
+    ticket.gateEvaluation.releaseInputLease()
+    activeAsyncSubmission = nil
+    if transaction.status == .open { try transaction.abort() }
+    if let completionError { throw completionError }
+  }
+
+  /// Reaps a NumanX prepare after a later owner close has resolved the joint
+  /// root. The aggregate high-level ticket has already observed terminal Metal
+  /// feedback and retains every borrowed input until this exact call, so no
+  /// host wait, token reconstruction, or state publication is performed here.
+  func releaseResolvedNumanXPreparedSubmission(
+    _ ticket: AcceptedConsequenceSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction
+  ) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .acceptedConsequence,
+      active.transactionFingerprint == transaction.jointToken.fingerprint,
+      active.feedbackState === ticket.feedbackState,
+      ticket.numanXPrepareEvaluation != nil,
+      ticket.feedbackState.hasCompleted
+    else {
+      preconditionFailure("resolved NumanX cognitive ticket is stale")
+    }
+    active.resources.release()
+    ticket.gateEvaluation.releaseInputLease()
+    activeAsyncSubmission = nil
+  }
+
+  private func encodeAcceptedFastMotorStateImport(
+    encoder: any MTL4ComputeCommandEncoder,
+    lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
+    transaction: MetalJointAgentStateTransaction,
+    gateEvaluation: MetalAcceptedPhysicsGateEvaluation
+  ) throws {
+    let section = agentStateRuntime.arena.layout.section(.cpgState)
+    let reflexSection = agentStateRuntime.arena.layout.section(.reflexState)
+    let fastCerebellarSection = agentStateRuntime.arena.layout.section(
+      .fastCerebellarState
+    )
+    let fastAutonomicSection = agentStateRuntime.arena.layout.section(
+      .fastAutonomicState
+    )
+    let acceptedSomaticSection = agentStateRuntime.arena.layout.section(
+      .acceptedSomaticOutput
+    )
+    let acceptedAutonomicSection = agentStateRuntime.arena.layout.section(
+      .acceptedAutonomicOutput
+    )
+    let acceptedActiveSensingSection = agentStateRuntime.arena.layout.section(
+      .acceptedActiveSensingOutput
+    )
+    let expectedReflexRuleCount = species.reflexes.reduce(0) {
+      $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
+    }
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
+      lease.transactionFingerprint == transaction.jointToken.fingerprint,
+      lease.acceptedTimestamp == transaction.jointToken.targetTimestamp,
+      lease.oscillatorCount == species.cpg.oscillators.count,
+      lease.byteCount == lease.oscillatorCount * section.elementStride,
+      lease.byteCount <= section.byteCount,
+      lease.reflexRuleCount == expectedReflexRuleCount,
+      lease.reflexStateByteCount
+        == lease.reflexRuleCount * reflexSection.elementStride,
+      lease.reflexStateByteCount <= reflexSection.byteCount,
+      lease.fastCerebellarStateCount == Int(species.motor.actuatorCount),
+      lease.fastCerebellarStateByteCount
+        == fastCerebellarSection.elementCount * fastCerebellarSection.elementStride,
+      lease.fastAutonomicStateCount
+        == Int(species.physiology.autonomicActionDimension),
+      lease.fastAutonomicStateByteCount
+        == fastAutonomicSection.elementCount * fastAutonomicSection.elementStride,
+      lease.acceptedSomaticOutputCount == Int(species.motor.actuatorCount),
+      lease.acceptedSomaticOutputByteCount
+        == acceptedSomaticSection.elementCount * acceptedSomaticSection.elementStride,
+      lease.acceptedSomaticOutputBuffer.length
+        >= lease.acceptedSomaticOutputByteCount,
+      lease.acceptedAutonomicOutputCount
+        == Int(species.physiology.autonomicActionDimension),
+      lease.acceptedAutonomicOutputByteCount
+        == acceptedAutonomicSection.elementCount * acceptedAutonomicSection.elementStride,
+      lease.acceptedAutonomicOutputBuffer.length
+        >= lease.acceptedAutonomicOutputByteCount,
+      lease.acceptedActiveSensingOutputCount
+        == Int(species.motor.activeSensingActionDimension),
+      lease.acceptedActiveSensingOutputByteCount
+        == acceptedActiveSensingSection.elementCount
+          * acceptedActiveSensingSection.elementStride,
+      lease.acceptedActiveSensingOutputBuffer.length
+        >= lease.acceptedActiveSensingOutputByteCount,
+      lease.actuatorCommandKind == species.motor.actuatorCommandKind
+    else {
+      throw TissueError.transaction(
+        "accepted fast motor state does not match the cognitive shadow"
+      )
+    }
+    let destination = try agentStateRuntime.arena.borrowShadowHotBuffer(
+      transaction: transaction.agentStateToken
+    )
+    if lease.byteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.cpgBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: section.byteOffset,
+        byteCount: lease.byteCount
+      )
+    }
+    if lease.reflexStateByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.reflexStateBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: reflexSection.byteOffset,
+        byteCount: lease.reflexStateByteCount
+      )
+    }
+    if lease.fastCerebellarStateByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.fastCerebellarStateBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: fastCerebellarSection.byteOffset,
+        byteCount: lease.fastCerebellarStateByteCount
+      )
+    }
+    if lease.fastAutonomicStateByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.fastAutonomicStateBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: fastAutonomicSection.byteOffset,
+        byteCount: lease.fastAutonomicStateByteCount
+      )
+    }
+    if lease.acceptedSomaticOutputByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.acceptedSomaticOutputBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: acceptedSomaticSection.byteOffset,
+        byteCount: lease.acceptedSomaticOutputByteCount
+      )
+    }
+    if lease.acceptedAutonomicOutputByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.acceptedAutonomicOutputBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: acceptedAutonomicSection.byteOffset,
+        byteCount: lease.acceptedAutonomicOutputByteCount
+      )
+    }
+    if lease.acceptedActiveSensingOutputByteCount > 0 {
+      try acceptedPhysicsGateRuntime.encodeConditionalCopy(
+        encoder: encoder,
+        evaluation: gateEvaluation,
+        source: lease.acceptedActiveSensingOutputBuffer,
+        sourceOffset: 0,
+        destination: destination,
+        destinationOffset: acceptedActiveSensingSection.byteOffset,
+        byteCount: lease.acceptedActiveSensingOutputByteCount
+      )
+    }
+  }
+
   /// Imports the exact accepted physical somatic output plus fast-substep
   /// oscillator, reflex, per-actuator cerebellar, and autonomic state into the
   /// same shadow generation. That generation receives accepted sensory
@@ -1019,7 +2383,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     let expectedReflexRuleCount = species.reflexes.reduce(0) {
       $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
     }
-    guard transaction.status == .open,
+    guard activeAsyncSubmission == nil,
+      transaction.status == .open,
       lease.transactionFingerprint == transaction.jointToken.fingerprint,
       lease.acceptedTimestamp == transaction.jointToken.targetTimestamp,
       lease.oscillatorCount == species.cpg.oscillators.count,
@@ -1030,23 +2395,28 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         == lease.reflexRuleCount * reflexSection.elementStride,
       lease.reflexStateByteCount <= reflexSection.byteCount,
       lease.fastCerebellarStateCount == Int(species.motor.actuatorCount),
-      lease.fastCerebellarStateByteCount == fastCerebellarSection.byteCount,
+      lease.fastCerebellarStateByteCount
+        == fastCerebellarSection.elementCount * fastCerebellarSection.elementStride,
       lease.fastAutonomicStateCount
         == Int(species.physiology.autonomicActionDimension),
-      lease.fastAutonomicStateByteCount == fastAutonomicSection.byteCount,
+      lease.fastAutonomicStateByteCount
+        == fastAutonomicSection.elementCount * fastAutonomicSection.elementStride,
       lease.acceptedSomaticOutputCount == Int(species.motor.actuatorCount),
-      lease.acceptedSomaticOutputByteCount == acceptedSomaticSection.byteCount,
+      lease.acceptedSomaticOutputByteCount
+        == acceptedSomaticSection.elementCount * acceptedSomaticSection.elementStride,
       lease.acceptedSomaticOutputBuffer.length
         >= lease.acceptedSomaticOutputByteCount,
       lease.acceptedAutonomicOutputCount
         == Int(species.physiology.autonomicActionDimension),
-      lease.acceptedAutonomicOutputByteCount == acceptedAutonomicSection.byteCount,
+      lease.acceptedAutonomicOutputByteCount
+        == acceptedAutonomicSection.elementCount * acceptedAutonomicSection.elementStride,
       lease.acceptedAutonomicOutputBuffer.length
         >= lease.acceptedAutonomicOutputByteCount,
       lease.acceptedActiveSensingOutputCount
         == Int(species.motor.activeSensingActionDimension),
       lease.acceptedActiveSensingOutputByteCount
-        == acceptedActiveSensingSection.byteCount,
+        == acceptedActiveSensingSection.elementCount
+          * acceptedActiveSensingSection.elementStride,
       lease.acceptedActiveSensingOutputBuffer.length
         >= lease.acceptedActiveSensingOutputByteCount,
       (lease.bodySchemaCount == 0 && lease.bodySchemaByteCount == 0)
@@ -1261,7 +2631,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.regionalPlasticModulationGPUAddress
         == buffer.gpuAddress + UInt64(plasticModulation.byteOffset),
       decision.fastPlasticityCount == fastPlasticity.elementCount,
-      decision.fastPlasticityByteCount == fastPlasticity.byteCount,
+      decision.fastPlasticityByteCount
+        == fastPlasticity.elementCount * fastPlasticity.elementStride,
       fastPlasticity.byteOffset <= buffer.length,
       decision.fastPlasticityByteCount
         <= buffer.length - fastPlasticity.byteOffset,
@@ -1293,14 +2664,16 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.motorCommandGPUAddress
         == buffer.gpuAddress + UInt64(motorCommands.byteOffset),
       decision.fastCerebellarStateCount == fastCerebellarState.elementCount,
-      decision.fastCerebellarStateByteCount == fastCerebellarState.byteCount,
+      decision.fastCerebellarStateByteCount
+        == fastCerebellarState.elementCount * fastCerebellarState.elementStride,
       fastCerebellarState.byteOffset <= buffer.length,
       fastCerebellarState.byteCount
         <= buffer.length - fastCerebellarState.byteOffset,
       decision.fastCerebellarStateGPUAddress
         == buffer.gpuAddress + UInt64(fastCerebellarState.byteOffset),
       decision.fastAutonomicStateCount == fastAutonomicState.elementCount,
-      decision.fastAutonomicStateByteCount == fastAutonomicState.byteCount,
+      decision.fastAutonomicStateByteCount
+        == fastAutonomicState.elementCount * fastAutonomicState.elementStride,
       fastAutonomicState.byteOffset <= buffer.length,
       fastAutonomicState.byteCount
         <= buffer.length - fastAutonomicState.byteOffset,
@@ -1335,6 +2708,106 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       fastCerebellarStateSourceOffset: fastCerebellarState.byteOffset,
       fastAutonomicStateSourceOffset: fastAutonomicState.byteOffset,
       receptorEventQueueSourceOffset: eventQueue.byteOffset
+    )
+  }
+
+  private func makeDecisionBufferView(
+    transaction: MetalJointAgentStateTransaction,
+    sensory: MetalSensoryTransductionRuntime.Result,
+    decision: MetalDecisionRuntime.OutputView,
+    feedback: MetalGPUCompletionFeedback?
+  ) throws -> DecisionBufferView {
+    let hot = try agentStateRuntime.hotStateView(
+      transaction: transaction.agentStateToken
+    )
+    let control = agentStateRuntime.arena.layout.section(.activeControl)
+    let workspace = agentStateRuntime.arena.layout.section(.workspaceContent)
+    let maturation = agentStateRuntime.arena.layout.section(.regionalMaturation)
+    let plasticModulation = agentStateRuntime.arena.layout.section(
+      .regionalPlasticModulation
+    )
+    let fastPlasticity = agentStateRuntime.arena.layout.section(.fastPlasticity)
+    let cpgState = agentStateRuntime.arena.layout.section(.cpgState)
+    let descendingBaseline = agentStateRuntime.arena.layout.section(
+      .descendingSomaticBaseline
+    )
+    let reflexState = agentStateRuntime.arena.layout.section(.reflexState)
+    let fastCerebellarState = agentStateRuntime.arena.layout.section(
+      .fastCerebellarState
+    )
+    let fastAutonomicState = agentStateRuntime.arena.layout.section(
+      .fastAutonomicState
+    )
+    let reflexStateCount = species.reflexes.reduce(0) {
+      $0 + $1.receptorChannelCodes.count * $1.actuatorIdentifiers.count
+    }
+    return DecisionBufferView(
+      transactionFingerprint: transaction.jointToken.fingerprint,
+      shadowGeneration: transaction.agentStateToken.shadowGeneration,
+      decisionTimestamp: transaction.jointToken.committedTimestamp,
+      activeControlGPUAddress: hot.outputGPUAddress + UInt64(control.byteOffset),
+      activeControlByteCount: control.byteCount,
+      motorGoalGPUAddress: decision.motorGoalGPUAddress,
+      motorGoalByteCount: decision.motorGoalByteCount,
+      motorCommandGPUAddress: decision.motorCommandGPUAddress,
+      motorCommandCount: decision.motorCommandCount,
+      spinalStateGPUAddress: decision.spinalStateGPUAddress,
+      somaticOutputGPUAddress: decision.somaticOutputGPUAddress,
+      somaticOutputByteCount:
+        decision.somaticOutputCount * MemoryLayout<Float>.stride,
+      somaticOutputCount: decision.somaticOutputCount,
+      descendingSomaticBaselineGPUAddress:
+        hot.outputGPUAddress + UInt64(descendingBaseline.byteOffset),
+      descendingSomaticBaselineByteCount:
+        descendingBaseline.elementCount * descendingBaseline.elementStride,
+      autonomicCommandGPUAddress: decision.autonomicCommandGPUAddress,
+      autonomicCommandCount: decision.autonomicCommandCount,
+      activeSensingCommandGPUAddress: decision.activeSensingCommandGPUAddress,
+      activeSensingCommandCount: decision.activeSensingCommandCount,
+      internalActionGPUAddress: decision.internalActionGPUAddress,
+      internalActionCount: decision.internalActionCount,
+      workspaceContentGPUAddress: hot.outputGPUAddress + UInt64(workspace.byteOffset),
+      workspaceContentByteCount: workspace.byteCount,
+      sensoryObservationGPUAddress: sensory.observationGPUAddress,
+      sensoryObservationScalarCount: sensory.observationScalarCount,
+      receptorEventQueueGPUAddress: sensory.eventQueueGPUAddress,
+      receptorEventCapacity: sensory.eventCapacity,
+      receptorEventMaximumCount: sensory.maximumEventCount,
+      regionalMaturationGPUAddress:
+        hot.outputGPUAddress + UInt64(maturation.byteOffset),
+      regionalMaturationByteCount:
+        maturation.elementCount * maturation.elementStride,
+      regionalMaturationCount: maturation.elementCount,
+      regionalPlasticModulationGPUAddress:
+        hot.outputGPUAddress + UInt64(plasticModulation.byteOffset),
+      regionalPlasticModulationByteCount:
+        plasticModulation.elementCount * plasticModulation.elementStride,
+      regionalPlasticModulationCount: plasticModulation.elementCount,
+      fastPlasticityGPUAddress:
+        hot.outputGPUAddress + UInt64(fastPlasticity.byteOffset),
+      fastPlasticityByteCount:
+        fastPlasticity.elementCount * fastPlasticity.elementStride,
+      fastPlasticityCount: fastPlasticity.elementCount,
+      cpgStateGPUAddress: hot.outputGPUAddress + UInt64(cpgState.byteOffset),
+      cpgStateByteCount: species.cpg.oscillators.count * cpgState.elementStride,
+      cpgStateCount: species.cpg.oscillators.count,
+      cpgSynergyCount: Int(species.motor.synergyCount),
+      reflexStateGPUAddress:
+        hot.outputGPUAddress + UInt64(reflexState.byteOffset),
+      reflexStateByteCount: reflexStateCount * reflexState.elementStride,
+      reflexStateCount: reflexStateCount,
+      fastCerebellarStateGPUAddress:
+        hot.outputGPUAddress + UInt64(fastCerebellarState.byteOffset),
+      fastCerebellarStateByteCount:
+        fastCerebellarState.elementCount * fastCerebellarState.elementStride,
+      fastCerebellarStateCount: fastCerebellarState.elementCount,
+      fastAutonomicStateGPUAddress:
+        hot.outputGPUAddress + UInt64(fastAutonomicState.byteOffset),
+      fastAutonomicStateByteCount:
+        fastAutonomicState.elementCount * fastAutonomicState.elementStride,
+      fastAutonomicStateCount: fastAutonomicState.elementCount,
+      gpuStartSeconds: feedback?.gpuStartSeconds ?? 0,
+      gpuEndSeconds: feedback?.gpuEndSeconds ?? 0
     )
   }
 
@@ -1398,11 +2871,14 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     sensors: [MetalRawSensorBufferLease],
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
     teacherState: MetalTeacherStateBufferLease?,
-    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?,
+    gateEvaluation: MetalAcceptedPhysicsGateEvaluation? = nil,
+    numanXPrepareEvaluation: MetalNumanXBrainCommitPrepareEvaluation? = nil
   ) throws -> (any MTLResidencySet)? {
     guard
       !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
-        || acceptedFastMotorState != nil
+        || acceptedFastMotorState != nil || gateEvaluation != nil
+        || numanXPrepareEvaluation != nil
     else { return nil }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted receptor and capability residency"
@@ -1412,8 +2888,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       }
       + (developmentalEvidence == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
-      + (acceptedFastMotorState == nil ? 0 : 1)
+      + (acceptedFastMotorState == nil ? 0 : 8)
       + ((acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0 ? 1 : 0)
+      + (gateEvaluation?.residencyAllocations.count ?? 0)
+      + (numanXPrepareEvaluation?.residencyAllocations.count ?? 0)
     let set: any MTLResidencySet
     do {
       set = try device.makeResidencySet(descriptor: descriptor)
@@ -1428,8 +2906,21 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
     if let teacherState { set.addAllocation(teacherState.buffer) }
+    for allocation in gateEvaluation?.residencyAllocations ?? [] {
+      set.addAllocation(allocation)
+    }
+    for allocation in numanXPrepareEvaluation?.residencyAllocations ?? [] {
+      set.addAllocation(allocation)
+    }
     if let acceptedFastMotorState {
+      set.addAllocation(acceptedFastMotorState.cpgBuffer)
+      set.addAllocation(acceptedFastMotorState.reflexStateBuffer)
       set.addAllocation(acceptedFastMotorState.protectiveCommandBuffer)
+      set.addAllocation(acceptedFastMotorState.fastCerebellarStateBuffer)
+      set.addAllocation(acceptedFastMotorState.fastAutonomicStateBuffer)
+      set.addAllocation(acceptedFastMotorState.acceptedSomaticOutputBuffer)
+      set.addAllocation(acceptedFastMotorState.acceptedAutonomicOutputBuffer)
+      set.addAllocation(acceptedFastMotorState.acceptedActiveSensingOutputBuffer)
     }
     if let acceptedFastMotorState,
       acceptedFastMotorState.bodySchemaByteCount > 0

@@ -315,6 +315,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     controlScalarCount = try Self.checkedAdd(
       controlScalarCount, cerebellarControlScalars
     )
+    // `MetalActiveControlLayout` aligns each of its eleven child sections to
+    // 256 bytes. Reserve one alignment quantum per child in addition to the
+    // raw scalar payload; otherwise compact species can pass arena creation
+    // and then fail when the structured control view is materialized.
+    controlScalarCount = try Self.checkedAdd(controlScalarCount, 11 * 64)
     try builder.append(
       .activeControl,
       count: max(controlScalarCount, 1),
@@ -689,7 +694,6 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
       ),
       stride: 128
     )
-    try builder.append(.motorGoal, count: 1, stride: 256)
     try builder.append(
       .motorCommands,
       count: Int(species.motor.actuatorCount),
@@ -725,6 +729,7 @@ public struct MetalActiveControlLayout: Codable, Equatable, Sendable {
       count: InternalActionKind.allCases.count,
       stride: 64
     )
+    try builder.append(.motorGoal, count: 1, stride: 256)
     guard builder.totalByteCount <= parent.byteCount else {
       throw BrainRuntimeError.capacity(
         "structured active-control state exceeds its hot arena section"
@@ -819,6 +824,10 @@ public struct MetalAgentStateTransactionToken: Equatable, Hashable, Sendable {
 @available(macOS 26.0, *)
 public final class MetalAgentStateArena: @unchecked Sendable {
   struct PreparedCommit: Equatable, Sendable {
+    let transaction: MetalAgentStateTransactionToken
+  }
+
+  struct PreparedEncodingCompletion: Equatable, Sendable {
     let transaction: MetalAgentStateTransactionToken
   }
 
@@ -999,7 +1008,34 @@ public final class MetalAgentStateArena: @unchecked Sendable {
     hotStateFullyDefined: Bool,
     memoryJournalFinalized: Bool
   ) throws {
+    let prepared = try prepareEncodingCompletion(transaction: transaction)
+    publishEncodingCompletion(
+      prepared,
+      hotStateFullyDefined: hotStateFullyDefined,
+      memoryJournalFinalized: memoryJournalFinalized
+    )
+  }
+
+  /// Validates the exact pending arena/layout generation before an async GPU
+  /// end witness is encoded. The returned marker owns no buffers and cannot
+  /// publish state by itself.
+  func prepareEncodingCompletion(
+    transaction: MetalAgentStateTransactionToken
+  ) throws -> PreparedEncodingCompletion {
     try validate(transaction)
+    return PreparedEncodingCompletion(transaction: transaction)
+  }
+
+  /// Nonthrowing host metadata transition after the joint apply decision has
+  /// proved that the command containing journal validation completed.
+  func publishEncodingCompletion(
+    _ prepared: PreparedEncodingCompletion,
+    hotStateFullyDefined: Bool,
+    memoryJournalFinalized: Bool
+  ) {
+    guard pendingToken == prepared.transaction else {
+      preconditionFailure("prevalidated agent-state generation is no longer pending")
+    }
     pendingHotStateDefined = hotStateFullyDefined
     pendingJournalFinalized = memoryJournalFinalized
   }
@@ -1126,6 +1162,15 @@ public final class MetalAgentStateArena: @unchecked Sendable {
   ) throws -> any MTLBuffer {
     try validate(transaction)
     return hotBuffers[Int(transaction.outputBufferIndex)]
+  }
+
+  /// Internal diagnostic view used to prove rejected GPU work cannot mutate
+  /// the pending memory journal before its shadow is discarded.
+  func borrowShadowJournalBuffer(
+    transaction: MetalAgentStateTransactionToken
+  ) throws -> any MTLBuffer {
+    try validate(transaction)
+    return journalBuffers[Int(transaction.outputBufferIndex)]
   }
 
   /// The owning runtime adds these allocations to its residency set. No CPU

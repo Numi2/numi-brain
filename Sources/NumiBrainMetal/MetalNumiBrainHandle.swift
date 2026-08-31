@@ -23,16 +23,16 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
 
     public var token: BrainJointTransactionToken { transaction.token }
     public var status: MetalNumiBrainRuntime.ControlTransaction.Status {
-      transaction.status
+      runtime.controlStatus(transaction)
     }
     public var decision: MetalEmbodiedBrainRuntime.DecisionBufferView? {
-      transaction.decision
+      runtime.controlDecision(transaction)
     }
     public var activeSubstep: BrainJointSubstepToken? {
-      transaction.activeSubstep
+      runtime.controlActiveSubstep(transaction)
     }
     public var lastAcceptedPhysicsState: AcceptedPhysicsStateToken? {
-      transaction.lastAcceptedPhysicsState
+      runtime.controlAcceptedPhysicsState(transaction)
     }
   }
 
@@ -49,6 +49,9 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
   private let configuration: MetalNumiBrainConfiguration
   private var publication: BrainParameterPublication
   private let device: any MTLDevice
+  private let numanXTerminalReleaseQueue = DispatchQueue(
+    label: "org.numi.brain.numanx-handle-terminal-release"
+  )
   private var runtime: MetalNumiBrainRuntime
   private var activeTransaction: ControlTransaction?
 
@@ -362,6 +365,132 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     }
   }
 
+  public func submitInferAndDecide(
+    _ transaction: ControlTransaction,
+    numanXSensors: NumanXSensorPacketLease,
+    externalGoal: ActiveGoal? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumiBrainRuntime.DecisionSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.submitInferAndDecide(
+        transaction.transaction,
+        numanXSensors: numanXSensors,
+        externalGoal: externalGoal,
+        waitFor: waitPoint,
+        signal: completionPoint
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  @discardableResult
+  public func finishInferAndDecideSubmission(
+    _ ticket: MetalNumiBrainRuntime.DecisionSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> MetalEmbodiedBrainRuntime.DecisionBufferView {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.finishInferAndDecideSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func abortInferAndDecideSubmission(
+    _ ticket: MetalNumiBrainRuntime.DecisionSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      try runtime.abortInferAndDecideSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      activeTransaction = nil
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func submitNumanXMotorCandidate(
+    _ decisionTicket: MetalNumiBrainRuntime.DecisionSubmissionTicket,
+    transaction: ControlTransaction,
+    candidateDurationMicroseconds: UInt64,
+    signal motorReadyPoint: MetalSharedEventPoint
+  ) throws -> MetalNumiBrainRuntime.NumanXMotorSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.submitNumanXMotorCandidate(
+        decisionTicket,
+        transaction: transaction.transaction,
+        candidateDurationMicroseconds: candidateDurationMicroseconds,
+        signal: motorReadyPoint
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func reapNumanXMotorSubmissionIfCompleted(
+    _ ticket: MetalNumiBrainRuntime.NumanXMotorSubmissionTicket,
+    transaction: ControlTransaction
+  ) throws -> MetalTissueRuntime.FastSystemResult? {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.reapNumanXMotorSubmissionIfCompleted(
+        ticket,
+        transaction: transaction.transaction
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func finishNumanXMotorSubmission(
+    _ ticket: MetalNumiBrainRuntime.NumanXMotorSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> MetalTissueRuntime.FastSystemResult {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.finishNumanXMotorSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
   public func advanceFastSystems(
     _ transaction: ControlTransaction,
     candidateDurationMicroseconds: UInt64
@@ -427,6 +556,183 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     )
   }
 
+  /// Starts the production no-host-token path. The returned ticket owns only
+  /// the unpublished fast preparation and its exact device timeline points.
+  public func submitProvisionalAcceptedFastRoot(
+    _ transaction: ControlTransaction,
+    waitFor physicalPreparedPoint: MetalSharedEventPoint,
+    signal fastPreparedPoint: MetalSharedEventPoint
+  ) throws -> MetalTissueRuntime.ProvisionalFastRootSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.submitProvisionalAcceptedFastRoot(
+        transaction.transaction,
+        waitFor: physicalPreparedPoint,
+        signal: fastPreparedPoint
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  /// Diagnostic/teardown boundary. A timeout keeps the handle and all GPU
+  /// leases active because it is not evidence that the fast queue completed.
+  public func abortProvisionalAcceptedFastRootSubmission(
+    _ ticket: MetalTissueRuntime.ProvisionalFastRootSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      try runtime.abortProvisionalAcceptedFastRootSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      activeTransaction = nil
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  /// Extends the exact provisional fast ticket into an unpublished cognitive
+  /// consequence and end witness. Candidate addresses remain private.
+  public func submitNumanXPreparedControl(
+    _ transaction: ControlTransaction,
+    provisionalFast ticket: MetalTissueRuntime.ProvisionalFastRootSubmissionTicket,
+    identity: MetalNumanXHumanMatterRootIdentity,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    signal brainPreparedPoint: MetalSharedEventPoint,
+    thenSignal preflightReadyPoint: MetalSharedEventPoint
+  ) throws -> MetalNumiBrainRuntime.NumanXPreparedControlTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.submitNumanXPreparedControl(
+        transaction.transaction,
+        provisionalFast: ticket,
+        identity: identity,
+        acceptedPhysicsGate: acceptedPhysicsGate,
+        sensorCandidate: sensorCandidate,
+        teacherState: teacherState,
+        signal: brainPreparedPoint,
+        thenSignal: preflightReadyPoint
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  /// Explicit NumanX interop step. Raw proposal/ACK ranges remain owned by the
+  /// retained low-level ticket and never become ordinary Brain state.
+  @discardableResult
+  @_spi(NumanXInterop)
+  public func submitNumanXBrainAck(
+    _ ticket: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
+    transaction: ControlTransaction,
+    proposal: MetalNumanXHumanMatterProposalLease,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumanXHumanMatterBrainAckTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    return try runtime.submitNumanXBrainAck(
+      ticket,
+      proposal: proposal,
+      signal: completionPoint
+    )
+  }
+
+  /// Returns the host-retained joint close identity only after the exact
+  /// prepared root has completed every Brain preflight. The bridge uses this
+  /// scalar to reserve the owner publication fence; no GPU payload is read.
+  @_spi(NumanXInterop)
+  public func numanXPreparedJointCommitFingerprint(
+    _ ticket: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
+    transaction: ControlTransaction,
+    identity: MetalNumanXHumanMatterRootIdentity
+  ) throws -> UInt64 {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    return try runtime.numanXPreparedJointCommitFingerprint(
+      for: ticket, identity: identity
+    )
+  }
+
+  /// Starts nonpublishing applied-root validation. The low-level GPU callback
+  /// owns Brain commit/reject; this wrapper installs its owning-handle cleanup
+  /// only after releasing `lock`, because registration may invoke immediately.
+  @discardableResult
+  @_spi(NumanXInterop)
+  public func validateNumanXAppliedRoot(
+    _ ticket: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
+    transaction: ControlTransaction,
+    ack ackTicket: MetalNumanXHumanMatterBrainAckTicket,
+    applied: MetalNumanXHumanMatterAppliedLease,
+    resolution: MetalNumanXJointResolutionReservation,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumanXHumanMatterAppliedValidationTicket {
+    let validationTicket: MetalNumanXHumanMatterAppliedValidationTicket
+    lock.lock()
+    do {
+      try requireActive(transaction)
+      validationTicket = try runtime.validateNumanXAppliedRoot(
+        ticket,
+        ack: ackTicket,
+        applied: applied,
+        resolution: resolution,
+        signal: completionPoint
+      )
+      lock.unlock()
+    } catch {
+      lock.unlock()
+      throw error
+    }
+
+    // This registration is deliberately outside the nonrecursive handle lock.
+    // A terminal GPU callback that beat registration invokes synchronously.
+    _ = ticket.registerOwningHandleTerminalRelease {
+      [weak self, weak transaction] in
+      guard let self, let transaction else { return }
+      self.numanXTerminalReleaseQueue.async { [weak self, weak transaction] in
+        guard let self, let transaction else { return }
+        self.settleNumanXHandleTerminalRelease(transaction)
+      }
+    }
+    return validationTicket
+  }
+
+  public func abortNumanXPreparedControl(
+    _ ticket: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      try runtime.abortNumanXPreparedControl(
+        ticket,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      activeTransaction = nil
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
   public func commitControl(
     _ transaction: ControlTransaction,
     acceptedSensors: NumanXSensorPacketLease,
@@ -453,6 +759,77 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     }
   }
 
+  public func submitAcceptedControl(
+    _ transaction: ControlTransaction,
+    acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
+    acceptedSensors: NumanXSensorPacketLease,
+    developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil,
+    teacherState: MetalTeacherStateBufferLease? = nil,
+    waitFor waitPoint: MetalSharedEventPoint? = nil,
+    signal completionPoint: MetalSharedEventPoint
+  ) throws -> MetalNumiBrainRuntime.CommitSubmissionTicket {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      return try runtime.submitAcceptedControl(
+        transaction.transaction,
+        acceptedPhysicsGate: acceptedPhysicsGate,
+        acceptedSensors: acceptedSensors,
+        developmentalEvidence: developmentalEvidence,
+        teacherState: teacherState,
+        waitFor: waitPoint,
+        signal: completionPoint
+      )
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func finishAcceptedControlSubmission(
+    _ ticket: MetalNumiBrainRuntime.CommitSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> CommitResult {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      let result = try runtime.finishAcceptedControlSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      activeTransaction = nil
+      return result
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
+  public func abortAcceptedControlSubmission(
+    _ ticket: MetalNumiBrainRuntime.CommitSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction)
+    do {
+      try runtime.abortAcceptedControlSubmission(
+        ticket,
+        transaction: transaction.transaction,
+        timeoutMilliseconds: timeoutMilliseconds
+      )
+      activeTransaction = nil
+    } catch {
+      if !runtime.hasOpenControl { activeTransaction = nil }
+      throw error
+    }
+  }
+
   public func abortControl(_ transaction: ControlTransaction) throws {
     lock.lock()
     defer { lock.unlock() }
@@ -472,6 +849,17 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
         "operation requires a closed complete-brain control root"
       )
     }
+  }
+
+  private func settleNumanXHandleTerminalRelease(
+    _ transaction: ControlTransaction
+  ) {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction === transaction, !runtime.hasOpenControl else {
+      return
+    }
+    activeTransaction = nil
   }
 
   private func requireActive(_ transaction: ControlTransaction) throws {

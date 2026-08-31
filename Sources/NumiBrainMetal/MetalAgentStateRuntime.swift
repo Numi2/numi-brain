@@ -42,6 +42,10 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     let arenaCommit: MetalAgentStateArena.PreparedCommit
   }
 
+  struct PreparedGPUStateFinish: Equatable, Sendable {
+    let arenaCompletion: MetalAgentStateArena.PreparedEncodingCompletion
+  }
+
   struct CheckpointPayload: Equatable, Sendable {
     let generation: UInt64
     let hotState: Data
@@ -376,6 +380,49 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     }
     try arena.markEncoded(
       transaction: transaction,
+      hotStateFullyDefined: true,
+      memoryJournalFinalized: true
+    )
+  }
+
+  /// Encodes the same journal validation used by the compatibility path into
+  /// the caller's already-open accepted-consequence command. Arena/layout and
+  /// generation admission is completed before the dispatch is emitted.
+  func encodeProvisionalMemoryJournalValidation(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken
+  ) throws -> PreparedGPUStateFinish {
+    lock.lock()
+    defer { lock.unlock() }
+    let memory = try arena.persistentMemoryView(transaction: transaction)
+    let arenaCompletion = try arena.prepareEncodingCompletion(
+      transaction: transaction
+    )
+    try writeUniforms(
+      baseGeneration: transaction.baseGeneration,
+      shadowGeneration: transaction.shadowGeneration,
+      applyMutations: false
+    )
+    applyJournalArguments.setAddress(memory.memoryGPUAddress, index: 0)
+    applyJournalArguments.setAddress(memory.journalGPUAddress, index: 1)
+    applyJournalArguments.setAddress(uniformBuffer.gpuAddress, index: 2)
+    encoder.setComputePipelineState(applyJournalPipeline)
+    encoder.setArgumentTable(applyJournalArguments)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: journalEntryCapacity, height: 1, depth: 1),
+      threadsPerThreadgroup: threadgroupSize(for: applyJournalPipeline)
+    )
+    return PreparedGPUStateFinish(arenaCompletion: arenaCompletion)
+  }
+
+  /// Called only after the later joint apply validator returns ACCEPT. No
+  /// command submission, wait, readback, allocation, or throwing validation
+  /// remains here.
+  func publishProvisionalGPUStateFinish(_ prepared: PreparedGPUStateFinish) {
+    lock.lock()
+    defer { lock.unlock() }
+    arena.publishEncodingCompletion(
+      prepared.arenaCompletion,
       hotStateFullyDefined: true,
       memoryJournalFinalized: true
     )

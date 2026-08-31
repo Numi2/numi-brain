@@ -36,8 +36,15 @@ let package = Package(
       dependencies: ["NumiBrainABI"]
     ),
     .target(
+      name: "NumiBrainMetalBridgeABI",
+      dependencies: ["NumiBrainABI"],
+      publicHeadersPath: "include"
+    ),
+    .target(
       name: "NumiBrainMetal",
-      dependencies: ["NumiBrainABI", "NumiBrainCore"],
+      dependencies: [
+        "NumiBrainABI", "NumiBrainCore", "NumiBrainMetalBridgeABI",
+      ],
       resources: [.process("Shaders")]
     ),
     .target(

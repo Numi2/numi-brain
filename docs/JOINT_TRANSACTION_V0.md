@@ -1,9 +1,14 @@
-# NumanX joint transaction contract v0.9
+# NumanX joint transaction contract v0.10
 
 This document defines the first compiled NumiBrain–NumanX handoff boundary.
 NumanX retains authoritative physical state; NumiBrain and orchestration retain
-only content-addressed tokens that identify the common root, physical
+only deterministic content-identity tokens that identify the common root, physical
 candidates, accepted physical shadows, and final commit.
+
+The field-wise FNV-1a fingerprints in this contract provide deterministic
+integrity and replay identity inside the trusted same-process runtime. They are
+unkeyed and collision-weak: they do not provide cryptographic authentication,
+adversarial tamper resistance, or proof of physical correctness.
 
 ## Stable ABI
 
@@ -17,10 +22,10 @@ record, all with field-wise fingerprints:
 - `NBJointSubstepToken` (72 bytes) binds the root fingerprint, accepted-substep
   index, retry-attempt index, start, duration, candidate timestamp, brain shadow
   generation, and unchanged random-counter generation.
-- `NBAcceptedPhysicsStateToken` (64 bytes) is NumanX's acceptance proof. It binds
+- `NBAcceptedPhysicsStateToken` (64 bytes) is NumanX's accepted-state identity. It binds
   the root and substep fingerprints to one opaque physical-state fingerprint,
   accepted timestamp, physical generation, and environment.
-- `NBJointCommitToken` (64 bytes) binds the accepted physical proof to the new
+- `NBJointCommitToken` (64 bytes) binds the accepted-state identity to the new
   brain and physics generations, committed timestamp, parameter version, and
   environment.
 - `NBProtectiveCommand` (64 bytes) binds one accepted brain generation and
@@ -121,7 +126,7 @@ unchanged and the retry recomputes tissue from the previous accepted state.
 Neither path publishes committed state.
 
 Each accepted prefix includes all accepted substep events from the root start,
-so bounded v0.9 execution recomputes a canonical prefix rather than mutating
+so bounded v0.10 execution recomputes a canonical prefix rather than mutating
 the committed generation incrementally. After the final accepted physical
 token reaches the target, `finishInteractiveJointControl` binds that fast
 shadow and the accepted tissue shadow to the joint-only commit guard. A final

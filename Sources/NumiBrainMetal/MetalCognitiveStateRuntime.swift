@@ -150,6 +150,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let plasticityRegionRangeBuffer: any MTLBuffer
+  private let unconditionalAcceptanceGateBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
   private let visionObservationOffset: UInt32
   private let visionObservationCount: UInt32
@@ -238,7 +239,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain cognitive-state arguments"
-    descriptor.maxBufferBindCount = 4
+    descriptor.maxBufferBindCount = 5
     descriptor.initializeBindings = true
     let worldDescriptor = MTL4ArgumentTableDescriptor()
     worldDescriptor.label = "NumiBrain hierarchical world-model arguments"
@@ -353,6 +354,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       let plasticityRegionRangeBuffer = device.makeBuffer(
         length: plasticityRegionRangeByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+        length: MemoryLayout<UInt32>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate cognitive-state bindings")
@@ -373,6 +378,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
         from: source, byteCount: bytes.count
       )
     }
+    unconditionalAcceptanceGateBuffer.contents().storeBytes(
+      of: UInt32(1), as: UInt32.self
+    )
     argumentTable.setAddress(plasticityRegionRangeBuffer.gpuAddress, index: 3)
     self.layoutFingerprint = arena.layout.fingerprint
     self.arena = arena
@@ -399,6 +407,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
     self.plasticityRegionRangeBuffer = plasticityRegionRangeBuffer
+    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
     self.worldModelLevelRecords = worldModelLevelRecords
     self.visionObservationOffset = visionObservationOffset
     self.visionObservationCount = visionObservationCount
@@ -467,7 +476,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   }
 
   public var residencyAllocations: [any MTLAllocation] {
-    [uniformBuffer, worldModelDescriptorBuffer, plasticityRegionRangeBuffer]
+    [
+      uniformBuffer, worldModelDescriptorBuffer, plasticityRegionRangeBuffer,
+      unconditionalAcceptanceGateBuffer,
+    ]
   }
 
   /// Imports the accepted fast regional generation into the cognitive shadow
@@ -478,7 +490,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
-    regionalRecurrentInput: MetalRegionalRecurrentBufferView
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     guard transaction.layoutFingerprint == layoutFingerprint,
       deltaMicroseconds > 0,
@@ -502,6 +515,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
     argumentTable.setAddress(regionalRecurrentInput.gpuAddress, index: 2)
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 4
+    )
     try dispatch(
       encoder: encoder,
       pipeline: ingestPipeline,
@@ -518,7 +535,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
-    receptorEventCapacity: Int
+    receptorEventCapacity: Int,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     guard transaction.layoutFingerprint == layoutFingerprint,
       deltaMicroseconds > 0,
@@ -543,6 +561,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 4
+    )
     try dispatch(
       encoder: encoder,
       pipeline: entityStatePipeline,
@@ -603,6 +625,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(
+      unconditionalAcceptanceGateBuffer.gpuAddress, index: 4
+    )
     if let regionalRecurrentInput {
       argumentTable.setAddress(regionalRecurrentInput.gpuAddress, index: 2)
       try dispatch(

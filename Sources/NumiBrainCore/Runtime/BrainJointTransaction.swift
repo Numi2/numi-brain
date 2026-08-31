@@ -308,6 +308,69 @@ public struct AcceptedPhysicsStateToken: Equatable, Hashable, Sendable {
   public var fingerprintHex: String { String(format: "%016llx", fingerprint) }
 }
 
+/// Non-authoritative identity for one physical candidate whose accepted bytes
+/// are being prepared entirely on the device timeline. It deliberately has no
+/// physical-state or token fingerprint and cannot make a joint root committable.
+/// Only binding the owner's later, GPU-validated canonical 64-byte token can
+/// advance accepted physics state.
+@frozen
+public struct BrainProvisionalPhysicsAcceptance: Equatable, Hashable, Sendable {
+  public let environmentIdentifier: UInt32
+  public let controlStep: UInt32
+  public let transactionFingerprint: UInt64
+  public let substepFingerprint: UInt64
+  public let substepIndex: UInt32
+  public let acceptedTimestamp: BrainTimestamp
+  public let expectedPhysicsGeneration: UInt64
+  public let shadowGeneration: UInt64
+
+  fileprivate init(
+    transaction: BrainJointTransactionToken,
+    substep: BrainJointSubstepToken,
+    controlStep: UInt32,
+    expectedPhysicsGeneration: UInt64
+  ) {
+    environmentIdentifier = transaction.environmentIdentifier
+    self.controlStep = controlStep
+    transactionFingerprint = transaction.fingerprint
+    substepFingerprint = substep.fingerprint
+    substepIndex = substep.substepIndex
+    acceptedTimestamp = substep.candidateTimestamp
+    self.expectedPhysicsGeneration = expectedPhysicsGeneration
+    shadowGeneration = transaction.shadowGeneration
+  }
+}
+
+/// Receipt fields that can be proven before the device-generated physical
+/// digest exists. This is not a receipt and has no accepted-token fingerprint;
+/// it only prevents layout/generation/anatomy work from being deferred until
+/// the final owner decision callback.
+@frozen
+public struct BrainProvisionalJointCommitPlan: Equatable, Hashable, Sendable {
+  public let transactionFingerprint: UInt64
+  public let substepFingerprint: UInt64
+  public let brainGeneration: UInt64
+  public let expectedPhysicsGeneration: UInt64
+  public let committedTimestamp: BrainTimestamp
+  public let parameterVersionFingerprint: UInt64
+  public let environmentIdentifier: UInt32
+  public let controlStep: UInt32
+
+  fileprivate init(
+    transaction: BrainJointTransactionToken,
+    provisional: BrainProvisionalPhysicsAcceptance
+  ) {
+    transactionFingerprint = transaction.fingerprint
+    substepFingerprint = provisional.substepFingerprint
+    brainGeneration = transaction.shadowGeneration
+    expectedPhysicsGeneration = provisional.expectedPhysicsGeneration
+    committedTimestamp = transaction.targetTimestamp
+    parameterVersionFingerprint = transaction.parameterVersionFingerprint
+    environmentIdentifier = transaction.environmentIdentifier
+    controlStep = provisional.controlStep
+  }
+}
+
 /// Receipt for one atomic brain/physics publication boundary.
 @frozen
 public struct BrainJointCommitToken: Equatable, Hashable, Sendable {
@@ -419,6 +482,8 @@ public struct BrainJointTransaction: Sendable {
   public private(set) var physicsGeneration: UInt64
   public private(set) var activeSubstep: BrainJointSubstepToken?
   public private(set) var lastAcceptedPhysicsState: AcceptedPhysicsStateToken?
+  public private(set) var provisionalPhysicsAcceptance:
+    BrainProvisionalPhysicsAcceptance?
   public private(set) var resolutions: [BrainJointSubstepResolution] = []
 
   private var attemptIndex: UInt32 = 0
@@ -473,7 +538,114 @@ public struct BrainJointTransaction: Sendable {
         receptorEvents: canonicalEvents
       )
     )
+    provisionalPhysicsAcceptance = nil
     activeSubstep = nil
+  }
+
+  /// Records the identity and expected generation of the sole NumanX physical
+  /// substep without claiming that physics accepted it. This is the only core
+  /// path that may precede a device-generated physical content digest.
+  public mutating func prepareProvisionalPhysicsAcceptance(
+    for substep: BrainJointSubstepToken
+  ) throws -> BrainProvisionalPhysicsAcceptance {
+    try requireActive(substep)
+    guard provisionalPhysicsAcceptance == nil else {
+      throw BrainRuntimeError.transaction(
+        "physical acceptance is already provisionally prepared"
+      )
+    }
+    guard acceptedSubstepCount == 0, substep.substepIndex == 0,
+      substep.candidateTimestamp == token.targetTimestamp
+    else {
+      throw BrainRuntimeError.transaction(
+        "provisional NumanX acceptance requires one whole-root physical substep"
+      )
+    }
+    guard let controlStep = UInt32(exactly: token.controlStepIdentifier) else {
+      throw BrainRuntimeError.transaction(
+        "NumanX v3 global control step does not fit UInt32"
+      )
+    }
+    let (expectedPhysicsGeneration, overflow) =
+      physicsGeneration.addingReportingOverflow(1)
+    guard !overflow else {
+      throw BrainRuntimeError.transaction(
+        "provisional physics generation overflows UInt64"
+      )
+    }
+    let provisional = BrainProvisionalPhysicsAcceptance(
+      transaction: token,
+      substep: substep,
+      controlStep: controlStep,
+      expectedPhysicsGeneration: expectedPhysicsGeneration
+    )
+    provisionalPhysicsAcceptance = provisional
+    return provisional
+  }
+
+  /// Binds the canonical token recovered only after the owner's final GPU
+  /// decision validator succeeds. A stale/malformed token leaves the
+  /// provisional transaction quarantined and publishes nothing.
+  public mutating func bindAcceptedPhysicsState(
+    _ accepted: AcceptedPhysicsStateToken,
+    to provisional: BrainProvisionalPhysicsAcceptance,
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
+  ) throws {
+    guard provisionalPhysicsAcceptance == provisional,
+      let substep = activeSubstep,
+      provisional.environmentIdentifier == token.environmentIdentifier,
+      provisional.transactionFingerprint == token.fingerprint,
+      provisional.substepFingerprint == substep.fingerprint,
+      provisional.substepIndex == substep.substepIndex,
+      provisional.acceptedTimestamp == substep.candidateTimestamp,
+      provisional.expectedPhysicsGeneration == accepted.physicsGeneration,
+      provisional.shadowGeneration == token.shadowGeneration,
+      accepted.transactionFingerprint == provisional.transactionFingerprint,
+      accepted.substepFingerprint == provisional.substepFingerprint,
+      accepted.acceptedTimestamp == provisional.acceptedTimestamp,
+      accepted.environmentIdentifier == provisional.environmentIdentifier
+    else {
+      throw BrainRuntimeError.transaction(
+        "canonical accepted-physics token does not match the provisional root"
+      )
+    }
+    try finishAcceptedPhysicsSubstep(
+      accepted,
+      for: substep,
+      receptorEvents: receptorEvents,
+      localizedMuscleLoadObservations: localizedMuscleLoadObservations
+    )
+  }
+
+  /// Preflights every commit-receipt field that does not depend on the final
+  /// physical content digest. Calling this never advances the transaction.
+  public func preflightProvisionalCommit(
+    _ provisional: BrainProvisionalPhysicsAcceptance
+  ) throws -> BrainProvisionalJointCommitPlan {
+    try requireOpen()
+    let (expectedPhysicsGeneration, generationOverflow) =
+      token.basePhysicsGeneration.addingReportingOverflow(1)
+    guard provisionalPhysicsAcceptance == provisional,
+      let activeSubstep,
+      activeSubstep.fingerprint == provisional.substepFingerprint,
+      acceptedSubstepCount == 0,
+      lastAcceptedPhysicsState == nil,
+      acceptedTimestamp == token.committedTimestamp,
+      physicsGeneration == token.basePhysicsGeneration,
+      provisional.acceptedTimestamp == token.targetTimestamp,
+      !generationOverflow,
+      provisional.expectedPhysicsGeneration == expectedPhysicsGeneration,
+      UInt32(exactly: token.controlStepIdentifier) == provisional.controlStep
+    else {
+      throw BrainRuntimeError.transaction(
+        "provisional joint receipt preflight does not match the open root"
+      )
+    }
+    return BrainProvisionalJointCommitPlan(
+      transaction: token,
+      provisional: provisional
+    )
   }
 
   public mutating func acceptPhysicsSubstep(
@@ -481,6 +653,25 @@ public struct BrainJointTransaction: Sendable {
     for substep: BrainJointSubstepToken,
     receptorEvents: [BrainInterruptEvent] = [],
     localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
+  ) throws {
+    guard provisionalPhysicsAcceptance == nil else {
+      throw BrainRuntimeError.transaction(
+        "bind the owner-validated token to the provisional acceptance"
+      )
+    }
+    try finishAcceptedPhysicsSubstep(
+      accepted,
+      for: substep,
+      receptorEvents: receptorEvents,
+      localizedMuscleLoadObservations: localizedMuscleLoadObservations
+    )
+  }
+
+  private mutating func finishAcceptedPhysicsSubstep(
+    _ accepted: AcceptedPhysicsStateToken,
+    for substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation]
   ) throws {
     try requireActive(substep)
     let canonicalEvents = try canonicalReceptorEvents(receptorEvents, for: substep)
@@ -520,6 +711,7 @@ public struct BrainJointTransaction: Sendable {
         localizedMuscleLoadObservations: canonicalLocalizedObservations
       )
     )
+    provisionalPhysicsAcceptance = nil
     activeSubstep = nil
     attemptIndex = 0
   }
@@ -548,6 +740,7 @@ public struct BrainJointTransaction: Sendable {
     try requireOpen()
     activeSubstep = nil
     lastAcceptedPhysicsState = nil
+    provisionalPhysicsAcceptance = nil
     acceptedTimestamp = token.committedTimestamp
     acceptedSubstepCount = 0
     rejectedAttemptCount = 0

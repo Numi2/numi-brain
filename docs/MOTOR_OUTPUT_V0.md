@@ -1,4 +1,8 @@
-# Protective motor-output boundary v0.2
+# Protective motor-output boundary
+
+The compiled profile remains format v1. The output header is format v3
+(80 bytes), and the transaction-local NumanX motor candidate is format v6
+(152 bytes).
 
 This document defines the first executable mapping from accepted fast neural
 state to per-muscle control values. It is a protective foundation, not the
@@ -34,8 +38,10 @@ excitation array. It binds format and emergency-stop flags, physical timestamp,
 brain generation, motor-profile and source-command fingerprints, muscle count,
 environment, descending inhibition, autonomic arousal, actuator command kind,
 output range, and a field-wise
-fingerprint covering every excitation. Consumers must compare its profile
-identity and muscle count with the body profile they own.
+fingerprint covering every excitation. This unkeyed FNV-1a value is a
+deterministic integrity/replay identity within the trusted runtime, not
+cryptographic authentication or adversarial tamper resistance. Consumers must
+compare its profile identity and muscle count with the body profile they own.
 
 ## Mapping
 

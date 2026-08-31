@@ -197,6 +197,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let jointReceptorBindingBuffer: any MTLBuffer
   private let muscleReceptorBindingBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
+  private let unconditionalAcceptanceGateBuffer: any MTLBuffer
   private let plasticityParameterCount: UInt32
   private let sensorimotorWorldDimension: Int
 
@@ -738,17 +739,24 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 12
+    descriptor.maxBufferBindCount = 14
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<AcceptedConsequenceUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+        length: 128,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate accepted-consequence bindings")
     }
     uniformBuffer.label = "NumiBrain accepted-consequence uniforms"
+    unconditionalAcceptanceGateBuffer.contents().storeBytes(
+      of: UInt32(1), as: UInt32.self
+    )
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.belief, minimumScalarCount: 15),
       index: 2
@@ -807,6 +815,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.jointReceptorBindingBuffer = jointReceptorBindingBuffer
     self.muscleReceptorBindingBuffer = muscleReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
+    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
     self.plasticityParameterCount = UInt32(plasticityScalarCount)
     self.sensorimotorWorldDimension = sensorimotorWorldDimension
   }
@@ -815,7 +824,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     [
       uniformBuffer, actuatorDescriptorBuffer, bodyReceptorBindingBuffer,
       jointReceptorBindingBuffer, muscleReceptorBindingBuffer,
-      neutralProtectiveCommandBuffer,
+      neutralProtectiveCommandBuffer, unconditionalAcceptanceGateBuffer,
     ]
   }
 
@@ -824,15 +833,20 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     deltaMicroseconds: UInt64,
-    receptorEventCapacity: Int
+    receptorEventCapacity: Int,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     try encode(
       encoder: encoder,
       transaction: transaction,
-      acceptedPhysicsState: acceptedPhysicsState,
+      acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
+      acceptedTransactionFingerprint: acceptedPhysicsState.transactionFingerprint,
+      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       deltaMicroseconds: deltaMicroseconds,
       receptorEventCapacity: receptorEventCapacity,
-      acceptedFastMotorState: nil
+      acceptedFastMotorState: nil,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: nil
     )
   }
 
@@ -842,16 +856,68 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     deltaMicroseconds: UInt64,
     receptorEventCapacity: Int,
-    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
-    guard acceptedPhysicsState.acceptedTimestamp.rawValue >= deltaMicroseconds,
+    try encode(
+      encoder: encoder,
+      transaction: transaction,
+      acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
+      acceptedTransactionFingerprint: acceptedPhysicsState.transactionFingerprint,
+      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: acceptedFastMotorState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: nil
+    )
+  }
+
+  func encodeAuthoritativeGate(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedTimestamp: BrainTimestamp,
+    acceptedTransactionFingerprint: UInt64,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil,
+    acceptanceGateGPUAddress: UInt64,
+    acceptanceGateResultGPUAddress: UInt64
+  ) throws {
+    try encode(
+      encoder: encoder,
+      transaction: transaction,
+      acceptedTimestamp: acceptedTimestamp,
+      acceptedTransactionFingerprint: acceptedTransactionFingerprint,
+      physicsStateFingerprint: 0,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: acceptedFastMotorState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  private func encode(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedTimestamp: BrainTimestamp,
+    acceptedTransactionFingerprint: UInt64,
+    physicsStateFingerprint: UInt64,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?,
+    acceptanceGateGPUAddress: UInt64?,
+    acceptanceGateResultGPUAddress: UInt64?
+  ) throws {
+    guard acceptedTimestamp.rawValue >= deltaMicroseconds,
       receptorEventCapacity >= 0,
       receptorEventCapacity <= Int(UInt32.max),
       acceptedFastMotorState == nil
         || (acceptedFastMotorState?.transactionFingerprint
-          == acceptedPhysicsState.transactionFingerprint
+          == acceptedTransactionFingerprint
           && acceptedFastMotorState?.acceptedTimestamp
-            == acceptedPhysicsState.acceptedTimestamp
+            == acceptedTimestamp
           && acceptedFastMotorState?.protectiveCommandByteCount
             == ProtectiveMotorCommand.byteCount
           && (acceptedFastMotorState?.protectiveCommandBuffer.length ?? 0)
@@ -867,7 +933,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     let hot = try arena.hotStateView(transaction: transaction)
     var uniforms = try makeUniforms(
-      acceptedPhysicsState: acceptedPhysicsState,
+      acceptedTimestamp: acceptedTimestamp,
+      physicsStateFingerprint: physicsStateFingerprint,
       deltaMicroseconds: deltaMicroseconds,
       eventCapacity: UInt32(receptorEventCapacity)
     )
@@ -877,6 +944,15 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 1)
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 12
+    )
+    argumentTable.setAddress(
+      acceptanceGateResultGPUAddress
+        ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 13
+    )
     argumentTable.setAddress(
       acceptedFastMotorState?.protectiveCommandBuffer.gpuAddress
         ?? neutralProtectiveCommandBuffer.gpuAddress,
@@ -976,7 +1052,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   }
 
   private func makeUniforms(
-    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    acceptedTimestamp: BrainTimestamp,
+    physicsStateFingerprint: UInt64,
     deltaMicroseconds: UInt64,
     eventCapacity: UInt32
   ) throws -> AcceptedConsequenceUniforms {
@@ -1028,7 +1105,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       throw TissueError.metal("accepted reflex state exceeds UInt32 or its arena section")
     }
     return AcceptedConsequenceUniforms(
-      targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
+      targetTimestampMicroseconds: acceptedTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
       observationOffset: UInt64(hot(.sensoryObservations).byteOffset),
       observationValidityOffset: UInt64(hot(.sensoryValidity).byteOffset),
@@ -1067,7 +1144,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       ),
       reflexStateOffset: UInt64(hot(.reflexState).byteOffset),
       fastAutonomicStateOffset: UInt64(hot(.fastAutonomicState).byteOffset),
-      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      physicsStateFingerprint: physicsStateFingerprint,
       regionalMaturationOffset: UInt64(hot(.regionalMaturation).byteOffset),
       observationCount: UInt32(hot(.sensoryObservations).elementCount),
       bodyCount: species.body.bodyCount,

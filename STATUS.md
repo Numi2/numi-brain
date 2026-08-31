@@ -8,11 +8,44 @@
 - Implemented runtime code: deterministic scheduler, immutable shared-parameter registry, compiled versioned cohort plans, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles including bounded physical-timestamp relay interpolation plus a Metal 4 structured fixed-step delayed-sheet runtime with a compiled 64-byte receptor-event ABI, compiled 32/64-byte parameter manifest records, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, private parameter-version validation, transactional module clocks, due-list compaction and consumption, deterministic multi-agent timestamp/module grouping, private region-major dispatch materialization, GPU-generated work expansion and environment-major invocation compaction, independent compact diagnostic plus 10,752-scalar authoritative routed cohort-token, delayed-history, and dynamic routing-state generations, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, GPU-generated indirect work consumption, environment-major invocation compaction, independent compact cohort diagnostic advance, timestamp-synchronous routed regional-token integration for both one-agent and cohort execution, protective-command derivation, and compiled profile-to-muscle mapping with private transactional command, header, and excitation generations
-- NumanX interop: compiled root, nested-substep, accepted-physics, joint-commit, 64-byte protective-command, 32-byte muscle-channel, 64-byte motor-output-header, and 96-byte motor-candidate ABI plus a deterministic Swift coordinator, accepted-only receptor-event handoff, corrected-duration interactive Metal candidate APIs, accepted fast scheduler/regional/protective-motor prefixes, transaction-validated private GPU command/header/excitation views, a lifetime-safe opaque `MTLBuffer` lease for the live candidate, an immutable fingerprinted 416-muscle endpoint attachment catalog spanning 157 Core bodies, committed sparse body-load frames with private Metal persistence and linear decay, endpoint-sharing protective candidate selection, field-lifetime Metal source inhibition, and a standalone dynamic bridge executable that consumes the exact private allocation in NumanX MyoSim, advances one articulated shadow, retries exactly, and commits tendon-local overload feedback; anatomical/body-side/function semantics, intermediate-route export, safe neighbor-directed action, calibrated vulnerability/damage/recovery dynamics, device-generated sensor updates, shared command timeline, GPU articulated integration, and atomic cross-runtime pointer publication remain absent
+- NumanX interop: compiled root/substep/motor/gate/accepted-physics/Brain-preflight/ACK/applied/publication ABIs; same-device retained motor and sensor leases; asynchronous Metal 4 decision and motor-ready gates; a versioned C bridge owning the real full-body Human, HumanIO, Matter, and ABI4 owner lifecycle; persistent device-resident q/v/MyoSim continuation; 416x10 proprioceptive and 416x1 interoceptive candidate channels; mutation-free proposal, Matter-then-Human apply/restore, and one aggregate reader/publication gate across Brain, physics, and sensors. The bounded production path is live for one environment and one physical substep. Anatomical nervous topology, complete sensor modalities, calibrated damage/recovery, learned general control, multi-environment production scale, and performance qualification remain absent.
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
-- GPU performance evidence: bounded Apple M4 closed-loop NumiBrain-NumanX temporal-body-field joint-root v0.8, private-field v0.7 through selected-muscle v0.2, Apple M4 Pro NumanX MyoSim borrowed-excitation v0.1, protective-motor/NumanX-packet v0.2, routed-cohort v0.20, accepted-fast-prefix joint v0.6, and interactive-joint v0.4 full-suite correctness, Apple M4 v0.19 routed-cohort correctness, Apple M4 v0.14 lightweight indirect-consumption correctness, and Apple M4 Pro/M4 v0.12 and earlier tissue correctness probes only; all are correctness evidence, and production throughput and counter qualification remain pending
+- GPU execution/correctness evidence: bounded Apple M4 closed-loop NumiBrain-NumanX temporal-body-field joint-root v0.8, private-field v0.7 through selected-muscle v0.2, Apple M4 Pro NumanX MyoSim borrowed-excitation v0.1, protective-motor/NumanX-packet v0.2, routed-cohort v0.20, accepted-fast-prefix joint v0.6, and interactive-joint v0.4 full-suite correctness, Apple M4 v0.19 routed-cohort correctness, Apple M4 v0.14 lightweight indirect-consumption correctness, and Apple M4 Pro/M4 v0.12 and earlier tissue correctness probes only; all are correctness evidence, and production throughput and counter qualification remain pending
 
-The architecture document remains a design contract. Only the tissue, scheduler, cohort, parameter-version, transaction-contract, and bounded protective-motor behavior owned by the source and tests in this repository is currently live.
+The architecture document remains broader than the implementation. The bounded one-environment NumanX runtime-integrity slice is now live end to end; learned generalist control, anatomical/biological validation, a complete sensorium, production-scale cohorts, and performance qualification are not.
+
+## NumanX ABI4 Gate A qualification
+
+The current 2026-08-31 source executes one production-shaped Apple-native root
+across NumiBrain, HumanIO, the 157-body `nq=129`/`nv=128` and 416-muscle Human,
+MyoSim, NHTENDON ownership diagnostics, and an attached one-tet Matter world.
+The interop path retains exact MTLBuffer and MTLSharedEvent identities, keeps
+physical sensors and Brain consequences unpublished through proposal/ACK/apply,
+and exposes only the aggregate root after the joint fence releases Brain,
+physics, and HumanIO together.
+
+The real full-body E2E test advances three accepted roots without re-uploading
+q/v/MyoSim, rejects a valid but stale predecessor before native mutation,
+force-restores a timed-out fourth attempt, and accepts the exact retry. The
+retry reproduces the complete 64-byte accepted token and both physical sensor
+payloads byte for byte. Public Brain and physics generations advance 0 through
+4 exactly once; HumanIO sensor generation advances monotonically to 5 because
+the rejected generation 4 is never reused or published.
+
+Apple M4 qualification evidence on macOS 26.6 build 25G5028f, Swift 6.3, and
+Metal 32023.883:
+
+- focused native NumanX CTest matrix: 10/10 twice;
+- focused Swift ABI4/publication/timeline/interop matrix: 56/56;
+- real full-body E2E: 1/1 in 4.96 seconds;
+- complete Swift package: 144 tests, one skipped, zero failures in 59.12
+  seconds; and
+- production Swift build: success in 81.20 seconds.
+
+The timings are build/test telemetry, not a matched performance result. The
+compiled Brain species fixture has the exact full-body channel shape but is not
+an anatomical brain, and the one-tet Matter attachment is not a full tissue or
+organ validation.
 
 ## Joint transaction foundation
 
@@ -44,9 +77,9 @@ The compiled v0.10 handoff contract currently proves:
 - one private command generation derived from the accepted scheduler/regional prefix and exposed as a GPU buffer view to the following physical candidate without a normal-path readback;
 - exact CPU/Metal protective-command parity, rejected-event command silence, and root-abort restoration of the committed command.
 - a fingerprinted immutable 32-byte-per-channel muscle profile with duplicate, range, flag, relation, and nonfinite rejection;
-- a fingerprinted 64-byte output header paired with bounded FP32 muscle excitations, descending motor inhibition, and autonomic arousal;
+- a fingerprinted 80-byte format-v3 output header paired with bounded FP32 muscle excitations, descending motor inhibition, and autonomic arousal;
 - exact fused-operation CPU/Metal muscle-output parity, GPU-resident next-candidate header/excitation views, and shared command/output commit, reject, and abort ownership.
-- a 96-byte ephemeral NumanX candidate packet that binds GPU addresses and buffer shapes to the exact root, substep, accepted brain time/generation, environment, profile, and random-counter generation;
+- a 152-byte format-v6 ephemeral NumanX candidate packet that binds GPU addresses and buffer shapes to the exact root, substep, accepted brain time/generation, environment, profile, and random-counter generation;
 - rejection of stale roots/substeps, wrong base-versus-shadow generation, null or misaligned addresses, byte/count drift, and packet fingerprint drift.
 - lifetime-safe borrowing of the exact resident header and excitation Metal allocations for only the still-live, unaccepted physical candidate, with opaque handle identity matching the compiled GPU addresses and no staging copy.
 
@@ -56,7 +89,7 @@ The source and deterministic tests are now joined by a temporal private-Metal bo
 
 The scheduler foundation currently proves:
 
-- a C++-compiled standard-layout ABI with 32-byte module descriptors, 16-byte module clocks, 24-byte interrupt events, and 32-byte due invocations;
+- a C++-compiled standard-layout ABI with 32-byte module descriptors, 16-byte module clocks, 32-byte interrupt events, and 32-byte due invocations;
 - explicit ABI offsets, compile-time size assertions, validation codes, and field-wise fingerprints independent of struct padding;
 - integer physical-microsecond timestamps without wall-clock scheduling or floating-point due-time drift;
 - explicit per-module period, conduction delay, intrinsic timescale, interrupt mask, token shape, clock class, and logical identifier;
@@ -80,7 +113,7 @@ The scheduler foundation currently proves:
 - no per-root scheduler readback, with explicit staging only after completion;
 - one `advance_due_regional_tokens` threadgroup that consumes the private canonical due list without a host count readback;
 - 10,752 FP32 region-major token scalars across the eight executable module shapes;
-- compiled 32-byte token layouts with per-receiver normal-route budgets, 24-byte sparse route records, 32-byte per-scalar immutable parameter records, a fingerprinted 48-byte version-2 program header, and 32-byte per-agent route-runtime records;
+- compiled 40-byte token layouts with per-receiver normal-route budgets, 24-byte sparse route records, 32-byte per-scalar immutable parameter records, a fingerprinted 56-byte version-3 program header, and 32-byte per-agent route-runtime records;
 - seven candidate sparse routes scored from a common causal pre-timestamp state;
 - deterministic normal-route top-k selection with canonical route-index tie breaking;
 - permanent emergency-route bypass outside the normal budget;
@@ -176,9 +209,9 @@ The implemented tissue slice currently proves:
 - route selection counters, last-selected timestamps, and switch counters agree exactly between CPU and Metal;
 - routing state rolls back, retries, replays, and chunks at the same transaction boundary as tokens and route history.
 
-The XCTest suite contains 85 passing tests locally: 19 tissue and timestamped-history CPU tests, 38 scheduler/regional/parameter/dispatch/joint/motor/catalog/body-load CPU tests, and 28 Metal 4 tests. Golden vectors pin the random, module, protective-command, muscle-profile, motor-output, and attachment-catalog fingerprints. Tissue tests require physical-microsecond delay sampling, deterministic interpolation, fail-closed coverage loss, and exact variable-duration retry, abort, and chunking identity. Parameter, dispatch, joint, motor, catalog, and body-load tests require canonical compiled fingerprints, serialization tamper rejection, accepted-only history, accepted-force receptor transduction, exact NumanX source-tendon and endpoint-body order, bounded endpoint coordinates, canonical protective-drive validation, unique muscle identities, mechanical-neighborhood selection, deterministic temporal retention/decay, exact source inhibition, exact fused gain mapping, and bounded excitation output. Metal tests require corrected-duration CPU parity, exact physical timestamp ownership, accepted fast-prefix response, CPU-identical protective command, source-inhibited muscle output and temporal body-load field, field-lifetime inhibition and release, transaction-bound NumanX address/shape validation, rejected-prefix/command/output/load silence, immutable version identity, recurrent token and route CPU parity, dynamic routing causality, interactive-versus-batched joint parity, and joint retry, abort, replay, and chunking equivalence.
+The XCTest suite contains 85 passing tests locally: 19 tissue and timestamped-history CPU tests, 38 scheduler/regional/parameter/dispatch/joint/motor/catalog/body-load CPU tests, and 28 Metal 4 tests. Golden vectors pin the random, module, protective-command, muscle-profile, motor-output, and attachment-catalog fingerprints. Tissue tests require physical-microsecond delay sampling, deterministic interpolation, fail-closed coverage loss, and exact variable-duration retry, abort, and chunking identity. Parameter, dispatch, joint, motor, catalog, and body-load tests require canonical compiled fingerprints, serialization corruption/drift rejection, accepted-only history, accepted-force receptor transduction, exact NumanX source-tendon and endpoint-body order, bounded endpoint coordinates, canonical protective-drive validation, unique muscle identities, mechanical-neighborhood selection, deterministic temporal retention/decay, exact source inhibition, exact fused gain mapping, and bounded excitation output. Metal tests require corrected-duration CPU parity, exact physical timestamp ownership, accepted fast-prefix response, CPU-identical protective command, source-inhibited muscle output and temporal body-load field, field-lifetime inhibition and release, transaction-bound NumanX address/shape validation, rejected-prefix/command/output/load silence, immutable version identity, recurrent token and route CPU parity, dynamic routing causality, interactive-versus-batched joint parity, and joint retry, abort, replay, and chunking equivalence.
 
-The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable receptor event uses one compiled 64-byte record. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. The scheduler owns a 1,536-byte private transduced-interrupt queue and a 16-byte private result in addition to the host event view. Protective output adds two private 64-byte command generations, one private 32-byte record per muscle, two private 64-byte output headers, two private FP32 excitation arrays, and one shared 32-byte uniform. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
+The Metal history ring uses two private 32-slot FP32 relay planes plus one rejected-candidate scratch plane. It costs 256 history bytes per site, excluding state, structure, delay, sparse graph, events, scratch, uniforms, and inspection staging. The graph adds four bytes per destination offset and 16 bytes per packed edge. Each immutable receptor event uses one compiled 64-byte record. The fixed-capacity active-index buffer uses 260 private bytes: one count plus 64 event indices. The scheduler owns a 1,536-byte private transduced-interrupt queue and a 16-byte private result in addition to the host event view. Protective output adds two private 64-byte command generations, one private 32-byte record per muscle, two private 80-byte output headers, two private FP32 excitation arrays, and one shared 32-byte uniform. A Metal root transaction may accept at most 32 substeps so the abort-authoritative plane cannot be overwritten; the canonical 20 ms control interval is within that boundary.
 
 The exact source at commit `2f8238bcb03338684e916291361d30d5f9f1a31b` passed all 78 tests on Apple M4 Pro, macOS 26.6 build 25G72, and Swift 6.3.3. The run compiled and executed the private protective-command and muscle-output kernels, including exact CPU/Metal excitation fingerprints, accepted next-candidate output, rejected-event silence, root-abort restoration, and commit publication. The artifact is in [`evidence/protective-motor-v0.1`](evidence/protective-motor-v0.1/README.md). It is correctness evidence only: the six-channel profile is synthetic and no NumanX body consumed the buffers.
 
@@ -210,4 +243,9 @@ This is an external runtime readiness observation. The shared MetalRobo checkout
 
 ## First implementation gate
 
-The tissue slice is not Phase 1 completion. Phase 1 is complete only when a minimal brain state can advance, reject, restore, retry, and atomically commit with NumanX without hot-path CPU copies, while preserving counter-based random streams and byte-stable committed replay under physical substep rejection.
+The bounded runtime-integrity gate is complete: a minimal Brain state now
+advances, rejects, restores, retries, and atomically publishes with the real
+full-body NumanX shape without production payload copies or host command-buffer
+waits, while preserving counter randomness and byte-stable physical retry.
+This does not complete the broader NumiBrain architecture or its learning,
+sensorium, physical-validation, scale, performance, and deployment gates.

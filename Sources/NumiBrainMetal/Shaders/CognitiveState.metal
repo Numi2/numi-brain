@@ -521,8 +521,10 @@ kernel void ingest_regional_recurrent_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *regional_input [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.recurrent_scalar_count) return;
   device float *recurrent = reinterpret_cast<device float *>(
     hot_state + uniforms.recurrent_offset
@@ -1505,8 +1507,10 @@ kernel void advance_entity_and_social_slots(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device const NBEventQueueStateHeader *event_header =
     reinterpret_cast<device const NBEventQueueStateHeader *>(
       hot_state + uniforms.event_queue_offset
@@ -2090,8 +2094,10 @@ kernel void advance_entity_relation_graph(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.relation_slot_count) return;
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
@@ -2240,8 +2246,10 @@ kernel void advance_spatial_coordinate_transforms(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.spatial_transform_count) return;
   device const NBEventQueueStateHeader *event_header =
     reinterpret_cast<device const NBEventQueueStateHeader *>(
@@ -3282,8 +3290,10 @@ kernel void broadcast_social_context(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u) return;
   device const NBEventQueueStateHeader *event_header =
     reinterpret_cast<device const NBEventQueueStateHeader *>(

@@ -366,6 +366,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let committedTransitionUniformBuffer: any MTLBuffer
   private let counterfactualLearningUniformBuffer: any MTLBuffer
   private let regionalLayoutBuffer: any MTLBuffer
+  private let unconditionalAcceptanceGateBuffer: any MTLBuffer
 
   public init(
     device: any MTLDevice,
@@ -437,7 +438,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 8
+    descriptor.maxBufferBindCount = 10
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -484,6 +485,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         length: regionalProgram.layouts.count
           * MemoryLayout<NBRegionalTokenLayout>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+        length: 128,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate memory-state bindings")
@@ -514,6 +519,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         byteCount: bytes.count
       )
     }
+    unconditionalAcceptanceGateBuffer.contents().storeBytes(
+      of: UInt32(1), as: UInt32.self
+    )
     argumentTable.setAddress(
       try sharedParameters.gpuAddress(.memory, minimumScalarCount: 18),
       index: 6
@@ -552,6 +560,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.committedTransitionUniformBuffer = committedTransitionUniformBuffer
     self.counterfactualLearningUniformBuffer = counterfactualLearningUniformBuffer
     self.regionalLayoutBuffer = regionalLayoutBuffer
+    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -560,6 +569,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       reconsolidationUniformBuffer,
       prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
       counterfactualLearningUniformBuffer, regionalLayoutBuffer,
+      unconditionalAcceptanceGateBuffer,
     ]
       + retrievalUniformBuffers
   }
@@ -574,7 +584,59 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     controlStepIdentifier: UInt64,
     previousTimestamp: BrainTimestamp,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
-    teacherState: MetalTeacherStateBufferLease?
+    teacherState: MetalTeacherStateBufferLease?,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeCommittedTransitionImpl(
+      encoder: encoder,
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      previousTimestamp: previousTimestamp,
+      acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
+      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      teacherState: teacherState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: nil
+    )
+  }
+
+  func encodeCommittedTransitionAuthoritativeGate(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    previousTimestamp: BrainTimestamp,
+    acceptedTimestamp: BrainTimestamp,
+    teacherState: MetalTeacherStateBufferLease?,
+    acceptanceGateGPUAddress: UInt64,
+    acceptanceGateResultGPUAddress: UInt64
+  ) throws {
+    try encodeCommittedTransitionImpl(
+      encoder: encoder,
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      previousTimestamp: previousTimestamp,
+      acceptedTimestamp: acceptedTimestamp,
+      physicsStateFingerprint: 0,
+      teacherState: teacherState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  private func encodeCommittedTransitionImpl(
+    encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    previousTimestamp: BrainTimestamp,
+    acceptedTimestamp: BrainTimestamp,
+    physicsStateFingerprint: UInt64,
+    teacherState: MetalTeacherStateBufferLease?,
+    acceptanceGateGPUAddress: UInt64?,
+    acceptanceGateResultGPUAddress: UInt64?
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -625,19 +687,19 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalTransitions.elementStride
         == MetalAgentMemoryLayout.regionalTransitionStride,
       teacherState == nil
-        || teacherState!.view.timestamp == acceptedPhysicsState.acceptedTimestamp
+        || teacherState!.view.timestamp == acceptedTimestamp
     else {
       throw TissueError.transaction("committed transition exceeds GPU capacity")
     }
     var uniforms = CommittedTransitionUniforms(
-      targetTimestampMicroseconds: acceptedPhysicsState.acceptedTimestamp.rawValue,
+      targetTimestampMicroseconds: acceptedTimestamp.rawValue,
       previousTimestampMicroseconds: previousTimestamp.rawValue,
       baseGeneration: transaction.baseGeneration,
       shadowGeneration: transaction.shadowGeneration,
       parameterVersionFingerprint: parameterVersionFingerprint,
       episodeIdentifier: episodeIdentifier,
       controlStepIdentifier: controlStepIdentifier,
-      physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
+      physicsStateFingerprint: physicsStateFingerprint,
       teacherContentFingerprint: teacherState?.view.contentFingerprint ?? 0,
       recurrentOffset: UInt64(recurrent.byteOffset),
       observationOffset: UInt64(observations.byteOffset),
@@ -714,6 +776,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(
       teacherState?.view.gpuAddress ?? hot.outputGPUAddress, index: 5
     )
+    bindAcceptanceGate(acceptanceGateGPUAddress)
+    argumentTable.setAddress(
+      acceptanceGateResultGPUAddress
+        ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 9
+    )
     encoder.setComputePipelineState(committedTransitionPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
@@ -731,7 +799,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
     sourceBeliefTimestamp: BrainTimestamp,
-    acceptedTimestamp: BrainTimestamp
+    acceptedTimestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -787,6 +856,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.memoryGPUAddress, index: 2)
     argumentTable.setAddress(memory.journalGPUAddress, index: 3)
     argumentTable.setAddress(counterfactualLearningUniformBuffer.gpuAddress, index: 4)
+    bindAcceptanceGate(acceptanceGateGPUAddress)
     encoder.setComputePipelineState(counterfactualLearningPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
@@ -801,7 +871,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   public func encodeProspectiveLifecycle(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -862,6 +933,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(prospectiveLifecycleUniformBuffer.gpuAddress, index: 3)
+    bindAcceptanceGate(acceptanceGateGPUAddress)
     encoder.setComputePipelineState(prospectiveLifecyclePipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
@@ -877,7 +949,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   public func encodeAcceptedReconsolidation(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -992,6 +1065,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(reconsolidationUniformBuffer.gpuAddress, index: 3)
+    bindAcceptanceGate(acceptanceGateGPUAddress)
     encoder.setComputePipelineState(reconsolidationPipeline)
     encoder.setArgumentTable(argumentTable)
     dispatch(encoder, pipeline: reconsolidationPipeline, count: maximumResults)
@@ -1002,7 +1076,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   public func encodeRestConsolidation(
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -1092,6 +1167,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(consolidationUniformBuffer.gpuAddress, index: 3)
+    bindAcceptanceGate(acceptanceGateGPUAddress)
     encoder.setComputePipelineState(consolidationPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
@@ -1276,7 +1352,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
@@ -1396,6 +1473,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 3)
+    bindAcceptanceGate(acceptanceGateGPUAddress)
     encoder.setComputePipelineState(segmentPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(
@@ -1418,6 +1496,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     encoder.dispatchThreads(
       threadsPerGrid: MTLSize(width: max(count, 1), height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
+    )
+  }
+
+  private func bindAcceptanceGate(_ gpuAddress: UInt64?) {
+    argumentTable.setAddress(
+      gpuAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 8
     )
   }
 

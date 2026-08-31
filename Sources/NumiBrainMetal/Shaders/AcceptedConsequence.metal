@@ -147,6 +147,40 @@ struct NBAcceptedConsequenceUniforms {
   float plasticity_learning_rate;
 };
 
+struct NBAcceptedPhysicsStateToken {
+  ulong transaction_fingerprint;
+  ulong substep_fingerprint;
+  ulong physics_state_fingerprint;
+  ulong accepted_timestamp_microseconds;
+  ulong physics_generation;
+  uint environment_identifier;
+  uint flags;
+  ulong reserved;
+  ulong token_fingerprint;
+};
+
+struct NBAcceptedPhysicsGateResult {
+  uint version;
+  uint status;
+  ulong expected_transaction_fingerprint;
+  ulong observed_transaction_fingerprint;
+  ulong expected_substep_fingerprint;
+  ulong observed_substep_fingerprint;
+  ulong computed_token_fingerprint;
+  ulong observed_token_fingerprint;
+  ulong reserved;
+  NBAcceptedPhysicsStateToken accepted_token;
+};
+
+inline ulong nb_accepted_physics_state_fingerprint(
+  constant NBAcceptedConsequenceUniforms &uniforms,
+  device const NBAcceptedPhysicsGateResult *gate)
+{
+  return uniforms.physics_state_fingerprint != 0ul
+    ? uniforms.physics_state_fingerprint
+    : gate->accepted_token.physics_state_fingerprint;
+}
+
 struct NBEventQueueHeader {
   atomic_uint count;
   uint capacity;
@@ -1186,8 +1220,11 @@ kernel void assimilate_accepted_body_and_physiology(
     [[buffer(6)]],
   device const NBBodyReceptorBindingTableHeader *body_receptor_table
     [[buffer(9)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
@@ -1508,7 +1545,9 @@ kernel void assimilate_accepted_body_and_physiology(
       body[NB_BODY_PROPRIOCEPTIVE_ERROR] = maximum_proprioceptive_error;
       identity[0] = ulong(gid);
       identity[1] = uniforms.target_timestamp_microseconds;
-      identity[2] = uniforms.physics_state_fingerprint;
+      identity[2] = nb_accepted_physics_state_fingerprint(
+        uniforms, acceptance_result
+      );
       identity[3] = NB_ACCEPTED_STATE_VALID;
     }
   }
@@ -1648,7 +1687,9 @@ kernel void assimilate_accepted_body_and_physiology(
     if (!anatomical_muscle) {
       effector_identity[2] = 0ul;
       effector_identity[3] = NB_ACCEPTED_STATE_VALID;
-      effector_identity[4] = uniforms.physics_state_fingerprint;
+      effector_identity[4] = nb_accepted_physics_state_fingerprint(
+        uniforms, acceptance_result
+      );
     }
     effector_identity[5] = ulong(actuator.actuator_identifier);
     effector_identity[6] = ulong(actuator.command_kind);
@@ -1676,8 +1717,11 @@ kernel void assimilate_accepted_muscle_schema(
   device const float *belief_parameters [[buffer(2)]],
   device const NBMuscleReceptorBindingTableHeader *muscle_receptor_table
     [[buffer(11)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.anatomical_muscle_count
       || gid >= muscle_receptor_table->muscle_count) return;
   device const float *observations = reinterpret_cast<device const float *>(
@@ -1781,7 +1825,9 @@ kernel void assimilate_accepted_muscle_schema(
   identity[1] = uniforms.target_timestamp_microseconds;
   identity[2] = muscle_receptor_table->attachment_fingerprint;
   identity[3] = ulong(flags);
-  identity[4] = uniforms.physics_state_fingerprint;
+  identity[4] = nb_accepted_physics_state_fingerprint(
+    uniforms, acceptance_result
+  );
   identity[7] = (ulong(topology.identifiers.z) << 32u)
     | ulong(topology.identifiers.y);
 }
@@ -1795,8 +1841,11 @@ kernel void assimilate_accepted_joint_schema(
   device const float *belief_parameters [[buffer(2)]],
   device const NBJointReceptorBindingTableHeader *joint_receptor_table
     [[buffer(10)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.joint_count
       || gid >= joint_receptor_table->joint_count) return;
   device const float *observations = reinterpret_cast<device const float *>(
@@ -1935,7 +1984,9 @@ kernel void assimilate_accepted_joint_schema(
   identity[2] = ulong(topology.identifiers.z);
   identity[3] = ulong(coordinate_count);
   identity[4] = uniforms.target_timestamp_microseconds;
-  identity[5] = uniforms.physics_state_fingerprint;
+  identity[5] = nb_accepted_physics_state_fingerprint(
+    uniforms, acceptance_result
+  );
   identity[6] = joint_receptor_table->topology_fingerprint;
   identity[7] = ulong(NB_ACCEPTED_STATE_VALID);
 }
@@ -1977,8 +2028,11 @@ kernel void reconcile_accepted_articulated_body_graph(
   device const float *belief_parameters [[buffer(2)]],
   device const NBJointReceptorBindingTableHeader *joint_receptor_table
     [[buffer(10)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.joint_count == 0u) return;
   device const NBJointTopologyRecord *topologies =
     reinterpret_cast<device const NBJointTopologyRecord *>(
@@ -2173,7 +2227,9 @@ kernel void reconcile_accepted_articulated_body_graph(
     );
     child_identity[0] = ulong(child_index);
     child_identity[1] = uniforms.target_timestamp_microseconds;
-    child_identity[2] = uniforms.physics_state_fingerprint;
+    child_identity[2] = nb_accepted_physics_state_fingerprint(
+      uniforms, acceptance_result
+    );
     child_identity[3] = (child_valid ? child_identity[3] : 0ul)
       | ulong(NB_ACCEPTED_STATE_VALID) | NB_ACCEPTED_BODY_ARTICULATED;
   }
@@ -2188,8 +2244,10 @@ kernel void learn_accepted_muscle_task_effect(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.anatomical_muscle_count
       || gid >= uniforms.muscle_count) return;
   device float *muscle = reinterpret_cast<device float *>(
@@ -2276,8 +2334,10 @@ kernel void assimilate_accepted_fast_body_schema(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const NBFastBodySchemaRecord *fast_body_schema [[buffer(7)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.body_count) return;
   const NBFastBodySchemaRecord schema = fast_body_schema[gid];
   if (schema.body_identifier != gid
@@ -2319,8 +2379,10 @@ kernel void update_accepted_embodied_self_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.body_count) return;
   device float *body = reinterpret_cast<device float *>(
     hot_state + uniforms.body_belief_offset + ulong(gid) * 256ul
@@ -2396,8 +2458,10 @@ kernel void reconcile_accepted_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *world_parameters [[buffer(3)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= min(uniforms.world_model_count, NB_WORLD_RECEPTOR_DIMENSION)
       || uniforms.observation_count == 0u
       || uniforms.world_model_count < 9u * NB_WORLD_RECEPTOR_DIMENSION) return;
@@ -2447,8 +2511,10 @@ kernel void reconcile_accepted_sensorimotor_world_model(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *world_parameters [[buffer(3)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   const uint required_count = NB_WORLD_SENSORIMOTOR_BASE
     + 9u * NB_WORLD_SENSORIMOTOR_DIMENSION;
   if (gid >= NB_WORLD_SENSORIMOTOR_DIMENSION
@@ -2499,8 +2565,10 @@ kernel void update_active_sensing_efficacy(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *belief_parameters [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.active_sensing_count) return;
   device const NBActiveSensingCommandRecord *commands =
     reinterpret_cast<device const NBActiveSensingCommandRecord *>(
@@ -2713,8 +2781,11 @@ kernel void broadcast_accepted_prediction_error(
   device const float *world_parameters [[buffer(3)]],
   device const NBAcceptedProtectiveCommandRecord *protective_command
     [[buffer(8)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u) return;
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
@@ -2900,7 +2971,9 @@ kernel void broadcast_accepted_prediction_error(
     const uint base = 2u * uniforms.workspace_dimension;
     workspace[base] = error;
     if (uniforms.workspace_dimension > 1u) {
-      workspace[base + 1u] = as_type<float>(uint(uniforms.physics_state_fingerprint));
+      workspace[base + 1u] = as_type<float>(uint(
+        nb_accepted_physics_state_fingerprint(uniforms, acceptance_result)
+      ));
     }
     if (uniforms.workspace_dimension > 2u) {
       workspace[base + 2u] = mean_agency;
@@ -2929,7 +3002,8 @@ kernel void broadcast_accepted_prediction_error(
     token.last_refresh_timestamp_microseconds = uniforms.target_timestamp_microseconds;
     token.entity_identifier = control->active_option_identifier;
     token.goal_identifier = control->active_goal_identifier;
-    token.provenance_record_identifier = uniforms.physics_state_fingerprint;
+    token.provenance_record_identifier =
+      nb_accepted_physics_state_fingerprint(uniforms, acceptance_result);
     token.kind_and_source = 7u | (50u << 16);
     token.confidence = accepted_stop
       ? max(
@@ -3071,8 +3145,10 @@ kernel void adapt_cerebellar_experts_from_accepted_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *cerebellar_parameters [[buffer(4)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.active_cerebellar_count) return;
   device NBCerebellarExpertRecord *experts =
     reinterpret_cast<device NBCerebellarExpertRecord *>(
@@ -3257,8 +3333,10 @@ kernel void update_fast_plasticity_from_accepted_error(
   device uchar *hot_state [[buffer(0)]],
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const float *plasticity_parameters [[buffer(5)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.fast_plasticity_count) return;
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
@@ -3344,8 +3422,10 @@ kernel void update_accepted_procedural_trace(
   constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
   device const NBAcceptedProtectiveCommandRecord *protective_command
     [[buffer(8)]],
+  device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.procedural_trace_record_capacity == 0u
       || uniforms.procedural_trace_phase_capacity == 0u) return;
   device const NBControlHeader *control =

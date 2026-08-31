@@ -252,7 +252,27 @@ func makeNumanXInteropBoundRuntime(
   return (runtime, compiledSpeciesTemplate)
 }
 
-func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
+func makeNumanXInteropCompiledTemplate(
+  actuatorCount: UInt32 = 6,
+  proprioceptorCount: UInt32 = 2,
+  proprioceptionFeatureDimension: UInt32 = 3,
+  proprioceptionLatencyMicroseconds: UInt32 = 250,
+  interoceptorCount: UInt32 = 1,
+  interoceptionFeatureDimension: UInt32 = 1,
+  interoceptionLatencyMicroseconds: UInt32 = 1_000,
+  name: String = "NumanX interop test fixture"
+) throws -> CompiledSpeciesTemplate {
+  guard actuatorCount > 0,
+    actuatorCount <= UInt32(UInt16.max),
+    proprioceptorCount > 1,
+    proprioceptionFeatureDimension >= UInt32(JointReceptorSignal.allCases.count),
+    interoceptorCount > 0,
+    interoceptionFeatureDimension > 0
+  else {
+    throw BrainRuntimeError.invalidDescriptor(
+      "NumanX interop fixture shape is invalid"
+    )
+  }
   let referenceGraph = try ReferenceBrainGraph.mammalianV1()
   let jointTopology = try NumanXJointTopologyCatalog(
     numanXModelFingerprint: 0x4e55_4d41_4e58,
@@ -283,9 +303,9 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
     case .proprioception:
       return try SensoryTopology(
         modality: modality,
-        receptorCount: 2,
-        observationDimension: 3,
-        latencyMicroseconds: 250,
+        receptorCount: proprioceptorCount,
+        observationDimension: proprioceptionFeatureDimension,
+        latencyMicroseconds: proprioceptionLatencyMicroseconds,
         adaptationTimeConstantMicroseconds: 10_000,
         noiseStandardDeviation: 0,
         activeSensingActionDimension: 1,
@@ -294,9 +314,9 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
     case .interoception:
       return try SensoryTopology(
         modality: modality,
-        receptorCount: 1,
-        observationDimension: 1,
-        latencyMicroseconds: 1_000,
+        receptorCount: interoceptorCount,
+        observationDimension: interoceptionFeatureDimension,
+        latencyMicroseconds: interoceptionLatencyMicroseconds,
         adaptationTimeConstantMicroseconds: 10_000,
         noiseStandardDeviation: 0,
         activeSensingActionDimension: 0,
@@ -317,8 +337,8 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
   }
   let motor = try MotorTopology(
     actuatorCommandKind: .muscleExcitation,
-    actuatorCount: 6,
-    synergyCount: 6,
+    actuatorCount: actuatorCount,
+    synergyCount: UInt16(actuatorCount),
     motorNucleusCount: 1,
     autonomicActionDimension: 1,
     activeSensingActionDimension: 1,
@@ -370,7 +390,7 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
   }
   let species = try SpeciesTemplate(
     family: .genericRobot,
-    name: "NumanX interop test fixture",
+    name: name,
     referenceGraph: referenceGraph,
     enabledModuleIdentifiers: enabledModules,
     body: try SpeciesBodyTopology(
@@ -380,7 +400,7 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
       muscleCount: 0,
       muscleAttachmentFingerprint: 0,
       skinSurfaceCount: 1,
-      actuatorCount: 6,
+      actuatorCount: actuatorCount,
       morphologyCode: 0x4e55_4d41_4e58
     ),
     senses: senses,
@@ -430,11 +450,11 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
     muscleAttachmentCatalog: nil
   )
   let protectiveMotorProfile = try ProtectiveMotorProfile.runtimeFoundationFixture(
-    muscleIdentifiers: Array(0..<6)
+    muscleIdentifiers: Array(0..<actuatorCount)
   )
   let somaticSynergyCatalog = try SomaticSynergyCatalog.runtimeFoundationFixture(
-    actuatorCount: 6,
-    synergyCount: 6
+    actuatorCount: actuatorCount,
+    synergyCount: UInt16(actuatorCount)
   )
   return try SpeciesTemplateCompiler.compileRuntimeTemplate(
     referenceBrainGraph: referenceGraph,
@@ -445,6 +465,25 @@ func makeNumanXInteropCompiledTemplate() throws -> CompiledSpeciesTemplate {
     muscleAttachmentCatalog: nil,
     somaticSynergyCatalog: somaticSynergyCatalog,
     protectiveMotorProfile: protectiveMotorProfile
+  )
+}
+
+/// Exact NumanX HumanIO/motor transport shape used by the real 416-muscle
+/// bridge. The two-body articulation remains an explicitly synthetic nervous-
+/// system fixture; the native full-body runtime separately owns and proves the
+/// 157-body 129-q/128-DoF physical asset.
+func makeNumanXFullBodyTransportCompiledTemplate() throws
+  -> CompiledSpeciesTemplate
+{
+  try makeNumanXInteropCompiledTemplate(
+    actuatorCount: 416,
+    proprioceptorCount: 416,
+    proprioceptionFeatureDimension: 10,
+    proprioceptionLatencyMicroseconds: 1_000,
+    interoceptorCount: 416,
+    interoceptionFeatureDimension: 1,
+    interoceptionLatencyMicroseconds: 1_000,
+    name: "NumanX 416-muscle transport qualification fixture"
   )
 }
 

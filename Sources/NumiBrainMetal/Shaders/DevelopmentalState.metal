@@ -78,6 +78,31 @@ struct NBRegionalMaturationRecord {
   uint flags;
 };
 
+struct NBAcceptedPhysicsStateToken {
+  ulong transaction_fingerprint;
+  ulong substep_fingerprint;
+  ulong physics_state_fingerprint;
+  ulong accepted_timestamp_microseconds;
+  ulong physics_generation;
+  uint environment_identifier;
+  uint flags;
+  ulong reserved;
+  ulong token_fingerprint;
+};
+
+struct NBAcceptedPhysicsGateResult {
+  uint version;
+  uint status;
+  ulong expected_transaction_fingerprint;
+  ulong observed_transaction_fingerprint;
+  ulong expected_substep_fingerprint;
+  ulong observed_substep_fingerprint;
+  ulong computed_token_fingerprint;
+  ulong observed_token_fingerprint;
+  ulong reserved;
+  NBAcceptedPhysicsStateToken accepted_token;
+};
+
 static_assert(sizeof(NBDevelopmentalUniforms) == 88);
 static_assert(sizeof(NBDevelopmentalStageDescriptor) == 64);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
@@ -102,8 +127,10 @@ kernel void initialize_developmental_state(
   device const uint *module_identifiers [[buffer(3)]],
   constant NBDevelopmentalUniforms &uniforms [[buffer(4)]],
   device const NBDevelopmentalEvidenceRecord *imported_evidence [[buffer(5)]],
+  device const uint *acceptance_gate [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.stage_count == 0u) return;
   device NBDevelopmentalHeader *header =
     reinterpret_cast<device NBDevelopmentalHeader *>(
@@ -140,8 +167,10 @@ kernel void record_developmental_capability_evidence(
   device const uint *module_identifiers [[buffer(3)]],
   constant NBDevelopmentalUniforms &uniforms [[buffer(4)]],
   device const NBDevelopmentalEvidenceRecord *imported_evidence [[buffer(5)]],
+  device const uint *acceptance_gate [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.imported_evidence_count) return;
   const NBDevelopmentalEvidenceRecord evidence = imported_evidence[gid];
   if (evidence.code == 0ul || evidence.confidence < 0.5f
@@ -164,8 +193,11 @@ kernel void advance_developmental_stage_from_capabilities(
   device const uint *module_identifiers [[buffer(3)]],
   constant NBDevelopmentalUniforms &uniforms [[buffer(4)]],
   device const NBDevelopmentalEvidenceRecord *imported_evidence [[buffer(5)]],
+  device const uint *acceptance_gate [[buffer(6)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(7)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.stage_count == 0u) return;
   device NBDevelopmentalHeader *header =
     reinterpret_cast<device NBDevelopmentalHeader *>(
@@ -173,7 +205,9 @@ kernel void advance_developmental_stage_from_capabilities(
     );
   header->developmental_age_microseconds += uniforms.delta_microseconds;
   header->accepted_physics_state_fingerprint =
-    uniforms.accepted_physics_state_fingerprint;
+    uniforms.accepted_physics_state_fingerprint != 0ul
+      ? uniforms.accepted_physics_state_fingerprint
+      : acceptance_result->accepted_token.token_fingerprint;
   const uint current_stage = min(header->stage, uniforms.stage_count - 1u);
   const ulong elapsed = uniforms.target_timestamp_microseconds
     >= header->last_transition_timestamp_microseconds
@@ -221,8 +255,10 @@ kernel void update_regional_maturation_state(
   device const uint *module_identifiers [[buffer(3)]],
   constant NBDevelopmentalUniforms &uniforms [[buffer(4)]],
   device const NBDevelopmentalEvidenceRecord *imported_evidence [[buffer(5)]],
+  device const uint *acceptance_gate [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.module_count || uniforms.stage_count == 0u) return;
   device const NBDevelopmentalHeader *header =
     reinterpret_cast<device const NBDevelopmentalHeader *>(

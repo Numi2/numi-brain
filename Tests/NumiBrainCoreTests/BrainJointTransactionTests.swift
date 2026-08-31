@@ -307,4 +307,141 @@ final class BrainJointTransactionTests: XCTestCase {
     )
     XCTAssertThrowsError(try MuscleLoadReceptorTransducer(overloadThreshold: .nan))
   }
+
+  func testProvisionalPhysicsAcceptanceCannotPublishBeforeCanonicalToken() throws {
+    let token = try makeToken()
+    var transaction = BrainJointTransaction(token: token)
+    let substep = try transaction.beginPhysicsSubstep(durationMicroseconds: 20_000)
+    let provisional = try transaction.prepareProvisionalPhysicsAcceptance(
+      for: substep
+    )
+
+    XCTAssertEqual(provisional.controlStep, 17)
+    XCTAssertEqual(provisional.transactionFingerprint, token.fingerprint)
+    XCTAssertEqual(provisional.substepFingerprint, substep.fingerprint)
+    XCTAssertEqual(provisional.substepIndex, 0)
+    XCTAssertEqual(provisional.acceptedTimestamp, token.targetTimestamp)
+    XCTAssertEqual(provisional.expectedPhysicsGeneration, 101)
+    XCTAssertEqual(provisional.shadowGeneration, token.shadowGeneration)
+    XCTAssertEqual(transaction.provisionalPhysicsAcceptance, provisional)
+    XCTAssertEqual(transaction.acceptedTimestamp, token.committedTimestamp)
+    XCTAssertEqual(transaction.physicsGeneration, token.basePhysicsGeneration)
+    XCTAssertEqual(transaction.acceptedSubstepCount, 0)
+    XCTAssertNil(transaction.lastAcceptedPhysicsState)
+    XCTAssertTrue(transaction.resolutions.isEmpty)
+    XCTAssertThrowsError(try transaction.commit())
+    let commitPlan = try transaction.preflightProvisionalCommit(provisional)
+    XCTAssertEqual(commitPlan.transactionFingerprint, token.fingerprint)
+    XCTAssertEqual(commitPlan.substepFingerprint, substep.fingerprint)
+    XCTAssertEqual(commitPlan.brainGeneration, token.shadowGeneration)
+    XCTAssertEqual(commitPlan.expectedPhysicsGeneration, 101)
+    XCTAssertEqual(commitPlan.committedTimestamp, token.targetTimestamp)
+    XCTAssertEqual(commitPlan.parameterVersionFingerprint,
+                   token.parameterVersionFingerprint)
+    XCTAssertEqual(commitPlan.environmentIdentifier, token.environmentIdentifier)
+    XCTAssertEqual(commitPlan.controlStep, 17)
+
+    let accepted = try AcceptedPhysicsStateToken(
+      transaction: token,
+      substep: substep,
+      physicsStateFingerprint: 0xf00d,
+      physicsGeneration: 101
+    )
+    XCTAssertThrowsError(
+      try transaction.acceptPhysicsSubstep(accepted, for: substep)
+    )
+    try transaction.bindAcceptedPhysicsState(accepted, to: provisional)
+    let commit = try transaction.commit()
+
+    XCTAssertEqual(transaction.status, .committed)
+    XCTAssertNil(transaction.provisionalPhysicsAcceptance)
+    XCTAssertEqual(transaction.lastAcceptedPhysicsState, accepted)
+    XCTAssertEqual(transaction.acceptedTimestamp, token.targetTimestamp)
+    XCTAssertEqual(transaction.physicsGeneration, 101)
+    XCTAssertEqual(commit.acceptedPhysicsTokenFingerprint, accepted.fingerprint)
+
+    var replay = BrainJointTransaction(token: token)
+    let replaySubstep = try replay.beginPhysicsSubstep(durationMicroseconds: 20_000)
+    let replayProvisional = try replay.prepareProvisionalPhysicsAcceptance(
+      for: replaySubstep
+    )
+    XCTAssertEqual(
+      try replay.preflightProvisionalCommit(replayProvisional),
+      commitPlan
+    )
+    try replay.bindAcceptedPhysicsState(accepted, to: replayProvisional)
+    XCTAssertEqual(replayProvisional, provisional)
+    XCTAssertEqual(try replay.commit(), commit)
+  }
+
+  func testProvisionalAcceptanceRejectsStaleIdentityAndWideControlStep() throws {
+    let wideToken = try makeToken(controlStep: UInt64(UInt32.max) + 1)
+    var wide = BrainJointTransaction(token: wideToken)
+    let wideSubstep = try wide.beginPhysicsSubstep(durationMicroseconds: 20_000)
+    XCTAssertThrowsError(
+      try wide.prepareProvisionalPhysicsAcceptance(for: wideSubstep)
+    )
+    XCTAssertNil(wide.provisionalPhysicsAcceptance)
+    XCTAssertEqual(wide.physicsGeneration, wideToken.basePhysicsGeneration)
+
+    let maximumGenerationToken = try makeToken(basePhysicsGeneration: .max)
+    var maximumGeneration = BrainJointTransaction(token: maximumGenerationToken)
+    let maximumGenerationSubstep = try maximumGeneration.beginPhysicsSubstep(
+      durationMicroseconds: 20_000
+    )
+    XCTAssertThrowsError(
+      try maximumGeneration.prepareProvisionalPhysicsAcceptance(
+        for: maximumGenerationSubstep
+      )
+    )
+    XCTAssertNil(maximumGeneration.provisionalPhysicsAcceptance)
+    XCTAssertEqual(maximumGeneration.physicsGeneration, UInt64.max)
+
+    let token = try makeToken()
+    var transaction = BrainJointTransaction(token: token)
+    let substep = try transaction.beginPhysicsSubstep(durationMicroseconds: 20_000)
+    let provisional = try transaction.prepareProvisionalPhysicsAcceptance(
+      for: substep
+    )
+    let otherToken = try makeToken(controlStep: 18)
+    let otherSubstep = try BrainJointSubstepToken(
+      transaction: otherToken,
+      substepIndex: 0,
+      attemptIndex: 0,
+      startTimestamp: otherToken.committedTimestamp,
+      durationMicroseconds: 20_000
+    )
+    let staleAccepted = try AcceptedPhysicsStateToken(
+      transaction: otherToken,
+      substep: otherSubstep,
+      physicsStateFingerprint: 0xf00d,
+      physicsGeneration: 101
+    )
+    XCTAssertThrowsError(
+      try transaction.bindAcceptedPhysicsState(staleAccepted, to: provisional)
+    )
+    XCTAssertEqual(transaction.provisionalPhysicsAcceptance, provisional)
+    XCTAssertEqual(transaction.acceptedTimestamp, token.committedTimestamp)
+    XCTAssertEqual(transaction.physicsGeneration, token.basePhysicsGeneration)
+    XCTAssertNil(transaction.lastAcceptedPhysicsState)
+
+    try transaction.rejectPhysicsSubstep(substep)
+    XCTAssertNil(transaction.provisionalPhysicsAcceptance)
+    XCTAssertEqual(transaction.acceptedSubstepCount, 0)
+    XCTAssertEqual(transaction.rejectedAttemptCount, 1)
+    XCTAssertEqual(transaction.resolutions.map(\.isAccepted), [false])
+
+    let retry = try transaction.beginPhysicsSubstep(durationMicroseconds: 20_000)
+    let retryProvisional = try transaction.prepareProvisionalPhysicsAcceptance(
+      for: retry
+    )
+    let accepted = try AcceptedPhysicsStateToken(
+      transaction: token,
+      substep: retry,
+      physicsStateFingerprint: 0xbeef,
+      physicsGeneration: 101
+    )
+    try transaction.bindAcceptedPhysicsState(accepted, to: retryProvisional)
+    XCTAssertNoThrow(try transaction.commit())
+  }
 }

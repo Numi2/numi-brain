@@ -226,8 +226,10 @@ kernel void begin_sensory_frame(
   device uchar *hot_state [[buffer(0)]],
   device const NBSensoryDescriptor *descriptors [[buffer(1)]],
   constant NBSensoryUniforms &uniforms [[buffer(2)]],
+  device const uint *acceptance_gate [[buffer(20)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device NBEventQueueHeader *header = reinterpret_cast<device NBEventQueueHeader *>(
     hot_state + uniforms.event_queue_offset
   );
@@ -292,8 +294,10 @@ kernel void update_receptor_adaptation(
   device const uint *validity5 [[buffer(17)]],
   device const uint *validity6 [[buffer(18)]],
   device const uint *validity7 [[buffer(19)]],
+  device const uint *acceptance_gate [[buffer(20)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device const NBEventQueueHeader *header =
     reinterpret_cast<device const NBEventQueueHeader *>(
       hot_state + uniforms.event_queue_offset
@@ -351,8 +355,10 @@ kernel void transduce_receptor_observations(
   device const uint *validity5 [[buffer(17)]],
   device const uint *validity6 [[buffer(18)]],
   device const uint *validity7 [[buffer(19)]],
+  device const uint *acceptance_gate [[buffer(20)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device const NBEventQueueHeader *header =
     reinterpret_cast<device const NBEventQueueHeader *>(
       hot_state + uniforms.event_queue_offset
@@ -412,8 +418,10 @@ kernel void extract_receptor_events(
   device const NBReceptorEventRule *rules [[buffer(2)]],
   constant NBSensoryUniforms &uniforms [[buffer(3)]],
   device const float *sensory_parameters [[buffer(11)]],
+  device const uint *acceptance_gate [[buffer(20)]],
   uint gid [[thread_position_in_grid]])
 {
+  if (acceptance_gate[0] != 1u) return;
   device NBEventQueueHeader *header = reinterpret_cast<device NBEventQueueHeader *>(
     hot_state + uniforms.event_queue_offset
   );

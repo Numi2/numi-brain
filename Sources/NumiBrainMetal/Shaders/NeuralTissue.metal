@@ -470,6 +470,7 @@ struct NBRegionalModuleStateABI {
 struct NBProtectiveCommandUniformsABI {
     ulong brain_generation;
     ulong motor_profile_fingerprint;
+    ulong sample_timestamp_microseconds;
     uint module_count;
     uint muscle_count;
     uint environment_identifier;
@@ -818,7 +819,7 @@ static_assert(sizeof(NBDispatchTokenUniformsABI) == 32, "token uniform ABI drift
 static_assert(sizeof(NBDispatchIndirectArgumentsABI) == 12, "indirect ABI drift");
 static_assert(sizeof(NBSchedulerResultABI) == 16, "scheduler result ABI drift");
 static_assert(sizeof(NBRegionalModuleStateABI) == 32, "regional state ABI drift");
-static_assert(sizeof(NBProtectiveCommandUniformsABI) == 32, "protective uniforms drift");
+static_assert(sizeof(NBProtectiveCommandUniformsABI) == 40, "protective uniforms drift");
 static_assert(sizeof(NBFastCPGUniformsABI) == 24, "fast CPG uniforms drift");
 static_assert(sizeof(NBFastCPGStateABI) == 64, "fast CPG state drift");
 static_assert(sizeof(NBFastReflexRuleABI) == 32, "fast reflex rule drift");
@@ -3728,7 +3729,11 @@ kernel void map_protective_motor_output(
     if (hasLocalizedWithdrawalSource) {
         header.flags |= NBMotorOutputFlagLocalizedWithdrawal;
     }
-    header.timestamp_microseconds = command.timestamp_microseconds;
+    // The command describes the previously accepted protective state, while
+    // this mapped output is the motor candidate for the current physical
+    // substep. Bind the output to the explicit candidate sample time instead
+    // of inheriting an initial or prior-root command timestamp.
+    header.timestamp_microseconds = uniforms->sample_timestamp_microseconds;
     header.brain_generation = uniforms->brain_generation;
     header.profile_fingerprint = uniforms->motor_profile_fingerprint;
     header.protective_command_fingerprint = command.command_fingerprint;

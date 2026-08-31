@@ -1722,7 +1722,11 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
   if (candidate->format_version != NB_NUMANX_MOTOR_CANDIDATE_VERSION) {
     return NB_NUMANX_MOTOR_CANDIDATE_FORMAT;
   }
-  if (candidate->flags != NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID) {
+  constexpr uint32_t known_flags =
+      NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID
+      | NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW;
+  if ((candidate->flags & NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID) == 0
+      || (candidate->flags & ~known_flags) != 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_FLAGS;
   }
   if (nb_brain_abi_validate_joint_substep(root, substep)
@@ -1744,10 +1748,16 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
       || candidate->reserved != 0) {
     return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
   }
-  const uint64_t expected_generation =
-      substep->substep_index == 0
-      ? root->base_brain_generation
-      : root->shadow_generation;
+  const bool decision_shadow =
+      (candidate->flags & NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW) != 0;
+  if (decision_shadow && substep->substep_index != 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_GENERATION;
+  }
+  const uint64_t expected_generation = decision_shadow
+      ? root->shadow_generation
+      : (substep->substep_index == 0
+          ? root->base_brain_generation
+          : root->shadow_generation);
   if (candidate->brain_generation != expected_generation) {
     return NB_NUMANX_MOTOR_CANDIDATE_GENERATION;
   }
