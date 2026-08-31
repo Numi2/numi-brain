@@ -72,16 +72,21 @@ workload and the previous accepted sensor generation; NumiBrain aggregates
 each feature across all 416 receptors rather than misreading the flattened
 tensor as nine body-wide scalars. This removes the semantic/indexing defect,
 but the held-out ablation still improves rather than degrades postural drift,
-so interoception is not promoted. Gate B also remains open because this reduced
-model is not systemic physiology and active sensing is still an acquisition-
-gain control rather than a physical eye/head/ear mechanism.
+so interoception is not promoted. The former active-acquisition gain has been
+replaced by an authored, bounded head-local camera gimbal that changes ray
+geometry while leaving nominal exposure and all nonvisual channels unchanged.
+The fresh developmental fixture still emits zero gaze command because it is at
+the innate scaffold stage; autonomous active sensing therefore awaits
+authenticated maturation or mature-state restoration plus an occlusion/search
+qualification. The gimbal is ideal and zero-reaction, not coupled ocular/neck
+dynamics. These two evidence gaps keep Gate B open.
 
 Qualification is split by resource envelope: the complete 146-test package
-passes with zero failures and three asset-dependent skips in 58.722 seconds;
+passes with zero failures and three asset-dependent skips in 58.491 seconds;
 the bounded real external-task plus publication/retry E2E passes 2/2 in 15.514
 seconds; and the six explicit 49-root modality cohorts pass independently in
 50.286–50.627 seconds each. Strict Metal checks pass and the final incremental
-Release build succeeds in 4.34 seconds. These timings are orchestration
+Release build succeeds in 0.42 seconds. These timings are orchestration
 telemetry, not control-loop latency or throughput measurements.
 
 ## Joint transaction foundation

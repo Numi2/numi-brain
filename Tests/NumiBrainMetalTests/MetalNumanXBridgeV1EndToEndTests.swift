@@ -1098,7 +1098,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot,
     candidateSensorValues: [Float],
     motorExcitations: [Float],
-    descendingSomatic: [Float]
+    descendingSomatic: [Float],
+    activeVisionCommand: Float,
+    activeVisionConfidence: Float
   ) {
     let staged = try prepareRoot(
       brain: brain,
@@ -1164,7 +1166,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       try XCTUnwrap(native.aggregateSnapshotIfAvailable()),
       candidateSensorValues,
       staged.motorExcitations,
-      staged.descendingSomatic
+      staged.descendingSomatic,
+      staged.activeVisionCommand,
+      staged.activeVisionConfidence
     )
   }
 
@@ -1625,7 +1629,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     physical: MetalNumanXBridgeV1PreparedRoot,
     prepared: MetalNumiBrainRuntime.NumanXPreparedControlTicket,
     motorExcitations: [Float],
-    descendingSomatic: [Float]
+    descendingSomatic: [Float],
+    activeVisionCommand: Float,
+    activeVisionConfidence: Float
   ) {
     let decisionPoint = try point(device, value: 1)
     let motorPoint = try point(device, value: 1)
@@ -1662,6 +1668,33 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let motorExcitations = try qualificationUInt32s(
       from: qualificationReadback(motor.buffers.excitationBuffer, device: device)
     ).map { Float(bitPattern: $0) }
+    let activeSensingByteCount = Int(motor.candidate.activeSensingCommandByteCount)
+    guard activeSensingByteCount <= motor.buffers.activeSensingBuffer.length else {
+      throw TissueError.transaction(
+        "Gate B active-sensing command exceeds its retained buffer"
+      )
+    }
+    let activeSensingWords = try qualificationUInt32s(
+      from: Array(UnsafeRawBufferPointer(
+        start: motor.buffers.activeSensingBuffer.contents(),
+        count: activeSensingByteCount
+      ))
+    )
+    guard activeSensingWords.count == 4 else {
+      throw TissueError.transaction(
+        "Gate B active-sensing command has the wrong ABI size"
+      )
+    }
+    let activeSensingCommand = Float(bitPattern: activeSensingWords[0])
+    let activeSensingConfidence = Float(bitPattern: activeSensingWords[1])
+    XCTAssertTrue(activeSensingCommand.isFinite)
+    XCTAssertTrue((-1...1).contains(activeSensingCommand))
+    XCTAssertTrue((0...1).contains(activeSensingConfidence))
+    XCTAssertEqual(
+      activeSensingWords[3] & 0xff,
+      UInt32(SensoryModality.vision.rawValue)
+    )
+    XCTAssertNotEqual(activeSensingWords[3] & (1 << 16), 0)
     let decisionSource = motor.motorTicket.motorEvaluation
       .decisionEvaluation.sourceBuffer
     guard motor.decision.descendingSomaticBaselineGPUAddress
@@ -1730,6 +1763,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     )
     let controlMode = controlWords[8]
     let controlFlags = controlWords[11]
+    let predictedInformationGain = Float(bitPattern: controlWords[21])
+    let unsupportedUncertainty = Float(bitPattern: controlWords[22])
     guard motor.decision.internalActionGPUAddress >= decisionSource.gpuAddress,
       let internalActionStart = Int(exactly:
         motor.decision.internalActionGPUAddress - decisionSource.gpuAddress
@@ -1761,7 +1796,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           + "controlMode=\(controlMode) controlFlags=0x\(String(controlFlags, radix: 16)) "
           + "inhibitionKind=\(inhibitionActionKind) "
           + "inhibitionFlags=0x\(String(inhibitionActionFlags, radix: 16)) "
-          + "inhibitionPriority=\(inhibitionActionPriority)"
+          + "inhibitionPriority=\(inhibitionActionPriority) "
+          + "predictedInformation=\(predictedInformationGain) "
+          + "unsupportedUncertainty=\(unsupportedUncertainty) "
+          + "activeVisionCommand=\(activeSensingCommand) "
+          + "activeVisionConfidence=\(activeSensingConfidence)"
       )
     }
     XCTAssertEqual(physical.sensorCandidate.rawSensors.count, 7)
@@ -1791,7 +1830,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           ?? "NumanX preflight settled as \(preflightStatus)"
       )
     }
-    return (physical, prepared, motorExcitations, descendingSomatic)
+    return (
+      physical,
+      prepared,
+      motorExcitations,
+      descendingSomatic,
+      activeSensingCommand,
+      activeSensingConfidence
+    )
   }
 
   private struct BridgePaths {

@@ -86,13 +86,27 @@ while the combined six-channel nonvisual payload fingerprint remained exactly
 `8f2d1accc01cc9e4` after audition joined that set. The real Brain/native E2E also carries vision into the next
 root and proves bitwise candidate replay across reject/retry.
 
-The full-body species now assigns its sole active-sensing action to vision. A
-transaction-owned command of `0.75` applies a bounded GPU acquisition exposure
-change (maximum range is one stop), records the effective exposure in the
-owned channel, and changes the vision fingerprint to `50ca65d0a2989ec6` with
-the same exact nonvisual fingerprint `8f2d1accc01cc9e4`. This proves the first
-command-to-subsequent-observation active-sensing path; it is an acquisition-gain
-control, not yet a physical eye/head gimbal.
+The full-body species now assigns its sole active-sensing action to vision. The
+native profile authors a unit local gaze axis and a `0.35`-radian bound. Before
+ray generation, a transaction-owned command rotates the camera-parent visual
+body by `command * confidence * maximumAngle`; exposure remains at the authored
+nominal value. On Apple Metal, command `0` produced 718 valid depth pixels and
+720 valid geometry pixels with vision fingerprint `010c050f1f3436d3`.
+Command `0.75` produced 2,054 and 2,058 respectively and changed the vision
+fingerprint to `7a62c5ca7c50b5fa`, while the combined nonvisual fingerprint
+remained exactly `d6e8fe77f1f2d094`. Two commanded runs were byte-identical.
+This is a real bounded ray-geometry actuator, but currently an ideal
+zero-reaction head-local camera gimbal rather than coupled ocular/neck dynamics.
+
+The real Brain/native support-task path now also validates the exact 16-byte
+vision command ABI before physical use. Its fresh developmental state is still
+at `innateScaffold`, however, where curiosity is intentionally zero and
+object/scene uncertainty is disabled until the active-sensing/object stages.
+Across the three accepted support roots it therefore emitted command `0` and
+confidence `0`. The physical mechanism is qualified; autonomous task-driven
+selection is not. Gate B next needs authenticated developmental maturation (or
+a restored mature state) on the ABI4 prepared path, followed by a predeclared
+occlusion/search task and command-ablation outcome.
 
 The aggregate reader now uses temporal-authority snapshot ABI v3. Its FNV-bound
 sensor clock is copied under the same reader gate as the seven channel records and
@@ -247,11 +261,12 @@ commands while preserving joint-limit, variance, pain, and emergency-stop
 gates.
 
 This checkpoint establishes the six closed-loop rows above, vision ABI/source
-ownership, the named physical signal perturbation, one bounded
-active-acquisition command, exact simulated sensor-clock delivery, plus fixed
-replay and rejection behavior. It does not yet establish wall-clock GPU
-capture-to-publication latency/performance, a physical eye/head/ear mechanism,
-or waveform/speech/language sensing. The native 416x6 interoceptive channel now
+ownership, the named physical signal perturbation, one bounded head-local
+ray-geometry command, exact simulated sensor-clock delivery, plus fixed replay
+and rejection behavior. It does not yet establish wall-clock GPU
+capture-to-publication latency/performance, autonomous mature-brain gaze,
+coupled ocular/neck dynamics, or waveform/speech/language sensing. The native
+416x6 interoceptive channel now
 integrates bounded local energy availability, oxygen availability, carbon-
 dioxide burden, temperature deviation, fatigue, and damage from causal MyoSim
 workload and only the previous accepted HumanIO generation. Rejected candidates
@@ -264,21 +279,21 @@ learned action by `0.0021179318`, descending and muscle output by
 `0.00017181039`, and later vision, touch, proprioception, vestibular, and
 kinesthetic state. It nevertheless improves the predeclared postural outcome
 (`46.580482` intact vestibular drift versus `46.49666` ablated), so the causal
-benefit criterion still fails. That measured training/qualification gap and the
-nonphysical active-sensing mechanism keep Gate B open.
+benefit criterion still fails. That measured training/qualification gap and
+the missing mature-brain active-sensing selection evidence keep Gate B open.
 
 Focused executable evidence at this checkpoint includes 14/14 native NumanX
 integration tests (green twice), the focused Swift
 interop/ABI4/atomic-publication/full-body E2E tests on Apple Metal, and the
 asset-backed multi-scene cohort with its deterministic MLX successor update and
 intervention replay. The complete Swift package is 146 tests with zero
-failures in 58.722 seconds when the three asset-dependent tests are skipped.
+failures in 58.491 seconds when the three asset-dependent tests are skipped.
 With real bridge paths, the bounded external-task plus publication/retry E2E
 passes 2/2 in 15.514 seconds and explicitly skips the isolated stress cohort.
 Six independent 49-root Gate B modality cohorts pass in 50.286–50.627 seconds
 each. The Decision, Memory, and AcceptedConsequence Metal 4 shaders pass
 `-Wall -Wextra -Werror` (with the repository's intentional unused-parameter
 suppression), `git diff --check` is clean, and the final incremental production
-Swift build passes in 4.34 seconds.
+Swift build passes in 0.42 seconds.
 
 Gate B is not achieved until every row and every evidence level is satisfied.
