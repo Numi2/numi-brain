@@ -41,6 +41,12 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   typealias RuntimeCopySnapshot = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_aggregate_snapshot_v1>?
   ) -> UInt8
+  typealias RuntimeCopySnapshotV2 = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_aggregate_snapshot_v2>?
+  ) -> UInt8
+  typealias RuntimeCopySnapshotV3 = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_aggregate_snapshot_v3>?
+  ) -> UInt8
   typealias CopyRoot = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_root_v1>?
   ) -> UInt8
@@ -53,6 +59,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   typealias CopyChannel = @convention(c) (
     UnsafeMutableRawPointer?, UInt32,
     UnsafeMutablePointer<mrnx_candidate_channel_v1>?
+  ) -> UInt8
+  typealias CopyTiming = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_candidate_timing_v1>?
   ) -> UInt8
   typealias SubmitProposal = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutableRawPointer?,
@@ -91,6 +100,8 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCopyInfo: RuntimeCopyInfo
   let runtimeBegin: RuntimeBegin
   let runtimeCopySnapshot: RuntimeCopySnapshot
+  let runtimeCopySnapshotV2: RuntimeCopySnapshotV2
+  let runtimeCopySnapshotV3: RuntimeCopySnapshotV3
   let preparedRetain: HandleVoid
   let preparedDrop: HandleVoid
   let candidateRetain: HandleVoid
@@ -99,6 +110,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let copyPhysicalGate: CopyWire
   let copyCandidate: CopyCandidate
   let copyChannel: CopyChannel
+  let copyTiming: CopyTiming
   let submitProposal: SubmitProposal
   let reserveApplication: ReserveWire
   let submitApply: SubmitApply
@@ -139,6 +151,12 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       runtimeCopySnapshot = try Self.symbol(
         "mrnx_bridge_v1_runtime_copy_aggregate_snapshot", library: library
       )
+      runtimeCopySnapshotV2 = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_aggregate_snapshot_v2", library: library
+      )
+      runtimeCopySnapshotV3 = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_aggregate_snapshot_v3", library: library
+      )
       preparedRetain = try Self.symbol("mrnx_bridge_v1_prepared_retain", library: library)
       preparedDrop = try Self.symbol("mrnx_bridge_v1_prepared_drop", library: library)
       candidateRetain = try Self.symbol("mrnx_bridge_v1_candidate_retain", library: library)
@@ -152,6 +170,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       copyChannel = try Self.symbol(
         "mrnx_bridge_v1_candidate_copy_channel", library: library
+      )
+      copyTiming = try Self.symbol(
+        "mrnx_bridge_v1_candidate_copy_timing", library: library
       )
       submitProposal = try Self.symbol("mrnx_bridge_v1_submit_proposal", library: library)
       reserveApplication = try Self.symbol(
@@ -296,6 +317,37 @@ private enum MetalNumanXBridgeV1Convert {
       elementByteCount: value.element_byte_count
     )
   }
+
+  static func timing(_ value: mrnx_candidate_timing_v1) throws
+    -> mrnx_candidate_timing_v1
+  {
+    var copy = value
+    let expected = copy.timing_fingerprint
+    copy.timing_fingerprint = 0
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    withUnsafeBytes(of: &copy) { bytes in
+      for byte in bytes.prefix(32) {
+        hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
+      }
+    }
+    if hash == 0 { hash = 14_695_981_039_346_656_037 }
+    guard value.abi_version == UInt32(MRNX_BRIDGE_ABI_V1),
+      value.struct_size == MemoryLayout<mrnx_candidate_timing_v1>.stride,
+      value.capture_timestamp_microseconds
+        <= value.delivery_timestamp_microseconds,
+      value.latency_microseconds > 0,
+      value.sample_interval_microseconds > 0,
+      value.delivery_timestamp_microseconds
+        - value.capture_timestamp_microseconds
+        == UInt64(value.latency_microseconds),
+      expected == hash
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "invalid HumanIO sensor timing authority"
+      )
+    }
+    return value
+  }
 }
 
 @available(macOS 26.0, *)
@@ -346,6 +398,7 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
       var root = mrnx_root_v1()
       var gate = mrnx_wire_lease_v1()
       var candidateView = mrnx_candidate_view_v1()
+      var candidateTiming = mrnx_candidate_timing_v1()
       root.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
       root.struct_size = UInt32(MemoryLayout<mrnx_root_v1>.stride)
       gate.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
@@ -353,6 +406,10 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
       candidateView.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
       candidateView.struct_size = UInt32(
         MemoryLayout<mrnx_candidate_view_v1>.stride
+      )
+      candidateTiming.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+      candidateTiming.struct_size = UInt32(
+        MemoryLayout<mrnx_candidate_timing_v1>.stride
       )
       guard symbols.copyRoot(handle, &root) != 0 else {
         throw MetalNumanXBridgeV1Error.invalidABI(
@@ -365,12 +422,19 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
         )
       }
       guard symbols.copyCandidate(candidateOwner.handle, &candidateView) != 0,
-        candidateView.channel_count == 2
+        candidateView.channel_count >= 2,
+        candidateView.channel_count <= UInt32(MRNX_MAX_SENSOR_CHANNELS_V2)
       else {
         throw MetalNumanXBridgeV1Error.invalidABI(
           "prepared root omitted its exact HumanIO view"
         )
       }
+      guard symbols.copyTiming(candidateOwner.handle, &candidateTiming) != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "prepared root omitted its exact HumanIO timing authority"
+        )
+      }
+      candidateTiming = try MetalNumanXBridgeV1Convert.timing(candidateTiming)
       let identity = try MetalNumanXBridgeV1Convert.identity(root)
       guard gate.root.transaction_fingerprint == root.transaction_fingerprint,
         gate.record.byte_count == UInt64(MetalAcceptedPhysicsGateLease.byteCount),
@@ -405,8 +469,7 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
         guard symbols.copyChannel(
           candidateOwner.handle, channelIndex, &channel) != 0,
           channel.flags & 1 != 0,
-          let modality = SensoryModality(rawValue: UInt16(channel.modality)),
-          modality == .proprioception || modality == .interoception
+          let modality = SensoryModality(rawValue: UInt16(channel.modality))
         else {
           throw MetalNumanXBridgeV1Error.invalidABI(
             "prepared root omitted a canonical HumanIO sensor channel"
@@ -428,6 +491,12 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
             receptorTimestamp: BrainTimestamp(
               microseconds: channel.receptor_timestamp_microseconds
             ),
+            deliveryTimestamp: BrainTimestamp(
+              microseconds: candidateTiming.delivery_timestamp_microseconds
+            ),
+            latencyMicroseconds: candidateTiming.latency_microseconds,
+            sampleIntervalMicroseconds:
+              candidateTiming.sample_interval_microseconds,
             receptorCount: channel.receptor_count,
             featureDimension: channel.feature_dimension,
             values: values,
@@ -435,8 +504,10 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
           )
         )
       }
-      guard Set(sensorChannels.map(\.modality)) ==
-        Set([.proprioception, .interoception])
+      guard Set(sensorChannels.map(\.modality)).isSuperset(
+        of: Set([.vision, .audition, .touch, .proprioception, .interoception,
+          .kinesthesia, .vestibular])
+      )
       else {
         throw MetalNumanXBridgeV1Error.invalidABI(
           "prepared root HumanIO modality set is incomplete"
@@ -971,6 +1042,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   public struct Configuration: Sendable {
     public let rigidPayloadPath: String
     public let musclePayloadPath: String
+    public let supportContactPayloadPath: String
+    public let visualPackPath: String
+    public let visionProfilePath: String
     public let metalRoboMetallibPath: String
     public let matterMetallibPath: String
     public let matterMaterialPath: String
@@ -981,6 +1055,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public init(
       rigidPayloadPath: String,
       musclePayloadPath: String,
+      supportContactPayloadPath: String,
+      visualPackPath: String,
+      visionProfilePath: String,
       metalRoboMetallibPath: String,
       matterMetallibPath: String,
       matterMaterialPath: String,
@@ -990,6 +1067,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     ) {
       self.rigidPayloadPath = rigidPayloadPath
       self.musclePayloadPath = musclePayloadPath
+      self.supportContactPayloadPath = supportContactPayloadPath
+      self.visualPackPath = visualPackPath
+      self.visionProfilePath = visionProfilePath
       self.metalRoboMetallibPath = metalRoboMetallibPath
       self.matterMetallibPath = matterMetallibPath
       self.matterMaterialPath = matterMaterialPath
@@ -1020,8 +1100,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let physicsGeneration: UInt64
     public let sensorGeneration: UInt64
     public let identity: MetalNumanXHumanMatterRootIdentity
+    public let channels: [MetalNumanXHumanIOSensorCandidateChannel]
     public let proprioception: MetalNumanXHumanIOSensorCandidateChannel
     public let interoception: MetalNumanXHumanIOSensorCandidateChannel
+    public let touch: MetalNumanXHumanIOSensorCandidateChannel
+    public let audition: MetalNumanXHumanIOSensorCandidateChannel
 
     /// Rebinds this jointly published HumanIO view as the causal sensor input
     /// for the immediately following Brain root. No payload is copied or read
@@ -1042,7 +1125,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       return try NumanXSensorPacketLease(
         transaction: transaction,
         compiledSpeciesTemplate: compiledSpeciesTemplate,
-        rawSensors: [proprioception.rawSensor, interoception.rawSensor]
+        rawSensors: channels.map(\.rawSensor)
       )
     }
   }
@@ -1064,15 +1147,21 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     rawInfo.struct_size = UInt32(MemoryLayout<mrnx_runtime_info_v1>.stride)
     let created: UnsafeMutableRawPointer? = configuration.rigidPayloadPath.withCString {
       rigid in configuration.musclePayloadPath.withCString {
-        muscles in configuration.metalRoboMetallibPath.withCString {
-          metalRobo in configuration.matterMetallibPath.withCString {
-            matter in configuration.matterMaterialPath.withCString { material in
+        muscles in configuration.supportContactPayloadPath.withCString {
+          contacts in configuration.visualPackPath.withCString {
+            visualPack in configuration.visionProfilePath.withCString {
+              visionProfile in configuration.metalRoboMetallibPath.withCString {
+                metalRobo in configuration.matterMetallibPath.withCString {
+                  matter in configuration.matterMaterialPath.withCString { material in
               var config = mrnx_runtime_config_v1()
               config.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
               config.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v1>.stride)
               config.metal_device = Unmanaged.passUnretained(device as AnyObject).toOpaque()
               config.rigid_payload_path = rigid
               config.muscle_payload_path = muscles
+              config.support_contact_payload_path = contacts
+              config.visual_pack_path = visualPack
+              config.vision_profile_path = visionProfile
               config.metalrobo_metallib_path = metalRobo
               config.matter_metallib_path = matter
               config.matter_material_path = material
@@ -1080,6 +1169,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
               config.maximum_retained_bytes = configuration.maximumRetainedBytes
               config.transaction_slot_count = configuration.transactionSlotCount
               return symbols.runtimeCreate(&config, &rawInfo)
+                  }
+                }
+              }
             }
           }
         }
@@ -1155,26 +1247,49 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   /// reads sensor payload bytes and never falls back to independent component
   /// snapshots.
   public func aggregateSnapshotIfAvailable() throws -> AggregateSnapshot? {
-    var value = mrnx_aggregate_snapshot_v1()
-    value.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
-    value.struct_size = UInt32(MemoryLayout<mrnx_aggregate_snapshot_v1>.stride)
-    guard symbols.runtimeCopySnapshot(runtime, &value) != 0 else { return nil }
-    guard value.abi_version == UInt32(MRNX_BRIDGE_ABI_V1),
-      value.struct_size == MemoryLayout<mrnx_aggregate_snapshot_v1>.stride,
+    var value = mrnx_aggregate_snapshot_v3()
+    value.abi_version = UInt32(MRNX_AGGREGATE_SNAPSHOT_ABI_V3)
+    value.struct_size = UInt32(MemoryLayout<mrnx_aggregate_snapshot_v3>.stride)
+    guard symbols.runtimeCopySnapshotV3(runtime, &value) != 0 else { return nil }
+    let timing = try MetalNumanXBridgeV1Convert.timing(value.timing)
+    guard value.abi_version == UInt32(MRNX_AGGREGATE_SNAPSHOT_ABI_V3),
+      value.struct_size == MemoryLayout<mrnx_aggregate_snapshot_v3>.stride,
       value.publication_epoch > 0,
       value.brain_generation > 0,
       value.physics_generation > 0,
       value.sensor_generation > 0,
-      value.sensor.channel_count == 2,
+      value.channel_capacity == UInt32(MRNX_MAX_SENSOR_CHANNELS_V2),
+      value.channel_count >= 2,
+      value.channel_count <= value.channel_capacity,
+      value.sensor.channel_count == value.channel_count,
       value.sensor.accepted_brain_generation == value.brain_generation,
-      value.sensor.key.sensor_generation == value.sensor_generation,
-      value.proprioception.modality
-        == UInt32(MRNX_CANDIDATE_MODALITY_PROPRIOCEPTION_V1),
-      value.interoception.modality
-        == UInt32(MRNX_CANDIDATE_MODALITY_INTEROCEPTION_V1)
+      value.sensor.key.sensor_generation == value.sensor_generation
     else {
       throw MetalNumanXBridgeV1Error.invalidABI(
         "native aggregate publication tuple is malformed"
+      )
+    }
+    let channelRecords = withUnsafeBytes(of: value.channels) { raw -> [
+      mrnx_candidate_channel_v1
+    ] in
+      Array(
+        raw.bindMemory(to: mrnx_candidate_channel_v1.self)
+          .prefix(Int(value.channel_count))
+      )
+    }
+    let channels = try channelRecords.map { try Self.snapshotChannel($0, timing: timing) }
+    guard Set(channels.map(\.modality)).count == channels.count,
+      Set(channels.map(\.modality)).isSuperset(
+        of: Set([.vision, .audition, .touch, .proprioception, .interoception,
+          .kinesthesia, .vestibular])
+      ),
+      let proprioception = channels.first(where: { $0.modality == .proprioception }),
+      let interoception = channels.first(where: { $0.modality == .interoception }),
+      let touch = channels.first(where: { $0.modality == .touch }),
+      let audition = channels.first(where: { $0.modality == .audition })
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "native aggregate sensor modality set is malformed"
       )
     }
     return AggregateSnapshot(
@@ -1183,8 +1298,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       physicsGeneration: value.physics_generation,
       sensorGeneration: value.sensor_generation,
       identity: try MetalNumanXBridgeV1Convert.identity(value.root),
-      proprioception: try Self.snapshotChannel(value.proprioception),
-      interoception: try Self.snapshotChannel(value.interoception)
+      channels: channels,
+      proprioception: proprioception,
+      interoception: interoception,
+      touch: touch,
+      audition: audition
     )
   }
 
@@ -1304,13 +1422,13 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   }
 
   private static func snapshotChannel(
-    _ value: mrnx_candidate_channel_v1
+    _ value: mrnx_candidate_channel_v1,
+    timing: mrnx_candidate_timing_v1
   ) throws -> MetalNumanXHumanIOSensorCandidateChannel {
     guard value.abi_version == UInt32(MRNX_BRIDGE_ABI_V1),
       value.struct_size == MemoryLayout<mrnx_candidate_channel_v1>.stride,
       value.flags & UInt32(MRNX_CANDIDATE_CHANNEL_HAS_VALIDITY_V1) != 0,
-      let modality = SensoryModality(rawValue: UInt16(value.modality)),
-      modality == .proprioception || modality == .interoception
+      let modality = SensoryModality(rawValue: UInt16(value.modality))
     else {
       throw MetalNumanXBridgeV1Error.invalidABI(
         "native aggregate sensor channel is malformed"
@@ -1321,6 +1439,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       receptorTimestamp: BrainTimestamp(
         microseconds: value.receptor_timestamp_microseconds
       ),
+      deliveryTimestamp: BrainTimestamp(
+        microseconds: timing.delivery_timestamp_microseconds
+      ),
+      latencyMicroseconds: timing.latency_microseconds,
+      sampleIntervalMicroseconds: timing.sample_interval_microseconds,
       receptorCount: value.receptor_count,
       featureDimension: value.feature_dimension,
       values: MetalNumanXBridgeV1Convert.range(

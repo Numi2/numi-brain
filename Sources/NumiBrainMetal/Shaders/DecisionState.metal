@@ -287,6 +287,7 @@ struct NBSemanticGoalOutcome {
 
 struct NBExternalGoalContext {
   float valid;
+  float priority;
   float damage_risk_budget;
   float persistence;
   float target[16];
@@ -622,6 +623,144 @@ inline float nb_motor_feature(
   return nb_uses_muscle_excitation(actuator_command_kind)
     ? clamp(drive, 0.0f, 1.0f)
     : clamp(fma(2.0f, drive, -1.0f), -1.0f, 1.0f);
+}
+
+/// The exact sixteen-coordinate slow policy head differentiated by
+/// MLXBrainLearner. Its output is a cortical synergy command; the immutable
+/// species decoder, task controller, spinal state, reflexes, cerebellum, and
+/// final actuator clamps remain the physical execution authority.
+inline float nb_learned_policy_synergy(
+  device const float *recurrent,
+  const uint recurrent_count,
+  device const float *policy_parameters,
+  device const float *belief_parameters,
+  device const float *policy_observation_sketch,
+  const uint synergy)
+{
+  if (recurrent_count == 0u || synergy >= 16u) return 0.0f;
+  // The learner journals three coordinates for each of up to eight sensory
+  // modalities (24 total), while the enacted action has sixteen synergies.
+  // Preserve the first sixteen coordinates as the primary basis and fold the
+  // remaining eight into the corresponding first eight synergies. Without
+  // this fold, the final modalities in canonical order (including the full
+  // kinesthetic slot) could be published and learned but never affect action.
+  float folded_observation = policy_observation_sketch[synergy];
+  float folded_validity = policy_observation_sketch[24u + synergy];
+  if (synergy < 8u) {
+    folded_observation += 0.25f
+      * policy_observation_sketch[16u + synergy];
+    folded_validity += 0.25f
+      * policy_observation_sketch[40u + synergy];
+  }
+  const float posterior = tanh(
+    belief_parameters[7] * recurrent[synergy % recurrent_count]
+      + belief_parameters[0] * folded_observation
+      + belief_parameters[15] * folded_validity
+      + belief_parameters[4]
+  );
+  return tanh(
+    posterior * policy_parameters[0] + policy_parameters[8]
+  );
+}
+
+inline ulong nb_policy_observation_hash(ulong value) {
+  value ^= value >> 30;
+  value *= 0xbf58476d1ce4e5b9ul;
+  value ^= value >> 27;
+  value *= 0x94d049bb133111ebul;
+  return value ^ (value >> 31);
+}
+
+inline float nb_policy_raw_sensor_value(
+  const uint modality_slot,
+  const uint scalar_index,
+  device const float *raw0,
+  device const float *raw1,
+  device const float *raw2,
+  device const float *raw3,
+  device const float *raw4,
+  device const float *raw5,
+  device const float *raw6,
+  device const float *raw7)
+{
+  switch (modality_slot) {
+    case 0u: return raw0[scalar_index];
+    case 1u: return raw1[scalar_index];
+    case 2u: return raw2[scalar_index];
+    case 3u: return raw3[scalar_index];
+    case 4u: return raw4[scalar_index];
+    case 5u: return raw5[scalar_index];
+    case 6u: return raw6[scalar_index];
+    default: return raw7[scalar_index];
+  }
+}
+
+/// Reconstructs the exact deterministic 24-coordinate raw-sensor projection
+/// journaled for the slow learner. One thread owns one projection coordinate;
+/// the second 24-float half is the evaluator's exact validity mask.
+kernel void sketch_policy_observations(
+  device const uchar *hot_state [[buffer(0)]],
+  device float *policy_observation_sketch [[buffer(14)]],
+  device const float *raw_sensor0 [[buffer(16)]],
+  device const float *raw_sensor1 [[buffer(17)]],
+  device const float *raw_sensor2 [[buffer(18)]],
+  device const float *raw_sensor3 [[buffer(19)]],
+  device const float *raw_sensor4 [[buffer(20)]],
+  device const float *raw_sensor5 [[buffer(21)]],
+  device const float *raw_sensor6 [[buffer(22)]],
+  device const float *raw_sensor7 [[buffer(23)]],
+  device const uint *metadata [[buffer(24)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid >= 24u) return;
+  const uint modality_slot = gid / 3u;
+  const uint projection = gid % 3u;
+  const uint modality_count = min(metadata[0], 8u);
+  policy_observation_sketch[gid] = 0.0f;
+  policy_observation_sketch[24u + gid] = 0.0f;
+  if (modality_slot >= modality_count) return;
+  const uint range_base = 4u + modality_slot * 3u;
+  const uint modality_code = metadata[range_base];
+  const uint scalar_offset = metadata[range_base + 1u];
+  const uint scalar_count = metadata[range_base + 2u];
+  const uint observation_count = metadata[1];
+  if (modality_code == 0u || scalar_count == 0u
+      || scalar_offset >= observation_count
+      || scalar_count > observation_count - scalar_offset) {
+    return;
+  }
+  const ulong validity_offset = ulong(metadata[2])
+    | (ulong(metadata[3]) << 32u);
+  device const uint *observation_validity =
+    reinterpret_cast<device const uint *>(hot_state + validity_offset);
+  const uint sample_count = min(scalar_count, 1024u);
+  float projection_sum = 0.0f;
+  uint valid_sample_count = 0u;
+  for (uint sample = 0u; sample < sample_count; ++sample) {
+    const uint local_index = uint(
+      (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
+    );
+    if (observation_validity[scalar_offset + local_index] == 0u) continue;
+    const float value = nb_policy_raw_sensor_value(
+      modality_slot, local_index,
+      raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+      raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+    );
+    if (!isfinite(value)) continue;
+    const ulong projection_key =
+      (ulong(modality_code) << 48u)
+      ^ (ulong(local_index) << 8u)
+      ^ ulong(projection)
+      ^ 0x4e58534b45544348ul;
+    const float sign = (nb_policy_observation_hash(projection_key) & 1ul) != 0ul
+      ? 1.0f : -1.0f;
+    projection_sum += sign * value;
+    valid_sample_count += 1u;
+  }
+  if (valid_sample_count == 0u) return;
+  policy_observation_sketch[gid] = projection_sum
+    / float(valid_sample_count);
+  policy_observation_sketch[24u + gid] = 1.0f;
 }
 
 inline float nb_normalized_body_feature_value(float value, uint feature) {
@@ -1086,6 +1225,7 @@ inline NBExternalGoalContext nb_external_goal_context(
         || token.provenance_record_identifier == 0ul) continue;
     const uint base = slot * uniforms.workspace_dimension;
     context.valid = 1.0f;
+    context.priority = max(workspace[base], 0.0f);
     context.damage_risk_budget = clamp(
       workspace[base + 20u], 0.0f, 1.0f
     );
@@ -2092,6 +2232,39 @@ kernel void propose_dynamic_options(
       candidate.parameters[9] = body_relative.y;
       candidate.parameters[10] = body_relative.z;
       candidate.competence *= sensor_to_body.confidence;
+    }
+  }
+  // An authenticated external goal must own a real candidate, not merely
+  // reweight unrelated innate options. Slot zero is the bounded task-space
+  // proposal: its sixteen target coordinates become the ordinary relative
+  // position/velocity/force/stiffness/synergy parameters consumed by the
+  // existing motor-goal, risk, anatomy, and spinal pipeline. Module 73 is
+  // deliberately distinct from module 72's locomotor/CPG policy.
+  const NBExternalGoalContext external_task = nb_external_goal_context(
+    workspace, workspace_metadata, uniforms, control->active_goal_identifier
+  );
+  if (gid == 0u && external_task.valid > 0.0f) {
+    candidate.option_identifier = 0x6000000000000000ul
+      | (control->active_goal_identifier & 0x0ffffffffffffffful);
+    candidate.goal_identifier = control->active_goal_identifier;
+    // Goal arbitration already authenticated and ranked this directive. Keep
+    // that priority causally present in option valuation instead of silently
+    // dropping it and allowing unrelated innate options to win by default.
+    candidate.task_value = external_task.priority
+      + external_task.persistence;
+    candidate.homeostatic_value = 0.0f;
+    candidate.social_value = 0.0f;
+    candidate.information_gain = 0.0f;
+    candidate.damage_cvar = clamp(safety + pain, 0.0f, 1.0f);
+    candidate.effort_cost = 0.01f;
+    candidate.switching_cost = 0.0f;
+    candidate.competence = 1.0f;
+    candidate.proposal_kind = 0u;
+    candidate.source_module = 73u;
+    candidate.flags = NB_CONTROL_FLAG_VALID | (1u << 7u);
+    candidate.parameter_count = 16u;
+    for (uint index = 0u; index < 16u; ++index) {
+      candidate.parameters[index] = external_task.target[index];
     }
   }
   candidates[gid] = candidate;
@@ -3261,8 +3434,13 @@ kernel void generate_motor_spinal_autonomic_state(
   device const NBActiveSensingChannelDescriptor *active_sensing_descriptors
     [[buffer(10)]],
   device const float *somatic_synergy_decoder [[buffer(13)]],
+  device const float *policy_observation_sketch [[buffer(14)]],
+  device const float *belief_parameters [[buffer(15)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const float *recurrent = reinterpret_cast<device const float *>(
+    hot_state + uniforms.recurrent_offset
+  );
   device const NBControlHeader *header = reinterpret_cast<device const NBControlHeader *>(
     hot_state + uniforms.control_header_offset
   );
@@ -3480,7 +3658,7 @@ kernel void generate_motor_spinal_autonomic_state(
         );
       }
     }
-    float goal_synergy = 0.0f;
+    float cortical_synergy = 0.0f;
     uint dominant_synergy = 0u;
     float dominant_synergy_gain = 0.0f;
     const uint available_synergy_count = min(
@@ -3494,16 +3672,46 @@ kernel void generate_motor_spinal_autonomic_state(
         dominant_synergy = synergy;
         dominant_synergy_gain = decoder_gain;
       }
-      if (motor_goal_valid && synergy < available_synergy_count) {
-        goal_synergy += decoder_gain
-          * motor_goal->synergy_coefficients[synergy];
-      }
+      const uint descriptor_index =
+        uniforms.communication_synergy_descriptor_offset + synergy;
+      const NBCommunicationChannelDescriptor synergy_descriptor =
+        communication_descriptors[descriptor_index];
+      const bool communication_synergy = descriptor_index
+        < uniforms.communication_descriptor_count
+        && (synergy_descriptor.flags & NB_CONTROL_FLAG_VALID) != 0u;
+      const uint synergy_parameter_index =
+        communication_selected && communication_synergy
+          ? synergy_descriptor.local_channel_index % parameter_count
+          : synergy % parameter_count;
+      const float planned_gain = communication_selected
+        ? (communication_synergy
+          ? synergy_descriptor.gain
+          : clamp(motor_parameters[8], 0.0f, 1.0f))
+        : policy_parameters[7];
+      const bool use_structured_synergy = motor_goal_valid
+        && motor_goal->synergy_count > 0u && !communication_selected;
+      const float planned_synergy = use_structured_synergy
+        ? (synergy < available_synergy_count
+          ? motor_goal->synergy_coefficients[synergy] : 0.0f)
+        : candidate.parameters[synergy_parameter_index] * planned_gain;
+      const float learned_synergy = motor_goal_valid
+          && !communication_selected && synergy < 16u
+        ? nb_learned_policy_synergy(
+            recurrent, uniforms.recurrent_scalar_count,
+            policy_parameters, belief_parameters,
+            policy_observation_sketch, synergy
+          ) * motor_parameters[7]
+        : 0.0f;
+      const float effective_synergy = rest_selected ? 0.0f : clamp(
+        planned_synergy + learned_synergy, -1.0f, 1.0f
+      ) * (1.0f - deliberate_inhibition);
+      cortical_synergy += decoder_gain * effective_synergy;
     }
-    goal_synergy = clamp(goal_synergy, -1.0f, 1.0f);
+    cortical_synergy = clamp(cortical_synergy, -1.0f, 1.0f);
     const float motor_logit =
       candidate.parameters[gid % parameter_count]
         * uniforms.motor_gain * motor_parameters[0]
-      + task_correction + goal_synergy * motor_parameters[6];
+      + task_correction + cortical_synergy * motor_parameters[6];
     const float ordinary_descending = rest_selected
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
@@ -3706,9 +3914,19 @@ kernel void generate_motor_spinal_autonomic_state(
       ? (gid < min(motor_goal->synergy_count, 16u)
         ? motor_goal->synergy_coefficients[gid] : 0.0f)
       : candidate.parameters[parameter_index];
-    synergies[gid] = rest_selected ? 0.0f
-      : structured_synergy * (use_structured_synergy ? 1.0f : gain)
-        * (1.0f - deliberate_inhibition);
+    const float planned_synergy = structured_synergy
+      * (use_structured_synergy ? 1.0f : gain);
+    const float learned_synergy = motor_goal_valid
+        && !communication_selected && gid < 16u
+      ? nb_learned_policy_synergy(
+          recurrent, uniforms.recurrent_scalar_count,
+          policy_parameters, belief_parameters,
+          policy_observation_sketch, gid
+        ) * motor_parameters[7]
+      : 0.0f;
+    synergies[gid] = rest_selected ? 0.0f : clamp(
+      planned_synergy + learned_synergy, -1.0f, 1.0f
+    ) * (1.0f - deliberate_inhibition);
   }
   if (gid < uniforms.autonomic_dimension) {
     device NBAutonomicCommandRecord *autonomic =

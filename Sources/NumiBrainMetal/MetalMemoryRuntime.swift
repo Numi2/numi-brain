@@ -308,6 +308,40 @@ private struct CommittedTransitionUniforms {
   var journalEntryCapacity: UInt32 = 0
   var teacherScalarCount: UInt32 = 0
   var teacherFlags: UInt32 = 0
+  var modalityCount: UInt32 = 0
+  var reservedModality0: UInt32 = 0
+  var reservedModality1: UInt32 = 0
+  var reservedModality2: UInt32 = 0
+  var modality0Code: UInt32 = 0
+  var modality1Code: UInt32 = 0
+  var modality2Code: UInt32 = 0
+  var modality3Code: UInt32 = 0
+  var modality4Code: UInt32 = 0
+  var modality5Code: UInt32 = 0
+  var modality6Code: UInt32 = 0
+  var modality7Code: UInt32 = 0
+  var modality0Offset: UInt32 = 0
+  var modality1Offset: UInt32 = 0
+  var modality2Offset: UInt32 = 0
+  var modality3Offset: UInt32 = 0
+  var modality4Offset: UInt32 = 0
+  var modality5Offset: UInt32 = 0
+  var modality6Offset: UInt32 = 0
+  var modality7Offset: UInt32 = 0
+  var modality0ScalarCount: UInt32 = 0
+  var modality1ScalarCount: UInt32 = 0
+  var modality2ScalarCount: UInt32 = 0
+  var modality3ScalarCount: UInt32 = 0
+  var modality4ScalarCount: UInt32 = 0
+  var modality5ScalarCount: UInt32 = 0
+  var modality6ScalarCount: UInt32 = 0
+  var modality7ScalarCount: UInt32 = 0
+}
+
+private struct CommittedTransitionModalityRange: Sendable {
+  let code: UInt32
+  let offset: UInt32
+  let scalarCount: UInt32
 }
 
 private struct CounterfactualLearningUniforms {
@@ -345,6 +379,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let autonomicActionCount: Int
   private let activeSensingCount: Int
   private let internalActionCount: Int
+  private let committedTransitionModalities: [CommittedTransitionModalityRange]
   private let segmentPipeline: any MTLComputePipelineState
   private let retrievalBeginPipeline: any MTLComputePipelineState
   private let archiveShortlistClearPipeline: any MTLComputePipelineState
@@ -383,7 +418,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 400,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 512,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -391,6 +426,40 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalProgram.layouts.allSatisfy({ $0.tokenDimension <= 256 })
     else {
       throw TissueError.metal("memory runtime ABI or parameter binding drift")
+    }
+    var modalityScalarOffset: UInt64 = 0
+    let committedTransitionModalities = try species.senses
+      .filter(\.enabled)
+      .sorted { $0.modality.rawValue < $1.modality.rawValue }
+      .map { topology -> CommittedTransitionModalityRange in
+        let (scalarCount, countOverflow) = UInt64(topology.receptorCount)
+          .multipliedReportingOverflow(by: UInt64(topology.observationDimension))
+        let (nextOffset, offsetOverflow) = modalityScalarOffset
+          .addingReportingOverflow(scalarCount)
+        guard !countOverflow, !offsetOverflow, scalarCount > 0,
+          modalityScalarOffset <= UInt64(UInt32.max),
+          scalarCount <= UInt64(UInt32.max), nextOffset <= UInt64(UInt32.max)
+        else {
+          throw TissueError.metal(
+            "committed transition modality range exceeds Metal UInt32"
+          )
+        }
+        let result = CommittedTransitionModalityRange(
+          code: UInt32(topology.modality.rawValue),
+          offset: UInt32(modalityScalarOffset),
+          scalarCount: UInt32(scalarCount)
+        )
+        modalityScalarOffset = nextOffset
+        return result
+      }
+    guard committedTransitionModalities.count <= 8,
+      modalityScalarOffset == UInt64(
+        arena.layout.section(.sensoryObservations).elementCount
+      )
+    else {
+      throw TissueError.metal(
+        "committed transition modality summary does not cover the sensorium"
+      )
     }
     let sourceURL =
       Bundle.module.url(
@@ -438,7 +507,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 10
+    descriptor.maxBufferBindCount = 18
     descriptor.initializeBindings = true
     guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
       let uniformBuffer = device.makeBuffer(
@@ -539,6 +608,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.autonomicActionCount = Int(species.physiology.autonomicActionDimension)
     self.activeSensingCount = Int(species.motor.activeSensingActionDimension)
     self.internalActionCount = InternalActionKind.allCases.count
+    self.committedTransitionModalities = committedTransitionModalities
     self.segmentPipeline = pipelines[0]
     self.retrievalBeginPipeline = pipelines[1]
     self.archiveShortlistClearPipeline = pipelines[2]
@@ -596,6 +666,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
       physicsStateFingerprint: acceptedPhysicsState.physicsStateFingerprint,
       teacherState: teacherState,
+      rawSensorViews: nil,
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: nil
     )
@@ -609,6 +680,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     previousTimestamp: BrainTimestamp,
     acceptedTimestamp: BrainTimestamp,
     teacherState: MetalTeacherStateBufferLease?,
+    rawSensorViews: [MetalRawSensorBufferView],
     acceptanceGateGPUAddress: UInt64,
     acceptanceGateResultGPUAddress: UInt64
   ) throws {
@@ -621,6 +693,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       acceptedTimestamp: acceptedTimestamp,
       physicsStateFingerprint: 0,
       teacherState: teacherState,
+      rawSensorViews: rawSensorViews,
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
@@ -635,6 +708,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     acceptedTimestamp: BrainTimestamp,
     physicsStateFingerprint: UInt64,
     teacherState: MetalTeacherStateBufferLease?,
+    rawSensorViews: [MetalRawSensorBufferView]?,
     acceptanceGateGPUAddress: UInt64?,
     acceptanceGateResultGPUAddress: UInt64?
   ) throws {
@@ -647,7 +721,11 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     let observations = layout.section(.sensoryObservations)
     let observationValidity = layout.section(.sensoryValidity)
     let events = layout.section(.eventQueue)
-    let somatic = layout.section(.somaticOutput)
+    // The slow learner and the live controller share the same fixed action
+    // space: sixteen transactional somatic-synergy coordinates. Recording the
+    // first sixteen muscles here would train a different function from the one
+    // the anatomical 416x16 decoder can enact.
+    let somatic = controlLayout.section(.synergyCoefficients)
     let acceptedAutonomic = layout.section(.acceptedAutonomicOutput)
     let acceptedActiveSensing = layout.section(.acceptedActiveSensingOutput)
     let internalActions = controlLayout.section(.internalActions)
@@ -679,6 +757,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalTransitions.elementCount, regionalTransitions.elementStride,
       regionalProgram.layouts.count,
     ]
+    let sortedRawSensorViews = rawSensorViews?.sorted {
+      $0.modality.rawValue < $1.modality.rawValue
+    }
     guard observationValidity.elementCount == observations.elementCount,
       counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       [objectSlots, otherAgentSlots, relationSlots, spatialTransforms]
@@ -687,7 +768,19 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalTransitions.elementStride
         == MetalAgentMemoryLayout.regionalTransitionStride,
       teacherState == nil
-        || teacherState!.view.timestamp == acceptedTimestamp
+        || teacherState!.view.timestamp == acceptedTimestamp,
+      sortedRawSensorViews == nil || (
+        sortedRawSensorViews!.count == committedTransitionModalities.count
+          && zip(sortedRawSensorViews!, committedTransitionModalities)
+            .allSatisfy { view, modality in
+              UInt32(view.modality.rawValue) == modality.code
+                && view.gpuAddress > 0
+                && view.receptorTimestamp <= acceptedTimestamp
+                && UInt64(view.receptorCount)
+                  * UInt64(view.featureDimension)
+                  == UInt64(modality.scalarCount)
+            }
+      )
     else {
       throw TissueError.transaction("committed transition exceeds GPU capacity")
     }
@@ -760,8 +853,48 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalModuleCount: UInt32(regionalProgram.layouts.count),
       journalEntryCapacity: UInt32(journalEntryCapacity),
       teacherScalarCount: teacherState?.view.scalarCount ?? 0,
-      teacherFlags: teacherState?.view.flags ?? 0
+      teacherFlags: teacherState?.view.flags ?? 0,
+      modalityCount: UInt32(committedTransitionModalities.count),
+      reservedModality0: sortedRawSensorViews == nil ? 0 : 1
     )
+    for (index, modality) in committedTransitionModalities.enumerated() {
+      switch index {
+      case 0:
+        uniforms.modality0Code = modality.code
+        uniforms.modality0Offset = modality.offset
+        uniforms.modality0ScalarCount = modality.scalarCount
+      case 1:
+        uniforms.modality1Code = modality.code
+        uniforms.modality1Offset = modality.offset
+        uniforms.modality1ScalarCount = modality.scalarCount
+      case 2:
+        uniforms.modality2Code = modality.code
+        uniforms.modality2Offset = modality.offset
+        uniforms.modality2ScalarCount = modality.scalarCount
+      case 3:
+        uniforms.modality3Code = modality.code
+        uniforms.modality3Offset = modality.offset
+        uniforms.modality3ScalarCount = modality.scalarCount
+      case 4:
+        uniforms.modality4Code = modality.code
+        uniforms.modality4Offset = modality.offset
+        uniforms.modality4ScalarCount = modality.scalarCount
+      case 5:
+        uniforms.modality5Code = modality.code
+        uniforms.modality5Offset = modality.offset
+        uniforms.modality5ScalarCount = modality.scalarCount
+      case 6:
+        uniforms.modality6Code = modality.code
+        uniforms.modality6Offset = modality.offset
+        uniforms.modality6ScalarCount = modality.scalarCount
+      case 7:
+        uniforms.modality7Code = modality.code
+        uniforms.modality7Offset = modality.offset
+        uniforms.modality7ScalarCount = modality.scalarCount
+      default:
+        preconditionFailure("committed transition modality capacity drift")
+      }
+    }
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
       committedTransitionUniformBuffer.contents().copyMemory(
@@ -782,6 +915,20 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         ?? unconditionalAcceptanceGateBuffer.gpuAddress,
       index: 9
     )
+    for index in 0..<8 {
+      let fallbackOffset = committedTransitionModalities.indices.contains(index)
+        ? UInt64(committedTransitionModalities[index].offset)
+          * UInt64(MemoryLayout<Float>.stride)
+        : 0
+      let address = if let sortedRawSensorViews,
+        index < sortedRawSensorViews.count
+      {
+        sortedRawSensorViews[index].gpuAddress
+      } else {
+        hot.outputGPUAddress + UInt64(observations.byteOffset) + fallbackOffset
+      }
+      argumentTable.setAddress(address, index: 10 + index)
+    }
     encoder.setComputePipelineState(committedTransitionPipeline)
     encoder.setArgumentTable(argumentTable)
     encoder.dispatchThreads(

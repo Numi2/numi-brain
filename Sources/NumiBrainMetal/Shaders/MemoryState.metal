@@ -21,7 +21,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 8u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 11u;
 constant uint NB_COMMITTED_TRANSITION_HAS_EMBODIED_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 2u;
@@ -484,6 +484,11 @@ struct NBCommittedTransitionUniforms {
   uint journal_entry_capacity;
   uint teacher_scalar_count;
   uint teacher_flags;
+  uint modality_count;
+  uint reserved_modality[3];
+  uint modality_codes[8];
+  uint modality_offsets[8];
+  uint modality_scalar_counts[8];
 };
 
 struct NBAcceptedPhysicsStateToken {
@@ -1096,7 +1101,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 304);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 400);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 512);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -1163,6 +1168,30 @@ inline ulong consolidation_hash(ulong value) {
   value ^= value >> 27;
   value *= 0x94d049bb133111ebul;
   return value ^ (value >> 31);
+}
+
+inline float committed_raw_sensor_value(
+  uint modality_slot,
+  uint scalar_index,
+  device const float *raw0,
+  device const float *raw1,
+  device const float *raw2,
+  device const float *raw3,
+  device const float *raw4,
+  device const float *raw5,
+  device const float *raw6,
+  device const float *raw7)
+{
+  switch (modality_slot) {
+    case 0u: return raw0[scalar_index];
+    case 1u: return raw1[scalar_index];
+    case 2u: return raw2[scalar_index];
+    case 3u: return raw3[scalar_index];
+    case 4u: return raw4[scalar_index];
+    case 5u: return raw5[scalar_index];
+    case 6u: return raw6[scalar_index];
+    default: return raw7[scalar_index];
+  }
 }
 
 /// Must remain numerically identical to CognitiveState.metal's structured
@@ -4769,6 +4798,14 @@ kernel void journal_committed_learning_transition(
   device const NBRegionalTokenLayoutRecord *regional_layouts [[buffer(7)]],
   device const uint *acceptance_gate [[buffer(8)]],
   device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(9)]],
+  device const float *raw_sensor0 [[buffer(10)]],
+  device const float *raw_sensor1 [[buffer(11)]],
+  device const float *raw_sensor2 [[buffer(12)]],
+  device const float *raw_sensor3 [[buffer(13)]],
+  device const float *raw_sensor4 [[buffer(14)]],
+  device const float *raw_sensor5 [[buffer(15)]],
+  device const float *raw_sensor6 [[buffer(16)]],
+  device const float *raw_sensor7 [[buffer(17)]],
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
@@ -4797,6 +4834,9 @@ kernel void journal_committed_learning_transition(
   device const uint *observation_validity = reinterpret_cast<device const uint *>(
     output_hot_state + uniforms.observation_validity_offset
   );
+  // These are the exact accepted cortical somatic-synergy coordinates, not an
+  // arbitrary prefix of the decoded muscle excitation vector. The learner's
+  // sixteen-value policy head is enacted through this same action space.
   device const float *actions = reinterpret_cast<device const float *>(
     output_hot_state + uniforms.somatic_output_offset
   );
@@ -4958,14 +4998,64 @@ kernel void journal_committed_learning_transition(
         output_hot_state, uniforms, level
       );
     }
-    const uint observation_index = component % uniforms.observation_count;
-    const bool observation_valid = observation_validity[observation_index] != 0u;
-    record.observation[component] = observation_valid
-      ? observations[observation_index] : 0.0f;
-    if (observation_valid) {
-      record.observation_sample_count += 1u;
-      record.observation_validity_mask |= 1u << component;
+  }
+  // Preserve explicit spatial evidence from every enabled modality. Each
+  // sorted modality owns a deterministic three-coordinate signed projection
+  // sketch. The projection signs bind the modality code, source scalar index,
+  // and coordinate, so localized changes cannot disappear merely because
+  // their global mean, magnitude, or maximum is unchanged. Small modalities
+  // contribute every scalar; large modalities use an evenly spaced bounded
+  // 1,024-scalar projection. This keeps the fixed 24-float learner record and
+  // constant per-modality work while avoiding v9's global-summary collision
+  // on physically distinct support geometries.
+  const uint modality_count = min(uniforms.modality_count, 8u);
+  for (uint modality_slot = 0u;
+      modality_slot < modality_count; ++modality_slot) {
+    const uint scalar_offset = uniforms.modality_offsets[modality_slot];
+    const uint scalar_count = uniforms.modality_scalar_counts[modality_slot];
+    if (uniforms.modality_codes[modality_slot] == 0u
+        || scalar_count == 0u
+        || scalar_offset >= uniforms.observation_count
+        || scalar_count > uniforms.observation_count - scalar_offset) {
+      continue;
     }
+    const uint sample_count = min(scalar_count, 1024u);
+    float projection_sums[3] = {};
+    uint valid_sample_count = 0u;
+    for (uint sample = 0u; sample < sample_count; ++sample) {
+      const uint local_index = uint(
+        (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
+      );
+      const uint observation_index = scalar_offset + local_index;
+      if (observation_validity[observation_index] == 0u) continue;
+      const float value = uniforms.reserved_modality[0] == 1u
+        ? committed_raw_sensor_value(
+          modality_slot, local_index,
+          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+        )
+        : observations[observation_index];
+      if (!isfinite(value)) continue;
+      for (uint projection = 0u; projection < 3u; ++projection) {
+        const ulong projection_key =
+          (ulong(uniforms.modality_codes[modality_slot]) << 48u)
+          ^ (ulong(local_index) << 8u)
+          ^ ulong(projection)
+          ^ 0x4e58534b45544348ul; // "NXSKETCH"
+        const float sign = (consolidation_hash(projection_key) & 1ul) != 0ul
+          ? 1.0f : -1.0f;
+        projection_sums[projection] += sign * value;
+      }
+      valid_sample_count += 1u;
+    }
+    if (valid_sample_count == 0u) continue;
+    const float inverse_count = 1.0f / float(valid_sample_count);
+    const uint component = modality_slot * 3u;
+    record.observation[component] = projection_sums[0] * inverse_count;
+    record.observation[component + 1u] = projection_sums[1] * inverse_count;
+    record.observation[component + 2u] = projection_sums[2] * inverse_count;
+    record.observation_sample_count += 3u;
+    record.observation_validity_mask |= 7u << component;
   }
   for (uint component = 0u; component < 16u; ++component) {
     record.action[component] = actions[component % uniforms.action_count];

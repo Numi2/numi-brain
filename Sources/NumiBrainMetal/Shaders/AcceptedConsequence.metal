@@ -1973,11 +1973,20 @@ kernel void assimilate_accepted_joint_schema(
   if (evidence_channels == 0u) return;
   const float evidence_fraction = float(evidence_channels)
     / max(float(coordinate_count * 3u), 1.0f);
-  joint[30] = clamp(mix(
-    prior_valid ? joint[30] : 0.0f,
-    evidence_fraction,
-    gain
-  ), 0.0f, 1.0f);
+  // Coverage is direct causal evidence about whether this joint belongs to
+  // the accepted articulated body, not a state variable integrated from an
+  // arbitrary zero prior. Attenuating the first valid observation by a
+  // millisecond-scale temporal gain makes ownership nearly zero and turns the
+  // next root's conservative uncertainty term into a false full-body stop.
+  // Later observations remain rate-limited so ownership cannot jump after the
+  // posterior has acquired a real history.
+  joint[30] = clamp(
+    prior_valid
+      ? mix(joint[30], evidence_fraction, gain)
+      : evidence_fraction,
+    0.0f,
+    1.0f
+  );
   joint[31] = maximum_error;
   identity[0] = ulong(topology.identifiers.x);
   identity[1] = ulong(topology.identifiers.y);

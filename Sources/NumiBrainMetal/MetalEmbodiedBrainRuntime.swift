@@ -701,6 +701,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         encoder: encoder,
         transaction: transaction.agentStateToken,
         timestamp: transaction.jointToken.committedTimestamp,
+        rawSensorViews: rawSensors.map(\.view),
         externalGoal: externalGoal
       )
       encoder.endEncoding()
@@ -962,6 +963,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         encoder: encoder,
         transaction: transaction.agentStateToken,
         timestamp: transaction.jointToken.committedTimestamp,
+        rawSensorViews: rawSensors.map(\.view),
         externalGoal: externalGoal
       )
       let decision = try makeDecisionBufferView(
@@ -1867,6 +1869,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         previousTimestamp: transaction.jointToken.committedTimestamp,
         acceptedTimestamp: acceptedTimestamp,
         teacherState: teacherState,
+        rawSensorViews: rawSensors.map(\.view),
         acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
         acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
       )

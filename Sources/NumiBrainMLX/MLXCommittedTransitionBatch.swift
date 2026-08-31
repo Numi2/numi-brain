@@ -5,7 +5,8 @@ import NumiBrainMetal
 
 /// Zero-copy MLX view of committed-transition slots. Every valid record carries
 /// 19 recurrent features, five exact structured world-context features,
-/// accepted somatic, autonomic, active-sensing, and internal action features,
+/// accepted somatic-synergy, autonomic, active-sensing, and internal action
+/// features,
 /// bounded plasticity/cerebellar traces, and accepted body-joint state; empty
 /// ring slots are excluded by `validMask`.
 @available(macOS 26.0, *)

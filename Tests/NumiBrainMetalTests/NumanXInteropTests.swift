@@ -1,5 +1,6 @@
 import Metal
 import NumiBrainABI
+import NumiBrainMetalBridgeABI
 import XCTest
 
 @testable import NumiBrainCore
@@ -17,6 +18,8 @@ final class NumanXInteropTests: XCTestCase {
     XCTAssertEqual(NumanXSensorPacket.byteCount, 72)
     XCTAssertEqual(nb_brain_abi_numanx_sensor_packet_size(), 72)
     XCTAssertEqual(MemoryLayout<NBNumanXSensorPacket>.stride, 72)
+    XCTAssertEqual(MemoryLayout<mrnx_candidate_timing_v1>.stride, 40)
+    XCTAssertEqual(MemoryLayout<mrnx_aggregate_snapshot_v3>.stride, 1_320)
   }
 
   func testCommittedSensorPacketRoundTripsAndRejectsShapeAndLeaseDrift() throws {
@@ -39,7 +42,7 @@ final class NumanXInteropTests: XCTestCase {
     XCTAssertEqual(lease.packet.deliveryTimestamp, transaction.committedTimestamp)
     XCTAssertEqual(
       lease.packet.rawSensorViews.map(\.modality),
-      [.proprioception, .interoception]
+      [.proprioception, .interoception, .kinesthesia]
     )
     XCTAssertEqual(
       try NumanXSensorPacketLease(
@@ -257,17 +260,50 @@ func makeNumanXInteropCompiledTemplate(
   proprioceptorCount: UInt32 = 2,
   proprioceptionFeatureDimension: UInt32 = 3,
   proprioceptionLatencyMicroseconds: UInt32 = 250,
+  proprioceptionActiveSensingActionDimension: UInt16 = 1,
+  kinesthesiaReceptorCount: UInt32 = 1,
+  kinesthesiaFeatureDimension: UInt32 = 7,
+  kinesthesiaLatencyMicroseconds: UInt32 = 250,
+  vestibularReceptorCount: UInt32 = 0,
+  vestibularFeatureDimension: UInt32 = 0,
+  vestibularLatencyMicroseconds: UInt32 = 250,
+  auditionReceptorCount: UInt32 = 0,
+  auditionFeatureDimension: UInt32 = 0,
+  auditionLatencyMicroseconds: UInt32 = 250,
+  visionReceptorCount: UInt32 = 0,
+  visionFeatureDimension: UInt32 = 0,
+  visionLatencyMicroseconds: UInt32 = 250,
+  visionActiveSensingActionDimension: UInt16 = 0,
+  touchReceptorCount: UInt32 = 0,
+  touchFeatureDimension: UInt32 = 0,
+  touchLatencyMicroseconds: UInt32 = 250,
   interoceptorCount: UInt32 = 1,
   interoceptionFeatureDimension: UInt32 = 1,
   interoceptionLatencyMicroseconds: UInt32 = 1_000,
+  somaticSynergyCount: UInt16? = nil,
+  planningHorizonSteps: UInt16 = 1,
+  workspaceCapacity: UInt16 = 1,
   name: String = "NumanX interop test fixture"
 ) throws -> CompiledSpeciesTemplate {
+  let capacities = try BrainCapacityProfile.fullCognitiveV1
+  let resolvedSomaticSynergyCount = somaticSynergyCount
+    ?? UInt16(truncatingIfNeeded: actuatorCount)
   guard actuatorCount > 0,
     actuatorCount <= UInt32(UInt16.max),
+    resolvedSomaticSynergyCount > 0,
     proprioceptorCount > 1,
-    proprioceptionFeatureDimension >= UInt32(JointReceptorSignal.allCases.count),
+    proprioceptionFeatureDimension > 0,
+    kinesthesiaReceptorCount > 0,
+    kinesthesiaFeatureDimension >= UInt32(JointReceptorSignal.allCases.count),
+    (auditionReceptorCount == 0) == (auditionFeatureDimension == 0),
+    (visionReceptorCount == 0) == (visionFeatureDimension == 0),
+    Int(proprioceptionActiveSensingActionDimension)
+      + Int(visionActiveSensingActionDimension) <= Int(UInt16.max),
     interoceptorCount > 0,
-    interoceptionFeatureDimension > 0
+    interoceptionFeatureDimension > 0,
+    planningHorizonSteps > 0,
+    workspaceCapacity > 0,
+    workspaceCapacity <= capacities.workspaceTokenCapacity
   else {
     throw BrainRuntimeError.invalidDescriptor(
       "NumanX interop fixture shape is invalid"
@@ -308,7 +344,8 @@ func makeNumanXInteropCompiledTemplate(
         latencyMicroseconds: proprioceptionLatencyMicroseconds,
         adaptationTimeConstantMicroseconds: 10_000,
         noiseStandardDeviation: 0,
-        activeSensingActionDimension: 1,
+        activeSensingActionDimension:
+          proprioceptionActiveSensingActionDimension,
         enabled: true
       )
     case .interoception:
@@ -317,6 +354,61 @@ func makeNumanXInteropCompiledTemplate(
         receptorCount: interoceptorCount,
         observationDimension: interoceptionFeatureDimension,
         latencyMicroseconds: interoceptionLatencyMicroseconds,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true
+      )
+    case .kinesthesia:
+      return try SensoryTopology(
+        modality: modality,
+        receptorCount: kinesthesiaReceptorCount,
+        observationDimension: kinesthesiaFeatureDimension,
+        latencyMicroseconds: kinesthesiaLatencyMicroseconds,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true
+      )
+    case .vestibular where vestibularReceptorCount > 0:
+      return try SensoryTopology(
+        modality: modality,
+        receptorCount: vestibularReceptorCount,
+        observationDimension: vestibularFeatureDimension,
+        latencyMicroseconds: vestibularLatencyMicroseconds,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true
+      )
+    case .audition where auditionReceptorCount > 0:
+      return try SensoryTopology(
+        modality: modality,
+        receptorCount: auditionReceptorCount,
+        observationDimension: auditionFeatureDimension,
+        latencyMicroseconds: auditionLatencyMicroseconds,
+        adaptationTimeConstantMicroseconds: 20_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true
+      )
+    case .vision where visionReceptorCount > 0:
+      return try SensoryTopology(
+        modality: modality,
+        receptorCount: visionReceptorCount,
+        observationDimension: visionFeatureDimension,
+        latencyMicroseconds: visionLatencyMicroseconds,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: visionActiveSensingActionDimension,
+        enabled: true
+      )
+    case .touch where touchReceptorCount > 0:
+      return try SensoryTopology(
+        modality: modality,
+        receptorCount: touchReceptorCount,
+        observationDimension: touchFeatureDimension,
+        latencyMicroseconds: touchLatencyMicroseconds,
         adaptationTimeConstantMicroseconds: 10_000,
         noiseStandardDeviation: 0,
         activeSensingActionDimension: 0,
@@ -338,10 +430,12 @@ func makeNumanXInteropCompiledTemplate(
   let motor = try MotorTopology(
     actuatorCommandKind: .muscleExcitation,
     actuatorCount: actuatorCount,
-    synergyCount: UInt16(actuatorCount),
+    synergyCount: resolvedSomaticSynergyCount,
     motorNucleusCount: 1,
     autonomicActionDimension: 1,
-    activeSensingActionDimension: 1,
+    activeSensingActionDimension:
+      proprioceptionActiveSensingActionDimension
+        + visionActiveSensingActionDimension,
     outputMinimum: 0,
     outputMaximum: 1
   )
@@ -374,7 +468,6 @@ func makeNumanXInteropCompiledTemplate(
       )
     ]
   )
-  let capacities = try BrainCapacityProfile.fullCognitiveV1
   let enabledModules = referenceGraph.modules.map(\.identifier)
   let development = try DevelopmentalStage.allCases.map { stage in
     try DevelopmentalStageTemplate(
@@ -383,8 +476,8 @@ func makeNumanXInteropCompiledTemplate(
       learningRateMultiplier: 1,
       sensorPrecisionMultiplier: 1,
       muscleStrengthMultiplier: 1,
-      planningHorizonSteps: 1,
-      workspaceCapacity: 1,
+      planningHorizonSteps: planningHorizonSteps,
+      workspaceCapacity: workspaceCapacity,
       capabilityGateCodes: stage == .innateScaffold ? [] : [UInt64(stage.rawValue)]
     )
   }
@@ -435,7 +528,7 @@ func makeNumanXInteropCompiledTemplate(
         sourceEndpointIdentifier: UInt64(110 + index),
         jointIdentifier: 1,
         coordinateIdentifier: 0,
-        receptorIndex: 1,
+        receptorIndex: 0,
         featureIndex: UInt32(index),
         signal: signal
       )
@@ -454,7 +547,7 @@ func makeNumanXInteropCompiledTemplate(
   )
   let somaticSynergyCatalog = try SomaticSynergyCatalog.runtimeFoundationFixture(
     actuatorCount: actuatorCount,
-    synergyCount: UInt16(actuatorCount)
+    synergyCount: resolvedSomaticSynergyCount
   )
   return try SpeciesTemplateCompiler.compileRuntimeTemplate(
     referenceBrainGraph: referenceGraph,
@@ -480,9 +573,29 @@ func makeNumanXFullBodyTransportCompiledTemplate() throws
     proprioceptorCount: 416,
     proprioceptionFeatureDimension: 10,
     proprioceptionLatencyMicroseconds: 1_000,
+    proprioceptionActiveSensingActionDimension: 0,
+    kinesthesiaReceptorCount: 128,
+    kinesthesiaFeatureDimension: 7,
+    kinesthesiaLatencyMicroseconds: 1_000,
+    vestibularReceptorCount: 1,
+    vestibularFeatureDimension: 22,
+    vestibularLatencyMicroseconds: 1_000,
+    auditionReceptorCount: 24,
+    auditionFeatureDimension: 8,
+    auditionLatencyMicroseconds: 1_000,
+    visionReceptorCount: 64 * 48,
+    visionFeatureDimension: 8,
+    visionLatencyMicroseconds: 1_000,
+    visionActiveSensingActionDimension: 1,
+    touchReceptorCount: 10,
+    touchFeatureDimension: 7,
+    touchLatencyMicroseconds: 1_000,
     interoceptorCount: 416,
-    interoceptionFeatureDimension: 1,
+    interoceptionFeatureDimension: 6,
     interoceptionLatencyMicroseconds: 1_000,
+    somaticSynergyCount: 16,
+    planningHorizonSteps: 4,
+    workspaceCapacity: 16,
     name: "NumanX 416-muscle transport qualification fixture"
   )
 }

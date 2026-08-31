@@ -177,19 +177,27 @@ public final class MLXBrainLearner: @unchecked Sendable {
         type: Float.self
       )
     }
-    let differentiated = valueAndGrad { [configuration] parameters -> [MLXArray] in
-      let terms = Self.cohortLossTerms(
-        parameters: parameters,
-        parentParameters: parentParameters,
-        batches: preparedBatches
-      )
-      var total = MLXArray(Float(0))
-      for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
-        total = total + (configuration.lossWeights[kind] ?? 0) * term
-      }
-      return [total]
-    }
+    let differentiated = valueAndGrad(
+      { [configuration] parameters -> [MLXArray] in
+        let terms = Self.cohortLossTerms(
+          parameters: parameters,
+          parentParameters: parentParameters,
+          batches: preparedBatches
+        )
+        var total = MLXArray(Float(0))
+        for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
+          total = total + (configuration.lossWeights[kind] ?? 0) * term
+        }
+        return [total]
+      },
+      argumentNumbers: parentParameters.indices
+    )
     let (_, gradients) = differentiated(parentParameters)
+    guard gradients.count == parentParameters.count else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX learner did not differentiate every parameter component"
+      )
+    }
     var squaredGradientNorm = MLXArray(Float(0))
     for gradient in gradients {
       squaredGradientNorm = squaredGradientNorm + square(gradient).sum()

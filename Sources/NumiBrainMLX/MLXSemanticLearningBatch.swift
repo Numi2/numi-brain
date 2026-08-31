@@ -123,18 +123,107 @@ public struct MLXSemanticLearningBatch: @unchecked Sendable {
       finite(rawRelationContradiction), min: 0, max: 1
     )
     let relationEvidence = finite(rawRelationEvidence)
-    let sourceMatches = (
-      relationSourceIdentifiers .== conceptIdentifiers.transposed()
-    ).asType(.float32) * conceptValidMask.transposed()
-    let destinationMatches = (
-      relationDestinationIdentifiers .== conceptIdentifiers.transposed()
-    ).asType(.float32) * conceptValidMask.transposed()
-    let sourceExists = (
-      sourceMatches.sum(axis: 1, keepDims: true) .== Float(1)
-    ).asType(.float32)
-    let destinationExists = (
-      destinationMatches.sum(axis: 1, keepDims: true) .== Float(1)
-    ).asType(.float32)
+    // Resolving every relation against every concept as one dense equality
+    // matrix scales as relationCapacity * conceptCapacity (17 billion entries
+    // for fullCognitiveV1). Build the exact unique-valid endpoint index once
+    // from the immutable shared snapshot instead. Only O(relations) gathered
+    // indices and masks enter MLX; concept embeddings remain zero-copy MLX
+    // views and all differentiable semantic losses are unchanged.
+    let conceptBytes = UnsafeRawBufferPointer(
+      start: try source.makeSharedStorageLease(for: .semanticConcepts).baseAddress,
+      count: source.semanticConceptCapacity * source.semanticConceptStride
+    )
+    let relationBytes = UnsafeRawBufferPointer(
+      start: try source.makeSharedStorageLease(for: .semanticRelations).baseAddress,
+      count: source.semanticRelationCapacity * source.semanticRelationStride
+    )
+    func conceptIsValid(_ index: Int) -> (identifier: UInt64, valid: Bool) {
+      let base = index * source.semanticConceptStride
+      let identifier = conceptBytes.loadUnaligned(
+        fromByteOffset: base, as: UInt64.self
+      )
+      let format = conceptBytes.loadUnaligned(
+        fromByteOffset: base + 32, as: UInt32.self
+      )
+      let kind = conceptBytes.loadUnaligned(
+        fromByteOffset: base + 36, as: UInt32.self
+      )
+      let flags = conceptBytes.loadUnaligned(
+        fromByteOffset: base + 40, as: UInt32.self
+      )
+      let confidence = conceptBytes.loadUnaligned(
+        fromByteOffset: base + 48, as: Float.self
+      )
+      var finiteEmbedding = true
+      for component in 0..<19 {
+        finiteEmbedding = finiteEmbedding && conceptBytes.loadUnaligned(
+          fromByteOffset: base + 52 + component * MemoryLayout<Float>.stride,
+          as: Float.self
+        ).isFinite
+      }
+      return (
+        identifier,
+        identifier > 0
+          && format == source.semanticRecordVersion
+          && kind >= UInt32(SemanticConceptKind.entity.rawValue)
+          && kind <= UInt32(SemanticConceptKind.rule.rawValue)
+          && (flags & 1) == 1
+          && confidence.isFinite && confidence >= 0 && confidence <= 1
+          && finiteEmbedding
+      )
+    }
+    var uniqueConceptSlots: [UInt64: Int32] = [:]
+    var duplicateConceptIdentifiers = Set<UInt64>()
+    uniqueConceptSlots.reserveCapacity(source.semanticConceptCapacity)
+    for index in 0..<source.semanticConceptCapacity {
+      let concept = conceptIsValid(index)
+      guard concept.valid else { continue }
+      if uniqueConceptSlots.updateValue(Int32(index), forKey: concept.identifier)
+        != nil
+      {
+        duplicateConceptIdentifiers.insert(concept.identifier)
+      }
+    }
+    for identifier in duplicateConceptIdentifiers {
+      uniqueConceptSlots.removeValue(forKey: identifier)
+    }
+    var sourceIndices = [Int32](
+      repeating: 0, count: source.semanticRelationCapacity
+    )
+    var destinationIndices = sourceIndices
+    var sourceEndpointMask = [Float](
+      repeating: 0, count: source.semanticRelationCapacity
+    )
+    var destinationEndpointMask = sourceEndpointMask
+    for index in 0..<source.semanticRelationCapacity {
+      let base = index * source.semanticRelationStride
+      let sourceIdentifier = relationBytes.loadUnaligned(
+        fromByteOffset: base + 8, as: UInt64.self
+      )
+      let destinationIdentifier = relationBytes.loadUnaligned(
+        fromByteOffset: base + 16, as: UInt64.self
+      )
+      if let slot = uniqueConceptSlots[sourceIdentifier] {
+        sourceIndices[index] = slot
+        sourceEndpointMask[index] = 1
+      }
+      if let slot = uniqueConceptSlots[destinationIdentifier] {
+        destinationIndices[index] = slot
+        destinationEndpointMask[index] = 1
+      }
+    }
+    let sourceIndexArray = MLXArray(
+      sourceIndices, [source.semanticRelationCapacity]
+    )
+    let destinationIndexArray = MLXArray(
+      destinationIndices, [source.semanticRelationCapacity]
+    )
+    let sourceExists = MLXArray(
+      sourceEndpointMask, [source.semanticRelationCapacity, 1]
+    )
+    let destinationExists = MLXArray(
+      destinationEndpointMask, [source.semanticRelationCapacity, 1]
+    )
     let relationFiniteMask = (
       isFinite(rawRelationEvidence).asType(.float32).sum(
         axis: 1, keepDims: true
@@ -215,8 +304,12 @@ public struct MLXSemanticLearningBatch: @unchecked Sendable {
     self.relationConfidence = relationConfidence
     self.relationContradiction = relationContradiction
     self.relationEvidenceEmbedding = relationEvidence
-    self.relationSourceEmbedding = sourceMatches.matmul(conceptEmbedding)
-    self.relationDestinationEmbedding = destinationMatches.matmul(conceptEmbedding)
+    self.relationSourceEmbedding = conceptEmbedding.take(
+      sourceIndexArray, axis: 0
+    ) * sourceExists
+    self.relationDestinationEmbedding = conceptEmbedding.take(
+      destinationIndexArray, axis: 0
+    ) * destinationExists
   }
 
   public func conceptMaskedMeanSquaredError(

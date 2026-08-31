@@ -8,7 +8,7 @@
 - Implemented runtime code: deterministic scheduler, immutable shared-parameter registry, compiled versioned cohort plans, recurrent regional-token, diagnostic-state, route-history, routing-state, and tissue CPU oracles including bounded physical-timestamp relay interpolation plus a Metal 4 structured fixed-step delayed-sheet runtime with a compiled 64-byte receptor-event ABI, compiled 32/64-byte parameter manifest records, causal onset-plus-latency interrupt transduction, a private merged interrupt queue, private parameter-version validation, transactional module clocks, due-list compaction and consumption, deterministic multi-agent timestamp/module grouping, private region-major dispatch materialization, GPU-generated work expansion and environment-major invocation compaction, independent compact diagnostic plus 10,752-scalar authoritative routed cohort-token, delayed-history, and dynamic routing-state generations, immutable factorized parameters, seven candidate sparse regional routes with timestamped conduction history, deterministic content-scored top-k selection, route persistence, emergency bypass, compact selected-route gathering, counter randomness, and a destination-major tissue CSR graph
 - Build and test system: Swift Package Manager and XCTest
 - Metal kernels: bounded receptor-event compaction, FP32 Wilson-Cowan-family tissue integration, receptor-onset interrupt transduction, compiled-ABI multi-rate due selection, version-bound cohort dispatch materialization, GPU-generated indirect work consumption, environment-major invocation compaction, independent compact cohort diagnostic advance, timestamp-synchronous routed regional-token integration for both one-agent and cohort execution, protective-command derivation, and compiled profile-to-muscle mapping with private transactional command, header, and excitation generations
-- NumanX interop: compiled root/substep/motor/gate/accepted-physics/Brain-preflight/ACK/applied/publication ABIs; same-device retained motor and sensor leases; asynchronous Metal 4 decision and motor-ready gates; a versioned C bridge owning the real full-body Human, HumanIO, Matter, and ABI4 owner lifecycle; persistent device-resident q/v/MyoSim continuation; 416x10 proprioceptive and 416x1 interoceptive candidate channels; mutation-free proposal, Matter-then-Human apply/restore, and one aggregate reader/publication gate across Brain, physics, and sensors. The bounded production path is live for one environment and one physical substep. Anatomical nervous topology, complete sensor modalities, calibrated damage/recovery, learned general control, multi-environment production scale, and performance qualification remain absent.
+- NumanX interop: compiled root/substep/motor/gate/accepted-physics/Brain-preflight/ACK/applied/publication ABIs; same-device retained motor and sensor leases; asynchronous Metal 4 decision and motor-ready gates; a versioned C bridge owning the real full-body Human, HumanIO, Matter, and ABI4 owner lifecycle; persistent device-resident q/v/MyoSim continuation; aggregate proprioceptive, interoceptive, kinesthetic, vestibular, tactile, vision/depth, and auditory channels; mutation-free proposal, Matter-then-Human apply/restore, and one aggregate reader/publication gate across Brain, physics, and sensors. The bounded production path is live for one environment and one physical substep. The learned v11 policy head now enacts sixteen sensor-conditioned synergies through the immutable 416-by-16 muscle decoder, with one qualified auditory closed-loop intervention. Anatomical nervous topology, calibrated damage/recovery, multimodal general control, multi-environment production scale, and performance qualification remain absent.
 - Checkpoint or replay artifacts: exact JSON replay evidence is checked in; persistent runtime checkpointing is not implemented
 - GPU execution/correctness evidence: bounded Apple M4 closed-loop NumiBrain-NumanX temporal-body-field joint-root v0.8, private-field v0.7 through selected-muscle v0.2, Apple M4 Pro NumanX MyoSim borrowed-excitation v0.1, protective-motor/NumanX-packet v0.2, routed-cohort v0.20, accepted-fast-prefix joint v0.6, and interactive-joint v0.4 full-suite correctness, Apple M4 v0.19 routed-cohort correctness, Apple M4 v0.14 lightweight indirect-consumption correctness, and Apple M4 Pro/M4 v0.12 and earlier tissue correctness probes only; all are correctness evidence, and production throughput and counter qualification remain pending
 
@@ -46,6 +46,39 @@ The timings are build/test telemetry, not a matched performance result. The
 compiled Brain species fixture has the exact full-body channel shape but is not
 an anatomical brain, and the one-tet Matter attachment is not a full tissue or
 organ validation.
+
+## NumanX Gate B causal-control checkpoint
+
+The committed-transition ABI is version 11 and records the exact sixteen
+accepted somatic-synergy coordinates. The Metal decision runtime evaluates the
+learned head against a deterministic validity-bound 24-coordinate raw-sensor
+sketch, folds all coordinates into the sixteen enacted synergies, and decodes
+them through the full body's 416-by-16 immutable map. The fold closes a real
+blind spot that previously made the final canonical modality slot incapable of
+affecting action. The accepted joint posterior initializes ownership from its
+first direct receptor coverage while retaining subsequent rate-limited
+inference and all hard protection gates.
+
+On the Apple M4 real full-body +1-degree held-out support task, independent
+three-root ablations now close the sensor-to-learned-action-to-416-muscle-to-
+later-physical-outcome chain for vision, audition, touch, proprioception,
+vestibular, and kinesthesia. The maximum learned-action deltas range from
+`0.0011254251` to `0.5306565`; decoded muscle-command deltas range from
+`0.000060815364` to `0.023855925`; and each intervention worsens a predeclared
+continuous touch, proprioceptive, kinesthetic, or vestibular drift outcome
+under the same accepted goal/option sequence. Gate B remains open because the
+native interoceptive channel still carries six muscle-mechanics fields rather
+than authored energy, fatigue, damage, and systemic physiology, and active
+sensing is still an acquisition-gain control rather than a physical
+eye/head/ear mechanism.
+
+Qualification is split by resource envelope: the complete 146-test package
+passes with zero failures and three asset-dependent skips in 58.722 seconds;
+the bounded real external-task plus publication/retry E2E passes 2/2 in 15.514
+seconds; and the six explicit 49-root modality cohorts pass independently in
+50.286–50.627 seconds each. Strict Metal checks pass and the final incremental
+Release build succeeds in 4.34 seconds. These timings are orchestration
+telemetry, not control-loop latency or throughput measurements.
 
 ## Joint transaction foundation
 

@@ -174,7 +174,11 @@ public struct BodyReceptorBinding: Codable, Equatable, Hashable, Sendable {
 public enum JointReceptorSignal: UInt16, Codable, CaseIterable, Sendable {
   case position = 1
   case velocity = 2
-  case limitActivation = 3
+  case appliedGeneralizedForce = 3
+  case matterReaction = 4
+  case lowerLimitMargin = 5
+  case upperLimitMargin = 6
+  case normalizedEffort = 7
 }
 
 /// Causal proprioceptive evidence attributed to one coordinate in the

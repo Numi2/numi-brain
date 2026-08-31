@@ -58,6 +58,9 @@ public enum SensoryModality: UInt16, Codable, CaseIterable, Sendable {
   case olfaction = 6
   case gustation = 7
   case interoception = 8
+  /// Generalized-coordinate position, velocity, load, reaction, and limit
+  /// sense. Muscle spindle/tendon state remains `.proprioception`.
+  case kinesthesia = 9
 }
 
 @frozen

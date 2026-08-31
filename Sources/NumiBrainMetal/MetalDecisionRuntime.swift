@@ -126,6 +126,13 @@ private struct DecisionActiveSensingChannelDescriptor {
   var flags: UInt32 = 0
 }
 
+private struct DecisionPolicyObservationRange: Sendable {
+  let modality: SensoryModality
+  let code: UInt32
+  let offset: UInt32
+  let scalarCount: UInt32
+}
+
 private struct ExternalGoalDirectiveRecord {
   var identifier: UInt64 = 0
   var deadlineTimestampMicroseconds: UInt64 = 0
@@ -212,6 +219,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let dynamics: DecisionDynamics
   private let controlLayout: MetalActiveControlLayout
   private let goalPipeline: any MTLComputePipelineState
+  private let policyObservationPipeline: any MTLComputePipelineState
   private let workspaceActionPipeline: any MTLComputePipelineState
   private let proposalPipeline: any MTLComputePipelineState
   private let planningPipeline: any MTLComputePipelineState
@@ -231,11 +239,16 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let activeSensingChannelDescriptorBuffer: any MTLBuffer
   private let externalGoalDirectiveBuffer: any MTLBuffer
   private let somaticSynergyDecoderBuffer: any MTLBuffer
+  private let policyObservationMetadataBuffer: any MTLBuffer
+  private let policyObservationSketchBuffer: any MTLBuffer
+  private let policyObservationFallbackBuffer: any MTLBuffer
+  private let policyObservationRanges: [DecisionPolicyObservationRange]
   private let communicationSynergyDescriptorOffset: UInt32
   private let activeSensingDescriptorOffset: UInt32
   private let communicationDescriptorCount: UInt32
   private let valueParameterGPUAddress: UInt64
   private let policyParameterGPUAddress: UInt64
+  private let beliefParameterGPUAddress: UInt64
   private let worldParameterGPUAddress: UInt64
   private let motorParameterGPUAddress: UInt64
   private let cerebellarParameterGPUAddress: UInt64
@@ -270,6 +283,42 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       arenaLayout: arena.layout,
       species: species
     )
+    var observationScalarOffset: UInt64 = 0
+    let policyObservationRanges = try species.senses
+      .filter(\.enabled)
+      .sorted { $0.modality.rawValue < $1.modality.rawValue }
+      .map { topology -> DecisionPolicyObservationRange in
+        let (scalarCount, scalarOverflow) = UInt64(topology.receptorCount)
+          .multipliedReportingOverflow(by: UInt64(topology.observationDimension))
+        let (nextOffset, offsetOverflow) = observationScalarOffset
+          .addingReportingOverflow(scalarCount)
+        guard !scalarOverflow, !offsetOverflow, scalarCount > 0,
+          observationScalarOffset <= UInt64(UInt32.max),
+          scalarCount <= UInt64(UInt32.max), nextOffset <= UInt64(UInt32.max)
+        else {
+          throw TissueError.metal(
+            "decision policy observation range exceeds Metal UInt32"
+          )
+        }
+        let range = DecisionPolicyObservationRange(
+          modality: topology.modality,
+          code: UInt32(topology.modality.rawValue),
+          offset: UInt32(observationScalarOffset),
+          scalarCount: UInt32(scalarCount)
+        )
+        observationScalarOffset = nextOffset
+        return range
+      }
+    let observations = arena.layout.section(.sensoryObservations)
+    let observationValidity = arena.layout.section(.sensoryValidity)
+    guard policyObservationRanges.count <= 8,
+      observationScalarOffset == UInt64(observations.elementCount),
+      observationValidity.elementCount == observations.elementCount
+    else {
+      throw TissueError.metal(
+        "decision policy observation sketch does not cover the sensorium"
+      )
+    }
     let sourceURL =
       Bundle.module.url(
         forResource: "DecisionState",
@@ -300,6 +349,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "generate_motor_spinal_autonomic_state",
       "predict_delayed_cerebellar_consequences",
       "generate_structured_motor_goal_state",
+      "sketch_policy_observations",
     ]
     let functions = try names.map { name -> any MTLFunction in
       guard let function = library.makeFunction(name: name) else {
@@ -315,7 +365,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 14
+    descriptor.maxBufferBindCount = 25
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -460,6 +510,18 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       let somaticSynergyDecoderBuffer = device.makeBuffer(
         length: somaticSynergyDecoder.count * MemoryLayout<Float>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let policyObservationMetadataBuffer = device.makeBuffer(
+        length: 28 * MemoryLayout<UInt32>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let policyObservationSketchBuffer = device.makeBuffer(
+        length: 48 * MemoryLayout<Float>.stride,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
+      let policyObservationFallbackBuffer = device.makeBuffer(
+        length: MemoryLayout<Float>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
       )
     else {
       throw TissueError.metal("failed to allocate decision-state bindings")
@@ -479,6 +541,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "NumiBrain transactional external goal directive"
     somaticSynergyDecoderBuffer.label =
       "NumiBrain immutable somatic synergy decoder"
+    policyObservationMetadataBuffer.label =
+      "NumiBrain immutable policy observation metadata"
+    policyObservationSketchBuffer.label =
+      "NumiBrain decision policy observation sketch"
+    policyObservationFallbackBuffer.label =
+      "NumiBrain decision policy observation fallback"
     communicationDescriptors.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       communicationDescriptorBuffer.contents().copyMemory(
@@ -515,6 +583,26 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         from: source, byteCount: bytes.count
       )
     }
+    var policyObservationMetadata = [UInt32](repeating: 0, count: 28)
+    policyObservationMetadata[0] = UInt32(policyObservationRanges.count)
+    policyObservationMetadata[1] = UInt32(observations.elementCount)
+    let validityOffset = UInt64(observationValidity.byteOffset)
+    policyObservationMetadata[2] = UInt32(truncatingIfNeeded: validityOffset)
+    policyObservationMetadata[3] = UInt32(truncatingIfNeeded: validityOffset >> 32)
+    for (index, range) in policyObservationRanges.enumerated() {
+      let base = 4 + index * 3
+      policyObservationMetadata[base] = range.code
+      policyObservationMetadata[base + 1] = range.offset
+      policyObservationMetadata[base + 2] = range.scalarCount
+    }
+    policyObservationMetadata.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      policyObservationMetadataBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
+    policyObservationFallbackBuffer.contents()
+      .assumingMemoryBound(to: Float.self).pointee = 0
     self.arena = arena
     self.species = species
     self.regionalProgram = regionalProgram
@@ -522,6 +610,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.dynamics = dynamics
     self.controlLayout = controlLayout
     self.goalPipeline = pipelines[0]
+    self.policyObservationPipeline = pipelines[11]
     self.workspaceActionPipeline = pipelines[1]
     self.proposalPipeline = pipelines[2]
     self.planningPipeline = pipelines[3]
@@ -542,6 +631,10 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       activeSensingChannelDescriptorBuffer
     self.externalGoalDirectiveBuffer = externalGoalDirectiveBuffer
     self.somaticSynergyDecoderBuffer = somaticSynergyDecoderBuffer
+    self.policyObservationMetadataBuffer = policyObservationMetadataBuffer
+    self.policyObservationSketchBuffer = policyObservationSketchBuffer
+    self.policyObservationFallbackBuffer = policyObservationFallbackBuffer
+    self.policyObservationRanges = policyObservationRanges
     self.communicationSynergyDescriptorOffset = UInt32(synergyDescriptorOffset)
     self.activeSensingDescriptorOffset = UInt32(activeSensingDescriptorOffset)
     self.communicationDescriptorCount = UInt32(communicationDescriptorCount)
@@ -550,6 +643,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
     self.policyParameterGPUAddress = try sharedParameters.gpuAddress(
       .policy, minimumScalarCount: 16
+    )
+    self.beliefParameterGPUAddress = try sharedParameters.gpuAddress(
+      .belief, minimumScalarCount: 16
     )
     self.worldParameterGPUAddress = try sharedParameters.gpuAddress(
       .world, minimumScalarCount: 190
@@ -568,6 +664,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       cpgOscillatorDescriptorBuffer, cpgCouplingDescriptorBuffer,
       autonomicChannelDescriptorBuffer, activeSensingChannelDescriptorBuffer,
       externalGoalDirectiveBuffer, somaticSynergyDecoderBuffer,
+      policyObservationMetadataBuffer, policyObservationSketchBuffer,
+      policyObservationFallbackBuffer,
     ]
   }
 
@@ -575,9 +673,27 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     encoder: any MTL4ComputeCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp,
+    rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal? = nil
   ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
+    let sortedRawSensorViews = rawSensorViews.sorted {
+      $0.modality.rawValue < $1.modality.rawValue
+    }
+    guard sortedRawSensorViews.count == policyObservationRanges.count,
+      zip(sortedRawSensorViews, policyObservationRanges).allSatisfy({ view, range in
+        let scalarCount = UInt64(view.receptorCount)
+          * UInt64(view.featureDimension)
+        return view.modality == range.modality
+          && UInt32(view.modality.rawValue) == range.code
+          && scalarCount == UInt64(range.scalarCount)
+          && view.receptorTimestamp <= timestamp
+      })
+    else {
+      throw TissueError.transaction(
+        "decision policy observations do not cover the current sensorium"
+      )
+    }
     var uniforms = try makeUniforms(timestamp: timestamp)
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
@@ -654,6 +770,19 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(worldParameterGPUAddress, index: 11)
     argumentTable.setAddress(externalGoalDirectiveBuffer.gpuAddress, index: 12)
     argumentTable.setAddress(somaticSynergyDecoderBuffer.gpuAddress, index: 13)
+    argumentTable.setAddress(policyObservationSketchBuffer.gpuAddress, index: 14)
+    argumentTable.setAddress(beliefParameterGPUAddress, index: 15)
+    for index in 0..<8 {
+      argumentTable.setAddress(
+        index < sortedRawSensorViews.count
+          ? sortedRawSensorViews[index].gpuAddress
+          : policyObservationFallbackBuffer.gpuAddress,
+        index: 16 + index
+      )
+    }
+    argumentTable.setAddress(policyObservationMetadataBuffer.gpuAddress, index: 24)
+    dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
+    barrier(encoder)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
     dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)

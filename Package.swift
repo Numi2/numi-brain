@@ -77,7 +77,7 @@ let package = Package(
     ),
     .testTarget(
       name: "NumiBrainMetalTests",
-      dependencies: ["NumiBrainCore", "NumiBrainMetal"]
+      dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
     ),
   ],
   cxxLanguageStandard: .cxx20

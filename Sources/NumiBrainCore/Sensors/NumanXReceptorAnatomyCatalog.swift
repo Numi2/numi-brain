@@ -114,7 +114,7 @@ public struct NumanXReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
   }
 }
 
-/// One immutable NumanX proprioceptor attributed to an exact joint
+/// One immutable NumanX kinesthetic receptor attributed to an exact joint
 /// coordinate and physical producer endpoint.
 @frozen
 public struct NumanXJointReceptorEndpoint: Codable, Equatable, Hashable, Sendable {
@@ -135,7 +135,7 @@ public struct NumanXJointReceptorEndpoint: Codable, Equatable, Hashable, Sendabl
     sourceEndpointIdentifier: UInt64,
     jointIdentifier: UInt32,
     coordinateIdentifier: UInt16,
-    modality: SensoryModality = .proprioception,
+    modality: SensoryModality = .kinesthesia,
     receptorIndex: UInt32,
     featureIndex: UInt32,
     signal: JointReceptorSignal,
@@ -459,7 +459,7 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
           | UInt64(coordinate.identifier)
         guard suppliedSignals[key] == Set(JointReceptorSignal.allCases) else {
           throw BrainRuntimeError.invalidDescriptor(
-            "every joint coordinate requires position, velocity, and limit receptors"
+            "every joint coordinate requires the complete kinesthetic signal set"
           )
         }
       }

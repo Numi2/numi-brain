@@ -61,7 +61,7 @@ public final class MetalLearningBatchStorageLease: @unchecked Sendable {
 @available(macOS 26.0, *)
 public final class MetalLearningBatch: @unchecked Sendable {
   public static let formatVersion: UInt32 = 12
-  public static let transitionRecordVersion: UInt32 = 8
+  public static let transitionRecordVersion: UInt32 = 11
   public static let episodicRecordVersion: UInt32 = 2
   public static let proceduralRecordVersion =
     MetalAgentMemoryLayout.proceduralSkillRecordVersion

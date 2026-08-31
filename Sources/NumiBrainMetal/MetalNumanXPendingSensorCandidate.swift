@@ -140,6 +140,9 @@ public final class MetalNumanXHumanIOSensorCandidateChannel:
 {
   public let modality: SensoryModality
   public let receptorTimestamp: BrainTimestamp
+  public let deliveryTimestamp: BrainTimestamp
+  public let latencyMicroseconds: UInt32
+  public let sampleIntervalMicroseconds: UInt32
   public let receptorCount: UInt32
   public let featureDimension: UInt32
   public let values: MetalNumanXHumanIOCandidateRangeLease
@@ -149,6 +152,9 @@ public final class MetalNumanXHumanIOSensorCandidateChannel:
   public init(
     modality: SensoryModality,
     receptorTimestamp: BrainTimestamp,
+    deliveryTimestamp: BrainTimestamp,
+    latencyMicroseconds: UInt32,
+    sampleIntervalMicroseconds: UInt32,
     receptorCount: UInt32,
     featureDimension: UInt32,
     values: MetalNumanXHumanIOCandidateRangeLease,
@@ -161,6 +167,11 @@ public final class MetalNumanXHumanIOSensorCandidateChannel:
     let (minimumValidityBytes, validityOverflow) = Int(receptorCount)
       .multipliedReportingOverflow(by: MemoryLayout<UInt32>.stride)
     guard receptorCount > 0, featureDimension > 0,
+      receptorTimestamp <= deliveryTimestamp,
+      latencyMicroseconds > 0,
+      sampleIntervalMicroseconds > 0,
+      deliveryTimestamp.rawValue - receptorTimestamp.rawValue
+        == UInt64(latencyMicroseconds),
       !scalarOverflow, !valueOverflow, !validityOverflow,
       values.elementType
         == MetalNumanXHumanIOCandidateRangeLease.float32ElementType,
@@ -181,6 +192,9 @@ public final class MetalNumanXHumanIOSensorCandidateChannel:
     }
     self.modality = modality
     self.receptorTimestamp = receptorTimestamp
+    self.deliveryTimestamp = deliveryTimestamp
+    self.latencyMicroseconds = latencyMicroseconds
+    self.sampleIntervalMicroseconds = sampleIntervalMicroseconds
     self.receptorCount = receptorCount
     self.featureDimension = featureDimension
     self.values = values
@@ -217,6 +231,7 @@ public final class MetalNumanXHumanIOPendingCandidateView:
   public let candidateIdentityFingerprint: UInt64
   public let deviceRegistryID: UInt64
   let rawSensors: [MetalRawSensorBufferLease]
+  fileprivate let channels: [MetalNumanXHumanIOSensorCandidateChannel]
   fileprivate let retainedOwner: AnyObject
 
   public init(
@@ -273,6 +288,7 @@ public final class MetalNumanXHumanIOPendingCandidateView:
     self.candidateIdentityFingerprint = candidateIdentityFingerprint
     self.deviceRegistryID = deviceRegistryID
     rawSensors = sorted.map(\.rawSensor)
+    self.channels = sorted
     self.retainedOwner = retainedOwner
   }
 }
@@ -304,8 +320,8 @@ public final class MetalNumanXPendingSensorCandidateLease:
   public let candidatePublicationFingerprint: UInt64
   public let candidateIdentityFingerprint: UInt64
   public let publicationFingerprint: UInt64
-
   let rawSensors: [MetalRawSensorBufferLease]
+  private let sensorChannels: [MetalNumanXHumanIOSensorCandidateChannel]
   private let bridgeCandidate: MetalNumanXHumanIOPendingCandidateView
   let deviceRegistryID: UInt64
   private let rangeBindings: [SensorRangeBinding]
@@ -387,6 +403,7 @@ public final class MetalNumanXPendingSensorCandidateLease:
     self.candidatePublicationFingerprint = candidatePublicationFingerprint
     self.candidateIdentityFingerprint = candidateIdentityFingerprint
     self.rawSensors = sorted
+    sensorChannels = bridgeCandidate.channels
     self.bridgeCandidate = bridgeCandidate
     deviceRegistryID = registryID
     rangeBindings = bindings
@@ -401,6 +418,7 @@ public final class MetalNumanXPendingSensorCandidateLease:
       candidatePublicationFingerprint: candidatePublicationFingerprint,
       candidateIdentityFingerprint: candidateIdentityFingerprint,
       deviceRegistryID: registryID,
+      sensorChannels: sensorChannels,
       rawSensors: sorted,
       rangeBindings: bindings
     )
@@ -419,6 +437,9 @@ public final class MetalNumanXPendingSensorCandidateLease:
       candidateKeyFingerprint == candidateKey.fingerprint,
       candidatePublicationFingerprint > 0,
       candidateIdentityFingerprint > 0,
+      sensorChannels.allSatisfy({
+        $0.deliveryTimestamp == provisional.acceptedTimestamp
+      }),
       zip(rawSensors, rangeBindings).allSatisfy({ lease, binding in
         Self.makeRangeBinding(lease) == binding
       }),
@@ -456,6 +477,7 @@ public final class MetalNumanXPendingSensorCandidateLease:
     candidatePublicationFingerprint: UInt64,
     candidateIdentityFingerprint: UInt64,
     deviceRegistryID: UInt64,
+    sensorChannels: [MetalNumanXHumanIOSensorCandidateChannel],
     rawSensors: [MetalRawSensorBufferLease],
     rangeBindings: [SensorRangeBinding]
   ) -> UInt64 {
@@ -471,6 +493,14 @@ public final class MetalNumanXPendingSensorCandidateLease:
     mix(candidatePublicationFingerprint, into: &hash)
     mix(candidateIdentityFingerprint, into: &hash)
     mix(deviceRegistryID, into: &hash)
+    mix(UInt32(sensorChannels.count), into: &hash)
+    for channel in sensorChannels {
+      mix(UInt32(channel.modality.rawValue), into: &hash)
+      mix(channel.receptorTimestamp.rawValue, into: &hash)
+      mix(channel.deliveryTimestamp.rawValue, into: &hash)
+      mix(channel.latencyMicroseconds, into: &hash)
+      mix(channel.sampleIntervalMicroseconds, into: &hash)
+    }
     mix(UInt32(rawSensors.count), into: &hash)
     for (lease, binding) in zip(rawSensors, rangeBindings) {
       let view = lease.view

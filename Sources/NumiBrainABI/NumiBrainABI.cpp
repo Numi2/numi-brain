@@ -1906,7 +1906,7 @@ uint32_t nb_brain_abi_validate_numanx_sensor_packet(
     constexpr uint32_t known_channel_flags =
         NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID
           | NB_NUMANX_SENSOR_CHANNEL_FLAG_HAS_VALIDITY;
-    if (channel.modality < 1 || channel.modality > 8
+    if (channel.modality < 1 || channel.modality > 9
         || channel.modality <= previous_modality
         || (channel.flags & NB_NUMANX_SENSOR_CHANNEL_FLAG_VALID) == 0
         || (channel.flags & ~known_channel_flags) != 0

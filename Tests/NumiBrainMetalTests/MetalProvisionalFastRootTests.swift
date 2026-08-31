@@ -2667,6 +2667,14 @@ final class MetalProvisionalFastRootTests: XCTestCase {
       commandBufferIdentity: 0x4342_4944_0000_0000 ^ salt
     )
     let channels = try packet.rawSensors.map { sensor in
+      let deliveryTimestamp = packet.packet.deliveryTimestamp
+      let latency = deliveryTimestamp.rawValue -
+        sensor.view.receptorTimestamp.rawValue
+      guard let latencyMicroseconds = UInt32(exactly: latency),
+        latencyMicroseconds > 0
+      else {
+        throw TissueError.transaction("fixture sensor timing is invalid")
+      }
       let valueRange = try MetalNumanXHumanIOCandidateRangeLease(
         buffer: sensor.buffer,
         metalBufferObject: Unmanaged.passUnretained(
@@ -2694,6 +2702,9 @@ final class MetalProvisionalFastRootTests: XCTestCase {
       return try MetalNumanXHumanIOSensorCandidateChannel(
         modality: sensor.view.modality,
         receptorTimestamp: sensor.view.receptorTimestamp,
+        deliveryTimestamp: deliveryTimestamp,
+        latencyMicroseconds: latencyMicroseconds,
+        sampleIntervalMicroseconds: latencyMicroseconds,
         receptorCount: sensor.view.receptorCount,
         featureDimension: sensor.view.featureDimension,
         values: valueRange,
