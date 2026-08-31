@@ -57,7 +57,7 @@ private struct DecisionUniforms {
   var cpgCouplingCount: UInt32 = 0
   var eventCapacity: UInt32 = 0
   var regionalPlasticModulationCount: UInt32 = 0
-  var reservedRegionalModulation: UInt32 = 0
+  var interoceptionPolicySlot: UInt32 = UInt32.max
   var riskWeight: Float = 0
   var damageRiskBudget: Float = 0
   var switchingMargin: Float = 0
@@ -1010,6 +1010,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       regionalPlasticModulationCount: UInt32(
         arena.layout.section(.regionalPlasticModulation).elementCount
       ),
+      interoceptionPolicySlot: policyObservationRanges.firstIndex {
+        $0.modality == .interoception
+      }.map(UInt32.init) ?? UInt32.max,
       riskWeight: dynamics.riskWeight,
       damageRiskBudget: dynamics.damageRiskBudget,
       switchingMargin: dynamics.switchingMargin,

@@ -275,9 +275,11 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
       * concatenated([observations[0..., 16..<24], zeroTail], axis: 1)
     let foldedMask = observationMask[0..., 0..<16] + Float(0.25)
       * concatenated([observationMask[0..., 16..<24], zeroTail], axis: 1)
+    // Mirror Metal exactly: validity gates a projected observation but never
+    // becomes an additive action coordinate of its own.
     let posterior = tanh(
       belief[7] * prior[0..., 0..<16] + belief[0] * foldedObservation
-        + belief[15] * foldedMask + belief[4]
+        * (foldedMask .> Float(0)).asType(.float32) + belief[4]
     )
     return tanh(posterior * policy[0] + policy[8])
   }

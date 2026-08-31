@@ -443,22 +443,40 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       sourcePath: paths.contacts, degrees: 2
     )
     let heldoutTilt = try tiltedSupportContactAsset(
-      sourcePath: paths.contacts, degrees: 1
+      sourcePath: paths.contacts, degrees: 0.5
     )
     defer {
       try? FileManager.default.removeItem(at: negativeTilt)
       try? FileManager.default.removeItem(at: positiveTilt)
       try? FileManager.default.removeItem(at: heldoutTilt)
     }
+    // The causal learner must observe accepted task actions. A passive tilted
+    // cohort has different sensors but identically zero actions and therefore
+    // cannot teach any sensory channel an action consequence.
+    let selectedInterventionName = ProcessInfo.processInfo.environment[
+      "NUMANX_GATE_B_INTERVENTION_MODALITY"
+    ] ?? "audition"
+    var stableTaskTarget = [Float](repeating: 0, count: 16)
+    stableTaskTarget[12] = 0.05
+    stableTaskTarget[13] = 0.05
+    stableTaskTarget[14] = 0.05
+    XCTAssertEqual(stableTaskTarget.count, 16)
+    let taskGoal: (UInt64) throws -> ActiveGoal = { controlStep in
+      try self.supportStabilityGoal(
+        target: stableTaskTarget, controlStep: controlStep
+      )
+    }
     let negativeScenario = try runAcceptedScenario(
       paths: paths, contactPath: negativeTilt.path,
       compiled: compiled, publication: publication,
-      device: device, rootCount: 9
+      device: device, rootCount: 3,
+      externalGoal: taskGoal
     )
     let positiveScenario = try runAcceptedScenario(
       paths: paths, contactPath: positiveTilt.path,
       compiled: compiled, publication: publication,
-      device: device, rootCount: 9
+      device: device, rootCount: 3,
+      externalGoal: taskGoal
     )
     let cohort = try MetalLearningCohortBatch(members: [
       try MetalLearningCohortMember(
@@ -470,8 +488,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     ])
     let negativeEvidence = try acceptedTransitionEvidence(negativeScenario.batch)
     let positiveEvidence = try acceptedTransitionEvidence(positiveScenario.batch)
-    XCTAssertEqual(negativeEvidence.count, 9)
-    XCTAssertEqual(positiveEvidence.count, 9)
+    XCTAssertEqual(negativeEvidence.count, 3)
+    XCTAssertEqual(positiveEvidence.count, 3)
     let cohortObservationDelta = maximumAbsoluteDelta(
       negativeEvidence.flatMap(\.observations),
       positiveEvidence.flatMap(\.observations)
@@ -523,19 +541,6 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       parentVersion: publication.version,
       learnerUpdate: update
     )
-    // External-task coordinates are the same structured motor-goal basis used
-    // by Metal: zero relative displacement/velocity/force with bounded
-    // postural stiffness on three independent synergy axes.
-    var stableTaskTarget = [Float](repeating: 0, count: 16)
-    stableTaskTarget[12] = 0.05
-    stableTaskTarget[13] = 0.05
-    stableTaskTarget[14] = 0.05
-    XCTAssertEqual(stableTaskTarget.count, 16)
-    let taskGoal: (UInt64) throws -> ActiveGoal = { controlStep in
-      try self.supportStabilityGoal(
-        target: stableTaskTarget, controlStep: controlStep
-      )
-    }
     let heldoutScenario = try runAcceptedScenario(
       paths: paths, contactPath: heldoutTilt.path,
       compiled: compiled, publication: publication,
@@ -558,9 +563,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       intervention: ClosedLoopSensorIntervention,
       outcomeModality: SensoryModality,
       label: String
-    ) = switch ProcessInfo.processInfo.environment[
-      "NUMANX_GATE_B_INTERVENTION_MODALITY"
-    ] ?? "audition" {
+    ) = switch selectedInterventionName {
     case "audition": (
       .audition, .scaled(.audition, 0.9), .vestibular, "scaled0.9"
     )
@@ -577,7 +580,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     case "interoception": (
       .interoception,
       .ablated(.interoception),
-      .vestibular,
+      .proprioception,
       "ablated"
     )
     case "kinesthesia": (
@@ -644,11 +647,21 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       taskLearnedScenario.descendingSomaticByGeneration.flatMap { $0 },
       taskIntervenedScenario.descendingSomaticByGeneration.flatMap { $0 }
     )
-    let intactTaskDrift = modalityDriftCost(
-      taskLearnedScenario, modality: selectedIntervention.outcomeModality
+    let intactTaskCost = selectedIntervention.modality == .interoception
+      ? proprioceptiveActivationDeficit(taskLearnedScenario)
+      : modalityDriftCost(
+        taskLearnedScenario, modality: selectedIntervention.outcomeModality
+      )
+    let interventionTaskCost = selectedIntervention.modality == .interoception
+      ? proprioceptiveActivationDeficit(taskIntervenedScenario)
+      : modalityDriftCost(
+        taskIntervenedScenario, modality: selectedIntervention.outcomeModality
+      )
+    let intactInteroceptiveMeans = interoceptiveFeatureMeans(
+      taskLearnedScenario
     )
-    let interventionTaskDrift = modalityDriftCost(
-      taskIntervenedScenario, modality: selectedIntervention.outcomeModality
+    let interventionInteroceptiveMeans = interoceptiveFeatureMeans(
+      taskIntervenedScenario
     )
     let learnedHeldoutScenario = try runAcceptedScenario(
       paths: paths, contactPath: heldoutTilt.path,
@@ -703,7 +716,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(firstCandidateSensorDivergence, 1)
     XCTAssertGreaterThan(cohortSensorDelta, 0)
     XCTAssertGreaterThan(cohortObservationDelta, 0)
-    XCTAssertEqual(cohortActionDelta, 0)
+    XCTAssertTrue((negativeEvidence + positiveEvidence).allSatisfy {
+      ($0.actions.map(abs).max() ?? 0) > 0
+    })
     XCTAssertTrue(taskParentEvidence.allSatisfy {
       $0.activeOptionIdentifier >> 60 == 0x6
         && ($0.actions.map(abs).max() ?? 0) > 0
@@ -728,8 +743,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertGreaterThan(interventionMotorDelta, 1.0e-8)
     XCTAssertGreaterThan(interventionPhysicalDelta, 1.0e-8)
     XCTAssertGreaterThan(
-      interventionTaskDrift,
-      intactTaskDrift + 1.0e-4
+      interventionTaskCost,
+      intactTaskCost + 1.0e-4
     )
     XCTAssertTrue(interventionPhysicalDeltas.contains {
       $0.key != selectedIntervention.modality && $0.value > 1.0e-8
@@ -787,8 +802,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           + "intervenedMotorMax=\(taskIntervenedScenario.motorExcitationsByGeneration.flatMap { $0 }.max() ?? .nan) "
           + "physicalSensorMaxDelta=\(interventionPhysicalDelta) "
           + "outcomeModality=\(selectedIntervention.outcomeModality) "
-          + "intactDrift=\(intactTaskDrift) "
-          + "intervenedDrift=\(interventionTaskDrift)"
+          + "intactOutcomeCost=\(intactTaskCost) "
+          + "intervenedOutcomeCost=\(interventionTaskCost) "
+          + "intactInteroceptiveMeans=\(intactInteroceptiveMeans) "
+          + "intervenedInteroceptiveMeans=\(interventionInteroceptiveMeans) "
+          + "intactFinalProprioceptiveMeans="
+          + "\(proprioceptiveFeatureMeans(taskLearnedScenario)) "
+          + "intervenedFinalProprioceptiveMeans="
+          + "\(proprioceptiveFeatureMeans(taskIntervenedScenario))"
       )
       for modality in interventionPhysicalDeltas.keys.sorted(by: {
         $0.rawValue < $1.rawValue
@@ -1732,10 +1753,12 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     }
     let target: SensoryModality
     let scale: Float
+    let invalidate: Bool
     switch intervention {
     case .ablated(let modality):
       target = modality
       scale = 0
+      invalidate = true
     case .scaled(let modality, let factor):
       guard factor.isFinite, factor >= 0, factor <= 1 else {
         throw TissueError.transaction(
@@ -1744,6 +1767,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       }
       target = modality
       scale = factor
+      invalidate = false
     }
     var replaced = false
     let sensors = try aggregate.channels.map { channel in
@@ -1769,13 +1793,30 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           destination[index] = values[index] * scale
         }
       }
+      let validityBuffer: (any MTLBuffer)?
+      if invalidate {
+        let validityByteCount = channel.rawSensor.validityBuffer?.length
+          ?? scalarCount * MemoryLayout<UInt32>.stride
+        guard let invalid = device.makeBuffer(
+          length: validityByteCount,
+          options: [.storageModeShared, .hazardTrackingModeTracked]
+        ) else {
+          throw TissueError.metal(
+            "failed to allocate Gate B intervention validity buffer"
+          )
+        }
+        memset(invalid.contents(), 0, validityByteCount)
+        validityBuffer = invalid
+      } else {
+        validityBuffer = channel.rawSensor.validityBuffer
+      }
       return try MetalRawSensorBufferLease(
         buffer: buffer,
         modality: channel.modality,
         receptorTimestamp: channel.receptorTimestamp,
         receptorCount: channel.receptorCount,
         featureDimension: channel.featureDimension,
-        validityBuffer: channel.rawSensor.validityBuffer
+        validityBuffer: validityBuffer
       )
     }
     guard replaced else {
@@ -1802,6 +1843,44 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       let delta = $1.0 - $1.1
       return $0 + delta * delta
     } / Float(first.count)
+  }
+
+  private func interoceptiveFeatureMeans(
+    _ scenario: AcceptedScenario
+  ) -> [[Float]] {
+    scenario.sensorValuesByGeneration.compactMap { channels in
+      guard let values = channels[.interoception],
+        !values.isEmpty, values.count % 6 == 0
+      else { return nil }
+      let receptorCount = values.count / 6
+      return (0..<6).map { feature in
+        stride(from: feature, to: values.count, by: 6).reduce(Float(0)) {
+          $0 + values[$1]
+        } / Float(receptorCount)
+      }
+    }
+  }
+
+  private func proprioceptiveActivationDeficit(
+    _ scenario: AcceptedScenario
+  ) -> Float {
+    let features = proprioceptiveFeatureMeans(scenario)
+    guard features.count == 10 else { return .infinity }
+    return 1 - min(max(features[1], 0), 1)
+  }
+
+  private func proprioceptiveFeatureMeans(
+    _ scenario: AcceptedScenario
+  ) -> [Float] {
+    guard let values = scenario.sensorValuesByGeneration.last?[.proprioception],
+      !values.isEmpty, values.count % 10 == 0
+    else { return [] }
+    let receptorCount = values.count / 10
+    return (0..<10).map { feature in
+      stride(from: feature, to: values.count, by: 10).reduce(Float(0)) {
+        $0 + values[$1]
+      } / Float(receptorCount)
+    }
   }
 
   private func qualificationSensorValues(

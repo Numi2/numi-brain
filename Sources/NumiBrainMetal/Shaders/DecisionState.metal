@@ -109,7 +109,7 @@ struct NBDecisionUniforms {
   uint cpg_coupling_count;
   uint event_capacity;
   uint regional_plastic_modulation_count;
-  uint reserved_regional_modulation;
+  uint interoception_policy_slot;
   float risk_weight;
   float damage_risk_budget;
   float switching_margin;
@@ -652,10 +652,14 @@ inline float nb_learned_policy_synergy(
     folded_validity += 0.25f
       * policy_observation_sketch[40u + synergy];
   }
+  const float evidence_observation = folded_validity > 0.0f
+    ? folded_observation : 0.0f;
+  // Validity gates evidence; it is not itself a motor feature. Treating a
+  // present sensor as an additive action bias makes missing physiology look
+  // like a low-effort command instead of an unavailable observation.
   const float posterior = tanh(
     belief_parameters[7] * recurrent[synergy % recurrent_count]
-      + belief_parameters[0] * folded_observation
-      + belief_parameters[15] * folded_validity
+      + belief_parameters[0] * evidence_observation
       + belief_parameters[4]
   );
   return tanh(
@@ -733,6 +737,79 @@ kernel void sketch_policy_observations(
     | (ulong(metadata[3]) << 32u);
   device const uint *observation_validity =
     reinterpret_cast<device const uint *>(hot_state + validity_offset);
+  // Interoception is not an exchangeable image-like channel. Its canonical
+  // six fields are energy availability, oxygen availability, CO2 burden,
+  // temperature deviation, fatigue, and damage. Preserve their direction in
+  // three compact learned-policy coordinates instead of assigning arbitrary
+  // signed hash projections that can make physiological distress increase
+  // exertion.
+  if (modality_code == 8u && scalar_count % 6u == 0u) {
+    const uint receptor_count = scalar_count / 6u;
+    float burden_sum = 0.0f;
+    uint valid_burden_count = 0u;
+    for (uint receptor = 0u; receptor < receptor_count; ++receptor) {
+      const uint base = receptor * 6u;
+      if (projection == 0u) {
+        if (observation_validity[scalar_offset + base] == 0u) continue;
+        burden_sum += 1.0f - clamp(nb_policy_raw_sensor_value(
+          modality_slot, base,
+          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+        ), 0.0f, 1.0f);
+        valid_burden_count += 1u;
+      } else if (projection == 1u) {
+        if (observation_validity[scalar_offset + base + 1u] == 0u
+            || observation_validity[scalar_offset + base + 2u] == 0u) {
+          continue;
+        }
+        burden_sum += max(
+          1.0f - clamp(nb_policy_raw_sensor_value(
+            modality_slot, base + 1u,
+            raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+            raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+          ), 0.0f, 1.0f),
+          clamp(nb_policy_raw_sensor_value(
+            modality_slot, base + 2u,
+            raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+            raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+          ), 0.0f, 1.0f)
+        );
+        valid_burden_count += 1u;
+      } else {
+        if (observation_validity[scalar_offset + base + 3u] == 0u
+            || observation_validity[scalar_offset + base + 4u] == 0u
+            || observation_validity[scalar_offset + base + 5u] == 0u) {
+          continue;
+        }
+        burden_sum += max(
+          abs(clamp(nb_policy_raw_sensor_value(
+            modality_slot, base + 3u,
+            raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+            raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+          ), -1.0f, 1.0f)),
+          max(
+            clamp(nb_policy_raw_sensor_value(
+              modality_slot, base + 4u,
+              raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+              raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+            ), 0.0f, 1.0f),
+            clamp(nb_policy_raw_sensor_value(
+              modality_slot, base + 5u,
+              raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+              raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+            ), 0.0f, 1.0f)
+          )
+        );
+        valid_burden_count += 1u;
+      }
+    }
+    if (valid_burden_count == 0u) return;
+    policy_observation_sketch[gid] = clamp(
+      burden_sum / float(valid_burden_count), 0.0f, 1.0f
+    );
+    policy_observation_sketch[24u + gid] = 1.0f;
+    return;
+  }
   const uint sample_count = min(scalar_count, 1024u);
   float projection_sum = 0.0f;
   uint valid_sample_count = 0u;
@@ -3476,6 +3553,23 @@ kernel void generate_motor_spinal_autonomic_state(
   const bool rest_selected = header->active_option_identifier
     == NB_REST_OPTION_IDENTIFIER;
   const float safety = uniforms.drive_count > 11u ? clamp(drives[11].level, 0.0f, 1.0f) : 0.0f;
+  float homeostatic_inhibition = 0.0f;
+  if (uniforms.interoception_policy_slot < 8u) {
+    const uint interoception_base = 3u * uniforms.interoception_policy_slot;
+    const bool interoception_valid =
+      policy_observation_sketch[24u + interoception_base] > 0.5f
+      && policy_observation_sketch[25u + interoception_base] > 0.5f
+      && policy_observation_sketch[26u + interoception_base] > 0.5f;
+    if (interoception_valid) {
+      homeostatic_inhibition = clamp(max(
+        policy_observation_sketch[interoception_base],
+        max(
+          policy_observation_sketch[interoception_base + 1u],
+          policy_observation_sketch[interoception_base + 2u]
+        )
+      ), 0.0f, 1.0f);
+    }
+  }
   device const NBInternalActionRecord *internal_actions =
     reinterpret_cast<device const NBInternalActionRecord *>(
       hot_state + uniforms.internal_action_offset
@@ -3740,7 +3834,7 @@ kernel void generate_motor_spinal_autonomic_state(
     const float inhibition = max(
       (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
         ? 1.0f : max(safety, embodied_risk),
-      deliberate_inhibition
+      max(deliberate_inhibition, homeostatic_inhibition)
     );
     NBFastCerebellarStateRecord fast_state = fast_cerebellar[gid];
     const bool fast_correction_active = !rest_selected && inhibition < 1.0f;

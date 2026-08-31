@@ -216,23 +216,16 @@ sequence does not demonstrate task-relevant causal use and therefore does not
 close Gate B.
 
 A second cohort benchmark now uses two distinct accepted training minds with
-authenticated support planes at -2 and +2 degrees (nine accepted roots each)
-and a separate +1-degree held-out mind through accepted root 11. The two native
-worlds diverge in their physical-state fingerprints from root 1; every logical
-sensor modality changes, with maximum absolute differences including touch
-`6.3407154`, vestibular `0.03045708`, and kinesthesia `0.02212683`. Their v11
-accepted learner observations differ by `0.1890342`; the somatic action records
-remain identical. On held-out generations 10–11, deterministic value shuffle
-and timestamp shift now produce nonzero policy-head deltas for touch,
-proprioception, vestibular, and interoception (and a smaller nonzero vision
-effect), with touch deltas `2.3585348e-07` and `6.9616647e-07` respectively.
-Vestibular ablation increases imitation MSE from `0.14783676` to `0.14815411`,
-while several other ablations reduce it. This closes the prior constant-input
-collapse and demonstrates replay-stable multi-scene/temporal sensitivity. It
-is still off-rollout policy-head evidence, not a claim of physical task
-degradation or a trained closed-loop controller.
+authenticated support planes at -2 and +2 degrees, three accepted task roots
+each, and a separate +0.5-degree held-out mind through accepted root 11. Unlike
+the former passive cohort, every training transition owns the same explicit
+support-stability goal and a nonzero accepted somatic-synergy action. The two
+native worlds diverge in physical-state and sensor fingerprints from root 1;
+their v11 learner observations differ by `0.046407957` and their enacted
+actions by `0.008507147`. The successor update and held-out intervention
+evaluation replay exactly.
 
-The v11 action journal now records the sixteen accepted somatic-synergy
+The v11 action journal records the sixteen accepted somatic-synergy
 coordinates rather than the first sixteen actuator samples. The production
 decision kernel evaluates the learned head against a deterministic 24-value
 raw-sensor sketch with one validity coordinate per enabled modality, folds all
@@ -243,23 +236,35 @@ final eight sketch coordinates—and therefore the full kinesthetic slot—unabl
 to affect action. The full-body fixture declares sixteen logical synergies;
 the 416 actuators remain the exact NumanX muscle order.
 
-The real closed-loop causal task uses the +1-degree held-out support world, an
+Interoception is no longer treated as an exchangeable image-like tensor in
+that sketch. Its 416x6 accepted values reduce to three validity-gated semantic
+burdens: energy deficit, respiratory burden, and thermal/fatigue/damage
+burden. Validity gates evidence but is not itself an additive motor feature;
+the Metal head and MLX evaluator use the same relation. A bounded
+homeostatic-inhibition term prevents increasing physiological burden from
+increasing the learned motor drive merely because a signed hash projection
+chose the opposite direction. Closed-loop ablation now clears both values and
+validity. This matters for interoception because zero energy or oxygen is a
+critical reading, not a missing observation.
+
+The real closed-loop causal task uses the +0.5-degree held-out support world, an
 explicit support-stability goal, and the learned successor. Each intervention
 runs in its own process and preserves the same three accepted roots and exact
 goal/option sequence. The current Apple M4 evidence is:
 
-| intervened channel | intervention | learned-action max delta | 416-muscle max delta | continuous outcome drift, intact -> intervened |
+| intervened channel | intervention | learned-action max delta | 416-muscle max delta | continuous physical outcome cost, intact -> intervened |
 |---|---:|---:|---:|---:|
-| vision | ablated | `0.0011254251` | `0.00009134039` | vestibular `46.496605 -> 46.508995` |
-| audition | values x `0.9` | `0.0012276769` | `0.000060815364` | vestibular `46.496605 -> 46.511135` |
-| touch | ablated | `0.07522233` | `0.005658008` | touch `36.914516 -> 37.225964` |
-| proprioception | ablated | `0.021982267` | `0.0016876431` | proprioception `7.5002885 -> 7.503776` |
-| vestibular | ablated | `0.5306565` | `0.023855925` | vestibular `46.496605 -> 46.52222` |
-| kinesthesia | ablated | `0.009146318` | `0.00074331556` | kinesthesia `14.809405 -> 14.80993` |
+| vision | ablated | `0.0011418909` | `0.000092715025` | vestibular drift `16.889305 -> 16.893648` |
+| audition | values x `0.9` | `0.0011649728` | `0.00005773455` | vestibular drift `16.889305 -> 16.896254` |
+| touch | ablated | `0.07663533` | `0.005761903` | touch drift `35.166237 -> 35.205273` |
+| proprioception | ablated | `0.009933576` | `0.00076077133` | proprioceptive drift `3.0985706 -> 3.1004167` |
+| vestibular | ablated | `0.29194874` | `0.023489268` | vestibular drift `16.889305 -> 16.940105` |
+| interoception | ablated | `0.16962136` | `0.055146806` | normalized activation deficit `0.99240863 -> 0.9983135` |
+| kinesthesia | ablated | `0.0049568415` | `0.00040262286` | kinesthetic drift `11.069081 -> 11.069504` |
 
 Every row also changes at least one independently published physical modality
 other than its intervened input. This closes the bounded learned-causal-use
-level for those six channels without treating a changed hash, categorical
+level for all seven channels without treating a changed hash, categorical
 vision code, or source-side perturbation as outcome evidence.
 
 The accepted joint posterior also now initializes ownership from the first
@@ -271,7 +276,7 @@ first root; the qualified three-root task now retains nonzero descending
 commands while preserving joint-limit, variance, pain, and emergency-stop
 gates.
 
-This checkpoint establishes the six closed-loop rows above, vision ABI/source
+This checkpoint establishes the seven closed-loop rows above, vision ABI/source
 ownership, the named physical signal perturbation, one bounded head-local
 ray-geometry command, accepted-root-authenticated mature autonomous gaze, exact
 simulated sensor-clock delivery, plus fixed replay and rejection behavior. It
@@ -286,30 +291,33 @@ cannot advance that history. The cognitive runtime now aggregates one semantic
 feature across all 416 receptors instead of treating the first nine flattened
 muscle scalars as nine body-wide physiological variables. This is a reduced
 control model, not authored systemic hydration, inflammation, sleep, metabolic,
-or clinical physiology. In the real three-root intervention, ablation changes
-learned action by `0.0021179318`, descending and muscle output by
-`0.00017181039`, and later vision, touch, proprioception, vestibular, and
-kinesthetic state. It nevertheless improves the predeclared postural outcome
-(`46.580482` intact vestibular drift versus `46.49666` ablated), so the causal
-benefit criterion still fails. That measured interoceptive
-training/qualification gap keeps Gate B open.
+or clinical physiology. In the new unseen held-out world, intact physiology
+executes the requested nonzero support action with mean physical muscle
+activation `0.0075913453`, versus `0.0016865405` when interoception is absent.
+The corresponding normalized activation deficit worsens from `0.99240863` to
+`0.9983135`; action, descending control, muscle excitation, and five other
+published physical modalities also diverge. The intact controller expends more
+energy to perform more requested work, so this is a task-capacity result rather
+than a claim that sensing minimizes metabolism.
 
 Focused executable evidence at this checkpoint includes 14/14 native NumanX
 integration tests (green twice), the focused Swift
 interop/ABI4/atomic-publication/full-body E2E tests on Apple Metal, and the
 asset-backed multi-scene cohort with its deterministic MLX successor update and
 intervention replay. The complete Swift package is 150 tests with zero failures
-in 58.763 seconds when seven bridge/stress tests are intentionally unconfigured.
+in 58.858 seconds when seven bridge/stress tests are intentionally unconfigured.
 With real bridge paths, the bounded external-task plus publication/retry E2E
 passes 2/2 in 15.514 seconds and explicitly skips the isolated stress cohort.
 The accepted-maturation/replay, rejected-root, and malformed-intent gaze proofs
 pass independently in 20.181, 7.889, and 7.176 seconds.
 The paired command-only gaze ablation passes in 13.703 seconds and measures
 718 -> 864 valid depth pixels plus 720 -> 864 valid geometry pixels.
-Six independent 49-root Gate B modality cohorts pass in 50.286–50.627 seconds
+Seven independent 37-root Gate B modality cohorts pass in 39.644–40.080 seconds
 each. The Developmental, Decision, Memory, and AcceptedConsequence Metal 4 shaders pass
 `-Wall -Wextra -Werror` (with the repository's intentional unused-parameter
 suppression), the ABI4/provisional matrix passes 40/40, `git diff --check` is
-clean, and the fresh production Swift build passes in 54.67 seconds.
+clean, and the fresh production Swift build passes in 56.49 seconds.
 
-Gate B is not achieved until every row and every evidence level is satisfied.
+At this bounded Apple-Metal checkpoint, every Gate B row and evidence level is
+satisfied. The limitations above remain explicit follow-on research rather
+than being promoted as stronger sensor, physiology, or language capability.
