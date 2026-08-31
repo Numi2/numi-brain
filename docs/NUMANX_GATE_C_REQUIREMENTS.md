@@ -74,12 +74,16 @@ deterministic tie handling. These names, units, reducers, directions, and
 thresholds are checked exactly—an arbitrary passing `score` cannot be relabeled
 after evaluation.
 
-Qualification artifacts are version 2 and must identify authoritative NumanX
+Qualification artifacts are version 3 and must identify authoritative NumanX
 execution plus the exact model weights, regional program, low-level controller,
-and hard-safety program. They retain accepted/rejected root counts and require
-zero command failures. OOD and hard-safety evidence must include at least one
-real rejected root; a liveness event or standalone simulator score is not
-accepted as rejection evidence.
+and hard-safety program. They retain a canonical per-sample root transcript with
+the exact owner transaction identity, terminal applied-record fingerprint, and
+accepted publication fingerprint. Accepted, rejected, and failed counts are
+derived from that transcript; they cannot be entered independently. Every
+metric sample must have at least one root, root identities cannot repeat, and
+command failures are rejected. OOD and hard-safety evidence must include at
+least one real rejected root; a liveness event or standalone simulator score is
+not accepted as rejection evidence.
 
 `MetalNumiBrainHandle.create(configuration:policyPackage:evidenceReceipt:)`
 admits a package only with that exact receipt and when its species, enabled
@@ -130,8 +134,8 @@ policy. Those missing artifacts and physical results—not additional schema—a
 the next promotion work.
 
 At this checkpoint the six focused verifier/package/Metal tests pass. The full
-Swift package executes 157 tests with seven intentionally unconfigured bridge/
-stress cases skipped and zero failures in 66.75 seconds. A fresh production
-build including `numi-brain-policy` passes in 85.46 seconds, scoped format lint
+Swift package executes 158 tests with seven intentionally unconfigured bridge/
+stress cases skipped and zero failures in 67.91 seconds. A fresh production
+build including `numi-brain-policy` passes in 81.63 seconds, scoped format lint
 and `git diff --check` are clean. These are implementation-correctness results,
 not Gate C task-performance evidence.

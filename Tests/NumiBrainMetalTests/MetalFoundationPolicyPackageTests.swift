@@ -344,6 +344,50 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
             observations: observations
           )
         }
+        let axisOrdinal = try XCTUnwrap(
+          BrainPolicyQualificationAxis.allCases.firstIndex(of: axis)
+        )
+        let transactionBase = UInt64(axisOrdinal + 1) * 1_000
+        var rootExecutions = try members.enumerated().map { index, sampleHash in
+          let transaction = transactionBase + UInt64(index + 1)
+          return try BrainPolicyNumanXRootExecution(
+            sampleSHA256: sampleHash,
+            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            transactionFingerprint: transaction,
+            linearizationEpoch: 1,
+            slotGeneration: UInt64(index + 1),
+            transactionSlot: UInt32(index % 2),
+            environment: 0,
+            stepIndex: 0,
+            controlStep: UInt32(index),
+            substepIndex: 0,
+            physicsSubstepCount: 1,
+            outcome: .accepted,
+            appliedRecordFingerprint: transaction + 10_000,
+            jointCommitFingerprint: transaction + 20_000
+          )
+        }
+        if axis == .uncertaintyAndOOD || axis == .hardSafetyRetention {
+          let transaction = transactionBase + 500
+          rootExecutions.append(
+            try BrainPolicyNumanXRootExecution(
+              sampleSHA256: members[0],
+              ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+              transactionFingerprint: transaction,
+              linearizationEpoch: 1,
+              slotGeneration: 500,
+              transactionSlot: 1,
+              environment: 0,
+              stepIndex: 0,
+              controlStep: 500,
+              substepIndex: 0,
+              physicsSubstepCount: 1,
+              outcome: .rejected,
+              appliedRecordFingerprint: transaction + 10_000,
+              jointCommitFingerprint: 0
+            )
+          )
+        }
         let evidence = try BrainPolicyQualificationEvidence(
           axis: axis,
           executionKind: .authoritativeNumanX,
@@ -351,10 +395,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
           runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
           lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
           hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
-          acceptedRootCount: UInt64(members.count),
-          rejectedRootCount: axis == .uncertaintyAndOOD
-            || axis == .hardSafetyRetention ? 1 : 0,
-          commandFailureCount: 0,
+          rootExecutions: rootExecutions,
           partitionIdentifiers: [partition.identifier],
           metrics: metrics
         )

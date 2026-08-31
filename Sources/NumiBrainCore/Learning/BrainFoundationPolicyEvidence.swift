@@ -65,6 +65,80 @@ public enum BrainPolicyQualificationExecutionKind: String, Codable, Sendable {
 }
 
 @frozen
+public enum BrainPolicyNumanXRootOutcome: String, Codable, Sendable {
+  case accepted
+  case rejected
+  case commandFailure
+}
+
+@frozen
+public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
+  public let sampleSHA256: String
+  public let ownerProgramFingerprint: UInt64
+  public let transactionFingerprint: UInt64
+  public let linearizationEpoch: UInt64
+  public let slotGeneration: UInt64
+  public let transactionSlot: UInt32
+  public let environment: UInt32
+  public let stepIndex: UInt32
+  public let controlStep: UInt32
+  public let substepIndex: UInt32
+  public let physicsSubstepCount: UInt32
+  public let outcome: BrainPolicyNumanXRootOutcome
+  public let appliedRecordFingerprint: UInt64
+  public let jointCommitFingerprint: UInt64
+
+  public init(
+    sampleSHA256: String,
+    ownerProgramFingerprint: UInt64,
+    transactionFingerprint: UInt64,
+    linearizationEpoch: UInt64,
+    slotGeneration: UInt64,
+    transactionSlot: UInt32,
+    environment: UInt32,
+    stepIndex: UInt32,
+    controlStep: UInt32,
+    substepIndex: UInt32,
+    physicsSubstepCount: UInt32,
+    outcome: BrainPolicyNumanXRootOutcome,
+    appliedRecordFingerprint: UInt64,
+    jointCommitFingerprint: UInt64
+  ) throws {
+    guard BrainPolicyEvidenceArtifact.isSHA256(sampleSHA256),
+      ownerProgramFingerprint > 0,
+      transactionFingerprint > 0,
+      linearizationEpoch > 0,
+      slotGeneration > 0,
+      environment == 0,
+      stepIndex == 0,
+      substepIndex == 0,
+      physicsSubstepCount == 1,
+      appliedRecordFingerprint > 0,
+      outcome == .accepted
+        ? jointCommitFingerprint > 0 : jointCommitFingerprint == 0
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "policy NumanX root execution is invalid"
+      )
+    }
+    self.sampleSHA256 = sampleSHA256
+    self.ownerProgramFingerprint = ownerProgramFingerprint
+    self.transactionFingerprint = transactionFingerprint
+    self.linearizationEpoch = linearizationEpoch
+    self.slotGeneration = slotGeneration
+    self.transactionSlot = transactionSlot
+    self.environment = environment
+    self.stepIndex = stepIndex
+    self.controlStep = controlStep
+    self.substepIndex = substepIndex
+    self.physicsSubstepCount = physicsSubstepCount
+    self.outcome = outcome
+    self.appliedRecordFingerprint = appliedRecordFingerprint
+    self.jointCommitFingerprint = jointCommitFingerprint
+  }
+}
+
+@frozen
 public struct BrainPolicyMetricObservation: Codable, Equatable, Sendable {
   public let sampleSHA256: String
   public let value: Double
@@ -213,7 +287,7 @@ public struct BrainPolicyQualificationMetricEvidence: Codable, Equatable, Sendab
 
 @frozen
 public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
 
   public let formatVersion: UInt32
   public let axis: BrainPolicyQualificationAxis
@@ -222,9 +296,7 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
   public let runtimeProgramFingerprint: UInt64
   public let lowLevelControllerFingerprint: UInt64
   public let hardSafetyProgramFingerprint: UInt64
-  public let acceptedRootCount: UInt64
-  public let rejectedRootCount: UInt64
-  public let commandFailureCount: UInt64
+  public let rootExecutions: [BrainPolicyNumanXRootExecution]
   public let partitionIdentifiers: [String]
   public let metrics: [BrainPolicyQualificationMetricEvidence]
 
@@ -235,26 +307,32 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     runtimeProgramFingerprint: UInt64,
     lowLevelControllerFingerprint: UInt64,
     hardSafetyProgramFingerprint: UInt64,
-    acceptedRootCount: UInt64,
-    rejectedRootCount: UInt64,
-    commandFailureCount: UInt64,
+    rootExecutions: [BrainPolicyNumanXRootExecution],
     partitionIdentifiers: [String],
     metrics: [BrainPolicyQualificationMetricEvidence]
   ) throws {
     let canonicalPartitions = partitionIdentifiers.sorted()
     let canonicalMetrics = metrics.sorted { $0.identifier < $1.identifier }
+    let canonicalExecutions = rootExecutions.sorted(by: Self.executionOrder)
     let sampleSets = canonicalMetrics.map { Set($0.observations.map(\.sampleSHA256)) }
+    let executionSampleSet = Set(canonicalExecutions.map(\.sampleSHA256))
+    let executionIdentities = canonicalExecutions.map {
+      "\($0.transactionFingerprint):\($0.slotGeneration)"
+    }
     guard BrainPolicyEvidenceArtifact.isSHA256(modelWeightsSHA256),
       runtimeProgramFingerprint > 0,
       lowLevelControllerFingerprint > 0,
       hardSafetyProgramFingerprint > 0,
-      acceptedRootCount > 0,
-      commandFailureCount == 0,
+      canonicalExecutions.allSatisfy({
+        $0.ownerProgramFingerprint == lowLevelControllerFingerprint
+      }),
+      Set(executionIdentities).count == executionIdentities.count,
       !canonicalPartitions.isEmpty,
       Set(canonicalPartitions).count == canonicalPartitions.count,
       !canonicalMetrics.isEmpty,
       Set(canonicalMetrics.map(\.identifier)).count == canonicalMetrics.count,
-      Set(sampleSets).count == 1
+      Set(sampleSets).count == 1,
+      sampleSets.first == executionSampleSet
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "policy qualification evidence is invalid"
@@ -267,15 +345,25 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     self.runtimeProgramFingerprint = runtimeProgramFingerprint
     self.lowLevelControllerFingerprint = lowLevelControllerFingerprint
     self.hardSafetyProgramFingerprint = hardSafetyProgramFingerprint
-    self.acceptedRootCount = acceptedRootCount
-    self.rejectedRootCount = rejectedRootCount
-    self.commandFailureCount = commandFailureCount
+    self.rootExecutions = canonicalExecutions
     self.partitionIdentifiers = canonicalPartitions
     self.metrics = canonicalMetrics
   }
 
   public var sampleCount: UInt64 {
     UInt64(metrics.first?.observations.count ?? 0)
+  }
+
+  public var acceptedRootCount: UInt64 {
+    UInt64(rootExecutions.count(where: { $0.outcome == .accepted }))
+  }
+
+  public var rejectedRootCount: UInt64 {
+    UInt64(rootExecutions.count(where: { $0.outcome == .rejected }))
+  }
+
+  public var commandFailureCount: UInt64 {
+    UInt64(rootExecutions.count(where: { $0.outcome == .commandFailure }))
   }
 
   public func encoded() throws -> Data {
@@ -314,9 +402,7 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
         runtimeProgramFingerprint: runtimeProgramFingerprint,
         lowLevelControllerFingerprint: lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: hardSafetyProgramFingerprint,
-        acceptedRootCount: acceptedRootCount,
-        rejectedRootCount: rejectedRootCount,
-        commandFailureCount: commandFailureCount,
+        rootExecutions: rootExecutions,
         partitionIdentifiers: partitionIdentifiers,
         metrics: metrics
       ) == self
@@ -325,6 +411,22 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
         "policy qualification evidence is not canonical"
       )
     }
+  }
+
+  private static func executionOrder(
+    _ lhs: BrainPolicyNumanXRootExecution,
+    _ rhs: BrainPolicyNumanXRootExecution
+  ) -> Bool {
+    if lhs.sampleSHA256 != rhs.sampleSHA256 {
+      return lhs.sampleSHA256 < rhs.sampleSHA256
+    }
+    if lhs.controlStep != rhs.controlStep {
+      return lhs.controlStep < rhs.controlStep
+    }
+    if lhs.transactionFingerprint != rhs.transactionFingerprint {
+      return lhs.transactionFingerprint < rhs.transactionFingerprint
+    }
+    return lhs.slotGeneration < rhs.slotGeneration
   }
 }
 

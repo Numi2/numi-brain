@@ -286,6 +286,98 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     )
   }
 
+  func testNumanXRootTranscriptDerivesCountsAndBindsEveryMetricSample() throws {
+    let architecture = try architecture(publication: learnedPublication())
+    let samples = [sha(1), sha(2)]
+    let metric = try BrainPolicyQualificationMetricEvidence(
+      identifier: "success_rate",
+      unit: "ratio",
+      reducer: .mean,
+      threshold: 0.7,
+      direction: .atLeast,
+      observations: try samples.map {
+        try BrainPolicyMetricObservation(sampleSHA256: $0, value: 1)
+      }
+    )
+    func root(
+      sample: String,
+      transaction: UInt64,
+      slotGeneration: UInt64,
+      outcome: BrainPolicyNumanXRootOutcome
+    ) throws -> BrainPolicyNumanXRootExecution {
+      try BrainPolicyNumanXRootExecution(
+        sampleSHA256: sample,
+        ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+        transactionFingerprint: transaction,
+        linearizationEpoch: 1,
+        slotGeneration: slotGeneration,
+        transactionSlot: UInt32(slotGeneration % 2),
+        environment: 0,
+        stepIndex: 0,
+        controlStep: UInt32(slotGeneration),
+        substepIndex: 0,
+        physicsSubstepCount: 1,
+        outcome: outcome,
+        appliedRecordFingerprint: transaction + 10_000,
+        jointCommitFingerprint: outcome == .accepted ? transaction + 20_000 : 0
+      )
+    }
+    let acceptedA = try root(
+      sample: samples[0], transaction: 1, slotGeneration: 1, outcome: .accepted
+    )
+    let rejectedA = try root(
+      sample: samples[0], transaction: 2, slotGeneration: 2, outcome: .rejected
+    )
+    let acceptedB = try root(
+      sample: samples[1], transaction: 3, slotGeneration: 3, outcome: .accepted
+    )
+    let evidence = try BrainPolicyQualificationEvidence(
+      axis: .crossTask,
+      executionKind: .authoritativeNumanX,
+      modelWeightsSHA256: architecture.modelWeightsSHA256,
+      runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+      lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
+      hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
+      rootExecutions: [acceptedB, rejectedA, acceptedA],
+      partitionIdentifiers: ["partition-held-out-task"],
+      metrics: [metric]
+    )
+    XCTAssertEqual(evidence.acceptedRootCount, 2)
+    XCTAssertEqual(evidence.rejectedRootCount, 1)
+    XCTAssertEqual(evidence.commandFailureCount, 0)
+    XCTAssertEqual(evidence.rootExecutions, [acceptedA, rejectedA, acceptedB])
+
+    XCTAssertThrowsError(
+      try BrainPolicyQualificationEvidence(
+        axis: .crossTask,
+        executionKind: .authoritativeNumanX,
+        modelWeightsSHA256: architecture.modelWeightsSHA256,
+        runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+        lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
+        hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
+        rootExecutions: [acceptedA],
+        partitionIdentifiers: ["partition-held-out-task"],
+        metrics: [metric]
+      )
+    )
+    let duplicateIdentity = try root(
+      sample: samples[1], transaction: 1, slotGeneration: 1, outcome: .accepted
+    )
+    XCTAssertThrowsError(
+      try BrainPolicyQualificationEvidence(
+        axis: .crossTask,
+        executionKind: .authoritativeNumanX,
+        modelWeightsSHA256: architecture.modelWeightsSHA256,
+        runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+        lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
+        hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
+        rootExecutions: [acceptedA, duplicateIdentity],
+        partitionIdentifiers: ["partition-held-out-task"],
+        metrics: [metric]
+      )
+    )
+  }
+
   func testPackageRejectsSeedTamperingAndSplitAlias() throws {
     let schedule = try ReferenceBrainSchedule.runtimeFoundationSubset()
     let program = try RegionalTokenProgram.runtimeFoundationV0(schedule: schedule)
@@ -368,7 +460,8 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     overlapSplits: Bool = false,
     foreignMetricSample: Bool = false,
     provenanceDrift: Bool = false,
-    omitRequiredReject: Bool = false
+    omitRequiredReject: Bool = false,
+    includeCommandFailure: Bool = false
   ) throws -> EvidenceFixture {
     let directory = FileManager.default.temporaryDirectory.appending(
       path: UUID().uuidString,
@@ -493,6 +586,73 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
           observations: observations
         )
       }
+      let axisOrdinal = try XCTUnwrap(
+        BrainPolicyQualificationAxis.allCases.firstIndex(of: axis)
+      )
+      let transactionBase = UInt64(axisOrdinal + 1) * 1_000
+      var rootExecutions = try sampleHashes.enumerated().map { index, sampleHash in
+        let transaction = transactionBase + UInt64(index + 1)
+        return try BrainPolicyNumanXRootExecution(
+          sampleSHA256: sampleHash,
+          ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+          transactionFingerprint: transaction,
+          linearizationEpoch: 1,
+          slotGeneration: UInt64(index + 1),
+          transactionSlot: UInt32(index % 2),
+          environment: 0,
+          stepIndex: 0,
+          controlStep: UInt32(index),
+          substepIndex: 0,
+          physicsSubstepCount: 1,
+          outcome: .accepted,
+          appliedRecordFingerprint: transaction + 10_000,
+          jointCommitFingerprint: transaction + 20_000
+        )
+      }
+      if !omitRequiredReject
+        && (axis == .uncertaintyAndOOD || axis == .hardSafetyRetention)
+      {
+        let transaction = transactionBase + 500
+        rootExecutions.append(
+          try BrainPolicyNumanXRootExecution(
+            sampleSHA256: sampleHashes[0],
+            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            transactionFingerprint: transaction,
+            linearizationEpoch: 1,
+            slotGeneration: 500,
+            transactionSlot: 1,
+            environment: 0,
+            stepIndex: 0,
+            controlStep: 500,
+            substepIndex: 0,
+            physicsSubstepCount: 1,
+            outcome: .rejected,
+            appliedRecordFingerprint: transaction + 10_000,
+            jointCommitFingerprint: 0
+          )
+        )
+      }
+      if includeCommandFailure, axis == .crossTask {
+        let transaction = transactionBase + 700
+        rootExecutions.append(
+          try BrainPolicyNumanXRootExecution(
+            sampleSHA256: sampleHashes[0],
+            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            transactionFingerprint: transaction,
+            linearizationEpoch: 1,
+            slotGeneration: 700,
+            transactionSlot: 1,
+            environment: 0,
+            stepIndex: 0,
+            controlStep: 700,
+            substepIndex: 0,
+            physicsSubstepCount: 1,
+            outcome: .commandFailure,
+            appliedRecordFingerprint: transaction + 10_000,
+            jointCommitFingerprint: 0
+          )
+        )
+      }
       let evidence = try BrainPolicyQualificationEvidence(
         axis: axis,
         executionKind: .authoritativeNumanX,
@@ -502,10 +662,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
           : architecture.runtimeProgramFingerprint,
         lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
-        acceptedRootCount: UInt64(sampleHashes.count),
-        rejectedRootCount: !omitRequiredReject
-          && (axis == .uncertaintyAndOOD || axis == .hardSafetyRetention) ? 1 : 0,
-        commandFailureCount: 0,
+        rootExecutions: rootExecutions,
         partitionIdentifiers: [partition.identifier],
         metrics: metricEvidence
       )
@@ -608,6 +765,15 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       try BrainFoundationPolicyEvidenceVerifier.verify(
         package: noReject.package,
         artifactDirectory: noReject.directory
+      )
+    )
+
+    let commandFailure = try evidenceFixture(includeCommandFailure: true)
+    defer { try? FileManager.default.removeItem(at: commandFailure.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: commandFailure.package,
+        artifactDirectory: commandFailure.directory
       )
     )
   }
