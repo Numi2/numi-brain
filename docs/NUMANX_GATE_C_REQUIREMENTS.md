@@ -67,7 +67,11 @@ the complete verified artifact set.
 admits a package only with that exact receipt and when its species, enabled
 sensor set, regional program, autoregressive planning horizon, somatic-synergy
 catalog, protective motor profile, and learned parameter bytes match the actual
-runtime. Offline candidate evaluation uses the explicitly named
+runtime. It also requires the canonical executable contract: hierarchical
+embodied Metal model revision 1, structured-task plus demonstration goals,
+autoregressive FP32 action generation, and the actual five-head epistemic
+ensemble uncertainty method. Arbitrary architecture labels cannot be used to
+rename the same executable. Offline candidate evaluation uses the explicitly named
 `createUnverifiedPolicyCandidate` path; it retains all structural and runtime
 identity checks but cannot enter production admission.
 

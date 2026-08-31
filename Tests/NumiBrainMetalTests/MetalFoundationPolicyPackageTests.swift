@@ -69,13 +69,14 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
     compiled: CompiledSpeciesTemplate,
     publication: BrainParameterPublication,
     qualified: Bool,
-    hardSafetyFingerprint: UInt64? = nil
+    hardSafetyFingerprint: UInt64? = nil,
+    modelIdentifier: String = BrainFoundationPolicyRuntimeContract.modelIdentifier
   ) throws -> BrainFoundationPolicyPackage {
     let enabledModalities = compiled.species.senses.filter(\.enabled).map(\.modality)
     let architecture = try BrainFoundationPolicyArchitecture(
       family: .hierarchicalEmbodied,
-      modelIdentifier: "numibrain.metal.package.test",
-      modelRevision: "r1",
+      modelIdentifier: modelIdentifier,
+      modelRevision: BrainFoundationPolicyRuntimeContract.modelRevision,
       modelWeightsSHA256:
         try BrainFoundationPolicyPackage
         .parameterWeightsSHA256(publication),
@@ -90,7 +91,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       actionHorizon: 4,
       inferencePrecision: .fp32,
       maximumInferenceLatencyMicroseconds: 10_000,
-      uncertaintyMethod: "ensemble-conformal-v1",
+      uncertaintyMethod: BrainFoundationPolicyRuntimeContract.uncertaintyMethod,
       supervisionRequestThreshold: 0.7,
       rootRejectionThreshold: 0.9
     )
@@ -282,8 +283,8 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       let enabledModalities = compiled.species.senses.filter(\.enabled).map(\.modality)
       let architecture = try BrainFoundationPolicyArchitecture(
         family: .hierarchicalEmbodied,
-        modelIdentifier: "numibrain.metal.package.test",
-        modelRevision: "r1",
+        modelIdentifier: BrainFoundationPolicyRuntimeContract.modelIdentifier,
+        modelRevision: BrainFoundationPolicyRuntimeContract.modelRevision,
         modelWeightsSHA256:
           try BrainFoundationPolicyPackage.parameterWeightsSHA256(publication),
         speciesFingerprint: compiled.species.fingerprint,
@@ -297,7 +298,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
         actionHorizon: 4,
         inferencePrecision: .fp32,
         maximumInferenceLatencyMicroseconds: 10_000,
-        uncertaintyMethod: "ensemble-conformal-v1",
+        uncertaintyMethod: BrainFoundationPolicyRuntimeContract.uncertaintyMethod,
         supervisionRequestThreshold: 0.7,
         rootRejectionThreshold: 0.9
       )
@@ -405,6 +406,20 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       try MetalNumiBrainHandle.createUnverifiedPolicyCandidate(
         configuration: configuration,
         policyPackage: wrongSafety,
+        device: device
+      )
+    )
+
+    let wrongModel = try package(
+      compiled: compiled,
+      publication: publication,
+      qualified: true,
+      modelIdentifier: "unimplemented.model"
+    )
+    XCTAssertThrowsError(
+      try MetalNumiBrainHandle.createUnverifiedPolicyCandidate(
+        configuration: configuration,
+        policyPackage: wrongModel,
         device: device
       )
     )

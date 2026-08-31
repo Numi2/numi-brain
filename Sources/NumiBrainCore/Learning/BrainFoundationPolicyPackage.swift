@@ -29,6 +29,35 @@ public enum BrainPolicyInferencePrecision: String, Codable, CaseIterable, Sendab
   case int8
 }
 
+/// Canonical architecture identity for the embodied policy that the current
+/// NumiBrain Metal runtime actually executes. Package metadata may describe
+/// candidates structurally, but production loading admits only this exact
+/// contract until another executable implementation is added explicitly.
+public enum BrainFoundationPolicyRuntimeContract {
+  public static let modelIdentifier =
+    "numibrain.hierarchical-embodied-metal"
+  public static let modelRevision = "1"
+  public static let family = BrainFoundationPolicyFamily.hierarchicalEmbodied
+  public static let goalInterfaces: [BrainPolicyGoalInterface] = [
+    .demonstration, .structuredTask,
+  ]
+  public static let actionGeneration = BrainPolicyActionGeneration.autoregressive
+  public static let inferencePrecision = BrainPolicyInferencePrecision.fp32
+  public static let uncertaintyMethod = "five-head-epistemic-ensemble-v1"
+
+  public static func validates(
+    _ architecture: BrainFoundationPolicyArchitecture
+  ) -> Bool {
+    architecture.modelIdentifier == modelIdentifier
+      && architecture.modelRevision == modelRevision
+      && architecture.family == family
+      && architecture.goalInterfaces == goalInterfaces
+      && architecture.actionGeneration == actionGeneration
+      && architecture.inferencePrecision == inferencePrecision
+      && architecture.uncertaintyMethod == uncertaintyMethod
+  }
+}
+
 @frozen
 public enum BrainPolicyDatasetSourceKind: String, Codable, CaseIterable, Sendable {
   case simulated

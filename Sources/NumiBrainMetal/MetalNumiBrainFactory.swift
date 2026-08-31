@@ -223,7 +223,11 @@ extension MetalNumiBrainHandle {
     let regionalProgram = try species.regionalProgram()
     let enabledModalities = species.senses.filter(\.enabled).map(\.modality)
     let planningHorizon = species.development.map(\.planningHorizonSteps).max() ?? 0
-    guard policyPackage.architecture.speciesFingerprint == species.fingerprint,
+    guard
+      BrainFoundationPolicyRuntimeContract.validates(
+        policyPackage.architecture
+      ),
+      policyPackage.architecture.speciesFingerprint == species.fingerprint,
       policyPackage.architecture.runtimeProgramFingerprint
         == regionalProgram.fingerprint,
       policyPackage.architecture.lowLevelControllerFingerprint
@@ -232,7 +236,6 @@ extension MetalNumiBrainHandle {
         == configuration.compiledSpeciesTemplate.protectiveMotorProfile.fingerprint,
       policyPackage.architecture.inputModalities
         == enabledModalities.sorted(by: { $0.rawValue < $1.rawValue }),
-      policyPackage.architecture.actionGeneration == .autoregressive,
       policyPackage.architecture.actionHorizon == UInt32(planningHorizon)
     else {
       throw TissueError.metal(

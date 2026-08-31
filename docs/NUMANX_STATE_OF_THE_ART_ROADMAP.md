@@ -246,7 +246,9 @@ all required evidence axes into a deterministic content-addressed `.nbpolicy`.
 The evidence verifier streams retained artifacts, proves split disjointness,
 recomputes metrics, and issues an in-process receipt bound to the exact package.
 The Metal factory requires that receipt and rejects seeds, sensor/program/
-controller drift, and unsupported action-generation geometry. The
+controller drift, unsupported action-generation geometry, and model-family/
+revision/goal/precision/uncertainty metadata that does not name its exact
+executable contract. The
 `numi-brain-policy` CLI can inspect, structurally validate, or verify a retained
 artifact store. No real production package or retained Gate C dataset/evaluation
 matrix exists yet, so Gate C remains open. See
