@@ -1643,6 +1643,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil,
     signal brainPreparedPoint: MetalSharedEventPoint,
     thenSignal preflightReadyPoint: MetalSharedEventPoint
@@ -1656,6 +1657,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         identity: identity,
         acceptedPhysicsGate: acceptedPhysicsGate,
         sensorCandidate: sensorCandidate,
+        developmentalIntents: developmentalIntents,
         teacherState: teacherState,
         signal: brainPreparedPoint,
         thenSignal: preflightReadyPoint
@@ -1679,6 +1681,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease?,
     teacherState: MetalTeacherStateBufferLease?,
     signal brainPreparedPoint: MetalSharedEventPoint,
     thenSignal preflightReadyPoint: MetalSharedEventPoint
@@ -1710,6 +1713,15 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       provisional: ticket.provisional,
       deviceRegistryID: deviceRegistryID
     )
+    if let developmentalIntents {
+      guard developmentalIntents.view.timestamp == transaction.token.targetTimestamp
+      else {
+        throw TissueError.transaction(
+          "developmental intents do not belong to the prepared NumanX root"
+        )
+      }
+      try developmentalIntents.validate(deviceRegistryID: deviceRegistryID)
+    }
 
     let fastSources = try fastTissue.makeNumanXPreparedFastStateSources(
       for: ticket
@@ -1757,6 +1769,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         acceptedPhysicsGate: acceptedPhysicsGate,
         rawSensors: sensorCandidate.rawSensors,
         acceptedRegionalRecurrentInput: acceptedRegionalRecurrent,
+        developmentalIntents: developmentalIntents,
         teacherState: teacherState,
         numanXRootPrepare: request,
         waitFor: ticket.completionPoint,

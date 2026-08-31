@@ -3,6 +3,12 @@ using namespace metal;
 
 constant uint NB_DEVELOPMENTAL_STATE_VERSION = 1u;
 constant uint NB_DEVELOPMENTAL_STATE_VALID = 1u;
+constant uint NB_DEVELOPMENTAL_INTENT_VERSION = 1u;
+constant uint NB_DEVELOPMENTAL_INPUT_GATE_INTENT = 1u;
+constant uint NB_ACCEPTED_PHYSICS_GATE_VERSION = 1u;
+constant uint NB_ACCEPTED_PHYSICS_GATE_VALID = 1u;
+constant ulong NB_FNV_OFFSET = 14695981039346656037ul;
+constant ulong NB_FNV_PRIME = 1099511628211ul;
 
 struct NBDevelopmentalUniforms {
   ulong target_timestamp_microseconds;
@@ -109,6 +115,32 @@ static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDevelopmentalEvidenceRecord) == 32);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 
+inline void nb_developmental_mix_uint(thread ulong &hash, uint value) {
+  for (uint byte_index = 0u; byte_index < 4u; ++byte_index) {
+    hash ^= ulong((value >> (byte_index * 8u)) & 0xffu);
+    hash *= NB_FNV_PRIME;
+  }
+}
+
+inline void nb_developmental_mix_ulong(thread ulong &hash, ulong value) {
+  for (uint byte_index = 0u; byte_index < 8u; ++byte_index) {
+    hash ^= (value >> (byte_index * 8u)) & 0xfful;
+    hash *= NB_FNV_PRIME;
+  }
+}
+
+inline ulong nb_developmental_intent_fingerprint(
+  const NBDevelopmentalEvidenceRecord intent)
+{
+  ulong hash = NB_FNV_OFFSET;
+  nb_developmental_mix_uint(hash, NB_DEVELOPMENTAL_INTENT_VERSION);
+  nb_developmental_mix_ulong(hash, intent.code);
+  nb_developmental_mix_ulong(hash, intent.timestamp_microseconds);
+  nb_developmental_mix_uint(hash, as_type<uint>(intent.confidence));
+  nb_developmental_mix_uint(hash, intent.flags);
+  return hash == 0ul ? NB_FNV_OFFSET : hash;
+}
+
 inline bool nb_module_unlocked(
   const NBDevelopmentalStageDescriptor stage,
   uint module_identifier)
@@ -130,6 +162,9 @@ kernel void initialize_developmental_state(
   device const uint *acceptance_gate [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
+  (void)capability_codes;
+  (void)module_identifiers;
+  (void)imported_evidence;
   if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.stage_count == 0u) return;
   device NBDevelopmentalHeader *header =
@@ -168,21 +203,40 @@ kernel void record_developmental_capability_evidence(
   constant NBDevelopmentalUniforms &uniforms [[buffer(4)]],
   device const NBDevelopmentalEvidenceRecord *imported_evidence [[buffer(5)]],
   device const uint *acceptance_gate [[buffer(6)]],
+  device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(7)]],
   uint gid [[thread_position_in_grid]])
 {
+  (void)stages;
+  (void)module_identifiers;
   if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.imported_evidence_count) return;
   const NBDevelopmentalEvidenceRecord evidence = imported_evidence[gid];
+  const bool gate_intent = uniforms.reserved0
+    == NB_DEVELOPMENTAL_INPUT_GATE_INTENT;
+  ulong accepted_fingerprint = uniforms.accepted_physics_state_fingerprint;
+  if (gate_intent) {
+    if (acceptance_result->version != NB_ACCEPTED_PHYSICS_GATE_VERSION
+        || acceptance_result->status != NB_ACCEPTED_PHYSICS_GATE_VALID
+        || acceptance_result->accepted_token.token_fingerprint == 0ul
+        || evidence.accepted_physics_state_fingerprint
+          != nb_developmental_intent_fingerprint(evidence)) return;
+    accepted_fingerprint =
+      acceptance_result->accepted_token.token_fingerprint;
+  }
   if (evidence.code == 0ul || evidence.confidence < 0.5f
+      || (evidence.flags & NB_DEVELOPMENTAL_STATE_VALID) == 0u
       || evidence.timestamp_microseconds != uniforms.target_timestamp_microseconds
-      || evidence.accepted_physics_state_fingerprint
-        != uniforms.accepted_physics_state_fingerprint) return;
+      || accepted_fingerprint == 0ul
+      || (!gate_intent && evidence.accepted_physics_state_fingerprint
+        != accepted_fingerprint)) return;
+  NBDevelopmentalEvidenceRecord accepted = evidence;
+  accepted.accepted_physics_state_fingerprint = accepted_fingerprint;
   device NBDevelopmentalEvidenceRecord *state =
     reinterpret_cast<device NBDevelopmentalEvidenceRecord *>(
       hot_state + uniforms.evidence_state_offset
     );
   for (uint index = 0u; index < uniforms.capability_code_count; ++index) {
-    if (capability_codes[index] == evidence.code) state[index] = evidence;
+    if (capability_codes[index] == accepted.code) state[index] = accepted;
   }
 }
 
@@ -197,6 +251,8 @@ kernel void advance_developmental_stage_from_capabilities(
   device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(7)]],
   uint gid [[thread_position_in_grid]])
 {
+  (void)module_identifiers;
+  (void)imported_evidence;
   if (acceptance_gate[0] != 1u) return;
   if (gid != 0u || uniforms.stage_count == 0u) return;
   device NBDevelopmentalHeader *header =
@@ -258,6 +314,8 @@ kernel void update_regional_maturation_state(
   device const uint *acceptance_gate [[buffer(6)]],
   uint gid [[thread_position_in_grid]])
 {
+  (void)capability_codes;
+  (void)imported_evidence;
   if (acceptance_gate[0] != 1u) return;
   if (gid >= uniforms.module_count || uniforms.stage_count == 0u) return;
   device const NBDevelopmentalHeader *header =

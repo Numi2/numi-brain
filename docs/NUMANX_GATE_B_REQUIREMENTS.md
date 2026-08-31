@@ -98,15 +98,20 @@ remained exactly `d6e8fe77f1f2d094`. Two commanded runs were byte-identical.
 This is a real bounded ray-geometry actuator, but currently an ideal
 zero-reaction head-local camera gimbal rather than coupled ocular/neck dynamics.
 
-The real Brain/native support-task path now also validates the exact 16-byte
-vision command ABI before physical use. Its fresh developmental state is still
-at `innateScaffold`, however, where curiosity is intentionally zero and
-object/scene uncertainty is disabled until the active-sensing/object stages.
-Across the three accepted support roots it therefore emitted command `0` and
-confidence `0`. The physical mechanism is qualified; autonomous task-driven
-selection is not. Gate B next needs authenticated developmental maturation (or
-a restored mature state) on the ABI4 prepared path, followed by a predeclared
-occlusion/search task and command-ablation outcome.
+The real Brain/native path validates the exact 16-byte vision command ABI before
+physical use. Developmental maturation now enters the ABI4 prepared path as an
+exact 32-byte FNV-bound capability intent. The GPU accepts the intent only after
+the authoritative accepted-physics gate validates, then stamps the accepted
+token into the private developmental evidence; no host token digest is used.
+Six accepted roots unlock the reference active-sensing stage. The seventh
+decision emits command `0.18011415` with confidence `0.55438346`, changes the
+published physical vision channel, and replays every sensor byte exactly. A
+rejected fifth-root intent does not unlock the command on step 6, while a valid
+retry unlocks it only on step 7. Seven accepted roots with each intent
+fingerprint mutated remain at zero command and confidence. This qualifies
+accepted-root-authenticated maturity and autonomous selection, but the claims
+are host-authored rather than autonomously discovered or competence-verified.
+Gate B still needs a predeclared occlusion/search command-ablation outcome.
 
 The aggregate reader now uses temporal-authority snapshot ABI v3. Its FNV-bound
 sensor clock is copied under the same reader gate as the seven channel records and
@@ -262,10 +267,11 @@ gates.
 
 This checkpoint establishes the six closed-loop rows above, vision ABI/source
 ownership, the named physical signal perturbation, one bounded head-local
-ray-geometry command, exact simulated sensor-clock delivery, plus fixed replay
-and rejection behavior. It does not yet establish wall-clock GPU
-capture-to-publication latency/performance, autonomous mature-brain gaze,
-coupled ocular/neck dynamics, or waveform/speech/language sensing. The native
+ray-geometry command, accepted-root-authenticated mature autonomous gaze, exact
+simulated sensor-clock delivery, plus fixed replay and rejection behavior. It
+does not yet establish wall-clock GPU capture-to-publication latency/performance,
+a gaze-command ablation with beneficial task outcome, autonomous capability
+discovery, coupled ocular/neck dynamics, or waveform/speech/language sensing. The native
 416x6 interoceptive channel now
 integrates bounded local energy availability, oxygen availability, carbon-
 dioxide burden, temperature deviation, fatigue, and damage from causal MyoSim
@@ -279,21 +285,23 @@ learned action by `0.0021179318`, descending and muscle output by
 `0.00017181039`, and later vision, touch, proprioception, vestibular, and
 kinesthetic state. It nevertheless improves the predeclared postural outcome
 (`46.580482` intact vestibular drift versus `46.49666` ablated), so the causal
-benefit criterion still fails. That measured training/qualification gap and
-the missing mature-brain active-sensing selection evidence keep Gate B open.
+benefit criterion still fails. That measured training/qualification gap and the
+missing gaze-command task-benefit evidence keep Gate B open.
 
 Focused executable evidence at this checkpoint includes 14/14 native NumanX
 integration tests (green twice), the focused Swift
 interop/ABI4/atomic-publication/full-body E2E tests on Apple Metal, and the
 asset-backed multi-scene cohort with its deterministic MLX successor update and
-intervention replay. The complete Swift package is 146 tests with zero
-failures in 58.491 seconds when the three asset-dependent tests are skipped.
+intervention replay. The complete Swift package is 149 tests with zero failures
+in 58.876 seconds when six bridge/stress tests are intentionally unconfigured.
 With real bridge paths, the bounded external-task plus publication/retry E2E
 passes 2/2 in 15.514 seconds and explicitly skips the isolated stress cohort.
+The accepted-maturation/replay, rejected-root, and malformed-intent gaze proofs
+pass independently in 20.181, 7.889, and 7.176 seconds.
 Six independent 49-root Gate B modality cohorts pass in 50.286–50.627 seconds
-each. The Decision, Memory, and AcceptedConsequence Metal 4 shaders pass
+each. The Developmental, Decision, Memory, and AcceptedConsequence Metal 4 shaders pass
 `-Wall -Wextra -Werror` (with the repository's intentional unused-parameter
-suppression), `git diff --check` is clean, and the final incremental production
-Swift build passes in 0.42 seconds.
+suppression), the ABI4/provisional matrix passes 40/40, `git diff --check` is
+clean, and the fresh production Swift build passes in 54.97 seconds.
 
 Gate B is not achieved until every row and every evidence level is satisfied.

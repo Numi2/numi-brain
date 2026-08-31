@@ -609,6 +609,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil,
     signal brainPreparedPoint: MetalSharedEventPoint,
     thenSignal preflightReadyPoint: MetalSharedEventPoint
@@ -623,6 +624,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
         identity: identity,
         acceptedPhysicsGate: acceptedPhysicsGate,
         sensorCandidate: sensorCandidate,
+        developmentalIntents: developmentalIntents,
         teacherState: teacherState,
         signal: brainPreparedPoint,
         thenSignal: preflightReadyPoint

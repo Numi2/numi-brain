@@ -4187,7 +4187,10 @@ kernel void generate_motor_spinal_autonomic_state(
     const float communication_allocation =
       communication_selected && communication_sensing
         ? header->confidence * (1.0f - sensing_cost) : 0.0f;
-    const float allocation = rest_selected ? 0.0f : clamp(
+    // Active sensing is an independent effector. A rest option suppresses
+    // somatic drive above, but must not deadlock a zero-reaction camera or eye
+    // actuator when uncertainty still makes observation valuable.
+    const float allocation = clamp(
       max(information_allocation, communication_allocation)
         * (1.0f - deliberate_inhibition),
       0.0f, 1.0f
@@ -4199,17 +4202,28 @@ kernel void generate_motor_spinal_autonomic_state(
     const bool grounded_visual_target = sensing_descriptor.modality == 1u
       && sensing_descriptor.modality_local_identifier < 3u
       && epistemic_target_slot > 0u;
+    const uint scan_index = uint(
+      (uniforms.target_timestamp_microseconds / 1000ul
+        + ulong(gid) * 73ul) & 255ul
+    );
+    const float exploratory_visual_command = sensing_descriptor.modality == 1u
+        && allocation > 0.0f
+      ? sin(6.28318530717958647692f * float(scan_index) / 256.0f)
+      : 0.0f;
+    const float ungrounded_command = abs(policy_command) > 1.0e-6f
+      ? policy_command : exploratory_visual_command;
     const float raw_command = grounded_visual_target
       ? mix(
           policy_command,
           clamp(epistemic_target_command, -1.0f, 1.0f),
           clamp(epistemic_target_score, 0.0f, 1.0f)
         )
-      : policy_command;
+      : ungrounded_command;
     NBActiveSensingCommandRecord command;
     command.command = clamp(raw_command * allocation, -1.0f, 1.0f);
-    command.confidence = rest_selected ? 1.0f
-      : clamp(allocation * max(header->confidence, expected_information), 0.0f, 1.0f);
+    command.confidence = clamp(
+      allocation * max(header->confidence, expected_information), 0.0f, 1.0f
+    );
     command.attention_allocation_mask = allocation > 0.0f
       ? (1u << min(max(sensing_descriptor.modality, 1u) - 1u, 7u))
         | ((epistemic_target_slot & 0xffffu) << 16u)

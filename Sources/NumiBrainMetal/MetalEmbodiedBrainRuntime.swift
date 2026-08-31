@@ -1509,6 +1509,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: numanXSensors.rawSensors,
       acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
       developmentalEvidence: developmentalEvidence,
+      developmentalIntents: nil,
       teacherState: teacherState,
       numanXRootPrepare: nil,
       waitFor: waitPoint,
@@ -1541,6 +1542,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: rawSensors,
       acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
       developmentalEvidence: developmentalEvidence,
+      developmentalIntents: nil,
       teacherState: teacherState,
       numanXRootPrepare: nil,
       waitFor: waitPoint,
@@ -1573,6 +1575,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: rawSensors,
       acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
       developmentalEvidence: nil,
+      developmentalIntents: nil,
       teacherState: teacherState,
       numanXRootPrepare: nil,
       waitFor: waitPoint,
@@ -1590,6 +1593,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     rawSensors: [MetalRawSensorBufferLease],
     acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil,
     numanXRootPrepare: MetalNumanXBrainCommitPrepareRequest,
     waitFor waitPoint: MetalSharedEventPoint? = nil,
@@ -1597,6 +1601,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   ) throws -> AcceptedConsequenceSubmissionTicket {
     var retainedInputs: [AnyObject] = [acceptedPhysicsGate]
     retainedInputs.append(contentsOf: rawSensors)
+    if let developmentalIntents { retainedInputs.append(developmentalIntents) }
     if let teacherState { retainedInputs.append(teacherState) }
     retainedInputs.append(contentsOf: numanXRootPrepare.fastStateSources)
     return try submitAcceptedConsequence(
@@ -1607,6 +1612,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       rawSensors: rawSensors,
       acceptedRegionalRecurrentInput: acceptedRegionalRecurrentInput,
       developmentalEvidence: nil,
+      developmentalIntents: developmentalIntents,
       teacherState: teacherState,
       numanXRootPrepare: numanXRootPrepare,
       waitFor: waitPoint,
@@ -1623,6 +1629,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     rawSensors: [MetalRawSensorBufferLease],
     acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease?,
     teacherState: MetalTeacherStateBufferLease?,
     numanXRootPrepare: MetalNumanXBrainCommitPrepareRequest?,
     waitFor waitPoint: MetalSharedEventPoint?,
@@ -1633,6 +1640,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     defer { lock.unlock() }
     guard activeAsyncSubmission == nil,
       transaction.status == .open,
+      developmentalEvidence == nil || developmentalIntents == nil,
+      developmentalIntents == nil
+        || (acceptedPhysicsState == nil && numanXRootPrepare != nil),
       candidateSubstep.transactionFingerprint == transaction.jointToken.fingerprint,
       candidateSubstep.candidateTimestamp == transaction.jointToken.targetTimestamp,
       candidateSubstep.shadowGeneration == transaction.jointToken.shadowGeneration,
@@ -1664,6 +1674,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     let acceptedTimestamp = candidateSubstep.candidateTimestamp
     let acceptedFastMotorState = try transaction.borrowAcceptedFastMotorState()
+    try developmentalIntents?.validate(deviceRegistryID: device.registryID)
     let gateEvaluation = try acceptedPhysicsGateRuntime.makeEvaluation(
       device: device,
       lease: acceptedPhysicsGate,
@@ -1687,12 +1698,36 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         journalBuffer: journalBuffer,
         fastPreparedPoint: waitPoint
       )
+      if let developmentalIntents {
+        let intentInterval = try developmentalIntents.interval
+        let protectedBuffers = [
+          acceptedPhysicsGate.buffer,
+          gateEvaluation.expectedBuffer,
+          gateEvaluation.resultBuffer,
+          gateEvaluation.copyUniformBuffer,
+          hotBuffer,
+          journalBuffer,
+        ]
+        for protectedBuffer in protectedBuffers {
+          let protected = try NumanXGPUInterval(
+            buffer: protectedBuffer,
+            offset: 0,
+            count: protectedBuffer.length
+          )
+          guard !intentInterval.overlaps(protected) else {
+            throw TissueError.transaction(
+              "developmental intents overlap accepted-root authority"
+            )
+          }
+        }
+      }
     } else {
       numanXPrepareEvaluation = nil
     }
     let dynamicResidency = try makeDynamicAcceptedResidency(
       sensors: rawSensors,
       developmentalEvidence: developmentalEvidence,
+      developmentalIntents: developmentalIntents,
       teacherState: teacherState,
       acceptedFastMotorState: acceptedFastMotorState,
       gateEvaluation: gateEvaluation,
@@ -1806,6 +1841,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
           transaction: transaction.agentStateToken,
           targetTimestamp: acceptedTimestamp,
           deltaMicroseconds: duration,
+          intents: developmentalIntents,
           acceptanceGateGPUAddress: gateEvaluation.resultBuffer.gpuAddress + 4,
           acceptanceGateResultGPUAddress: gateEvaluation.resultBuffer.gpuAddress
         )
@@ -2873,13 +2909,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   private func makeDynamicAcceptedResidency(
     sensors: [MetalRawSensorBufferLease],
     developmentalEvidence: MetalDevelopmentalEvidenceBufferLease?,
+    developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease?,
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?,
     gateEvaluation: MetalAcceptedPhysicsGateEvaluation? = nil,
     numanXPrepareEvaluation: MetalNumanXBrainCommitPrepareEvaluation? = nil
   ) throws -> (any MTLResidencySet)? {
     guard
-      !sensors.isEmpty || developmentalEvidence != nil || teacherState != nil
+      !sensors.isEmpty || developmentalEvidence != nil
+        || developmentalIntents != nil || teacherState != nil
         || acceptedFastMotorState != nil || gateEvaluation != nil
         || numanXPrepareEvaluation != nil
     else { return nil }
@@ -2890,6 +2928,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         $0 + 1 + ($1.validityBuffer == nil ? 0 : 1)
       }
       + (developmentalEvidence == nil ? 0 : 1)
+      + (developmentalIntents == nil ? 0 : 1)
       + (teacherState == nil ? 0 : 1)
       + (acceptedFastMotorState == nil ? 0 : 8)
       + ((acceptedFastMotorState?.bodySchemaByteCount ?? 0) > 0 ? 1 : 0)
@@ -2908,6 +2947,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       }
     }
     if let developmentalEvidence { set.addAllocation(developmentalEvidence.buffer) }
+    if let developmentalIntents { set.addAllocation(developmentalIntents.buffer) }
     if let teacherState { set.addAllocation(teacherState.buffer) }
     for allocation in gateEvaluation?.residencyAllocations ?? [] {
       set.addAllocation(allocation)

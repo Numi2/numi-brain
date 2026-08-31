@@ -183,9 +183,13 @@ aggregation, but its held-out ablation still improves the support outcome and
 therefore fails promotion. It also remains short of systemic physiology. Active
 sensing now owns a transaction-bound, bounded head-local camera gimbal that
 changes ray geometry with deterministic replay and nonvisual isolation. The
-fresh brain remains at the innate developmental scaffold and consequently
-selects zero gaze; mature-stage autonomous selection and a command-ablation
-task outcome remain open. Promote the remaining boundaries independently:
+ABI4 prepared path now turns FNV-bound host capability claims into private
+developmental evidence only after the authoritative GPU accepted-physics gate.
+After six accepted roots the reference brain reaches its active-sensing stage;
+the seventh decision autonomously commands the physical gimbal, while rejected
+or fingerprint-mutated claims cannot unlock it. Autonomous capability discovery
+and a gaze command-ablation task outcome remain open. Promote the remaining
+boundaries independently:
 
 - tactile/contact pressure and slip;
 - vestibular and base acceleration;
@@ -193,8 +197,8 @@ task outcome remain open. Promote the remaining boundaries independently:
 - interoceptive muscle/tendon/fatigue/energy state;
 - vision and depth with calibrated capture time and rolling/exposure semantics;
 - audition and language input;
-- authenticated developmental maturation or mature-state restoration followed
-  by autonomous active-sensing command selection and command-ablation evidence.
+- autonomous developmental capability discovery/verification and predeclared
+  active-sensing command-ablation task-benefit evidence.
 
 Every channel needs exact capture time, delivery time, latency, shape, validity,
 species/profile identity, accepted-root provenance, perturbation tests, and an

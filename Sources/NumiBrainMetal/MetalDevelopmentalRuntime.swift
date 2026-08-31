@@ -21,6 +21,166 @@ public struct MetalDevelopmentalCapabilityEvidenceRecord: Sendable {
   }
 }
 
+/// One host-authored capability claim that becomes developmental evidence only
+/// if the authoritative accepted-physics gate validates on the GPU. The third
+/// field is an FNV-bound intent fingerprint before dispatch; the developmental
+/// kernel replaces it with the accepted token fingerprint in the owned state.
+/// This keeps ABI4 maturation free of a host token readback.
+@frozen
+public struct MetalDevelopmentalCapabilityIntentRecord: Sendable {
+  public static let formatVersion: UInt32 = 1
+  public static let byteCount = 32
+
+  public var code: UInt64
+  public var timestampMicroseconds: UInt64
+  public var intentFingerprint: UInt64
+  public var confidence: Float
+  public var flags: UInt32
+
+  public init(
+    code: UInt64,
+    timestamp: BrainTimestamp,
+    confidence: Float
+  ) throws {
+    guard code > 0, confidence.isFinite, (0...1).contains(confidence) else {
+      throw TissueError.transaction("developmental capability intent is invalid")
+    }
+    self.code = code
+    timestampMicroseconds = timestamp.rawValue
+    self.confidence = confidence
+    flags = 1
+    intentFingerprint = Self.fingerprint(
+      code: code,
+      timestampMicroseconds: timestamp.rawValue,
+      confidence: confidence,
+      flags: flags
+    )
+  }
+
+  private static func fingerprint(
+    code: UInt64,
+    timestampMicroseconds: UInt64,
+    confidence: Float,
+    flags: UInt32
+  ) -> UInt64 {
+    var hash: UInt64 = 14_695_981_039_346_656_037
+    mix(formatVersion, into: &hash)
+    mix(code, into: &hash)
+    mix(timestampMicroseconds, into: &hash)
+    mix(confidence.bitPattern, into: &hash)
+    mix(flags, into: &hash)
+    return hash == 0 ? 14_695_981_039_346_656_037 : hash
+  }
+
+  private static func mix(_ value: UInt64, into hash: inout UInt64) {
+    var value = value.littleEndian
+    withUnsafeBytes(of: &value) { bytes in
+      for byte in bytes {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+      }
+    }
+  }
+
+  private static func mix(_ value: UInt32, into hash: inout UInt64) {
+    var value = value.littleEndian
+    withUnsafeBytes(of: &value) { bytes in
+      for byte in bytes {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+      }
+    }
+  }
+}
+
+@frozen
+public struct MetalDevelopmentalCapabilityIntentBufferView: Equatable, Sendable {
+  public let gpuAddress: UInt64
+  public let intentCount: Int
+  public let timestamp: BrainTimestamp
+
+  public init(
+    gpuAddress: UInt64,
+    intentCount: Int,
+    timestamp: BrainTimestamp
+  ) throws {
+    guard gpuAddress > 0, intentCount > 0 else {
+      throw TissueError.transaction("developmental intent GPU view is invalid")
+    }
+    self.gpuAddress = gpuAddress
+    self.intentCount = intentCount
+    self.timestamp = timestamp
+  }
+}
+
+@available(macOS 26.0, *)
+public final class MetalDevelopmentalCapabilityIntentBufferLease:
+  @unchecked Sendable
+{
+  public let view: MetalDevelopmentalCapabilityIntentBufferView
+  let buffer: any MTLBuffer
+  let byteOffset: Int
+  let byteCount: Int
+
+  public init(
+    buffer: any MTLBuffer,
+    byteOffset: Int = 0,
+    intentCount: Int,
+    timestamp: BrainTimestamp
+  ) throws {
+    let (byteCount, overflow) = intentCount.multipliedReportingOverflow(
+      by: MetalDevelopmentalCapabilityIntentRecord.byteCount
+    )
+    let (gpuAddress, addressOverflow) = buffer.gpuAddress.addingReportingOverflow(
+      UInt64(byteOffset >= 0 ? byteOffset : 0)
+    )
+    guard !overflow, !addressOverflow, byteOffset >= 0,
+      byteOffset.isMultiple(of: MemoryLayout<UInt64>.alignment),
+      byteOffset <= buffer.length, byteCount <= buffer.length - byteOffset,
+      gpuAddress > 0
+    else {
+      throw TissueError.transaction("developmental intent buffer range is invalid")
+    }
+    view = try MetalDevelopmentalCapabilityIntentBufferView(
+      gpuAddress: gpuAddress,
+      intentCount: intentCount,
+      timestamp: timestamp
+    )
+    self.buffer = buffer
+    self.byteOffset = byteOffset
+    self.byteCount = byteCount
+  }
+
+  public var metalBufferObject: UnsafeMutableRawPointer {
+    Unmanaged.passUnretained(buffer as AnyObject).toOpaque()
+  }
+
+  func validate(deviceRegistryID: UInt64) throws {
+    let interval = try NumanXGPUInterval(
+      buffer: buffer,
+      offset: byteOffset,
+      count: byteCount
+    )
+    guard buffer.device.registryID == deviceRegistryID,
+      interval.start == view.gpuAddress,
+      byteCount == view.intentCount * Self.recordByteCount
+    else {
+      throw TissueError.transaction(
+        "developmental intent device, range, or identity is stale"
+      )
+    }
+  }
+
+  var interval: NumanXGPUInterval {
+    get throws {
+      try NumanXGPUInterval(buffer: buffer, offset: byteOffset, count: byteCount)
+    }
+  }
+
+  private static let recordByteCount =
+    MetalDevelopmentalCapabilityIntentRecord.byteCount
+}
+
 @frozen
 public struct MetalDevelopmentalEvidenceBufferView: Equatable, Sendable {
   public let gpuAddress: UInt64
@@ -142,6 +302,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     species: SpeciesTemplate
   ) throws {
     guard MemoryLayout<MetalDevelopmentalCapabilityEvidenceRecord>.stride == 32,
+      MemoryLayout<MetalDevelopmentalCapabilityIntentRecord>.stride == 32,
       MemoryLayout<DevelopmentalUniforms>.stride == 88,
       MemoryLayout<DevelopmentalStageRecord>.stride == 64,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -325,7 +486,8 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       targetTimestamp: timestamp,
       deltaMicroseconds: 0,
       acceptedPhysicsStateFingerprint: 0,
-      evidence: nil
+      evidence: nil,
+      gateIntents: nil
     )
     dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
@@ -362,6 +524,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       deltaMicroseconds: deltaMicroseconds,
       acceptedPhysicsStateFingerprint: acceptedPhysicsState.fingerprint,
       evidence: evidence,
+      gateIntents: nil,
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
@@ -389,20 +552,39 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
+    intents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     acceptanceGateGPUAddress: UInt64,
     acceptanceGateResultGPUAddress: UInt64
   ) throws {
+    if let intents {
+      guard intents.view.timestamp == targetTimestamp,
+        intents.view.intentCount <= capabilityCodeCount
+      else {
+        throw TissueError.transaction(
+          "developmental intents do not belong to the accepted root"
+        )
+      }
+    }
     try bind(
       transaction: transaction,
       targetTimestamp: targetTimestamp,
       deltaMicroseconds: deltaMicroseconds,
       acceptedPhysicsStateFingerprint: 0,
       evidence: nil,
+      gateIntents: intents,
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
     dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
+    if let intents {
+      dispatch(
+        encoder,
+        pipeline: evidencePipeline,
+        count: intents.view.intentCount
+      )
+      barrier(encoder)
+    }
     dispatch(encoder, pipeline: advancePipeline, count: 1)
     barrier(encoder)
     dispatch(
@@ -418,10 +600,18 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     deltaMicroseconds: UInt64,
     acceptedPhysicsStateFingerprint: UInt64,
     evidence: MetalDevelopmentalEvidenceBufferLease?,
+    gateIntents: MetalDevelopmentalCapabilityIntentBufferLease?,
     acceptanceGateGPUAddress: UInt64? = nil,
     acceptanceGateResultGPUAddress: UInt64? = nil
   ) throws {
+    guard evidence == nil || gateIntents == nil else {
+      throw TissueError.transaction(
+        "developmental evidence and gate intents are mutually exclusive"
+      )
+    }
     let hot = try arena.hotStateView(transaction: transaction)
+    let importedCount = evidence?.view.evidenceCount
+      ?? gateIntents?.view.intentCount ?? 0
     var uniforms = DevelopmentalUniforms(
       targetTimestampMicroseconds: targetTimestamp.rawValue,
       deltaMicroseconds: deltaMicroseconds,
@@ -442,8 +632,8 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
         arena.layout.section(.developmentalEvidence).elementCount
       ),
       moduleCount: UInt32(species.enabledModuleIdentifiers.count),
-      importedEvidenceCount: UInt32(evidence?.view.evidenceCount ?? 0),
-      reserved0: 0,
+      importedEvidenceCount: UInt32(importedCount),
+      reserved0: gateIntents == nil ? 0 : 1,
       reserved1: 0,
       reserved2: 0
     )
@@ -457,7 +647,8 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     argumentTable.setAddress(moduleIdentifierBuffer.gpuAddress, index: 3)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 4)
     argumentTable.setAddress(
-      evidence?.view.gpuAddress ?? dummyEvidenceBuffer.gpuAddress,
+      evidence?.view.gpuAddress ?? gateIntents?.view.gpuAddress
+        ?? dummyEvidenceBuffer.gpuAddress,
       index: 5
     )
     argumentTable.setAddress(
