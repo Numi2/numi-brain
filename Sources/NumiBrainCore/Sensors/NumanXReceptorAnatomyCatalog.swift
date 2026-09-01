@@ -275,7 +275,7 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     muscleEndpoints: [NumanXMuscleReceptorEndpoint]
   ) throws {
     guard numanXModelFingerprint > 0, species.fingerprint > 0,
-      !endpoints.isEmpty, !jointEndpoints.isEmpty,
+      !endpoints.isEmpty,
       jointTopologyCatalog.numanXModelFingerprint == numanXModelFingerprint,
       (species.body.muscleCount == 0 && muscleAttachmentCatalog == nil
         && muscleEndpoints.isEmpty)
@@ -425,6 +425,7 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
     species: SpeciesTemplate,
     jointTopologyCatalog: NumanXJointTopologyCatalog
   ) throws {
+    if jointEndpoints.isEmpty { return }
     guard Set(jointEndpoints.map(\.identifier)).count == jointEndpoints.count else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX joint receptor endpoint identifiers are duplicated"
@@ -452,14 +453,17 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
         | UInt64(endpoint.coordinateIdentifier)
       suppliedSignals[key, default: []].insert(endpoint.signal)
     }
+    let requiredCausalSignals: Set<JointReceptorSignal> = [.position, .velocity]
     for joint in jointTopologyCatalog.joints {
       for coordinate in joint.coordinates {
         let key =
           UInt64(joint.jointIdentifier) << 16
           | UInt64(coordinate.identifier)
-        guard suppliedSignals[key] == Set(JointReceptorSignal.allCases) else {
+        guard let signals = suppliedSignals[key],
+          requiredCausalSignals.isSubset(of: signals)
+        else {
           throw BrainRuntimeError.invalidDescriptor(
-            "every joint coordinate requires the complete kinesthetic signal set"
+            "every sensed joint coordinate requires position and velocity authority"
           )
         }
       }
@@ -573,7 +577,7 @@ public struct NumanXReceptorAnatomyCatalog: Codable, Equatable, Hashable, Sendab
       [NumanXMuscleReceptorEndpoint].self, forKey: .muscleEndpoints
     ).sorted { $0.identifier < $1.identifier }
     guard numanXModelFingerprint > 0, speciesTemplateFingerprint > 0,
-      jointTopologyFingerprint > 0, !endpoints.isEmpty, !jointEndpoints.isEmpty,
+      jointTopologyFingerprint > 0, !endpoints.isEmpty,
       (muscleAttachmentFingerprint == 0) == muscleEndpoints.isEmpty,
       Set(endpoints.map(\.identifier)).count == endpoints.count,
       Set(jointEndpoints.map(\.identifier)).count == jointEndpoints.count,

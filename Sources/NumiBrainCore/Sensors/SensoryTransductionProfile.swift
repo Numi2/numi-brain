@@ -335,7 +335,7 @@ public struct SensoryTransductionProfile: Codable, Equatable, Sendable {
     guard
       Set(jointReceptorBindings.map(\.identifier)).count
         == jointReceptorBindings.count,
-      jointReceptorBindings.isEmpty == (jointTopologyCatalog == nil)
+      jointReceptorBindings.isEmpty || jointTopologyCatalog != nil
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "joint receptor bindings require one topology and unique identifiers"

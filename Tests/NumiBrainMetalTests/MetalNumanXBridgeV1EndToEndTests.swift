@@ -416,6 +416,191 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     }
   }
 
+  func testGateCExternalTaskUsesExactTargetBody() throws {
+    let paths = try bridgePaths()
+    guard let device = MTLCreateSystemDefaultDevice(),
+      device.makeMTL4CommandQueue() != nil,
+      device.makeCommandAllocator() != nil,
+      device.makeCommandBuffer() != nil
+    else {
+      throw XCTSkip("Metal 4 execution is unavailable")
+    }
+    let compiled = try makeNumanXFullBodyTransportCompiledTemplate()
+    let publication = try BrainParameterPublication.developmentalSeedV1(
+      species: compiled.species,
+      tissueParameters: .corticalSheetV0
+    )
+    var target = [Float](repeating: 0, count: 16)
+    target[2] = 0.25
+    target[6] = 0.10
+    target[10] = 0.05
+    target[14] = 0.20
+    let head = try runAcceptedScenario(
+      paths: paths, contactPath: paths.contacts,
+      compiled: compiled, publication: publication,
+      device: device, rootCount: 3,
+      externalGoal: { controlStep in
+        try self.supportStabilityGoal(
+          target: target,
+          controlStep: controlStep,
+          targetBodyIdentifier: 23
+        )
+      }
+    )
+    let root = try runAcceptedScenario(
+      paths: paths, contactPath: paths.contacts,
+      compiled: compiled, publication: publication,
+      device: device, rootCount: 3,
+      externalGoal: { controlStep in
+        try self.supportStabilityGoal(
+          target: target,
+          controlStep: controlStep,
+          targetBodyIdentifier: 0
+        )
+      }
+    )
+    XCTAssertNotEqual(
+      try XCTUnwrap(head.descendingSomaticByGeneration.last),
+      try XCTUnwrap(root.descendingSomaticByGeneration.last),
+      "changing only the authenticated target body did not change motor output"
+    )
+    // The signed physical objective must deterministically reach the exact
+    // slow motor gains consumed by this target-body path.
+    let sourceRunHash = BrainPolicyEvidenceArtifact.sha256(
+      Data("head-posture-learner-fixture".utf8)
+    )
+    let objective = try BrainPolicyNumanXHeadPostureLearningArtifact(
+      sourceRunArtifactSHA256: sourceRunHash,
+      coordinates: try BrainPolicyNumanXDatasetCoordinates(
+        datasetSourceIdentifier: "head-posture-learner-fixture",
+        datasetSourceRevision: "training",
+        episodeIdentifier: 1,
+        taskFingerprint: 1,
+        sceneFingerprint: 2,
+        objectFingerprint: 3,
+        embodimentFingerprint: 4
+      ),
+      timestepMicroseconds: 100,
+      objectiveWeight: 4,
+      observation: try BrainPolicyNumanXHeadPostureObservation(
+        runArtifactSHA256: sourceRunHash,
+        rootCount: 100,
+        initialControlStep: 2,
+        terminalControlStep: 100,
+        initialSampleSHA256: BrainPolicyEvidenceArtifact.sha256(
+          Data("head-posture-initial".utf8)
+        ),
+        terminalSampleSHA256: BrainPolicyEvidenceArtifact.sha256(
+          Data("head-posture-terminal".utf8)
+        ),
+        initialRelativeHeadHeightMeters: -0.33,
+        terminalRelativeHeadHeightMeters: -0.330_093_45,
+        meanActuatorCommand: 0.01,
+        peakActuatorCommand: 0.3
+      )
+    )
+    let foundation = MLXBrainLearnerConfiguration.foundationV1
+    let learner = MLXBrainLearner(configuration:
+      try MLXBrainLearnerConfiguration(
+        learningRate: 0.1,
+        gradientNormLimit: foundation.gradientNormLimit,
+        parameterMagnitudeLimit: foundation.parameterMagnitudeLimit,
+        lossWeights: foundation.lossWeights,
+        headPostureObjectiveWeight: objective.objectiveWeight
+      ))
+    let update = try learner.update(
+      parentPublication: publication,
+      batch: head.batch,
+      headPosture: objective
+    )
+    XCTAssertEqual(try learner.update(
+      parentPublication: publication,
+      batch: head.batch,
+      headPosture: objective
+    ), update)
+    let successor = try BrainParameterPublication(
+      parentVersion: publication.version,
+      learnerUpdate: update
+    )
+    func motorParameters(_ source: BrainParameterPublication) -> [Float] {
+      source.sharedArtifact.payload(.motor).data.withUnsafeBytes { raw in
+        stride(from: 0, to: raw.count, by: MemoryLayout<UInt32>.stride).map {
+          Float(bitPattern: UInt32(littleEndian: raw.loadUnaligned(
+            fromByteOffset: $0, as: UInt32.self
+          )))
+        }
+      }
+    }
+    let parentMotor = motorParameters(publication)
+    let learnedMotor = motorParameters(successor)
+    for kind in BrainSharedParameterArtifact.requiredKinds where kind != .motor {
+      XCTAssertEqual(
+        successor.sharedArtifact.payload(kind).data,
+        publication.sharedArtifact.payload(kind).data,
+        "head-posture intervention changed non-motor component \(kind)"
+      )
+    }
+    for index in parentMotor.indices where ![3, 4].contains(index) {
+      XCTAssertEqual(
+        learnedMotor[index], parentMotor[index],
+        "head-posture intervention changed motor scalar \(index)"
+      )
+    }
+    XCTAssertEqual(learnedMotor[0], parentMotor[0])
+    XCTAssertGreaterThan(learnedMotor[3], parentMotor[3])
+    XCTAssertGreaterThan(learnedMotor[4], parentMotor[4])
+    let calibratedObjective = try
+      BrainPolicyNumanXHeadPostureLearningArtifact(
+        sourceRunArtifactSHA256: sourceRunHash,
+        coordinates: try BrainPolicyNumanXDatasetCoordinates(
+          datasetSourceIdentifier: "head-posture-learner-fixture",
+          datasetSourceRevision: "training",
+          episodeIdentifier: 1,
+          taskFingerprint: 1,
+          sceneFingerprint: 2,
+          objectFingerprint: 3,
+          embodimentFingerprint: 4
+        ),
+        timestepMicroseconds: 100,
+        objectiveWeight: 4,
+        observation: objective.observation,
+        calibrationEvaluationArtifactSHA256:
+          BrainPolicyEvidenceArtifact.sha256(Data("negative-probe".utf8)),
+        responseGainDirection: -1
+      )
+    let calibratedUpdate = try learner.update(
+      parentPublication: publication,
+      batch: head.batch,
+      headPosture: calibratedObjective
+    )
+    XCTAssertEqual(try learner.update(
+      parentPublication: publication,
+      batch: head.batch,
+      headPosture: calibratedObjective
+    ), calibratedUpdate)
+    let calibratedSuccessor = try BrainParameterPublication(
+      parentVersion: publication.version,
+      learnerUpdate: calibratedUpdate
+    )
+    let calibratedMotor = motorParameters(calibratedSuccessor)
+    for kind in BrainSharedParameterArtifact.requiredKinds where kind != .motor {
+      XCTAssertEqual(
+        calibratedSuccessor.sharedArtifact.payload(kind).data,
+        publication.sharedArtifact.payload(kind).data,
+        "calibrated intervention changed non-motor component \(kind)"
+      )
+    }
+    for index in parentMotor.indices where ![3, 4].contains(index) {
+      XCTAssertEqual(
+        calibratedMotor[index], parentMotor[index],
+        "calibrated intervention changed motor scalar \(index)"
+      )
+    }
+    XCTAssertEqual(calibratedMotor[0], parentMotor[0])
+    XCTAssertLessThan(calibratedMotor[3], parentMotor[3])
+    XCTAssertLessThan(calibratedMotor[4], parentMotor[4])
+  }
+
   func testZZGateBHeldOutSupportTiltPolicyInterventions() throws {
     guard ProcessInfo.processInfo.environment["NUMANX_GATE_B_EVIDENCE"] == "1"
     else {
@@ -914,6 +1099,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   }
 
   func testRealFullBodyBrainProposalApplyAndJointPublication() throws {
+    let gateBTimestepMicroseconds: UInt64 = 100
+    let initialCommittedTimestampMicroseconds: UInt64 = 1_000
+    func gateBTimestamp(_ boundary: UInt64) -> BrainTimestamp {
+      BrainTimestamp(
+        microseconds: initialCommittedTimestampMicroseconds
+          + (boundary - 1) * gateBTimestepMicroseconds
+      )
+    }
     let paths = try bridgePaths()
     guard let device = MTLCreateSystemDefaultDevice(),
       device.makeMTL4CommandQueue() != nil,
@@ -923,7 +1116,9 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       throw XCTSkip("Metal 4 execution is unavailable")
     }
     let parameters = TissueParameters.corticalSheetV0
-    let compiled = try makeNumanXFullBodyTransportCompiledTemplate()
+    let compiled = try makeNumanXFullBodyTransportCompiledTemplate(
+      latencyMicroseconds: UInt32(gateBTimestepMicroseconds)
+    )
     XCTAssertEqual(compiled.species.activeSensingChannels.count, 1)
     XCTAssertEqual(
       compiled.species.activeSensingChannels.first?.modality, .vision
@@ -967,7 +1162,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         metalRoboMetallibPath: paths.metalRoboMetallib,
         matterMetallibPath: paths.matterMetallib,
         matterMaterialPath: paths.material,
-        timestepMicroseconds: 1_000,
+        timestepMicroseconds: gateBTimestepMicroseconds,
         transactionSlotCount: 2
       )
     )
@@ -981,8 +1176,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let transaction = try brain.beginControl(
       controlStepIdentifier: 1,
       basePhysicsGeneration: 0,
-      committedTimestamp: BrainTimestamp(microseconds: 1_000),
-      targetTimestamp: BrainTimestamp(microseconds: 2_000),
+      committedTimestamp: gateBTimestamp(1),
+      targetTimestamp: gateBTimestamp(2),
       cachedDecisionFingerprint: 0x4e58_4445_4349_5349
     )
     // Generation zero is the canonical first deterministic random stream; it
@@ -1059,20 +1254,35 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     )
     XCTAssertEqual(vision.receptorCount, 64 * 48)
     XCTAssertEqual(vision.featureDimension, 8)
-    XCTAssertEqual(vision.receptorTimestamp, BrainTimestamp(microseconds: 1_000))
+    XCTAssertEqual(
+      vision.receptorTimestamp,
+      gateBTimestamp(1)
+    )
     for channel in aggregate.channels {
-      XCTAssertEqual(channel.receptorTimestamp, BrainTimestamp(microseconds: 1_000))
-      XCTAssertEqual(channel.deliveryTimestamp, BrainTimestamp(microseconds: 2_000))
-      XCTAssertEqual(channel.latencyMicroseconds, 1_000)
-      XCTAssertEqual(channel.sampleIntervalMicroseconds, 1_000)
+      XCTAssertEqual(
+        channel.receptorTimestamp,
+        gateBTimestamp(1)
+      )
+      XCTAssertEqual(
+        channel.deliveryTimestamp,
+        gateBTimestamp(2)
+      )
+      XCTAssertEqual(
+        channel.latencyMicroseconds,
+        UInt32(gateBTimestepMicroseconds)
+      )
+      XCTAssertEqual(
+        channel.sampleIntervalMicroseconds,
+        UInt32(gateBTimestepMicroseconds)
+      )
     }
     XCTAssertEqual(try native.currentInfo().residentContinuationCount, 0)
 
     let secondTransaction = try brain.beginControl(
       controlStepIdentifier: 2,
       basePhysicsGeneration: aggregate.physicsGeneration,
-      committedTimestamp: BrainTimestamp(microseconds: 2_000),
-      targetTimestamp: BrainTimestamp(microseconds: 3_000),
+      committedTimestamp: gateBTimestamp(2),
+      targetTimestamp: gateBTimestamp(3),
       cachedDecisionFingerprint: 0x4e58_4445_4349_534a
     )
     let publishedSensors = try aggregate.sensorPacket(
@@ -1097,13 +1307,13 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       secondTransaction.token.fingerprint
     )
     XCTAssertEqual(second.aggregate.proprioception.receptorTimestamp,
-                   BrainTimestamp(microseconds: 2_000))
+                   gateBTimestamp(2))
     XCTAssertEqual(second.aggregate.interoception.receptorTimestamp,
-                   BrainTimestamp(microseconds: 2_000))
+                   gateBTimestamp(2))
     XCTAssertTrue(second.aggregate.channels.allSatisfy {
-      $0.deliveryTimestamp == BrainTimestamp(microseconds: 3_000)
-        && $0.latencyMicroseconds == 1_000
-        && $0.sampleIntervalMicroseconds == 1_000
+      $0.deliveryTimestamp == gateBTimestamp(3)
+        && $0.latencyMicroseconds == UInt32(gateBTimestepMicroseconds)
+        && $0.sampleIntervalMicroseconds == UInt32(gateBTimestepMicroseconds)
     })
     let secondAuditionValidity = try qualificationUInt32s(
       from: try qualificationReadback(
@@ -1135,8 +1345,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let staleTransaction = try brain.beginControl(
       controlStepIdentifier: 3,
       basePhysicsGeneration: 1,
-      committedTimestamp: BrainTimestamp(microseconds: 3_000),
-      targetTimestamp: BrainTimestamp(microseconds: 4_000),
+      committedTimestamp: gateBTimestamp(3),
+      targetTimestamp: gateBTimestamp(4),
       cachedDecisionFingerprint: 0x4e58_5354_414c_4501
     )
     let staleSensors = try bootstrapSensorPacket(
@@ -1152,7 +1362,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let staleMotor = try brain.submitNumanXMotorCandidate(
       staleDecision,
       transaction: staleTransaction,
-      candidateDurationMicroseconds: 1_000,
+      candidateDurationMicroseconds: gateBTimestepMicroseconds,
       signal: point(device, value: 1)
     )
     XCTAssertThrowsError(
@@ -1181,8 +1391,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let thirdTransaction = try brain.beginControl(
       controlStepIdentifier: 3,
       basePhysicsGeneration: second.aggregate.physicsGeneration,
-      committedTimestamp: BrainTimestamp(microseconds: 3_000),
-      targetTimestamp: BrainTimestamp(microseconds: 4_000),
+      committedTimestamp: gateBTimestamp(3),
+      targetTimestamp: gateBTimestamp(4),
       cachedDecisionFingerprint: 0x4e58_4445_4349_534b
     )
     let thirdSensors = try second.aggregate.sensorPacket(
@@ -1205,8 +1415,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let rejectedTransaction = try brain.beginControl(
       controlStepIdentifier: 4,
       basePhysicsGeneration: third.aggregate.physicsGeneration,
-      committedTimestamp: BrainTimestamp(microseconds: 4_000),
-      targetTimestamp: BrainTimestamp(microseconds: 5_000),
+      committedTimestamp: gateBTimestamp(4),
+      targetTimestamp: gateBTimestamp(5),
       cachedDecisionFingerprint: 0x4e58_5245_4a45_4354
     )
     let rejectedSensors = try third.aggregate.sensorPacket(
@@ -1259,8 +1469,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let retryTransaction = try brain.beginControl(
       controlStepIdentifier: 4,
       basePhysicsGeneration: afterReject.physicsGeneration,
-      committedTimestamp: BrainTimestamp(microseconds: 4_000),
-      targetTimestamp: BrainTimestamp(microseconds: 5_000),
+      committedTimestamp: gateBTimestamp(4),
+      targetTimestamp: gateBTimestamp(5),
       cachedDecisionFingerprint: 0x4e58_5245_4a45_4354
     )
     XCTAssertEqual(
@@ -1363,12 +1573,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       let transaction = try brain.beginControl(
         controlStepIdentifier: controlStep,
         basePhysicsGeneration: heldoutAggregate.physicsGeneration,
-        committedTimestamp: BrainTimestamp(
-          microseconds: controlStep * 1_000
-        ),
-        targetTimestamp: BrainTimestamp(
-          microseconds: (controlStep + 1) * 1_000
-        ),
+        committedTimestamp: gateBTimestamp(controlStep),
+        targetTimestamp: gateBTimestamp(controlStep + 1),
         cachedDecisionFingerprint: 0x4e58_484f_4c44_0000 | controlStep
       )
       let sensors = try heldoutAggregate.sensorPacket(
@@ -2011,7 +2217,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
 
   private func supportStabilityGoal(
     target: [Float],
-    controlStep: UInt64
+    controlStep: UInt64,
+    targetBodyIdentifier: UInt32? = nil
   ) throws -> ActiveGoal {
     guard target.count == 16, controlStep > 0 else {
       throw TissueError.transaction(
@@ -2039,7 +2246,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       // prevents ordinary counterfactual pruning from hiding the task option.
       damageRiskBudget: 1.0,
       persistence: 1,
-      createdTimestamp: committedTimestamp
+      createdTimestamp: committedTimestamp,
+      targetBodyIdentifier: targetBodyIdentifier
     )
   }
 
@@ -2112,10 +2320,20 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       activeSensingCommandScale: activeSensingCommandScale,
       signal: decisionPoint
     )
+    guard transaction.token.targetTimestamp.rawValue
+        > transaction.token.committedTimestamp.rawValue
+    else {
+      throw TissueError.transaction(
+        "Gate B transaction has no positive motor duration"
+      )
+    }
+    let candidateDurationMicroseconds =
+      transaction.token.targetTimestamp.rawValue
+        - transaction.token.committedTimestamp.rawValue
     let motor = try brain.submitNumanXMotorCandidate(
       decision,
       transaction: transaction,
-      candidateDurationMicroseconds: 1_000,
+      candidateDurationMicroseconds: candidateDurationMicroseconds,
       signal: motorPoint
     )
     let rootLatch = AsyncResultLatch<MetalNumanXBridgeV1PreparedRoot>()
@@ -2275,6 +2493,29 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       )
     }
     XCTAssertEqual(physical.sensorCandidate.rawSensors.count, 7)
+    if ProcessInfo.processInfo.environment["NUMANX_GATE_B_EVIDENCE"] == "1" {
+      let gateBytes = try qualificationReadback(
+        physical.acceptedPhysicsGate.buffer, device: device
+      )
+      let gateWords = gateBytes.withUnsafeBytes {
+        Array($0.bindMemory(to: UInt64.self).prefix(8))
+      }
+      print(
+        "GateB physical-token words="
+          + gateWords.map { String(format: "%016llx", $0) }.joined(separator: ",")
+      )
+      if let proprioception = physical.sensorCandidate.rawSensors.first(where: {
+        $0.view.modality == .proprioception
+      }), let validity = proprioception.validityBuffer {
+        let validityWords = try qualificationUInt32s(
+          from: qualificationReadback(validity, device: device)
+        )
+        print(
+          "GateB physical-proprio-validity="
+            + validityWords.prefix(8).map(String.init).joined(separator: ",")
+        )
+      }
+    }
 
     let fastPoint = try point(device, value: 1)
     let brainPoint = try point(device, value: 1)

@@ -1,9 +1,10 @@
 import Foundation
 import Metal
+import NumiBrainABI
 import NumiBrainCore
 import XCTest
 
-@testable import NumiBrainMetal
+@_spi(NumanXInterop) @testable import NumiBrainMetal
 
 @available(macOS 26.0, *)
 final class MetalFoundationPolicyPackageTests: XCTestCase {
@@ -70,7 +71,11 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
     publication: BrainParameterPublication,
     qualified: Bool,
     hardSafetyFingerprint: UInt64? = nil,
-    modelIdentifier: String = BrainFoundationPolicyRuntimeContract.modelIdentifier
+    modelIdentifier: String = BrainFoundationPolicyRuntimeContract.modelIdentifier,
+    supervisionRequestThreshold: Float =
+      BrainFoundationPolicyRuntimeContract.supervisionRequestThreshold,
+    rootRejectionThreshold: Float =
+      BrainFoundationPolicyRuntimeContract.rootRejectionThreshold
   ) throws -> BrainFoundationPolicyPackage {
     let enabledModalities = compiled.species.senses.filter(\.enabled).map(\.modality)
     let architecture = try BrainFoundationPolicyArchitecture(
@@ -82,6 +87,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
         .parameterWeightsSHA256(publication),
       speciesFingerprint: compiled.species.fingerprint,
       runtimeProgramFingerprint: publication.version.regionalProgramFingerprint,
+      ownerProgramFingerprint: 0x4d52_4f57_4e45_5201,
       lowLevelControllerFingerprint: compiled.somaticSynergyCatalog.fingerprint,
       hardSafetyProgramFingerprint: hardSafetyFingerprint
         ?? compiled.protectiveMotorProfile.fingerprint,
@@ -92,8 +98,8 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       inferencePrecision: .fp32,
       maximumInferenceLatencyMicroseconds: 10_000,
       uncertaintyMethod: BrainFoundationPolicyRuntimeContract.uncertaintyMethod,
-      supervisionRequestThreshold: 0.7,
-      rootRejectionThreshold: 0.9
+      supervisionRequestThreshold: supervisionRequestThreshold,
+      rootRejectionThreshold: rootRejectionThreshold
     )
     let sources = [
       try BrainPolicyDatasetSource(
@@ -293,6 +299,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
           try BrainFoundationPolicyPackage.parameterWeightsSHA256(publication),
         speciesFingerprint: compiled.species.fingerprint,
         runtimeProgramFingerprint: publication.version.regionalProgramFingerprint,
+        ownerProgramFingerprint: 0x4d52_4f57_4e45_5201,
         lowLevelControllerFingerprint: compiled.somaticSynergyCatalog.fingerprint,
         hardSafetyProgramFingerprint: hardSafetyFingerprint
           ?? compiled.protectiveMotorProfile.fingerprint,
@@ -352,7 +359,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
           let transaction = transactionBase + UInt64(index + 1)
           return try BrainPolicyNumanXRootExecution(
             sampleSHA256: sampleHash,
-            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            ownerProgramFingerprint: architecture.ownerProgramFingerprint,
             transactionFingerprint: transaction,
             linearizationEpoch: 1,
             slotGeneration: UInt64(index + 1),
@@ -372,7 +379,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
           rootExecutions.append(
             try BrainPolicyNumanXRootExecution(
               sampleSHA256: members[0],
-              ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+              ownerProgramFingerprint: architecture.ownerProgramFingerprint,
               transactionFingerprint: transaction,
               linearizationEpoch: 1,
               slotGeneration: 500,
@@ -393,6 +400,7 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
           executionKind: .authoritativeNumanX,
           modelWeightsSHA256: architecture.modelWeightsSHA256,
           runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+          ownerProgramFingerprint: architecture.ownerProgramFingerprint,
           lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
           hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
           rootExecutions: rootExecutions,
@@ -501,6 +509,21 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
       )
     )
 
+    let wrongCalibration = try package(
+      compiled: compiled,
+      publication: publication,
+      qualified: true,
+      supervisionRequestThreshold: 0.69,
+      rootRejectionThreshold: 0.9
+    )
+    XCTAssertThrowsError(
+      try MetalNumiBrainHandle.createUnverifiedPolicyCandidate(
+        configuration: configuration,
+        policyPackage: wrongCalibration,
+        device: device
+      )
+    )
+
     let otherPackage = try package(
       compiled: compiled,
       publication: publication,
@@ -515,5 +538,197 @@ final class MetalFoundationPolicyPackageTests: XCTestCase {
         device: device
       )
     )
+  }
+
+  func testGateCUncertaintyRejectsDecisionBeforePhysicalMotorHandoff() throws {
+    guard let device = MTLCreateSystemDefaultDevice(),
+      let legacyQueue = device.makeCommandQueue(),
+      let queue = device.makeMTL4CommandQueue(),
+      let allocator = device.makeCommandAllocator(),
+      let commandBuffer = device.makeCommandBuffer(),
+      let event = device.makeSharedEvent()
+    else {
+      throw XCTSkip("Metal 4 is unavailable")
+    }
+    let compiled = try compiledTemplate()
+    let publication = try learnedPublication(compiled: compiled)
+    let policyPackage = try package(
+      compiled: compiled,
+      publication: publication,
+      qualified: false
+    )
+    let regionalProgram = try compiled.species.regionalProgram()
+    let runtime = try MetalEmbodiedBrainRuntime(
+      device: device,
+      compiledSpeciesTemplate: compiled,
+      regionalProgram: regionalProgram,
+      parameterVersion: publication.version,
+      sharedParameterArtifact: publication.sharedArtifact,
+      foundationPolicyArchitecture: policyPackage.architecture
+    )
+    let root = try BrainJointTransactionToken(
+      environmentIdentifier: 0,
+      episodeIdentifier: 71,
+      controlStepIdentifier: 1,
+      parameterVersionFingerprint: publication.version.fingerprint,
+      baseBrainGeneration: 0,
+      basePhysicsGeneration: 9,
+      committedTimestamp: BrainTimestamp(microseconds: 10_000),
+      targetTimestamp: BrainTimestamp(microseconds: 11_000),
+      randomCounterGeneration: 0
+    )
+    let transaction = try runtime.beginControl(
+      jointToken: root,
+      cachedDecisionFingerprint: 0x4741_5445_4301
+    )
+    defer { try? runtime.abort(transaction: transaction) }
+    let recurrentBuffer = try XCTUnwrap(device.makeBuffer(
+      length: regionalProgram.scalarCount * MemoryLayout<Float>.stride,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ))
+    recurrentBuffer.contents().initializeMemory(
+      as: UInt8.self, repeating: 0, count: recurrentBuffer.length
+    )
+    let recurrent = try MetalRegionalRecurrentBufferView(
+      gpuAddress: recurrentBuffer.gpuAddress,
+      scalarCount: regionalProgram.scalarCount,
+      regionalProgramFingerprint: regionalProgram.fingerprint
+    )
+    let decision = try runtime.inferAndDecide(
+      transaction: transaction,
+      rawSensors: try makeGateCRawSensors(
+        device: device,
+        compiled: compiled,
+        deliveryTimestamp: root.committedTimestamp
+      ),
+      regionalRecurrentInput: recurrent
+    )
+    let lease = try runtime.borrowNumanXSomaticBuffer(
+      for: decision,
+      transaction: transaction
+    )
+
+    // The test mutates only the unpublished shadow header, using a blit because
+    // the production arena is private. Offset 88 is NBControlHeader's
+    // unsupported_uncertainty field; the shader's static layout assertion is
+    // the cross-language authority for this focused fault injection.
+    let staging = try XCTUnwrap(device.makeBuffer(
+      length: 256,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ))
+    func blit(
+      source: any MTLBuffer,
+      sourceOffset: Int,
+      destination: any MTLBuffer,
+      destinationOffset: Int
+    ) throws {
+      let buffer = try XCTUnwrap(legacyQueue.makeCommandBuffer())
+      let encoder = try XCTUnwrap(buffer.makeBlitCommandEncoder())
+      encoder.copy(
+        from: source,
+        sourceOffset: sourceOffset,
+        to: destination,
+        destinationOffset: destinationOffset,
+        size: 256
+      )
+      encoder.endEncoding()
+      buffer.commit()
+      buffer.waitUntilCompleted()
+      if let error = buffer.error { throw error }
+    }
+    try blit(
+      source: lease.buffer,
+      sourceOffset: lease.controlHeaderByteOffset,
+      destination: staging,
+      destinationOffset: 0
+    )
+    staging.contents().storeBytes(of: Float(0.95), toByteOffset: 88, as: Float.self)
+    try blit(
+      source: staging,
+      sourceOffset: 0,
+      destination: lease.buffer,
+      destinationOffset: lease.controlHeaderByteOffset
+    )
+
+    let readyPoint = try MetalSharedEventPoint(event: event, value: 1)
+    let gateRuntime = try MetalNumanXMotorReadyRuntime(device: device)
+    let evaluation = try gateRuntime.makeDecisionEvaluation(
+      device: device,
+      commandLease: lease,
+      transaction: root,
+      readyPoint: readyPoint,
+      compiledSpeciesTemplateFingerprint: compiled.fingerprint,
+      parameterVersionFingerprint: publication.version.fingerprint,
+      regionalProgramFingerprint: regionalProgram.fingerprint,
+      scheduleFingerprint: regionalProgram.scheduleFingerprint,
+      brainProgramFingerprint: runtime.numanXBrainProgramFingerprint,
+      uncertaintyGate: try MetalNumanXUncertaintyGateConfiguration(
+        architecture: policyPackage.architecture
+      )
+    )
+    let residency = try gateRuntime.makeResidencySet(
+      device: device,
+      label: "Gate C uncertainty rejection test",
+      allocations: evaluation.residencyAllocations
+    )
+    defer { residency.endResidency() }
+    allocator.reset()
+    commandBuffer.beginCommandBuffer(allocator: allocator)
+    commandBuffer.useResidencySet(residency)
+    let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
+    gateRuntime.encodeDecision(encoder: encoder, evaluation: evaluation)
+    encoder.endEncoding()
+    commandBuffer.endCommandBuffer()
+    let completion = DispatchSemaphore(value: 0)
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { _ in completion.signal() }
+    queue.commit([commandBuffer], options: options)
+    XCTAssertEqual(completion.wait(timeout: .now() + 10), .success)
+
+    XCTAssertTrue(evaluation.hasValidTerminal())
+    XCTAssertFalse(evaluation.hasValidSuccess())
+    let record = evaluation.gateBuffer.contents().load(
+      as: NBNumanXDecisionReadyGateGPU.self
+    )
+    XCTAssertEqual(record.status, UInt32(NB_NUMANX_READY_GATE_FAILURE.rawValue))
+    XCTAssertEqual(record.flags, 0b111)
+    XCTAssertEqual(record.decisionOutputFingerprint, 0)
+  }
+
+  private func makeGateCRawSensors(
+    device: any MTLDevice,
+    compiled: CompiledSpeciesTemplate,
+    deliveryTimestamp: BrainTimestamp
+  ) throws -> [MetalRawSensorBufferLease] {
+    try compiled.species.senses.filter(\.enabled).map { topology in
+      let scalarCount = Int(topology.receptorCount)
+        * Int(topology.observationDimension)
+      let buffer = try XCTUnwrap(device.makeBuffer(
+        length: scalarCount * MemoryLayout<Float>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ))
+      buffer.contents().initializeMemory(
+        as: UInt8.self, repeating: 0, count: buffer.length
+      )
+      let validity: (any MTLBuffer)? = topology.modality == .proprioception
+        ? device.makeBuffer(
+          length: Int(topology.receptorCount) * MemoryLayout<UInt32>.stride,
+          options: [.storageModeShared, .hazardTrackingModeTracked]
+        ) : nil
+      validity?.contents().initializeMemory(
+        as: UInt8.self, repeating: 0xff, count: validity?.length ?? 0
+      )
+      return try MetalRawSensorBufferLease(
+        buffer: buffer,
+        modality: topology.modality,
+        receptorTimestamp: BrainTimestamp(
+          microseconds: deliveryTimestamp.rawValue
+            - UInt64(topology.latencyMicroseconds)
+        ),
+        receptorCount: topology.receptorCount,
+        featureDimension: topology.observationDimension,
+        validityBuffer: validity
+      )
+    }
   }
 }

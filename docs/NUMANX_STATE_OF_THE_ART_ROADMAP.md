@@ -241,8 +241,9 @@ generalist claim.
 
 The first Gate C production boundary is now executable but is not a promotion:
 `BrainFoundationPolicyPackage` binds exact learned parameter bytes, architecture,
-species/runtime/controller/safety identities, dataset and split provenance, and
-all required evidence axes into a deterministic content-addressed `.nbpolicy`.
+species/runtime/owner/controller/safety identities, dataset and split provenance,
+and all required evidence axes into a deterministic content-addressed
+version-2 `.nbpolicy`.
 The evidence verifier streams retained artifacts, proves split disjointness,
 recomputes predeclared axis-specific metrics, requires authoritative NumanX
 root provenance, and issues an in-process receipt bound to the exact package.
@@ -251,9 +252,155 @@ controller drift, unsupported action-generation geometry, and model-family/
 revision/goal/precision/uncertainty metadata that does not name its exact
 executable contract. The
 `numi-brain-policy` CLI can inspect, structurally validate, or verify a retained
-artifact store. No real production package or retained Gate C dataset/evaluation
-matrix exists yet, so Gate C remains open. See
+artifact store. Package thresholds now bind the executable Metal decision and
+motor gates: unpublished uncertainty can request supervision or reject before
+physical handoff. Authoritative accepted/rejected release can emit a version-4
+root transcript, while pending, failed, and quarantined attempts cannot. The
+production `numi-brain-gate-c` runner now captures exact settled sensor tensors,
+canonical sample manifests, terminal executions, all nine immutable learning-
+batch sections, and non-promotable run manifests from the real 157-body ABI4
+bridge. Its verifier reopens the complete artifact graph and recomputes the
+live Metal learning-batch fingerprints. A deterministic three-root MLX
+candidate and its honest 1-millisecond +0.5-degree `2/3` failure remain retained.
+Those historical "support" task names do not denote active ground contact in
+the present prepared Human/Matter v1 path: it supplies an unconstrained `A0`,
+disables contacts and root assistance, and lacks the nullspace/KKT/Schur
+tangent authority needed for constrained support dynamics. A 1,000-root M4
+trace (`0ebe5548ef25fafe55dccc8b1d848c40d31c7edf17484d616d265e062aea0992`)
+accepted every root while root vertical velocity reached `-1.0136935711 m/s`
+and root/head height fell about 5.17/5.19 cm. It is free-fall evidence, not
+balance evidence. All older support-labeled results are therefore retained only
+as runtime, artifact, replay, rejection, latency, memory, or synthetic-input
+diagnostics.
+
+The production support implementation is now deliberately scoped as one
+monolithic constraint solve, not a second Stand contact pass. Matter must
+import the exact NHCNT point-plane rows through the Human candidate point
+Jacobians, solve their unilateral/friction state in the same Newton/FGMRES KKT
+as the attached material, and return the resulting generalized Human reaction
+through the existing staged `A0 * deltaV / h` publication seam. The owner
+therefore keeps its independent contact pass disabled; enabling it after the
+Matter solve would double-apply contact and invalidate the accepted candidate.
+Support multipliers, active/friction state, and their exact NHCNT source
+identity must be checkpointed and included in accepted-state proof authority,
+then drive tactile/support consequences. A frozen square projector is not an
+acceptable substitute for unilateral Coulomb contact because its active set
+depends on the coupled solution.
+
+The first contact-independent physical Gate C task is now
+`head-posture-lift-v1`, whose external goal carries exact target body 23 through
+the fixed-size Metal goal ABI. A causal Metal test proves that selecting body 0
+versus body 23 changes the final 416-muscle descending output. A coordinate-
+exact, disjoint-scene 100-root baseline/candidate comparison then produced
+identical head-relative-to-root change (`-0.00009346008 m`) and zero candidate
+advantage against a predeclared `0.000001 m` minimum. Evaluation
+`56d7e56eb642547ef9c273ceb63988b5b02221320995bdca254da2570d9d966b`
+is explicit, byte-recomputable negative evidence.
+
+A signed MLX physical objective now binds exact accepted vestibular/action
+evidence to the DecisionState motor-drive and task-space gains. The first
+candidate changed 104 muscle commands but retained zero lift advantage
+(`c3b3ed313fd7d50fd274af414b52a67bb3b6a605063e32059d05e0ef8defdaf1`).
+A stronger bounded exploratory update produced a measurable harmful
+`-0.23841858` micrometre response
+(`a316e273a8a7785a5d29e08068ca4944c8aae4fb0c380c95f9c21e676d328200`).
+The learner now accepts that result only as a transitive causal calibration,
+records gain direction `-1`, and rejects missing, zero, mismatched, or recursive
+calibration. Calibrated candidate
+`30b2b27bab02a05120e9eb19cef1f16b97e9c2cf3e37f8250b2c46e416b4fb25`
+completed a third fresh 100-root scene and materially changed muscle output,
+but its exact lift advantage remained zero
+(`b3fbf5057e6cbea049b87e2230aa8de34f18984c36f76ea5bb99e6550c413ad3`).
+A predeclared fourth-scene 1,000-root comparison then completed 1,000/1,000
+accepted roots for both policies. Baseline/candidate head-relative lift was
+`-0.00029051304/-0.00029039383 m`, a positive `0.11920929`-micrometre
+candidate advantage but only about 12 percent of the unchanged one-micrometre
+minimum. Evaluation
+`961066d605aa89efa4f8de364ba3e2d35ba536cbfdab9baebc2a6074a4b4cbc0`
+independently verifies and remains non-promotable. One predeclared stronger
+successor then increased the calibrated learning rate from `4` to `12` while
+retaining objective weight `4` and the existing `+/-4` parameter bound.
+Training run
+`933ed5614e07bcbd8a51d2fadce887b5fff47b5b9780ae4a4f00979570f6ff2a`
+emitted signed learning artifact
+`0f7be2cafc56e1e07f1d5c4bfc41b339a166fdf459588085e55fb04fc1b3fecb`
+and candidate
+`c60c18f708a81310a1caf396066af10eb98799eb602992f289ac6a5d7b115314`
+was tested on a fifth fresh scene; baseline
+`eaaf071d7034aa85c271924c85c40aea64142a6ec9bf68e1b538248f21428b3b`
+and candidate run
+`c524ca3b2beff3fbf5a9985f995794b5aa65c0cdf432424e305def4896e6d6d9`
+both completed 1,000/1,000 accepted roots, but both measured exactly
+`-0.00029051304 m` head-relative lift. Evaluation
+`11d2c107be2eb59fbceed6205d101bace5fee8e37a345928cbaabe31c591a472`
+independently verifies the exact `0 m` advantage. Gate C remains open. Its next
+promotion-directed step needs a newly justified causal update or another
+calibrated body metric that clears its fixed threshold on a fresh held-out
+scene, or the larger constrained-dynamics authority required before genuine
+support learning can be claimed. Post-hoc parameter sweeps and threshold
+relaxation are not acceptable substitutes.
+
+The anatomical identification path no longer uses a nonzero learned-effect
+vector as its only completion marker. An exact accepted-attempt bit now
+advances past a probe whose 10-microsecond endpoint delta is below resolution,
+and muscle-model residuals remain actuator-local epistemic evidence rather
+than whole-body damage authority. A matched 20-root Apple M4 diagnostic
+retained 20/20 accepted roots for baseline
+`a2c20d9e3897453d08d703759aec174efa2242f9eaa0368eab047f5341de783a`
+and body-23 goal
+`e5a599775b13515b3b3f77c7ff755ac3594f3c7180fa9f3b2bfc2ef0fa7d0467`.
+The goal issued one learned command per root across actuators 22, 23, and
+32 through 42 before risk inhibition, producing matched-baseline differences
+only in proprioceptive and muscle-receptor payloads from root 3 onward. Exact
+vestibular root-relative head height remained unchanged. This is positive
+local causal-response evidence and negative task-response evidence over only
+200 microseconds; it does not change the 100-microsecond qualified default or
+close Gate C.
+The runner now binds its exact native timestep through motor duration,
+timestamps, species transport, and the run manifest. At 100 microseconds, a
+new candidate trained from 11 accepted roots and both baseline/learned
+held-out cohorts complete 10/10 post-bootstrap observations. An independent
+repeat matches sensor contents, generations, outcomes, and physical metrics
+across all 22 roots while producing fresh transaction authority identities.
+The learned-minus-baseline success delta is still zero. Metal-feedback latency
+now passes its predeclared 20 ms p99 budget over 100 learned roots. A separate
+20-ID/20-all-invalid local invalid-sensor cohort recomputes AUROC 1.0,
+supervision-or-reject recall 1.0, and unsafe acceptance 0 from authoritative
+accepted/rejected transcripts while rejected roots preserve generation 20.
+An additional same-root emergency cohort challenges 40/40 roots and retains
+exact GPU protective-command and per-muscle output evidence. It includes 20
+authoritative uncertainty rejections, observes a maximum nonzero learned drive
+of `0.18392205238342285`, and recomputes zero protective bypasses and zero
+safety violations. This is stable local cross-scene, synthetic OOD, and bounded
+same-root safety evidence, not learned advantage, independent-distribution or
+independent-embodiment calibration, or promotion. No production
+package, independent embodiment source, complete disjoint Gate C dataset
+matrix, or passing evaluation matrix exists yet. Absolute species-critical
+sensor rules now consume the raw validity-gated receptor plane, preventing
+learned sensory bias from fabricating a physiological emergency stop; a real
+two-root M4 regression covers the former healthy-interoception failure. A
+fresh, coordinate-exact 8-example adaptation still yields zero success gain on
+the legacy 5-degree metadata variant (`0.4 -> 0.4`) while retaining `1.0`
+prior-task success. Its successor changes all 416 actuator commands, but the
+1.1-millisecond free-fall trajectory is unchanged, and a four-example
+pre-failure calibration suppresses output rather than improving support. The
+few-shot contract requires a 10-point gain, a task-conditioned learning
+objective, and a meaningful physical horizon; this remains negative evidence
+and Gate C remains open. See
 [NUMANX_GATE_C_REQUIREMENTS.md](NUMANX_GATE_C_REQUIREMENTS.md).
+
+The long-horizon evidence path now retains complete committed memory batches on
+both sides of every authoritative root plus an address- and generation-free
+semantic motor-action artifact. Verification enforces exact memory continuity,
+accepted-root advance, and rejected-root no-mutation. This prevents a future
+delayed/interrupted/state-aliasing benchmark from substituting run labels for
+recomputable memory and action evidence. Fixed local Apple M4 protocols now pass
+all three 10-cohort axes at `1.0`: state-alias pairs use byte-identical semantic
+sensor content with distinct memory/action evidence; interrupted roots reject
+without memory mutation and recover on the next root; delayed cues remain live
+across two waits through the consequence deadline. These are non-promotable
+same-device, same-body, same nominal-task-family development results. Independent
+task sources, scenes, objects, embodiments, and laboratories remain required.
 
 ### Gate D — physical and biological validation
 

@@ -5,6 +5,10 @@ constant uint NB_NUMANX_READY_ABI_VERSION = 1u;
 constant uint NB_NUMANX_READY_PENDING = 0u;
 constant uint NB_NUMANX_READY_SUCCESS = 1u;
 constant uint NB_NUMANX_READY_FAILURE = 2u;
+constant uint NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND = 1u << 0u;
+constant uint NB_NUMANX_DECISION_SUPERVISION_REQUIRED = 1u << 1u;
+constant uint NB_NUMANX_DECISION_ROOT_REJECTED = 1u << 2u;
+constant uint NB_NUMANX_UNCERTAINTY_POLICY_ABI_VERSION = 1u;
 constant uint NB_NUMANX_DECISION_GATE_BYTES = 160u;
 constant uint NB_NUMANX_MOTOR_GATE_BYTES = 160u;
 constant uint NB_NUMANX_DECISION_MAX_RANGES = 12u;
@@ -25,7 +29,7 @@ struct NBNumanXDecisionReadyGateGPU {
   uint environment;
   uint rangeCount;
   uint flags;
-  uint reserved32_0;
+  uint unsupportedUncertaintyBits;
   uint reserved32_1;
   ulong controlStep;
   ulong transactionFingerprint;
@@ -84,6 +88,40 @@ struct NBNumanXDecisionReadyDispatchGPU {
   NBNumanXDecisionRangeGPU ranges[NB_NUMANX_DECISION_MAX_RANGES];
 };
 
+struct NBNumanXUncertaintyPolicyGPU {
+  uint abiVersion;
+  uint flags;
+  float supervisionRequestThreshold;
+  float rootRejectionThreshold;
+};
+
+struct NBControlHeaderGPU {
+  ulong activeGoalIdentifier;
+  ulong activeOptionIdentifier;
+  ulong activePlanIdentifier;
+  ulong selectedTimestampMicroseconds;
+  uint mode;
+  uint candidateCount;
+  uint planStepCount;
+  uint flags;
+  float selectedScore;
+  float selectedDamageCVaR;
+  float confidence;
+  float vigor;
+  float explorationTemperature;
+  float controllerPhase;
+  float interruptionCost;
+  float progress;
+  float predictedEffort;
+  float predictedInformationGain;
+  float unsupportedUncertainty;
+  float reservedFloat;
+  ulong reserved0;
+  ulong reserved1;
+  ulong reserved2;
+  ulong reserved3;
+};
+
 struct NBNumanXMotorCandidateGPU {
   uint formatVersion;
   uint flags;
@@ -133,6 +171,8 @@ struct NBMotorOutputHeaderGPU {
 static_assert(sizeof(NBNumanXDecisionReadyGateGPU) == 160);
 static_assert(sizeof(NBNumanXMotorReadyGateGPU) == 160);
 static_assert(sizeof(NBNumanXDecisionReadyDispatchGPU) == 272);
+static_assert(sizeof(NBNumanXUncertaintyPolicyGPU) == 16);
+static_assert(sizeof(NBControlHeaderGPU) == 128);
 static_assert(sizeof(NBNumanXMotorCandidateGPU) == 152);
 static_assert(sizeof(NBMotorOutputHeaderGPU) == 80);
 
@@ -281,16 +321,35 @@ kernel void numanx_publish_decision_ready(
   constant NBNumanXDecisionReadyDispatchGPU &dispatch [[buffer(0)]],
   device const uchar *decisionBytes [[buffer(1)]],
   device NBNumanXDecisionReadyGateGPU *gate [[buffer(2)]],
+  device const NBControlHeaderGPU *controlHeader [[buffer(3)]],
+  constant NBNumanXUncertaintyPolicyGPU &uncertaintyPolicy [[buffer(4)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
   NBNumanXDecisionReadyGateGPU output = dispatch.expected;
+  const NBControlHeaderGPU control = controlHeader[0];
+  const bool uncertaintyPolicyDisabled = uncertaintyPolicy.flags == 0u
+    && uncertaintyPolicy.supervisionRequestThreshold == 0.0f
+    && uncertaintyPolicy.rootRejectionThreshold == 0.0f
+    && output.flags == 0u;
+  const bool uncertaintyPolicyEnabled =
+    uncertaintyPolicy.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND
+    && isfinite(uncertaintyPolicy.supervisionRequestThreshold)
+    && isfinite(uncertaintyPolicy.rootRejectionThreshold)
+    && uncertaintyPolicy.supervisionRequestThreshold >= 0.0f
+    && uncertaintyPolicy.supervisionRequestThreshold <= 1.0f
+    && uncertaintyPolicy.rootRejectionThreshold
+      >= uncertaintyPolicy.supervisionRequestThreshold
+    && uncertaintyPolicy.rootRejectionThreshold <= 1.0f
+    && output.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND;
   bool valid = output.abiVersion == NB_NUMANX_READY_ABI_VERSION
     && output.structBytes == NB_NUMANX_DECISION_GATE_BYTES
     && output.status == NB_NUMANX_READY_PENDING
     && output.rangeCount == NB_NUMANX_DECISION_MAX_RANGES
-    && output.flags == 0u
-    && output.reserved32_0 == 0u
+    && (uncertaintyPolicyDisabled || uncertaintyPolicyEnabled)
+    && uncertaintyPolicy.abiVersion
+      == NB_NUMANX_UNCERTAINTY_POLICY_ABI_VERSION
+    && output.unsupportedUncertaintyBits == 0u
     && output.reserved32_1 == 0u
     && output.transactionFingerprint != 0ul
     && output.shadowGeneration != 0ul
@@ -309,6 +368,11 @@ kernel void numanx_publish_decision_ready(
   ulong aggregate = NB_FNV_OFFSET;
   nb_mix_uint(aggregate, 0x44454331u);
   nb_mix_uint(aggregate, output.rangeCount);
+  nb_mix_uint(aggregate, uncertaintyPolicy.abiVersion);
+  nb_mix_uint(aggregate, uncertaintyPolicy.flags);
+  nb_mix_float(aggregate, uncertaintyPolicy.supervisionRequestThreshold);
+  nb_mix_float(aggregate, uncertaintyPolicy.rootRejectionThreshold);
+  nb_mix_float(aggregate, control.unsupportedUncertainty);
   for (uint index = 0u; index < output.rangeCount; ++index) {
     const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
     const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
@@ -325,7 +389,18 @@ kernel void numanx_publish_decision_ready(
       ulong(range.byteCount)
     );
   }
-  if (valid) {
+  const bool uncertaintyValid = isfinite(control.unsupportedUncertainty)
+    && control.unsupportedUncertainty >= 0.0f;
+  const float normalizedUncertainty = uncertaintyValid
+    ? clamp(control.unsupportedUncertainty, 0.0f, 1.0f) : 1.0f;
+  const bool supervisionRequired = uncertaintyPolicyEnabled
+    && normalizedUncertainty
+      >= uncertaintyPolicy.supervisionRequestThreshold;
+  const bool rootRejected = uncertaintyPolicyEnabled
+    && normalizedUncertainty >= uncertaintyPolicy.rootRejectionThreshold;
+  output.unsupportedUncertaintyBits = uncertaintyPolicyEnabled
+    ? as_type<uint>(normalizedUncertainty) : 0u;
+  if (valid && uncertaintyValid && !supervisionRequired) {
     const NBNumanXDecisionRangeGPU descending = dispatch.ranges[0];
     const NBNumanXDecisionRangeGPU autonomic = dispatch.ranges[8];
     const NBNumanXDecisionRangeGPU activeSensing = dispatch.ranges[10];
@@ -348,6 +423,12 @@ kernel void numanx_publish_decision_ready(
     );
     output.status = NB_NUMANX_READY_SUCCESS;
   } else {
+    if (uncertaintyPolicyEnabled && (!uncertaintyValid || supervisionRequired)) {
+      output.flags |= NB_NUMANX_DECISION_SUPERVISION_REQUIRED;
+    }
+    if (uncertaintyPolicyEnabled && (!uncertaintyValid || rootRejected)) {
+      output.flags |= NB_NUMANX_DECISION_ROOT_REJECTED;
+    }
     output.decisionOutputFingerprint = 0ul;
     output.descendingSomaticFingerprint = 0ul;
     output.autonomicCommandFingerprint = 0ul;
@@ -370,6 +451,8 @@ kernel void numanx_publish_motor_ready(
   device const uchar *autonomicCommands [[buffer(9)]],
   device const uchar *activeSensingCommands [[buffer(10)]],
   device NBNumanXMotorReadyGateGPU *gate [[buffer(11)]],
+  device const NBControlHeaderGPU *controlHeader [[buffer(12)]],
+  constant NBNumanXUncertaintyPolicyGPU &uncertaintyPolicy [[buffer(13)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -410,8 +493,10 @@ kernel void numanx_publish_motor_ready(
     && decisionPending.structBytes == NB_NUMANX_DECISION_GATE_BYTES
     && decisionPending.status == NB_NUMANX_READY_PENDING
     && decisionPending.rangeCount == NB_NUMANX_DECISION_MAX_RANGES
-    && decisionPending.flags == 0u
-    && decisionPending.reserved32_0 == 0u
+    && (decisionPending.flags == 0u
+      || decisionPending.flags
+        == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND)
+    && decisionPending.unsupportedUncertaintyBits == 0u
     && decisionPending.reserved32_1 == 0u
     && decisionExpected.reserved == 0ul
     && decisionPending.decisionOutputFingerprint == 0ul
@@ -423,6 +508,20 @@ kernel void numanx_publish_motor_ready(
   ulong decisionOutputFingerprint = NB_FNV_OFFSET;
   nb_mix_uint(decisionOutputFingerprint, 0x44454331u);
   nb_mix_uint(decisionOutputFingerprint, decisionPending.rangeCount);
+  nb_mix_uint(decisionOutputFingerprint, uncertaintyPolicy.abiVersion);
+  nb_mix_uint(decisionOutputFingerprint, uncertaintyPolicy.flags);
+  nb_mix_float(
+    decisionOutputFingerprint,
+    uncertaintyPolicy.supervisionRequestThreshold
+  );
+  nb_mix_float(
+    decisionOutputFingerprint,
+    uncertaintyPolicy.rootRejectionThreshold
+  );
+  nb_mix_float(
+    decisionOutputFingerprint,
+    controlHeader[0].unsupportedUncertainty
+  );
   for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
     const NBNumanXDecisionRangeGPU range = decisionExpected.ranges[index];
     const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
@@ -440,6 +539,11 @@ kernel void numanx_publish_motor_ready(
       ulong(range.byteCount)
     );
   }
+  const bool uncertaintyPolicyEnabled =
+    decisionPending.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND
+    && uncertaintyPolicy.abiVersion
+      == NB_NUMANX_UNCERTAINTY_POLICY_ABI_VERSION
+    && uncertaintyPolicy.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND;
   if (decisionOutputFingerprint == 0ul) {
     decisionOutputFingerprint = NB_FNV_OFFSET;
   }
@@ -450,7 +554,10 @@ kernel void numanx_publish_motor_ready(
     && decision.environment == decisionPending.environment
     && decision.rangeCount == decisionPending.rangeCount
     && decision.flags == decisionPending.flags
-    && decision.reserved32_0 == decisionPending.reserved32_0
+    && decision.unsupportedUncertaintyBits
+      == (uncertaintyPolicyEnabled
+        ? as_type<uint>(clamp(controlHeader[0].unsupportedUncertainty, 0.0f, 1.0f))
+        : 0u)
     && decision.reserved32_1 == decisionPending.reserved32_1
     && decision.controlStep == decisionPending.controlStep
     && decision.transactionFingerprint

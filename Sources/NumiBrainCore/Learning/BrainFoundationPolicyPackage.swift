@@ -44,6 +44,11 @@ public enum BrainFoundationPolicyRuntimeContract {
   public static let actionGeneration = BrainPolicyActionGeneration.autoregressive
   public static let inferencePrecision = BrainPolicyInferencePrecision.fp32
   public static let uncertaintyMethod = "five-head-epistemic-ensemble-v1"
+  /// The current Metal executable has one calibrated fail-closed uncertainty
+  /// policy. These values are part of executable identity, not package-selected
+  /// labels: a future calibration requires a new runtime-contract revision.
+  public static let supervisionRequestThreshold: Float = 0.7
+  public static let rootRejectionThreshold: Float = 0.9
 
   public static func validates(
     _ architecture: BrainFoundationPolicyArchitecture
@@ -55,6 +60,9 @@ public enum BrainFoundationPolicyRuntimeContract {
       && architecture.actionGeneration == actionGeneration
       && architecture.inferencePrecision == inferencePrecision
       && architecture.uncertaintyMethod == uncertaintyMethod
+      && architecture.supervisionRequestThreshold
+        == supervisionRequestThreshold
+      && architecture.rootRejectionThreshold == rootRejectionThreshold
   }
 }
 
@@ -176,6 +184,7 @@ public enum BrainPolicyGateCMetricContract {
       return [
         maximum("adaptation_examples", "count", atMost: 32),
         maximum("adaptation_wall_clock", "seconds", atMost: 3_600),
+        mean("adaptation_success_gain", atLeast: 0.1),
         mean("post_adaptation_success_rate", atLeast: 0.7),
         mean("retained_prior_success_rate", atLeast: 0.65),
       ]
@@ -219,6 +228,10 @@ public struct BrainFoundationPolicyArchitecture: Codable, Equatable, Sendable {
   public let modelWeightsSHA256: String
   public let speciesFingerprint: UInt64
   public let runtimeProgramFingerprint: UInt64
+  /// Exact MetalRobo owner-program identity carried by every authoritative
+  /// NumanX root. This is intentionally distinct from the somatic controller
+  /// catalog below.
+  public let ownerProgramFingerprint: UInt64
   public let lowLevelControllerFingerprint: UInt64
   public let hardSafetyProgramFingerprint: UInt64
   public let inputModalities: [SensoryModality]
@@ -238,6 +251,7 @@ public struct BrainFoundationPolicyArchitecture: Codable, Equatable, Sendable {
     modelWeightsSHA256: String,
     speciesFingerprint: UInt64,
     runtimeProgramFingerprint: UInt64,
+    ownerProgramFingerprint: UInt64,
     lowLevelControllerFingerprint: UInt64,
     hardSafetyProgramFingerprint: UInt64,
     inputModalities: [SensoryModality],
@@ -254,7 +268,8 @@ public struct BrainFoundationPolicyArchitecture: Codable, Equatable, Sendable {
     let canonicalGoalInterfaces = goalInterfaces.sorted { $0.rawValue < $1.rawValue }
     guard !modelIdentifier.isEmpty, !modelRevision.isEmpty,
       Self.isSHA256(modelWeightsSHA256), speciesFingerprint > 0,
-      runtimeProgramFingerprint > 0, lowLevelControllerFingerprint > 0,
+      runtimeProgramFingerprint > 0, ownerProgramFingerprint > 0,
+      lowLevelControllerFingerprint > 0,
       hardSafetyProgramFingerprint > 0, !canonicalModalities.isEmpty,
       Set(canonicalModalities).count == canonicalModalities.count,
       !canonicalGoalInterfaces.isEmpty,
@@ -276,6 +291,7 @@ public struct BrainFoundationPolicyArchitecture: Codable, Equatable, Sendable {
     self.modelWeightsSHA256 = modelWeightsSHA256
     self.speciesFingerprint = speciesFingerprint
     self.runtimeProgramFingerprint = runtimeProgramFingerprint
+    self.ownerProgramFingerprint = ownerProgramFingerprint
     self.lowLevelControllerFingerprint = lowLevelControllerFingerprint
     self.hardSafetyProgramFingerprint = hardSafetyProgramFingerprint
     self.inputModalities = canonicalModalities
@@ -297,6 +313,7 @@ public struct BrainFoundationPolicyArchitecture: Codable, Equatable, Sendable {
       modelWeightsSHA256: modelWeightsSHA256,
       speciesFingerprint: speciesFingerprint,
       runtimeProgramFingerprint: runtimeProgramFingerprint,
+      ownerProgramFingerprint: ownerProgramFingerprint,
       lowLevelControllerFingerprint: lowLevelControllerFingerprint,
       hardSafetyProgramFingerprint: hardSafetyProgramFingerprint,
       inputModalities: inputModalities,
@@ -592,7 +609,7 @@ public struct BrainPackagedParameterPublication: Codable, Equatable, Sendable {
 /// the content-addressed evidence artifacts referenced by the manifest.
 @frozen
 public struct BrainFoundationPolicyPackage: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let packageIdentifier: String

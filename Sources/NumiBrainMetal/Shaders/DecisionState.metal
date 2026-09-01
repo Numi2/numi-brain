@@ -7,6 +7,8 @@ constant uint NB_CONTROL_MODE_PLANNING = 3u;
 constant uint NB_CONTROL_FLAG_VALID = 1u;
 constant uint NB_CONTROL_FLAG_HYPERDIRECT_STOP = 1u << 1;
 constant uint NB_CONTROL_FLAG_EXTERNAL_GOAL_FAILED = 1u << 8;
+constant uint NB_MOTOR_GOAL_ANATOMICAL_BODY_TASK = 1u << 3;
+constant float NB_ANATOMICAL_BODY_TASK_GAIN = 5.0f;
 constant uint NB_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant ulong NB_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant uint NB_OPTION_PROPOSAL_LOCOMOTION = 1u;
@@ -49,6 +51,7 @@ constant uint NB_JOINT_IDENTITY_FLOAT_OFFSET = 32u;
 constant uint NB_MUSCLE_TASK_EFFECT = 13u;
 constant uint NB_MUSCLE_SENSORIMOTOR_FEATURE_COUNT = 16u;
 constant uint NB_MUSCLE_IDENTITY_FLOAT_OFFSET = 16u;
+constant ulong NB_MUSCLE_TASK_EFFECT_ATTEMPTED = 1ul << 6u;
 constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
 constant uint NB_CEREBELLAR_FEATURE_MASK = 0xffu;
@@ -131,6 +134,8 @@ struct NBDecisionUniforms {
   ulong active_sensing_efficacy_offset;
   uint actuator_command_kind;
   uint active_sensing_command_scale_bits;
+  uint anatomical_muscle_count;
+  uint reserved_anatomy;
 };
 
 struct NBDriveRecord {
@@ -290,6 +295,8 @@ struct NBExternalGoalContext {
   float priority;
   float damage_risk_budget;
   float persistence;
+  uint has_target_body;
+  uint target_body_identifier;
   float target[16];
 };
 
@@ -324,7 +331,9 @@ struct NBMotorGoalRecord {
   uint synergy_count;
   uint parameter_count;
   float synergy_coefficients[16];
-  float reserved[8];
+  uint identification_actuator_identifier;
+  uint identification_flags;
+  float reserved[6];
 };
 
 struct NBCerebellarExpertRecord {
@@ -527,7 +536,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 448);
+static_assert(sizeof(NBDecisionUniforms) == 456);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
@@ -1012,6 +1021,11 @@ inline float nb_articulated_joint_risk(
     );
     if ((identity[7] & 1ul) == 0ul) continue;
     const uint coordinate_count = min(uint(identity[3]), 6u);
+    // Fixed links publish parent/child topology so anatomical graph traversal
+    // can cross them, but they intentionally own no coordinate posterior.
+    // Their zeroed ownership/variance fields are therefore not uncertainty
+    // evidence and must never globally inhibit otherwise safe motor output.
+    if (coordinate_count == 0u) continue;
     float variance = 0.0f;
     float limit_activation = 0.0f;
     for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
@@ -1066,15 +1080,13 @@ inline float nb_embodied_self_risk(
       )
     ));
   }
-  device const uchar *effector_belief =
-    hot_state + uniforms.somatic_effector_belief_offset;
-  for (uint index = 0u;
-      index < uniforms.somatic_effector_belief_count; ++index) {
-    device const float *effector = reinterpret_cast<device const float *>(
-      effector_belief + ulong(index) * 192ul
-    );
-    risk = max(risk, clamp(effector[9], 0.0f, 1.0f));
-  }
+  // A muscle command-model residual is epistemic evidence about that one
+  // actuator, not whole-body damage authority. Promoting the maximum residual
+  // across hundreds of muscles into global risk makes the first bounded
+  // identification probe hyperdirect-stop every untried actuator. The motor
+  // stage still applies each effector's residual as actuator-local inhibition;
+  // only accepted pain, vulnerability, damage, and joint evidence may stop the
+  // complete body here.
   float joint_uncertainty = 0.0f;
   risk = max(
     risk,
@@ -1116,6 +1128,28 @@ inline float nb_counterfactual_option_context(
       + 0.25f * candidate.parameters[paired]
       + 0.25f * rollout_state[component % 16u]
   );
+}
+
+/// Returns the fraction of the declared policy-observation projection that
+/// has no finite, valid sensory support. The sketch kernel owns both the
+/// projection and its exact validity mask, so this term cannot be supplied by
+/// the host or inferred from stale output bytes. It complements learned
+/// ensemble disagreement: five agreeing heads are not evidence of certainty
+/// when every current observation supporting the decision is absent.
+inline float nb_policy_observation_support_uncertainty(
+  device const float *policy_observation_sketch,
+  device const uint *metadata)
+{
+  const uint modality_count = min(metadata[0], 8u);
+  if (modality_count == 0u) return 1.0f;
+  const uint projection_count = modality_count * 3u;
+  uint valid_projection_count = 0u;
+  for (uint projection = 0u; projection < projection_count; ++projection) {
+    valid_projection_count +=
+      policy_observation_sketch[24u + projection] > 0.5f ? 1u : 0u;
+  }
+  return 1.0f
+    - float(valid_projection_count) / float(projection_count);
 }
 
 inline NBCounterfactualWorldOutcome nb_counterfactual_world_outcome(
@@ -1307,10 +1341,65 @@ inline NBExternalGoalContext nb_external_goal_context(
       workspace[base + 20u], 0.0f, 1.0f
     );
     context.persistence = clamp(workspace[base + 21u], 0.0f, 1.0f);
+    if (uniforms.workspace_dimension > 56u) {
+      const float body_low = workspace[base + 55u];
+      const float body_high_marker = workspace[base + 56u];
+      if (isfinite(body_low) && isfinite(body_high_marker)
+          && body_low >= 0.0f && body_low <= 65535.0f
+          && body_high_marker >= 1.0f
+          && body_high_marker <= 65536.0f
+          && floor(body_low) == body_low
+          && floor(body_high_marker) == body_high_marker) {
+        context.has_target_body = 1u;
+        context.target_body_identifier = uint(body_low)
+          | ((uint(body_high_marker) - 1u) << 16u);
+      }
+    }
     for (uint component = 0u; component < 16u; ++component) {
       context.target[component] = workspace[base + 4u + component];
     }
     break;
+  }
+  return context;
+}
+
+// Reduced developmental workspace capacities may not yet expose ranked goal
+// token slots 7...10. The authenticated directive remains bound at buffer 12,
+// so downstream stages may recover it only when its derived identity is the
+// goal already selected by the ordinary arbiter. This is not a second goal
+// arbitration path.
+inline NBExternalGoalContext nb_external_goal_directive_context(
+  device const NBExternalGoalDirectiveRecord *external_goal,
+  constant NBDecisionUniforms &uniforms,
+  const ulong selected_goal_identifier)
+{
+  NBExternalGoalContext context = {};
+  context.damage_risk_budget = uniforms.damage_risk_budget;
+  const bool directive_valid = (external_goal->flags & 1ul) != 0ul
+    && external_goal->identifier != 0ul
+    && external_goal->created_timestamp_microseconds
+      <= uniforms.target_timestamp_microseconds
+    && (external_goal->deadline_timestamp_microseconds == 0ul
+      || uniforms.target_timestamp_microseconds
+        <= external_goal->deadline_timestamp_microseconds)
+    && isfinite(external_goal->priority)
+    && external_goal->priority > 0.0f;
+  if (!directive_valid) return context;
+  const ulong directive_goal_identifier = (2ul << 56u) | (1ul << 55u)
+    | (external_goal->identifier & 0x007ffffffffffffful);
+  if (selected_goal_identifier != directive_goal_identifier) return context;
+  context.valid = 1.0f;
+  context.priority = external_goal->priority;
+  context.damage_risk_budget = clamp(
+    external_goal->damage_risk_budget, 0.0f, 1.0f
+  );
+  context.persistence = clamp(external_goal->persistence, 0.0f, 1.0f);
+  if ((external_goal->flags & (1ul << 1ul)) != 0ul) {
+    context.has_target_body = 1u;
+    context.target_body_identifier = uint(external_goal->flags >> 32ul);
+  }
+  for (uint component = 0u; component < 16u; ++component) {
+    context.target[component] = external_goal->target[component];
   }
   return context;
 }
@@ -1379,6 +1468,8 @@ kernel void generate_active_goal_state(
   float external_goal_priority = 0.0f;
   float external_goal_risk_budget = uniforms.damage_risk_budget;
   float external_goal_persistence = 0.0f;
+  uint external_goal_has_target_body = 0u;
+  uint external_goal_target_body_identifier = 0u;
   float external_goal_target[16] = {};
   float external_goal_success_model[16] = {};
   float external_goal_failure_model[16] = {};
@@ -1433,6 +1524,10 @@ kernel void generate_active_goal_state(
       external_goal->damage_risk_budget, 0.0f, 1.0f
     );
     external_goal_persistence = clamp(external_goal->persistence, 0.0f, 1.0f);
+    if ((external_goal->flags & (1ul << 1ul)) != 0ul) {
+      external_goal_has_target_body = 1u;
+      external_goal_target_body_identifier = uint(external_goal->flags >> 32ul);
+    }
     for (uint component = 0u; component < 16u; ++component) {
       external_goal_target[component] = external_goal->target[component];
       external_goal_success_model[component] =
@@ -1500,6 +1595,20 @@ kernel void generate_active_goal_state(
       external_goal_risk_budget = uniforms.workspace_dimension > 20u
         ? clamp(workspace[external_base + 20u], 0.0f, 1.0f)
         : uniforms.damage_risk_budget;
+      if (uniforms.workspace_dimension > 56u) {
+        const float body_low = workspace[external_base + 55u];
+        const float body_high_marker = workspace[external_base + 56u];
+        if (isfinite(body_low) && isfinite(body_high_marker)
+            && body_low >= 0.0f && body_low <= 65535.0f
+            && body_high_marker >= 1.0f
+            && body_high_marker <= 65536.0f
+            && floor(body_low) == body_low
+            && floor(body_high_marker) == body_high_marker) {
+          external_goal_has_target_body = 1u;
+          external_goal_target_body_identifier = uint(body_low)
+            | ((uint(body_high_marker) - 1u) << 16u);
+        }
+      }
       for (uint component = 0u; component < 16u; ++component) {
         external_goal_target[component] = uniforms.workspace_dimension
             > 4u + component
@@ -1690,6 +1799,10 @@ kernel void generate_active_goal_state(
           value = external_goal_success_model[feature - 23u];
         } else if (feature >= 39u && feature < 55u) {
           value = external_goal_failure_model[feature - 39u];
+        } else if (feature == 55u && external_goal_has_target_body != 0u) {
+          value = float(external_goal_target_body_identifier & 0xffffu);
+        } else if (feature == 56u && external_goal_has_target_body != 0u) {
+          value = float((external_goal_target_body_identifier >> 16u) + 1u);
         }
       }
       workspace[base + feature] = value;
@@ -1815,6 +1928,7 @@ kernel void propose_dynamic_options(
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *value_parameters [[buffer(2)]],
   device const float *policy_parameters [[buffer(3)]],
+  device const NBExternalGoalDirectiveRecord *external_goal [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -2317,9 +2431,16 @@ kernel void propose_dynamic_options(
   // position/velocity/force/stiffness/synergy parameters consumed by the
   // existing motor-goal, risk, anatomy, and spinal pipeline. Module 73 is
   // deliberately distinct from module 72's locomotor/CPG policy.
-  const NBExternalGoalContext external_task = nb_external_goal_context(
+  NBExternalGoalContext external_task = nb_external_goal_context(
     workspace, workspace_metadata, uniforms, control->active_goal_identifier
   );
+  const NBExternalGoalContext directive_task =
+    nb_external_goal_directive_context(
+      external_goal, uniforms, control->active_goal_identifier
+    );
+  if (directive_task.valid > 0.0f) {
+    external_task = directive_task;
+  }
   if (gid == 0u && external_task.valid > 0.0f) {
     candidate.option_identifier = 0x6000000000000000ul
       | (control->active_goal_identifier & 0x0ffffffffffffffful);
@@ -2353,6 +2474,8 @@ kernel void simulate_candidate_option_outcomes(
   device const float *value_parameters [[buffer(2)]],
   device const float *policy_parameters [[buffer(3)]],
   device const float *world_parameters [[buffer(11)]],
+  device const float *policy_observation_sketch [[buffer(14)]],
+  device const uint *policy_observation_metadata [[buffer(24)]],
   uint gid [[thread_position_in_grid]])
 {
   device const NBDevelopmentalHeader *development =
@@ -2395,6 +2518,10 @@ kernel void simulate_candidate_option_outcomes(
   }
   const bool structured_world_available = uniforms.world_model_scalar_count
     >= NB_WORLD_EVENT_OPTION_BASE + 9u * NB_WORLD_EVENT_OPTION_DIMENSION;
+  const float observation_support_uncertainty =
+    nb_policy_observation_support_uncertainty(
+      policy_observation_sketch, policy_observation_metadata
+    );
   const float embodied_self_risk = nb_embodied_self_risk(hot_state, uniforms);
   float rollout_state[16];
   for (uint component = 0u; component < 16u; ++component) {
@@ -2520,8 +2647,11 @@ kernel void simulate_candidate_option_outcomes(
     const float external_goal_alignment =
       nb_external_goal_state_alignment(external, predicted_state);
     const float epistemic = max(
-      world_outcome.epistemic_uncertainty,
-      episodic.support * episodic.uncertainty
+      observation_support_uncertainty,
+      max(
+        world_outcome.epistemic_uncertainty,
+        episodic.support * episodic.uncertainty
+      )
     );
     const float step_damage = clamp(
       max(
@@ -2632,6 +2762,8 @@ kernel void select_option_and_control_mode(
   );
   uint selected = 0u;
   float selected_score = -INFINITY;
+  uint external_candidate = candidate_limit;
+  float external_candidate_score = -INFINITY;
   for (uint index = 0u; index < candidate_limit; ++index) {
     const uint terminal_index = index * uniforms.maximum_planning_horizon
       + active_horizon - 1u;
@@ -2644,6 +2776,23 @@ kernel void select_option_and_control_mode(
       selected = index;
       selected_score = modulated_score;
     }
+    // Module 73 exists only after the workspace goal arbiter has authenticated
+    // the exact external directive. Once its ordinary counterfactual plan is
+    // admissible, an unrelated innate/exploratory option must not silently
+    // replace it. The safety branch below still owns the hyperdirect override.
+    if (candidates[index].source_module == 73u
+        && candidates[index].goal_identifier != 0ul
+        && plan.admissibility > 0.5f
+        && modulated_score > external_candidate_score) {
+      external_candidate = index;
+      external_candidate_score = modulated_score;
+    }
+  }
+  const bool authenticated_external_selected =
+    external_candidate < candidate_limit;
+  if (authenticated_external_selected) {
+    selected = external_candidate;
+    selected_score = external_candidate_score;
   }
   uint previous_candidate = uniforms.candidate_capacity;
   float previous_score = -INFINITY;
@@ -2660,7 +2809,8 @@ kernel void select_option_and_control_mode(
     }
     break;
   }
-  if (previous_candidate < candidate_limit && selected != previous_candidate
+  if (!authenticated_external_selected
+      && previous_candidate < candidate_limit && selected != previous_candidate
       && isfinite(previous_score)
       && selected_score < previous_score + uniforms.switching_margin) {
     selected = previous_candidate;
@@ -2851,10 +3001,17 @@ kernel void generate_internal_action_state(
 /// Materializes the selected option into one structured task-space motor goal.
 /// The record is shadow-generation state: physical rejection cannot publish a
 /// target, duration, impedance request, or synergy basis that was not lived.
+inline uint nb_body_ancestor_distance(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  uint body_identifier,
+  uint target_body_identifier);
+
 kernel void generate_structured_motor_goal_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *policy_parameters [[buffer(3)]],
+  device const NBExternalGoalDirectiveRecord *external_goal [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid != 0u) return;
@@ -2894,6 +3051,26 @@ kernel void generate_structured_motor_goal_state(
     ? max(plans[plan_index].duration_seconds, 1.0e-3f) : 0.1f;
 
   device const uchar *body_belief = hot_state + uniforms.body_belief_offset;
+  device const float *workspace = reinterpret_cast<device const float *>(
+    hot_state + uniforms.workspace_offset
+  );
+  device const NBWorkspaceMetadataRecord *workspace_metadata =
+    reinterpret_cast<device const NBWorkspaceMetadataRecord *>(
+      hot_state + uniforms.workspace_metadata_offset
+    );
+  NBExternalGoalContext external_task = nb_external_goal_context(
+    workspace, workspace_metadata, uniforms, candidate.goal_identifier
+  );
+  const NBExternalGoalContext directive_task =
+    nb_external_goal_directive_context(
+      external_goal, uniforms, candidate.goal_identifier
+    );
+  if (directive_task.valid > 0.0f) {
+    external_task = directive_task;
+  }
+  const bool exact_external_body = candidate.source_module == 73u
+    && external_task.valid > 0.0f
+    && external_task.has_target_body != 0u;
   uint selected_body_index = 0u;
   float selected_body_score = -INFINITY;
   bool body_found = false;
@@ -2907,6 +3084,8 @@ kernel void generate_structured_motor_goal_state(
       body + NB_BODY_IDENTITY_FLOAT_OFFSET
     );
     if ((identity[3] & NB_CONTROL_FLAG_VALID) == 0ul) continue;
+    if (exact_external_body
+        && uint(identity[0]) != external_task.target_body_identifier) continue;
     float variance = max(body[NB_BODY_LOAD_VARIANCE], 0.0f);
     for (uint axis = 0u; axis < 3u; ++axis) {
       variance += max(body[NB_BODY_POSITION_VARIANCE + axis], 0.0f);
@@ -2934,6 +3113,21 @@ kernel void generate_structured_motor_goal_state(
     }
   }
   if (!body_found) {
+    if (exact_external_body) {
+      // An authenticated body task whose target belief has not arrived must
+      // remain an anatomical zero-drive hold. Clearing the goal here would
+      // make the motor stage treat the same directive as a generic policy and
+      // broadcast ungrounded commands across the full muscle set.
+      next.option_identifier = candidate.option_identifier;
+      next.goal_identifier = candidate.goal_identifier;
+      next.timestamp_microseconds = uniforms.target_timestamp_microseconds;
+      next.target_body_identifier = external_task.target_body_identifier;
+      next.flags = NB_CONTROL_FLAG_VALID
+        | NB_MOTOR_GOAL_ANATOMICAL_BODY_TASK;
+      next.identification_actuator_identifier = 0xffffffffu;
+      *goal = next;
+      return;
+    }
     *goal = next;
     return;
   }
@@ -3031,15 +3225,73 @@ kernel void generate_structured_motor_goal_state(
   next.target_body_identifier = uint(body_identity[0]);
   next.flags = NB_CONTROL_FLAG_VALID
     | (absolute_task_target ? (1u << 1u) : 0u)
-    | (candidate.source_module == 60u ? (1u << 2u) : 0u);
+    | (candidate.source_module == 60u ? (1u << 2u) : 0u)
+    | (exact_external_body ? NB_MOTOR_GOAL_ANATOMICAL_BODY_TASK : 0u);
   next.synergy_count = min(uniforms.synergy_count, 16u);
   next.parameter_count = candidate.parameter_count;
+  next.identification_actuator_identifier = 0xffffffffu;
+  next.identification_flags = 0u;
   const bool rest_selected = candidate.option_identifier
     == NB_REST_OPTION_IDENTIFIER;
   for (uint index = 0u; index < 16u; ++index) {
-    next.synergy_coefficients[index] = rest_selected ? 0.0f
-      : tanh(candidate.parameters[index % parameter_count])
-        * policy_parameters[7];
+    next.synergy_coefficients[index] = 0.0f;
+  }
+  // Exact body-space tasks are decoded below by each muscle's signed learned
+  // endpoint effect. A body-index region synergy has no agonist/antagonist
+  // sign and recruits both sides together, so it is deliberately absent here.
+  if (!rest_selected && !exact_external_body) {
+    for (uint index = 0u; index < 16u; ++index) {
+      next.synergy_coefficients[index] =
+        tanh(candidate.parameters[index % parameter_count])
+          * policy_parameters[7];
+    }
+  }
+  if (exact_external_body) {
+    uint selected_identifier = 0xffffffffu;
+    uint selected_distance = 0xffffffffu;
+    for (uint muscle_index = 0u;
+        muscle_index < uniforms.somatic_effector_belief_count;
+        ++muscle_index) {
+      device const float *muscle = reinterpret_cast<device const float *>(
+        hot_state + uniforms.somatic_effector_belief_offset
+          + ulong(muscle_index) * 192ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+      );
+      const uint actuator_identifier = uint(identity[5]);
+      if ((identity[3] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+          || identity[2] == 0ul
+          || actuator_identifier >= uniforms.actuator_count) continue;
+      const uint first_distance = nb_body_ancestor_distance(
+        hot_state, uniforms, uint(identity[7]),
+        next.target_body_identifier
+      );
+      const uint terminal_distance = nb_body_ancestor_distance(
+        hot_state, uniforms, uint(identity[7] >> 32u),
+        next.target_body_identifier
+      );
+      if (min(first_distance, terminal_distance) == 0xffffffffu
+          || first_distance == terminal_distance) continue;
+      const float3 learned_effect = float3(
+        muscle[NB_MUSCLE_TASK_EFFECT],
+        muscle[NB_MUSCLE_TASK_EFFECT + 1u],
+        muscle[NB_MUSCLE_TASK_EFFECT + 2u]
+      );
+      if ((identity[3] & NB_MUSCLE_TASK_EFFECT_ATTEMPTED) != 0ul
+          || length_squared(learned_effect) > 1.0e-8f) continue;
+      const uint endpoint_distance = min(first_distance, terminal_distance);
+      if (endpoint_distance < selected_distance
+          || (endpoint_distance == selected_distance
+            && actuator_identifier < selected_identifier)) {
+        selected_distance = endpoint_distance;
+        selected_identifier = actuator_identifier;
+      }
+    }
+    if (selected_identifier != 0xffffffffu) {
+      next.identification_actuator_identifier = selected_identifier;
+      next.identification_flags = NB_CONTROL_FLAG_VALID;
+    }
   }
   *goal = next;
 }
@@ -3499,6 +3751,36 @@ kernel void advance_cpg_state(
   }
 }
 
+inline uint nb_body_ancestor_distance(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  uint body_identifier,
+  uint target_body_identifier)
+{
+  if (body_identifier == target_body_identifier) return 0u;
+  uint current = target_body_identifier;
+  for (uint depth = 1u; depth <= uniforms.joint_belief_count; ++depth) {
+    bool found_parent = false;
+    for (uint joint_index = 0u;
+        joint_index < uniforms.joint_belief_count; ++joint_index) {
+      device const float *joint = reinterpret_cast<device const float *>(
+        hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+      );
+      if ((identity[7] & ulong(NB_CONTROL_FLAG_VALID)) == 0ul
+          || uint(identity[2]) != current) continue;
+      current = uint(identity[1]);
+      found_parent = true;
+      break;
+    }
+    if (!found_parent) return 0xffffffffu;
+    if (current == body_identifier) return depth;
+  }
+  return 0xffffffffu;
+}
+
 kernel void generate_motor_spinal_autonomic_state(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
@@ -3548,6 +3830,8 @@ kernel void generate_motor_spinal_autonomic_state(
   const bool motor_goal_valid =
     (motor_goal->flags & NB_CONTROL_FLAG_VALID) != 0u
       && motor_goal->option_identifier == header->active_option_identifier;
+  const bool anatomical_body_task = motor_goal_valid
+    && (motor_goal->flags & NB_MOTOR_GOAL_ANATOMICAL_BODY_TASK) != 0u;
   const bool communication_selected = development->stage >= 10u
     && candidate.source_module == 51u;
   const bool rest_selected = header->active_option_identifier
@@ -3662,13 +3946,21 @@ kernel void generate_motor_spinal_autonomic_state(
     const float external_disturbance =
       effector_valid
         ? clamp(effector[9], 0.0f, 1.0f) : 0.0f;
+    const bool bounded_identification_actuator = anatomical_body_task
+      && (motor_goal->identification_flags & NB_CONTROL_FLAG_VALID) != 0u
+      && gid == motor_goal->identification_actuator_identifier;
     float joint_uncertainty = 0.0f;
     const float joint_limit_risk = nb_articulated_joint_risk(
       hot_state, uniforms, joint_uncertainty
     );
     const float embodied_risk = clamp(
       body_risk * max(motor_parameters[11], 0.0f)
-        + external_disturbance * max(motor_parameters[12], 0.0f)
+        // The one explicitly selected bounded probe exists to measure this
+        // unknown command-effect relation. Its own pre-probe model residual
+        // cannot be evidence against performing the experiment; accepted
+        // pain, damage, and joint risk still inhibit it below.
+        + (bounded_identification_actuator ? 0.0f : external_disturbance)
+          * max(motor_parameters[12], 0.0f)
         + joint_limit_risk * max(motor_parameters[14], 0.25f)
         + joint_uncertainty * max(motor_parameters[15], 0.1f),
       0.0f,
@@ -3690,11 +3982,22 @@ kernel void generate_motor_spinal_autonomic_state(
       ? uint(effector_identity[7]) : 0u;
     const uint terminal_body_identifier = anatomical_effector
       ? uint(effector_identity[7] >> 32u) : 0u;
+    const uint first_target_distance = motor_goal_valid
+      ? nb_body_ancestor_distance(
+          hot_state, uniforms, first_body_identifier,
+          motor_goal->target_body_identifier
+        )
+      : 0xffffffffu;
+    const uint terminal_target_distance = motor_goal_valid
+      ? nb_body_ancestor_distance(
+          hot_state, uniforms, terminal_body_identifier,
+          motor_goal->target_body_identifier
+        )
+      : 0xffffffffu;
     const bool effector_targets_body = motor_goal_valid
-      && (first_body_identifier == motor_goal->target_body_identifier
-        || terminal_body_identifier == motor_goal->target_body_identifier);
-    const float endpoint_sign = terminal_body_identifier
-        == motor_goal->target_body_identifier
+      && min(first_target_distance, terminal_target_distance) != 0xffffffffu
+      && first_target_distance != terminal_target_distance;
+    const float endpoint_sign = terminal_target_distance < first_target_distance
       ? 1.0f : -1.0f;
     const float3 learned_task_effect = anatomical_effector
       && effector_targets_body
@@ -3738,7 +4041,11 @@ kernel void generate_motor_spinal_autonomic_state(
             learned_task_effect, task_error
           );
         }
-      } else {
+      } else if (uniforms.anatomical_muscle_count == 0u) {
+        // Generic robot actuators may use the axis-index fallback. A
+        // biological full-body root must wait for its accepted anatomical
+        // effector identity; broadcasting one body error across every muscle
+        // before that identity exists is unsafe co-contraction.
         const float position_error = motor_goal->task_space_target[task_axis]
           - target_body[NB_BODY_POSITION + task_axis];
         const float velocity_error = motor_goal->velocity_target[task_axis]
@@ -3789,7 +4096,7 @@ kernel void generate_motor_spinal_autonomic_state(
           ? motor_goal->synergy_coefficients[synergy] : 0.0f)
         : candidate.parameters[synergy_parameter_index] * planned_gain;
       const float learned_synergy = motor_goal_valid
-          && !communication_selected && synergy < 16u
+          && !anatomical_body_task && !communication_selected && synergy < 16u
         ? nb_learned_policy_synergy(
             recurrent, uniforms.recurrent_scalar_count,
             policy_parameters, belief_parameters,
@@ -3802,10 +4109,32 @@ kernel void generate_motor_spinal_autonomic_state(
       cortical_synergy += decoder_gain * effective_synergy;
     }
     cortical_synergy = clamp(cortical_synergy, -1.0f, 1.0f);
+    if (anatomical_body_task) {
+      // Learned endpoint effects are only as authoritative as their accepted
+      // command-to-consequence agency posterior. This prevents a fresh or
+      // weakly identified muscle model from amplifying a provisional effect
+      // across the whole body before the physical owner has confirmed it.
+      task_correction *= NB_ANATOMICAL_BODY_TASK_GAIN * agency_confidence;
+    }
+    const bool unidentified_anatomical_effector = anatomical_body_task
+      && effector_targets_body
+      && (effector_identity[3] & NB_MUSCLE_TASK_EFFECT_ATTEMPTED) == 0ul
+      && length_squared(learned_task_effect) <= 1.0e-8f;
+    // System identification remains a bounded neural probe, not a broad
+    // co-contraction. The single-thread motor-goal stage selects exactly one
+    // anatomy-qualified unidentified actuator, so a root never silently
+    // misses the target chain or excites several matching modulo lanes.
+    // Accepted consequences replace the probe with the learned signed effect.
+    const float identification_probe = unidentified_anatomical_effector
+        && bounded_identification_actuator
+      ? 0.02f : 0.0f;
     const float motor_logit =
-      candidate.parameters[gid % parameter_count]
-        * uniforms.motor_gain * motor_parameters[0]
-      + task_correction + cortical_synergy * motor_parameters[6];
+      (anatomical_body_task ? 0.0f
+        : candidate.parameters[gid % parameter_count]
+          * uniforms.motor_gain * motor_parameters[0])
+      + task_correction + identification_probe
+      + (anatomical_body_task ? 0.0f
+        : cortical_synergy * motor_parameters[6]);
     const float ordinary_descending = rest_selected
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
@@ -3837,7 +4166,13 @@ kernel void generate_motor_spinal_autonomic_state(
       max(deliberate_inhibition, homeostatic_inhibition)
     );
     NBFastCerebellarStateRecord fast_state = fast_cerebellar[gid];
-    const bool fast_correction_active = !rest_selected && inhibition < 1.0f;
+    // A generic per-actuator fast correction is not causally qualified for an
+    // exact anatomical body task. The signed accepted endpoint-effect
+    // controller above owns that task; admitting pre-existing fast state here
+    // would recruit unrelated muscles before their anatomy-specific error
+    // relation has been identified.
+    const bool fast_correction_active = !rest_selected
+      && !anatomical_body_task && inhibition < 1.0f;
     fast_state.flags = (fast_state.flags | NB_CONTROL_FLAG_VALID)
       & ~(1u << 1u);
     fast_state.flags |= fast_correction_active ? (1u << 1u) : 0u;
@@ -3923,7 +4258,13 @@ kernel void generate_motor_spinal_autonomic_state(
       0.0f,
       1.0f
     );
-    const float slow_cerebellar_residual = rest_selected
+    const float causal_cerebellar_gain = uniforms.anatomical_muscle_count > 0u
+      ? agency_confidence : (0.5f + 0.5f * agency_confidence);
+    // Exact anatomical body tasks already have a signed, accepted endpoint
+    // controller. Generic cerebellar experts are not allowed to inject a
+    // parallel whole-body residual until an anatomy-specific expert contract
+    // exists; doing so recruits unrelated muscles on the first root.
+    const float slow_cerebellar_residual = rest_selected || anatomical_body_task
       ? 0.0f
       : clamp(
           learned_cerebellar_residual * clamp(
@@ -3933,7 +4274,7 @@ kernel void generate_motor_spinal_autonomic_state(
             1.0f
           ),
           -0.25f, 0.25f
-        ) * (0.5f + 0.5f * agency_confidence);
+        ) * causal_cerebellar_gain;
     command.cerebellar_residual = clamp(
       slow_cerebellar_residual + fast_cerebellar_residual,
       -0.25f,
@@ -3961,7 +4302,11 @@ kernel void generate_motor_spinal_autonomic_state(
     }
     // Antagonist decoder gains remain signed until final motor-neuron
     // excitation is bounded; otherwise the negative half of a gait vanishes.
-    cpg_output = clamp(cpg_output, -1.0f, 1.0f);
+    // Locomotor oscillators are a separate policy. They must not be mixed into
+    // an explicit anatomical posture command unless a future goal contract
+    // explicitly binds that CPG to the selected body task.
+    cpg_output = anatomical_body_task
+      ? 0.0f : clamp(cpg_output, -1.0f, 1.0f);
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
     spinal_state.cpg_output = cpg_output;
@@ -4011,7 +4356,7 @@ kernel void generate_motor_spinal_autonomic_state(
     const float planned_synergy = structured_synergy
       * (use_structured_synergy ? 1.0f : gain);
     const float learned_synergy = motor_goal_valid
-        && !communication_selected && gid < 16u
+        && !anatomical_body_task && !communication_selected && gid < 16u
       ? nb_learned_policy_synergy(
           recurrent, uniforms.recurrent_scalar_count,
           policy_parameters, belief_parameters,

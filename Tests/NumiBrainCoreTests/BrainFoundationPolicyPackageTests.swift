@@ -64,6 +64,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         .parameterWeightsSHA256(publication),
       speciesFingerprint: 0x1001,
       runtimeProgramFingerprint: publication.version.regionalProgramFingerprint,
+      ownerProgramFingerprint: 0x1002,
       lowLevelControllerFingerprint: 0x1003,
       hardSafetyProgramFingerprint: 0x1004,
       inputModalities: [
@@ -307,7 +308,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     ) throws -> BrainPolicyNumanXRootExecution {
       try BrainPolicyNumanXRootExecution(
         sampleSHA256: sample,
-        ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+        ownerProgramFingerprint: architecture.ownerProgramFingerprint,
         transactionFingerprint: transaction,
         linearizationEpoch: 1,
         slotGeneration: slotGeneration,
@@ -336,6 +337,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       executionKind: .authoritativeNumanX,
       modelWeightsSHA256: architecture.modelWeightsSHA256,
       runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+      ownerProgramFingerprint: architecture.ownerProgramFingerprint,
       lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
       hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
       rootExecutions: [acceptedB, rejectedA, acceptedA],
@@ -353,6 +355,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         executionKind: .authoritativeNumanX,
         modelWeightsSHA256: architecture.modelWeightsSHA256,
         runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+        ownerProgramFingerprint: architecture.ownerProgramFingerprint,
         lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
         rootExecutions: [acceptedA],
@@ -369,6 +372,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         executionKind: .authoritativeNumanX,
         modelWeightsSHA256: architecture.modelWeightsSHA256,
         runtimeProgramFingerprint: architecture.runtimeProgramFingerprint,
+        ownerProgramFingerprint: architecture.ownerProgramFingerprint,
         lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
         rootExecutions: [acceptedA, duplicateIdentity],
@@ -460,6 +464,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     overlapSplits: Bool = false,
     foreignMetricSample: Bool = false,
     provenanceDrift: Bool = false,
+    ownerProvenanceDrift: Bool = false,
     omitRequiredReject: Bool = false,
     includeCommandFailure: Bool = false
   ) throws -> EvidenceFixture {
@@ -545,6 +550,9 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
     )
     let publication = try learnedPublication()
     let architecture = try architecture(publication: publication)
+    let evidenceOwnerProgramFingerprint = ownerProvenanceDrift
+      ? architecture.ownerProgramFingerprint &+ 1
+      : architecture.ownerProgramFingerprint
     let results = try BrainPolicyQualificationAxis.allCases.map { axis in
       let split = requiredSplit(for: axis)
       let partition = try XCTUnwrap(partitions.first(where: { $0.split == split }))
@@ -594,7 +602,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         let transaction = transactionBase + UInt64(index + 1)
         return try BrainPolicyNumanXRootExecution(
           sampleSHA256: sampleHash,
-          ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+          ownerProgramFingerprint: evidenceOwnerProgramFingerprint,
           transactionFingerprint: transaction,
           linearizationEpoch: 1,
           slotGeneration: UInt64(index + 1),
@@ -616,7 +624,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         rootExecutions.append(
           try BrainPolicyNumanXRootExecution(
             sampleSHA256: sampleHashes[0],
-            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            ownerProgramFingerprint: evidenceOwnerProgramFingerprint,
             transactionFingerprint: transaction,
             linearizationEpoch: 1,
             slotGeneration: 500,
@@ -637,7 +645,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         rootExecutions.append(
           try BrainPolicyNumanXRootExecution(
             sampleSHA256: sampleHashes[0],
-            ownerProgramFingerprint: architecture.lowLevelControllerFingerprint,
+            ownerProgramFingerprint: evidenceOwnerProgramFingerprint,
             transactionFingerprint: transaction,
             linearizationEpoch: 1,
             slotGeneration: 700,
@@ -660,6 +668,7 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
         runtimeProgramFingerprint: provenanceDrift
           ? architecture.runtimeProgramFingerprint &+ 1
           : architecture.runtimeProgramFingerprint,
+        ownerProgramFingerprint: evidenceOwnerProgramFingerprint,
         lowLevelControllerFingerprint: architecture.lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: architecture.hardSafetyProgramFingerprint,
         rootExecutions: rootExecutions,
@@ -756,6 +765,15 @@ final class BrainFoundationPolicyPackageTests: XCTestCase {
       try BrainFoundationPolicyEvidenceVerifier.verify(
         package: provenance.package,
         artifactDirectory: provenance.directory
+      )
+    )
+
+    let ownerProvenance = try evidenceFixture(ownerProvenanceDrift: true)
+    defer { try? FileManager.default.removeItem(at: ownerProvenance.directory) }
+    XCTAssertThrowsError(
+      try BrainFoundationPolicyEvidenceVerifier.verify(
+        package: ownerProvenance.package,
+        artifactDirectory: ownerProvenance.directory
       )
     )
 

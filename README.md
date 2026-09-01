@@ -1,36 +1,129 @@
 # NumiBrain
 
-NumiBrain is the standalone Apple-native nervous-system runtime for embodied humans, animals, and robots inside NumiLab. It is designed to couple transactionally to NumanX while keeping the normal perception-to-action loop GPU resident on Apple M4/M5-family hardware through Metal 4.
+<p align="center">
+  <strong>A transactional nervous system for embodied intelligence on Apple silicon.</strong><br>
+  Perception, memory, learning, action, and physics advance as one accepted reality.
+</p>
 
-> Status: the Apple-native runtime-integrity slice is executable end to end. A real 157-body, `nq=129`/`nv=128`, 416-muscle Human and attached Matter world now consume an event-ordered NumiBrain motor candidate, produce unpublished proprioceptive and interoceptive sensor generations, prepare Brain fast+cognitive consequences, close through ABI4 proposal/ACK/apply, and publish one aggregate Brain/physics/sensor root. Persistent device state advances across accepted roots; stale predecessor identity fails before mutation; forced rejection restores and retries with byte-identical accepted-token and sensor payloads. This is transactional correctness evidence, not a learned-generalist, anatomical, biological-validation, or performance claim.
+<p align="center">
+  <img alt="Swift 6.2+" src="https://img.shields.io/badge/Swift-6.2%2B-F05138?logo=swift&logoColor=white">
+  <img alt="Apple silicon" src="https://img.shields.io/badge/Apple%20silicon-native-111111?logo=apple&logoColor=white">
+  <img alt="Metal 4" src="https://img.shields.io/badge/Metal-4-5B5B5B">
+  <img alt="Runtime gates A and B complete" src="https://img.shields.io/badge/runtime%20gates-A%20%2B%20B%20complete-1F8A70">
+  <img alt="Gate C active" src="https://img.shields.io/badge/learning%20gate-C%20active-F59E0B">
+</p>
 
-The authoritative causal path is:
+NumiBrain is the neural half of **NumanX**: an Apple-native embodied-agent
+runtime coupling a GPU-resident brain to articulated Human, MyoSim muscle,
+Matter deformable physics, and causal sensors. It is built around one demanding
+idea:
 
-```text
-receptors
-  -> embodied belief and body schema
-  -> predictive world model
-  -> workspace and memory
-  -> goals, options, and planning
-  -> cerebellar, brainstem, and spinal control
-  -> muscle and autonomic commands
-  -> NumanX shadow integration
-  -> accepted sensory consequences
-  -> atomic joint commit and learning
+> A brain must never learn from a future the body rejected.
+
+Every physical candidate and every neural consequence remain private until one
+root protocol accepts them together. Rejection restores the prior physical and
+neural reality; acceptance publishes one complete Brain + physics + sensor
+generation.
+
+## Why this architecture matters
+
+Most embodied-AI stacks connect a policy to a simulator through a sequence of
+loosely coordinated host calls. NumiBrain makes the boundary itself part of the
+model:
+
+- **One causal history.** Recurrent state, memory, plasticity, random counters,
+  muscle state, deformable state, and sensors advance only on an accepted root.
+- **GPU-native time.** Metal owns the hot perception-to-action loop, physical
+  timestamps, sparse event routing, inference, and transactional shadows.
+- **Embodiment, not pose control.** Normal actions are muscle, autonomic, and
+  active-sensing commands; normal observations are delayed, validity-gated
+  receptors—not privileged simulator state.
+- **Safety through ownership.** Events provide ordering, while versioned
+  records, exact resource identity, terminal command status, and state-derived
+  proofs provide authority.
+- **Evidence before promotion.** Correctness, physical fidelity, learning,
+  throughput, biological usefulness, and safety are separate gates. A smaller
+  result remains evidence; it is never renamed as the target.
+
+## One root, one reality
+
+```mermaid
+flowchart LR
+    A[Causal receptors] --> B[Belief and body schema]
+    B --> C[World model, workspace, memory]
+    C --> D[Goals, planning, learned policy]
+    D --> E[Somatic, autonomic, sensing commands]
+    E --> F[NumanX Human + MyoSim + Matter]
+    F --> G[Unpublished physical sensor candidate]
+    G --> H[Unpublished Brain consequence]
+    H --> I{Proposal + GPU ACK + apply}
+    I -->|reject| J[Restore or terminal quarantine]
+    I -->|accept| K[Atomic Brain + physics + sensor publication]
+    K --> A
 ```
 
-NumanX owns body, material, contact, muscle, organ, and environment physics. NumiBrain owns perception, belief, memory, motivation, action selection, learning, and neural control. A separate developmental environment supplies objects, consequences, social agents, demonstrations, language, challenges, and exploration opportunities.
+The close protocol is mutation-free proposal → Brain preflight → GPU ACK →
+Matter-then-Human apply/restore → publication reservation → private Brain flip
+→ joint fence → physical and sensor release. No public reader is allowed to
+observe a mixed root.
 
-The system is a mesoscale hierarchical recurrent latent-state architecture: dense local computation, sparse long-range routing, event interrupts, explicit memory, multi-timescale plasticity, world-model planning, and structured motor control. Detailed spiking or compartmental neurons are optional local modules, not the default whole-brain representation.
+## Verified frontier
 
-The architecture is defined by [NumiBrain v1.0](docs/NUMIBRAIN_V1_SPEC.md). The promotion-gated path from the transactional runtime to physically validated, learned generalist control is mapped in the [NumanX state-of-the-art roadmap](docs/NUMANX_STATE_OF_THE_ART_ROADMAP.md). The implemented tissue model and its scientific limits are defined in [TISSUE_MODEL_V0.md](docs/TISSUE_MODEL_V0.md). The compiled module ABI and deterministic scheduler semantics are defined in [SCHEDULER_V0.md](docs/SCHEDULER_V0.md). The executable region-major recurrent state and routing boundary are defined in [REGIONAL_TOKEN_V0.md](docs/REGIONAL_TOKEN_V0.md). Immutable slow-parameter identity and publication are defined in [PARAMETER_VERSIONING_V0.md](docs/PARAMETER_VERSIONING_V0.md). Deterministic multi-agent plan compilation and private Metal materialization are defined in [COHORT_DISPATCH_V0.md](docs/COHORT_DISPATCH_V0.md). The stable NumanX handoff contract is defined in [JOINT_TRANSACTION_V0.md](docs/JOINT_TRANSACTION_V0.md), and the protective muscle mapping in [MOTOR_OUTPUT_V0.md](docs/MOTOR_OUTPUT_V0.md). Implementation claims and current readiness are tracked in [STATUS.md](STATUS.md).
+| Gate | State | Current evidence boundary |
+|---|---|---|
+| **A — Transactional root** | **Complete** | A real 157-body, `nq=129`/`nv=128`, 416-muscle Human and attached Matter world execute the ABI4 root protocol on Apple M4. Accepted roots advance once; rejected retries restore and replay exactly. |
+| **B — Causal sensorium** | **Complete** | Proprioception, muscle-local physiology, kinesthesia, vestibular state, touch, vision/depth, and audition have bounded accepted-root causal intervention evidence. Autonomous gaze changes physical rays and valid coverage. |
+| **C — Learned embodied policy** | **Active** | Content-addressed `.nbpolicy` packaging, authoritative dataset capture, MLX successor training, uncertainty gates, replay, safety cohorts, and local actuator-to-sensor causality are executable. A promotable generalist policy and meaningful held-out physical advantage are not yet established. |
+| **D — Physical and biological validation** | Planned | Independent contact, material, muscle, tendon, joint-load, metabolic, perturbation, and ablation validation. |
+| **E — Scale and performance** | Planned | Matched latency, throughput, memory, energy, counter, and scaling studies. |
+| **F — Safety and deployment** | Planned | OOD behavior, force/collision limits, fault recovery, long-lived operation, and hardware governance. |
 
-## Run the tissue slice
+The detailed, revision-aware record lives in [STATUS.md](STATUS.md). The
+promotion criteria and explicit non-claims live in the
+[state-of-the-art roadmap](docs/NUMANX_STATE_OF_THE_ART_ROADMAP.md).
 
-NumiBrain requires macOS 26, Swift 6.2 or later, and an Apple GPU with Metal 4 for the native path.
+## What is implemented
+
+| Layer | Responsibility |
+|---|---|
+| `NumiBrainABI` | Stable root, substep, motor, gate, accepted-physics, preflight, ACK, applied, and publication records. |
+| `NumiBrainCore` | Physical time, belief, body schema, memory, motivation, goals, policy artifacts, deterministic scheduling, and transaction semantics. |
+| `NumiBrainMetal` | Metal 4 tissue, sensory transduction, sparse delayed routing, decision, motor, memory journals, shadow state, and atomic publication. |
+| `NumiBrainMLX` | Batch learning from committed artifacts and immutable successor publication. MLX never steps production physics. |
+| NumanX bridge | Exact same-device motor/sensor leases and the joint Brain–Human–Matter root lifecycle. |
+
+The runtime includes:
+
+- timestamped receptor events, causal delays, adaptation, validity, and typed
+  emergency interrupts;
+- a 10,752-scalar recurrent regional state with sparse long-range routes,
+  deterministic top-k selection, persistence, and emergency bypass;
+- immutable slow-parameter generations and per-agent private minds;
+- compiled 416-muscle somatic output plus autonomic and active-sensing commands;
+- accepted-only memory, developmental, consequence, and learning journals;
+- deterministic counter-based randomness, rollback, retry, and replay; and
+- content-addressed Gate C datasets, evaluations, policies, and evidence roots.
+
+## Quick start
+
+### Requirements
+
+- macOS 26 or newer
+- Apple silicon with Metal 4 for the native GPU path
+- Xcode/Command Line Tools with Swift 6.2 or newer
+
+### Build and test
 
 ```sh
+git clone https://github.com/Numi2/numi-brain.git
+cd numi-brain
+swift build -c release
 swift test
+```
+
+### Run the deterministic tissue slice
+
+```sh
 swift run -c release numi-brain-tissue \
   --backend metal \
   --width 256 \
@@ -40,76 +133,115 @@ swift run -c release numi-brain-tissue \
   --structure layered \
   --delays layered \
   --connectome bilateral \
-  --stimulus-noise 0.35 \
   --receptor-interrupt pain \
   --receptor-latency-us 500 \
   --seed 0x4e554d49 \
-  --lesion-x 0.62 \
-  --lesion-y 0.5 \
-  --lesion-radius 0.10 \
-  --lesion-viability 0 \
   --verify-cpu \
   --verify-replay \
   --snapshot artifacts/tissue-activity.png \
   --output artifacts/tissue-evidence.json
 ```
 
-The executable also supports `--backend cpu` as a deterministic FP32 tissue oracle, `--structure homogeneous`, `--delays instantaneous`, and `--connectome none` as baselines. Its runtime input is an immutable schedule of timestamped receptor events rather than a shader-special-cased stimulus. `--stimulus-noise`, `--seed`, `--environment-id`, and `--episode-id` address bounded counter-random samples without mutable RNG state. `--receptor-interrupt` and `--receptor-latency-us` attach a typed scheduler interrupt and causal conduction delay to the stimulus onset. On Metal, a dedicated kernel merges those due onsets with any host interrupt packets into a canonical private GPU queue before scheduling; there is no hot-path count readback. The Metal path advances the compiled eight-module schedule once per root transaction, then consumes the private due list through a 10,752-scalar recurrent token operator. Seven candidate sparse routes carry 0-5 ms delays; each due receiver deterministically scores causal messages, preserves routes inside a 2 ms minimum-persistence window, selects its configured normal top-k, permanently bypasses that budget for emergency routes, normalizes selected strengths, and gathers only compacted route indices. One compiled immutable parameter generation binds the exact tissue values, schedule, regional shape, and regional content to CPU checkpoints and a private 64-byte GPU record; publication is allowed only after rollout cohorts release the current version. Scheduler clocks, token state, diagnostic records, timestamped route histories, and per-agent routing state use private shadow generations that publish with tissue commit. Layered tissue structure, delay classes, both sparse graphs, event noise, lesion controls, scheduler roles, regional topology, score constants, and initial parameters are synthetic execution fixtures, not anatomical, conduction-velocity, receptor, injury, learned-model, or biological-timing calibration. Schema-v12 JSON evidence records the parameter version and parent, manifest and GPU binding bytes, schedule and regional identities, receptor ABI/transduction identity, token, route-history and routing-state memory, active-route counts, scheduler and regional dispatches, CPU parity, replay, rollback, and tissue CPU–GPU error. PNG output is an inspection heatmap, not biological validation.
-
-Bounded Apple M4 Pro and Apple M4 correctness probes of the v0.12 immutable-parameter path are checked into [evidence/tissue-v0.12](evidence/tissue-v0.12/README.md). The heavy run started through `ssh macmini` only after the unrelated crow workload exited. The preceding receptor-interrupt qualification remains in [evidence/tissue-v0.11](evidence/tissue-v0.11/README.md). These are correctness and visual-inspection artifacts, not production performance qualifications.
-
-## Run the scheduler oracle
-
-The Phase 1 scheduler reference uses integer physical microseconds, compiled C++ ABI records, per-agent transactional clocks, immediate interrupt masks, and deterministic cohort grouping:
+The CPU backend is a deterministic FP32 oracle:
 
 ```sh
-swift run -c release numi-brain-scheduler \
-  --duration-ms 200 \
-  --control-ms 20 \
-  --environments 4 \
-  --output artifacts/scheduler-evidence.json
+swift run -c release numi-brain-tissue --backend cpu --help
 ```
 
-This executable remains the standalone CPU oracle for multi-agent scheduler semantics. The tissue executable now runs bounded one-agent due selection and the eight-module recurrent regional-token operator inside its Metal command timeline. It is not the complete 96-module graph or a large-cohort scheduler qualification.
+Additional executables expose the scheduler oracle, cohort dispatch,
+content-addressed policy tooling, the NumanX interop boundary, and Gate C
+capture/evaluation:
 
-The exact v0.1 four-agent scheduler artifact is checked into [evidence/scheduler-v0.1](evidence/scheduler-v0.1/README.md).
-
-## Run cohort dispatch materialization
-
-The v0.20 dispatch executable preserves independent version-bound scheduler shadows, compiles their active module work into canonical timestamp/module groups, materializes the flattened plan into private Metal 4 buffers, and launches four consumer dispatches from three GPU-generated indirect arguments:
-
-```sh
-swift run -c release numi-brain-dispatch \
-  --environments 8192 \
-  --control-ms 20 \
-  --output artifacts/cohort-dispatch-evidence.json
+```text
+numi-brain-scheduler
+numi-brain-dispatch
+numi-brain-policy
+numi-brain-numanx-interop
+numi-brain-gate-c
 ```
 
-The first consumer emits exact auditable work records. The second advances a distinct environment-major compact diagnostic-state generation for each active agent. The third assigns contiguous plan-row ranges to 64 lanes per environment, performs a deterministic threadgroup prefix scan of match counts, and scatters a canonical private invocation span. The fourth launches one 64-lane threadgroup per agent and jointly advances its authoritative 10,752-scalar recurrent tokens, seven delayed route rings, and dynamic route scores, selections, strengths, persistence counters, and timestamps from that compact span and immutable per-scalar plus shared dense-local parameters. All modules due at one physical timestamp read one stable pre-timestamp token generation before publishing together. The executable verifies retry and discarded-shadow identity, canonical input ordering, exact GPU materialization, work consumption and invocation compaction, FP32 CPU-reference diagnostic, token, history, score, and strength parity, exact discrete routing state, interrupt isolation, full-cohort ownership, and exact replay fingerprints. A compiled 32-publication ring is accepted only when a pre-dispatch proof shows that the root plan cannot overwrite a delayed value it may still read. The CPU currently owns plan construction; Metal owns private region-major materialization and the no-readback handoff into all four dispatches. This is not GPU-native plan construction or cohort throughput qualification.
+The complete NumanX full-body path also requires the corresponding MetalRobo,
+Matter, and provenance-valid Human assets. It intentionally fails closed when
+those native capabilities or exact identities are absent.
 
-An exact-source 256-environment Apple M4 Pro correctness artifact for v0.20 is in [evidence/cohort-dispatch-v0.20](evidence/cohort-dispatch-v0.20/README.md); the preceding 16-environment Apple M4 control is in [v0.19](evidence/cohort-dispatch-v0.19/README.md). The exact 8,192-environment v0.14 indirect-consumption artifact remains in [v0.14](evidence/cohort-dispatch-v0.14/README.md), with the preceding materialization-only artifact in [v0.13](evidence/cohort-dispatch-v0.13/README.md). Command-feedback timings cover only the named kernels and are not production performance claims.
+## Evidence, not demos
 
-Physical-time Metal conduction and accepted fast scheduler/regional prefixes have an exact-source 74-test Apple M4 Pro qualification in [evidence/joint-transaction-v0.6](evidence/joint-transaction-v0.6/README.md). The earlier interactive-lifecycle and CPU-oracle qualification remains in [v0.4](evidence/joint-transaction-v0.4/README.md). These are correctness artifacts, not live NumanX coupling or throughput evidence.
+The repository retains small, reviewable correctness artifacts under
+[`evidence/`](evidence/). Each evidence package records its source revision,
+device, command, fingerprints, replay result, and limitations. Larger local
+Numi Lab runs remain in `.numi/` and are not committed by default.
 
-Protective command, compiled muscle output, and the transaction-bound NumanX GPU packet have an exact-source 78-test Apple M4 Pro qualification in [evidence/protective-motor-v0.2](evidence/protective-motor-v0.2/README.md). The preceding command/output-only artifact remains in [v0.1](evidence/protective-motor-v0.1/README.md). These prove bounded CPU/Metal and transaction parity only; no NumanX body consumed the GPU output.
+Representative retained evidence:
 
-The current same-process closed-loop artifact is in [evidence/numanx-joint-root-v0.8](evidence/numanx-joint-root-v0.8/README.md), with private-field v0.7 through selected-muscle v0.2 retained as controls. On Apple M4, one exact private 416-channel NumiBrain excitation buffer drove the complete NumanX MyoSim muscle catalog and articulated state. Accepted tendon `215` load becomes a fingerprinted body-load frame on route bodies `34` and `41`, a private transactional Metal body field, a 37-muscle endpoint-sharing neighborhood, and source protection that zeros tendon `215`. The field now retains original physical provenance, persists for 40 ms, decays linearly for 160 ms, and continues source inhibition until expiry; the policy is deterministic but uncalibrated. Tendon `215` has zero fixture neural gain and passive force, so the full-body run proves command inhibition rather than physical load reduction. Commanded tendon `3` activation and force rose from a zero-activation start, one rejected physical candidate replayed exactly, and fresh processes emitted byte-identical committed JSON. Field inputs are still assembled by the bounded host bridge, and the reference synchronizes separate queues, stages diagnostics, integrates the Core body on the CPU, and publishes the two roots sequentially.
+- [immutable tissue and CPU/Metal parity](evidence/tissue-v0.12/README.md)
+- [routed cohort dispatch](evidence/cohort-dispatch-v0.20/README.md)
+- [accepted-fast joint transactions](evidence/joint-transaction-v0.6/README.md)
+- [compiled protective motor output](evidence/protective-motor-v0.2/README.md)
+- [full-body temporal joint-root coupling](evidence/numanx-joint-root-v0.8/README.md)
 
-## Foundational invariants
+FNV fingerprints provide deterministic same-process integrity and replay
+identity. They are not cryptographic authentication.
 
-- Normal observations are causal receptor signals, never perfect or future simulator state.
-- Authoritative somatic output is muscle excitation or an equivalent actuator command.
-- Body, world, spatial, and self estimates are compatible factors of one belief state.
-- Fast reflexes and critical events never wait for slow planning.
-- Rejected physical trajectories change no neural history, memory, learning, drives, plasticity, or random counters.
-- Shared slow weights are immutable within a rollout cohort; each agent retains an independent mind.
-- The hot physics-brain loop stays on the GPU; the CPU is an orchestration and publication boundary.
-- Deterministic replay restores physical state, brain state, parameter version, schedules, generations, and counter-based randomness.
+## Scientific boundaries
 
-## Implementation order
+NumiBrain is active research software. The current evidence establishes
+bounded runtime integrity and causal-control properties on named Apple GPU
+paths. It does **not** establish consciousness, human-equivalent cognition,
+an anatomically calibrated brain, a clinically validated digital human,
+production GPU performance, or a generally capable learned policy.
 
-The first executable vertical slice now establishes an FP32 excitatory/inhibitory tissue field plus a schedule-driven recurrent regional primitive: synthetic per-site heterogeneity, finite-time axonal relay and physical-timestamp conduction history, lesionable short-range coupling, destination-major sparse delayed tissue projections, timestamped noisy receptor events, a compiled 64-byte receptor-event ABI, GPU event and interrupt compaction, counter-based randomness, private scheduler clocks, 10,752 region-major token scalars, immutable per-scalar residuals and shared dense-local slow parameters, seven candidate sparse regional routes with per-agent transaction-owned timestamped delivery rings, deterministic content-scored top-k selection, emergency bypass, normalized strengths, compact selected-route gathering, matching CPU oracles, versioned multi-agent dispatch plans, private Metal cohort materialization, GPU-generated indirect work expansion, independent compact diagnostic, recurrent-token, route-history, and routing-state generations, Metal 4 dispatch, committed/root-shadow/candidate transactions, and compiled root/substep/physical-acceptance/commit tokens for NumanX handoff. The interactive bridge executes corrected-duration candidate tissue steps on Metal, samples local and sparse conduction by physical microseconds, advances root-shadow value/timestamp ownership only after a matching physical acceptance token, overwrites rejected scratch generations on retry, filters rejected events, and publishes accepted tissue, scheduler, token, history, routing, protective-command, and protective-muscle generations only through joint commit. Each accepted physical token dispatches a canonical GPU scheduler/regional prefix, derives a fingerprinted protective command, and maps it through an immutable compiled muscle profile into a private FP32 excitation array for the next candidate. A standalone executable now lends the actual 416-channel allocation to the complete NumanX MyoSim muscle catalog, advances a full-body articulated candidate, maps every source tendon to its ordered route endpoint bodies and local attachment coordinates, converts the accepted peak muscle force and source-tendon identity into a receptor-derived overload event, builds a committed sparse body-load frame and endpoint-sharing motor neighborhood, retains and decays peak loads in a private root generation, keeps the source tendon inhibited while its peak cell is active, and verifies exact physical retry before joint commit. It does not yet implement body-side or anatomical labels, intermediate-route body export, neighbor-directed protective action, calibrated vulnerability or uncertainty dynamics, voluntary motor output, calibrated receptors or conduction velocity, learned routing, tiled dense-regional throughput, GPU-native plan construction, the complete 96-module graph, learning, memory, or general motor control.
+In particular, the present prepared Human/Matter path does not yet own active
+ground-support contact. Support-labelled historical captures qualify their
+named runtime and artifact properties, not balance. The next constrained
+physics slice places NHCNT support rows inside Matter's monolithic KKT so
+contact is solved once and participates in accepted-state proof authority.
 
-The next runtime-foundation work adds stable body-side, anatomical, and functional muscle labels plus any needed intermediate route bodies, so the selected mechanical neighborhood can support safe neighbor-directed withdrawal or bracing. The temporal field then needs calibrated receptor thresholds, vulnerability, uncertainty, fatigue, damage, and recovery dynamics instead of its current fixed hold-and-decay policy. Articulated integration and sensor extraction must move onto the shared GPU timeline, and sequential root publication must become a fail-closed coordinated publication boundary. Incremental fast regional generations can replace the current bounded canonical-prefix recomputation after exact parity is retained. GPU-native plan construction, immutable successor-buffer activation across runtimes, persistent checkpoints, and private-heap state storage follow. Later phases add calibrated causal receptors, full body schema, voluntary and learned motor systems, world modeling, motivation, skills and planning, memory, development, communication, and persistent life mode.
+## Vision
 
-No phase is intended as a throwaway implementation.
+NumiBrain is pursuing a persistent embodied foundation model that can:
+
+1. learn a causal body schema from lived, accepted interaction;
+2. integrate vision, touch, audition, proprioception, interoception, and active
+   sensing in physical time;
+3. build skills, concepts, plans, language, and autobiographical memory without
+   breaking sensorimotor grounding;
+4. transfer across humans, animals, robots, tasks, and material worlds while
+   preserving per-agent identity; and
+5. remain replayable, inspectable, bounded, and fail-closed from simulation to
+   hardware.
+
+The ambition is broad. The promotion gates are intentionally stricter.
+
+## Repository map
+
+```text
+Sources/NumiBrainABI/          Stable C/C++ wire contracts
+Sources/NumiBrainCore/         Deterministic neural and learning semantics
+Sources/NumiBrainMetal/        GPU-resident runtime and Metal 4 kernels
+Sources/NumiBrainMLX/          Committed-artifact learning
+Sources/NumiBrain*CLI/         Bounded executable tools
+Tests/                         CPU, Metal, replay, fault, and interop tests
+docs/                          Architecture and promotion contracts
+evidence/                      Small retained qualification artifacts
+```
+
+Start with:
+
+- [NumiBrain v1.0 architecture](docs/NUMIBRAIN_V1_SPEC.md)
+- [NumanX roadmap](docs/NUMANX_STATE_OF_THE_ART_ROADMAP.md)
+- [Gate C requirements](docs/NUMANX_GATE_C_REQUIREMENTS.md)
+- [tissue model and scientific limits](docs/TISSUE_MODEL_V0.md)
+- [joint transaction contract](docs/JOINT_TRANSACTION_V0.md)
+- [implementation status](STATUS.md)
+
+## Contributing
+
+Read [AGENTS.md](AGENTS.md) before changing architecture or runtime ownership.
+The core rules are simple: change the lowest owning layer, preserve one GPU
+timeline, keep rejected futures out of memory and learning, use bounded tests
+before long GPU runs, and describe only what the evidence proves.
+
+## License
+
+No open-source license has been declared yet. Until one is added, the source is
+publicly visible but standard copyright restrictions apply.

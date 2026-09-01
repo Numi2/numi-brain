@@ -79,6 +79,10 @@ public struct ActiveGoal: Codable, Equatable, Hashable, Sendable {
   public let damageRiskBudget: Float
   public let persistence: Float
   public let createdTimestamp: BrainTimestamp
+  /// Optional species body identifier targeted by a structured embodied goal.
+  /// This is an identifier in the causal body schema, never a simulator pose
+  /// or a privileged body-state value.
+  public let targetBodyIdentifier: UInt32?
 
   public init(
     identifier: UInt64,
@@ -90,7 +94,8 @@ public struct ActiveGoal: Codable, Equatable, Hashable, Sendable {
     failureModel: BrainLatentVector,
     damageRiskBudget: Float,
     persistence: Float,
-    createdTimestamp: BrainTimestamp
+    createdTimestamp: BrainTimestamp,
+    targetBodyIdentifier: UInt32? = nil
   ) throws {
     guard identifier > 0, priority.isFinite, priority >= 0,
       deadline == nil || deadline! >= createdTimestamp,
@@ -109,6 +114,7 @@ public struct ActiveGoal: Codable, Equatable, Hashable, Sendable {
     self.damageRiskBudget = damageRiskBudget
     self.persistence = persistence
     self.createdTimestamp = createdTimestamp
+    self.targetBodyIdentifier = targetBodyIdentifier
   }
 }
 

@@ -39,7 +39,9 @@ typedef struct NB_NUMANX_READY_ALIGN16 NBNumanXDecisionReadyGateGPU {
   uint32_t environment;
   uint32_t rangeCount;
   uint32_t flags;
-  uint32_t reserved32_0;
+  /// Exact FP32 epistemic score consumed by the prephysical gate. Zero while
+  /// PENDING or when no uncertainty policy is bound.
+  uint32_t unsupportedUncertaintyBits;
   uint32_t reserved32_1;
   uint64_t controlStep;
   uint64_t transactionFingerprint;

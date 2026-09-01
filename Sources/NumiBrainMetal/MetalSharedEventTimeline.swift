@@ -456,6 +456,12 @@ extension MetalEmbodiedBrainRuntime {
 
 @available(macOS 26.0, *)
 extension MetalNumiBrainRuntime {
+  @_spi(NumanXInterop)
+  public struct NumanXPolicyRejectionSettlement: Sendable {
+    public let fastSystems: MetalTissueRuntime.FastSystemResult
+    public let uncertainty: MetalNumanXDecisionUncertaintyObservation
+  }
+
   /// Complete-brain ownership ticket for an event-driven cognitive decision.
   /// The root cannot advance into fast systems until this ticket is explicitly
   /// finished, which stages the decision into the fast neural runtime.
@@ -487,6 +493,26 @@ extension MetalNumiBrainRuntime {
       -> MetalGPUCompletionFeedback?
     {
       try cognitiveTicket.completionFeedbackIfAvailable()
+    }
+
+    /// Qualification-only diagnostic extracted from the exact fingerprinted
+    /// decision gate after terminal Metal feedback. It cannot authorize motor
+    /// handoff or root publication.
+    @_spi(NumanXInterop)
+    public func uncertaintyObservationIfAvailable() throws
+      -> MetalNumanXDecisionUncertaintyObservation?
+    {
+      guard try cognitiveTicket.completionFeedbackIfAvailable() != nil else {
+        return nil
+      }
+      guard let observation = cognitiveTicket.decisionGateEvaluation
+        .qualificationUncertaintyObservation()
+      else {
+        throw TissueError.transaction(
+          "NumanX decision has no valid uncertainty evidence"
+        )
+      }
+      return observation
     }
 
     public func waitUntilCompleted(

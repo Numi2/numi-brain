@@ -155,8 +155,11 @@ public final class MetalLearningBatch: @unchecked Sendable {
       (.semanticRelations, semanticRelations, Self.semanticRelationStride),
       (.regionalTransitions, regionalTransitions, Self.regionalTransitionStride),
     ]
-    guard transitions.generation > 0,
-      sections.allSatisfy({ _, snapshot, stride in
+    // Generation zero is the runtime's immutable developmental seed state.
+    // It is a valid committed-memory snapshot before the first control root,
+    // but MetalLearningCohortBatch deliberately continues to require a
+    // positive generation before any learner update may consume a batch.
+    guard sections.allSatisfy({ _, snapshot, stride in
         snapshot.generation == transitions.generation
           && snapshot.elementCount > 0
           && snapshot.elementStride == stride

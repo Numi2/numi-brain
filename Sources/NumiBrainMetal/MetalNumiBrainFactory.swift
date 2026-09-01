@@ -60,6 +60,8 @@ extension MetalNumiBrainRuntime {
   static func makeRuntime(
     configuration: MetalNumiBrainConfiguration,
     publication: BrainParameterPublication,
+    foundationPolicyArchitecture: BrainFoundationPolicyArchitecture? = nil,
+    numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration? = nil,
     device: any MTLDevice
   ) throws -> MetalNumiBrainRuntime {
     let compiledSpeciesTemplate = configuration.compiledSpeciesTemplate
@@ -116,13 +118,31 @@ extension MetalNumiBrainRuntime {
     }
     let somaticSynergyCatalog = compiledSpeciesTemplate.somaticSynergyCatalog
     try somaticSynergyCatalog.validate(motor: species.motor)
-    let cognitive = try MetalEmbodiedBrainRuntime(
-      device: device,
-      compiledSpeciesTemplate: compiledSpeciesTemplate,
-      regionalProgram: regionalProgram,
-      parameterVersion: version,
-      sharedParameterArtifact: publication.sharedArtifact
-    )
+    guard foundationPolicyArchitecture == nil || numanXUncertaintyGate == nil
+    else {
+      throw TissueError.metal(
+        "NumanX uncertainty gate has two competing executable authorities"
+      )
+    }
+    let cognitive = if let numanXUncertaintyGate {
+      try MetalEmbodiedBrainRuntime(
+        device: device,
+        compiledSpeciesTemplate: compiledSpeciesTemplate,
+        regionalProgram: regionalProgram,
+        parameterVersion: version,
+        sharedParameterArtifact: publication.sharedArtifact,
+        numanXUncertaintyGate: numanXUncertaintyGate
+      )
+    } else {
+      try MetalEmbodiedBrainRuntime(
+        device: device,
+        compiledSpeciesTemplate: compiledSpeciesTemplate,
+        regionalProgram: regionalProgram,
+        parameterVersion: version,
+        sharedParameterArtifact: publication.sharedArtifact,
+        foundationPolicyArchitecture: foundationPolicyArchitecture
+      )
+    }
     let fastTissue = try MetalTissueRuntime(
       initialState: configuration.initialTissueState,
       parameters: configuration.tissueParameters,
@@ -137,9 +157,11 @@ extension MetalNumiBrainRuntime {
       parameterVersion: version,
       sharedParameterArtifact: publication.sharedArtifact,
       protectiveMotorProfile: protectiveProfile,
-      numanXMuscleAttachmentCatalog: compiledSpeciesTemplate.muscleAttachmentCatalog,
+      numanXMuscleAttachmentCatalog:
+        compiledSpeciesTemplate.muscleAttachmentCatalog,
       somaticSynergyCatalog: somaticSynergyCatalog,
-      schedulerEnvironmentIdentifier: configuration.schedulerEnvironmentIdentifier,
+      schedulerEnvironmentIdentifier:
+        configuration.schedulerEnvironmentIdentifier,
       maxSchedulerEvents: configuration.maximumSchedulerEvents,
       maxSchedulerInvocations: configuration.maximumSchedulerInvocations,
       maxEncodedSubsteps: configuration.maximumEncodedSubsteps,
@@ -169,12 +191,14 @@ extension MetalNumiBrainHandle {
     let runtime = try MetalNumiBrainRuntime.makeRuntime(
       configuration: configuration,
       publication: publication,
+      foundationPolicyArchitecture: nil,
       device: device
     )
     return MetalNumiBrainHandle(
       runtime: runtime,
       configuration: configuration,
       publication: publication,
+      foundationPolicyArchitecture: nil,
       device: device
     )
   }
@@ -245,7 +269,32 @@ extension MetalNumiBrainHandle {
     return try create(
       configuration: configuration,
       publication: policyPackage.publication(),
+      foundationPolicyArchitecture: policyPackage.architecture,
       device: requestedDevice
+    )
+  }
+
+  private static func create(
+    configuration: MetalNumiBrainConfiguration,
+    publication: BrainParameterPublication,
+    foundationPolicyArchitecture: BrainFoundationPolicyArchitecture?,
+    device requestedDevice: (any MTLDevice)?
+  ) throws -> MetalNumiBrainHandle {
+    guard let device = requestedDevice ?? MTLCreateSystemDefaultDevice() else {
+      throw TissueError.metal("no Metal device is available")
+    }
+    let runtime = try MetalNumiBrainRuntime.makeRuntime(
+      configuration: configuration,
+      publication: publication,
+      foundationPolicyArchitecture: foundationPolicyArchitecture,
+      device: device
+    )
+    return MetalNumiBrainHandle(
+      runtime: runtime,
+      configuration: configuration,
+      publication: publication,
+      foundationPolicyArchitecture: foundationPolicyArchitecture,
+      device: device
     )
   }
 }

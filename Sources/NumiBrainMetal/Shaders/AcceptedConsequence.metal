@@ -6,6 +6,7 @@ constant uint NB_ACCEPTED_MUSCLE_LENGTH_VALID = 1u << 1;
 constant uint NB_ACCEPTED_MUSCLE_VELOCITY_VALID = 1u << 2;
 constant uint NB_ACCEPTED_MUSCLE_FORCE_VALID = 1u << 3;
 constant uint NB_ACCEPTED_MUSCLE_FATIGUE_VALID = 1u << 4;
+constant ulong NB_ACCEPTED_MUSCLE_TASK_EFFECT_ATTEMPTED = 1ul << 6u;
 constant ulong NB_ACCEPTED_BODY_ARTICULATED = 1ul << 5;
 constant uint NB_ACCEPTED_CEREBELLAR_PREDICTION_VALID = 1u << 5;
 constant uint NB_ACCEPTED_TRACE_COMPLETE = 1u << 1;
@@ -1785,6 +1786,7 @@ kernel void assimilate_accepted_muscle_schema(
   );
   device ulong *identity = reinterpret_cast<device ulong *>(muscle + 16u);
   const bool prior_valid = (identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul;
+  flags |= uint(identity[3] & NB_ACCEPTED_MUSCLE_TASK_EFFECT_ATTEMPTED);
   muscle[12] = prior_valid ? muscle[1] : 0.0f;
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
@@ -1887,6 +1889,25 @@ kernel void assimilate_accepted_joint_schema(
   float maximum_error = 0.0f;
   uint evidence_channels = 0u;
   const uint coordinate_count = min(topology.identifiers.w, 6u);
+  // A fixed joint has no coordinate receptor evidence by construction, but
+  // its immutable parent/child topology is still causal body-schema
+  // authority. Publish only that identity so graph traversal can cross fixed
+  // links without fabricating a position, velocity, limit, or coverage
+  // observation. Articulated joints remain invalid until real receptor
+  // evidence is fused below.
+  if (coordinate_count == 0u) {
+    identity[0] = ulong(topology.identifiers.x);
+    identity[1] = ulong(topology.identifiers.y);
+    identity[2] = ulong(topology.identifiers.z);
+    identity[3] = 0ul;
+    identity[4] = uniforms.target_timestamp_microseconds;
+    identity[5] = nb_accepted_physics_state_fingerprint(
+      uniforms, acceptance_result
+    );
+    identity[6] = joint_receptor_table->topology_fingerprint;
+    identity[7] = ulong(NB_ACCEPTED_STATE_VALID);
+    return;
+  }
   for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
     float position_total = 0.0f;
     float position_weight = 0.0f;
@@ -2262,12 +2283,19 @@ kernel void learn_accepted_muscle_task_effect(
   device float *muscle = reinterpret_cast<device float *>(
     hot_state + uniforms.muscle_belief_offset + ulong(gid) * 192ul
   );
-  device const ulong *muscle_identity =
-    reinterpret_cast<device const ulong *>(
+  device ulong *muscle_identity =
+    reinterpret_cast<device ulong *>(
       muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
     );
   if ((muscle_identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul
       || muscle_identity[2] == 0ul) return;
+  const float command = clamp(muscle[11], 0.0f, 1.0f);
+  if (command <= 1.0e-4f) return;
+  // The exact accepted excitation is itself causal evidence that this
+  // actuator was tested. Preserve that fact even when the 100-us endpoint
+  // displacement is below sensor resolution, so the next root advances to a
+  // different anatomy-qualified muscle instead of repeating one experiment.
+  muscle_identity[3] |= NB_ACCEPTED_MUSCLE_TASK_EFFECT_ATTEMPTED;
   const uint first_identifier = uint(muscle_identity[7]);
   const uint terminal_identifier = uint(muscle_identity[7] >> 32u);
   device const float *first_body = nullptr;
@@ -2291,8 +2319,6 @@ kernel void learn_accepted_muscle_task_effect(
   const uint terminal_mask = uint(clamp(
     terminal_body[NB_BODY_ACCEPTED_POSITION_DELTA_MASK], 0.0f, 7.0f
   ));
-  const float command = clamp(muscle[11], 0.0f, 1.0f);
-  if (command <= 1.0e-4f) return;
   const float elapsed_seconds = max(
     float(uniforms.delta_microseconds) * 1.0e-6f, 1.0e-6f
   );

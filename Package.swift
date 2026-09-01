@@ -20,6 +20,7 @@ let package = Package(
       name: "numi-brain-numanx-interop",
       targets: ["NumiBrainNumanXInteropCLI"]
     ),
+    .executable(name: "numi-brain-gate-c", targets: ["NumiBrainGateCCLI"]),
   ],
   dependencies: [
     .package(
@@ -75,6 +76,10 @@ let package = Package(
     .executableTarget(
       name: "NumiBrainNumanXInteropCLI",
       dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainMetal"]
+    ),
+    .executableTarget(
+      name: "NumiBrainGateCCLI",
+      dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
     ),
     .testTarget(
       name: "NumiBrainCoreTests",

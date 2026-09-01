@@ -3331,7 +3331,7 @@ kernel void derive_protective_command(
 /// independent of reduction order; production profiles will use a parallel
 /// excitation pass followed by a canonical hash pass.
 kernel void map_protective_motor_output(
-    device const NBProtectiveCommandABI *commandBuffer [[buffer(0)]],
+    device NBProtectiveCommandABI *commandBuffer [[buffer(0)]],
     device const NBMotorChannelDescriptorABI *channels [[buffer(1)]],
     constant NBProtectiveCommandUniformsABI *uniforms [[buffer(2)]],
     device NBMotorOutputHeaderABI *outputHeader [[buffer(3)]],
@@ -3358,13 +3358,65 @@ kernel void map_protective_motor_output(
     if (threadIndex != 0u) {
         return;
     }
-    const NBProtectiveCommandABI command = commandBuffer[0];
+    NBProtectiveCommandABI command = commandBuffer[0];
     const uint oscillatorCount = (cpgUniforms->flags & 1u) != 0u
         ? min(cpgUniforms->oscillator_count, 64u)
         : 0u;
     const uint interruptEventCount = (cpgUniforms->flags & (1u << 1u)) != 0u
         ? interruptResult->event_count
         : 0u;
+    ulong sameRootInterruptMask = 0ul;
+    float sameRootInterruptMagnitude = 0.0f;
+    if (interruptResult->status == NBReceptorTransductionStatusValid) {
+        for (uint eventIndex = 0u; eventIndex < interruptEventCount;
+             ++eventIndex) {
+            const NBInterruptEventABI event = interruptEvents[eventIndex];
+            sameRootInterruptMask |= event.interrupt_mask;
+            sameRootInterruptMagnitude = max(
+                sameRootInterruptMagnitude,
+                clamp(event.magnitude, 0.0f, 1.0f)
+            );
+        }
+    }
+    const ulong effectiveInterruptMask = command.interrupt_mask
+        | sameRootInterruptMask;
+    const ulong withdrawalCauses =
+        NBInterruptPain | NBInterruptDamagingContact
+        | NBInterruptJointLimit | NBInterruptMuscleOverload;
+    const ulong braceCauses = NBInterruptLossOfSupport | NBInterruptImpact;
+    const ulong stopCauses =
+        withdrawalCauses | braceCauses | NBInterruptPhysiologicalCritical
+        | NBInterruptRescue;
+    const bool withdrawal = (effectiveInterruptMask & withdrawalCauses) != 0ul;
+    const bool brace = (effectiveInterruptMask & braceCauses) != 0ul;
+    const bool emergencyStop = (effectiveInterruptMask & stopCauses) != 0ul;
+    const bool autonomicArousal = effectiveInterruptMask != 0ul;
+    command.format_version = NBProtectiveCommandVersion;
+    command.flags = NBProtectiveCommandFlagValid
+        | (emergencyStop ? NBProtectiveCommandFlagEmergencyStop : 0u)
+        | (withdrawal ? NBProtectiveCommandFlagWithdrawal : 0u)
+        | (brace ? NBProtectiveCommandFlagPosturalBrace : 0u)
+        | (autonomicArousal ? NBProtectiveCommandFlagAutonomicArousal : 0u);
+    command.timestamp_microseconds = uniforms->sample_timestamp_microseconds;
+    command.brain_generation = uniforms->brain_generation;
+    command.interrupt_mask = effectiveInterruptMask;
+    command.withdrawal_drive = withdrawal
+        ? max(clamp(command.withdrawal_drive, 0.0f, 1.0f),
+              max(0.5f, sameRootInterruptMagnitude))
+        : 0.0f;
+    command.postural_stiffness = brace
+        ? max(clamp(command.postural_stiffness, 0.0f, 1.0f),
+              max(0.75f, sameRootInterruptMagnitude))
+        : 0.0f;
+    command.motor_inhibition = emergencyStop ? 1.0f : 0.0f;
+    command.autonomic_arousal = autonomicArousal
+        ? max(clamp(command.autonomic_arousal, 0.0f, 1.0f),
+              max(0.5f, sameRootInterruptMagnitude))
+        : 0.0f;
+    command.environment_identifier = uniforms->environment_identifier;
+    command.reserved = 0u;
+    command.command_fingerprint = protective_command_fingerprint(command);
+    commandBuffer[0] = command;
     constexpr float twoPi = 6.28318530717958647692f;
     for (uint oscillator = 0u; oscillator < oscillatorCount; ++oscillator) {
         NBFastCPGStateABI state = cpgStates[oscillator];
@@ -3553,8 +3605,6 @@ kernel void map_protective_motor_output(
         }
     }
     bool hasLocalizedSourceInhibition = false;
-    const bool emergencyStop =
-        (command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u;
     float outputMinimum = actuatorDescriptors[0].output_minimum;
     float outputMaximum = actuatorDescriptors[0].output_maximum;
     for (uint index = 0u; index < uniforms->muscle_count; ++index) {

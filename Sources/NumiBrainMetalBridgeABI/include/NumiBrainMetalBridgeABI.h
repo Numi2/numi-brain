@@ -232,6 +232,75 @@ typedef struct mrnx_runtime_info_v1 {
   uint64_t model_source_fingerprint;
 } mrnx_runtime_info_v1;
 
+typedef struct mrnx_joint_anatomy_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t joint_identifier;
+  uint32_t parent_body_identifier;
+  uint32_t child_body_identifier;
+  uint32_t coordinate_offset;
+  uint32_t coordinate_count;
+  uint32_t reserved0;
+  float parent_local_anchor[3];
+  float reserved1;
+  float child_local_anchor[3];
+  float reserved2;
+  float rest_relative_orientation[4];
+} mrnx_joint_anatomy_v1;
+
+typedef struct mrnx_runtime_anatomy_info_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t body_count;
+  uint32_t joint_count;
+  uint32_t coordinate_count;
+  uint32_t muscle_count;
+  uint32_t head_body_identifier;
+  uint32_t reserved0;
+  uint64_t model_source_fingerprint;
+} mrnx_runtime_anatomy_info_v1;
+
+typedef struct mrnx_joint_coordinate_anatomy_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t joint_identifier;
+  uint32_t coordinate_identifier;
+  uint32_t kind;
+  uint32_t q_index;
+  uint32_t v_index;
+  uint32_t flags;
+  float parent_local_axis[3];
+  float minimum_position;
+  float maximum_position;
+  float rest_position;
+  float reserved0;
+  float reserved1;
+} mrnx_joint_coordinate_anatomy_v1;
+
+typedef struct mrnx_muscle_attachment_anatomy_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint32_t muscle_identifier;
+  uint32_t route_node_count;
+  uint32_t first_body_identifier;
+  uint32_t terminal_body_identifier;
+  uint32_t reserved0;
+  uint32_t reserved1;
+  float first_local_point[3];
+  float reserved2;
+  float terminal_local_point[3];
+  float reserved3;
+} mrnx_muscle_attachment_anatomy_v1;
+
+enum mrnx_joint_coordinate_kind_v1 {
+  MRNX_JOINT_COORDINATE_ANGULAR_V1 = 1u,
+  MRNX_JOINT_COORDINATE_LINEAR_V1 = 2u,
+};
+
+enum mrnx_joint_coordinate_flags_v1 {
+  MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1 = 1u << 0u,
+};
+
 typedef struct mrnx_aggregate_snapshot_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -302,6 +371,23 @@ _Static_assert(sizeof(mrnx_proposal_view_v1) == 280u, "mrnx proposal ABI");
 _Static_assert(sizeof(mrnx_applied_view_v1) == 240u, "mrnx applied ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v1) == 104u, "mrnx config ABI");
 _Static_assert(sizeof(mrnx_runtime_info_v1) == 64u, "mrnx info ABI");
+_Static_assert(sizeof(mrnx_joint_anatomy_v1) == 80u,
+               "mrnx joint anatomy ABI");
+_Static_assert(offsetof(mrnx_joint_anatomy_v1,
+                        rest_relative_orientation) == 64u,
+               "mrnx joint anatomy orientation offset");
+_Static_assert(sizeof(mrnx_joint_coordinate_anatomy_v1) == 64u,
+               "mrnx joint coordinate anatomy ABI");
+_Static_assert(offsetof(mrnx_joint_coordinate_anatomy_v1,
+                        parent_local_axis) == 32u,
+               "mrnx joint coordinate axis offset");
+_Static_assert(sizeof(mrnx_muscle_attachment_anatomy_v1) == 64u,
+               "mrnx muscle anatomy ABI");
+_Static_assert(sizeof(mrnx_runtime_anatomy_info_v1) == 40u,
+               "mrnx runtime anatomy info ABI");
+_Static_assert(offsetof(mrnx_muscle_attachment_anatomy_v1,
+                        first_local_point) == 32u,
+               "mrnx muscle anatomy point offset");
 _Static_assert(sizeof(mrnx_aggregate_snapshot_v1) == 504u, "mrnx snapshot ABI");
 _Static_assert(sizeof(mrnx_aggregate_snapshot_v2) == 1280u,
                "mrnx snapshot v2 ABI");

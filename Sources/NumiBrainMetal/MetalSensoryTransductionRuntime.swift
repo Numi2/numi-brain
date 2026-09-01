@@ -158,6 +158,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
   private let species: SpeciesTemplate
   private let profile: SensoryTransductionProfile
   private let descriptors: [SensoryDescriptorRecord]
+  private let inputSlotByModality: [SensoryModality: Int]
   private let totalObservationScalars: Int
   private let totalReceptors: Int
   private let beginPipeline: any MTLComputePipelineState
@@ -171,6 +172,20 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
   private let dummyInputBuffer: any MTLBuffer
   private let dummyValidityBuffer: any MTLBuffer
   private let unconditionalAcceptanceGateBuffer: any MTLBuffer
+
+  static func compactInputSlots(
+    for modalities: [SensoryModality]
+  ) throws -> [SensoryModality: Int] {
+    let canonical = modalities.sorted { $0.rawValue < $1.rawValue }
+    guard canonical.count <= 8, Set(canonical).count == canonical.count else {
+      throw TissueError.metal("sensory topology exceeds eight compact Metal slots")
+    }
+    return Dictionary(
+      uniqueKeysWithValues: canonical.enumerated().map {
+        ($0.element, $0.offset)
+      }
+    )
+  }
 
   public init(
     device: any MTLDevice,
@@ -190,8 +205,13 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     var observationOffset: UInt32 = 0
     var adaptationOffset: UInt32 = 0
     var descriptors: [SensoryDescriptorRecord] = []
-    for topology in species.senses.sorted(by: { $0.modality.rawValue < $1.modality.rawValue })
-    where topology.enabled {
+    let enabledTopologies = species.senses.filter(\.enabled).sorted {
+      $0.modality.rawValue < $1.modality.rawValue
+    }
+    let inputSlotByModality = try Self.compactInputSlots(
+      for: enabledTopologies.map(\.modality)
+    )
+    for (inputSlot, topology) in enabledTopologies.enumerated() {
       let scalarCount64 = UInt64(topology.receptorCount)
         * UInt64(topology.observationDimension)
       guard scalarCount64 <= UInt64(UInt32.max),
@@ -206,7 +226,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
           modality: UInt32(topology.modality.rawValue),
           receptorCount: topology.receptorCount,
           featureDimension: topology.observationDimension,
-          inputBufferIndex: UInt32(topology.modality.rawValue - 1),
+          inputBufferIndex: UInt32(inputSlot),
           outputScalarOffset: observationOffset,
           adaptationOffset: adaptationOffset,
           rawScalarCount: scalarCount,
@@ -282,7 +302,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     }
     let argumentDescriptor = MTL4ArgumentTableDescriptor()
     argumentDescriptor.label = "NumiBrain sensory transduction arguments"
-    argumentDescriptor.maxBufferBindCount = 21
+    argumentDescriptor.maxBufferBindCount = 22
     argumentDescriptor.initializeBindings = true
     let descriptorByteCount = max(
       descriptors.count * MemoryLayout<SensoryDescriptorRecord>.stride,
@@ -348,6 +368,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     self.species = species
     self.profile = profile
     self.descriptors = descriptors
+    self.inputSlotByModality = inputSlotByModality
     self.totalObservationScalars = Int(observationOffset)
     self.totalReceptors = Int(adaptationOffset)
     self.beginPipeline = pipelines[0]
@@ -380,6 +401,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     randomCounterGeneration: UInt64,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt32,
+    allowsMatchingAcceptedFrameReuse: Bool = false,
     acceptanceGateGPUAddress: UInt64? = nil
   ) throws -> Result {
     guard transaction.layoutFingerprint == arena.layout.fingerprint,
@@ -421,9 +443,12 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("sensory runtime exceeds compiled queue limits")
     }
-    var validityFlags: UInt32 = 1
+    var validityFlags: UInt32 = allowsMatchingAcceptedFrameReuse ? 1 : 0
     for view in rawSensorViews where view.hasValidity {
-      validityFlags |= UInt32(1) << UInt32(7 + view.modality.rawValue)
+      guard let inputSlot = inputSlotByModality[view.modality] else {
+        throw TissueError.transaction("raw sensory modality has no compact Metal slot")
+      }
+      validityFlags |= UInt32(1) << UInt32(8 + inputSlot)
     }
     var uniforms = SensoryUniforms(
       targetTimestampMicroseconds: targetTimestamp.rawValue,
@@ -457,22 +482,26 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(descriptorBuffer.gpuAddress, index: 1)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 2)
-    argumentTable.setAddress(
-      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
-      index: 20
-    )
-    for modality in SensoryModality.allCases {
+    for inputSlot in 0..<8 {
+      argumentTable.setAddress(dummyInputBuffer.gpuAddress, index: inputSlot + 3)
+      argumentTable.setAddress(dummyValidityBuffer.gpuAddress, index: inputSlot + 12)
+    }
+    for (modality, inputSlot) in inputSlotByModality {
       argumentTable.setAddress(
         viewByModality[modality]?.gpuAddress ?? dummyInputBuffer.gpuAddress,
-        index: Int(modality.rawValue) + 2
+        index: inputSlot + 3
       )
       argumentTable.setAddress(
         viewByModality[modality].flatMap {
           $0.hasValidity ? $0.validityGPUAddress : nil
         } ?? dummyValidityBuffer.gpuAddress,
-        index: Int(modality.rawValue) + 11
+        index: inputSlot + 12
       )
     }
+    argumentTable.setAddress(
+      acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
+      index: 20
+    )
     dispatch(
       encoder: encoder,
       pipeline: beginPipeline,
@@ -493,7 +522,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     if !profile.eventRules.isEmpty {
       barrier(encoder)
       argumentTable.setAddress(ruleBuffer.gpuAddress, index: 2)
-      argumentTable.setAddress(uniformBuffer.gpuAddress, index: 3)
+      argumentTable.setAddress(uniformBuffer.gpuAddress, index: 21)
       dispatch(
         encoder: encoder,
         pipeline: eventPipeline,

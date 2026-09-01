@@ -9,8 +9,8 @@ xcuserdata/
 *.trace
 
 # Local Numi Lab execution evidence is retained locally, not committed by default.
-.numi/logs/
-.numi/runs/
+# Selected compact evidence belongs under evidence/ after explicit review.
+.numi/
 
 # Long-lived agent state and training artifacts require explicit publication.
 checkpoints/

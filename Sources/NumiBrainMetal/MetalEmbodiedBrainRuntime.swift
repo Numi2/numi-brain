@@ -105,6 +105,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
     let buffer: any MTLBuffer
     let sourceOffset: Int
+    let controlHeaderSourceOffset: Int
     let descendingBaselineSourceOffset: Int
     let autonomicSourceOffset: Int
     let activeSensingSourceOffset: Int
@@ -124,6 +125,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: UInt64,
       buffer: any MTLBuffer,
       sourceOffset: Int,
+      controlHeaderSourceOffset: Int,
       descendingBaselineSourceOffset: Int,
       autonomicSourceOffset: Int,
       activeSensingSourceOffset: Int,
@@ -142,6 +144,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       self.speciesTemplateFingerprint = speciesTemplateFingerprint
       self.buffer = buffer
       self.sourceOffset = sourceOffset
+      self.controlHeaderSourceOffset = controlHeaderSourceOffset
       self.descendingBaselineSourceOffset = descendingBaselineSourceOffset
       self.autonomicSourceOffset = autonomicSourceOffset
       self.activeSensingSourceOffset = activeSensingSourceOffset
@@ -162,6 +165,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
 
     public var somaticByteOffset: Int { sourceOffset }
+    public var controlHeaderByteOffset: Int { controlHeaderSourceOffset }
     public var descendingSomaticBaselineByteOffset: Int {
       descendingBaselineSourceOffset
     }
@@ -206,6 +210,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   private let acceptedPhysicsGateRuntime: MetalAcceptedPhysicsGateRuntime
   private let numanXHumanMatterRuntime: MetalNumanXHumanMatterBrainRuntime
   private let numanXMotorReadyRuntime: MetalNumanXMotorReadyRuntime
+  private let numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration?
   let boundCompiledSpeciesTemplate: CompiledSpeciesTemplate
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
@@ -248,7 +253,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   var boundSpeciesTemplate: SpeciesTemplate { species }
 
-  public init(
+  public convenience init(
     device: any MTLDevice,
     compiledSpeciesTemplate: CompiledSpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
@@ -261,7 +266,73 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       MemoryRetrievalDynamics? = nil,
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics? = nil,
+    foundationPolicyArchitecture: BrainFoundationPolicyArchitecture? = nil,
     initialGeneration: UInt64 = 0
+  ) throws {
+    try self.init(
+      device: device,
+      compiledSpeciesTemplate: compiledSpeciesTemplate,
+      regionalProgram: regionalProgram,
+      parameterVersion: parameterVersion,
+      sharedParameterArtifact: sharedParameterArtifact,
+      decisionDynamics: requestedDecisionDynamics,
+      acceptedConsequenceDynamics: requestedAcceptedConsequenceDynamics,
+      memoryRetrievalDynamics: requestedMemoryRetrievalDynamics,
+      episodicSegmentation: requestedEpisodicSegmentation,
+      numanXUncertaintyGate: try foundationPolicyArchitecture.map {
+        try MetalNumanXUncertaintyGateConfiguration(architecture: $0)
+      },
+      initialGeneration: initialGeneration
+    )
+  }
+
+  @_spi(NumanXInterop)
+  public convenience init(
+    device: any MTLDevice,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
+    regionalProgram: RegionalTokenProgram,
+    parameterVersion: BrainParameterVersion,
+    sharedParameterArtifact: BrainSharedParameterArtifact? = nil,
+    decisionDynamics requestedDecisionDynamics: DecisionDynamics? = nil,
+    acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
+      AcceptedConsequenceDynamics? = nil,
+    memoryRetrievalDynamics requestedMemoryRetrievalDynamics:
+      MemoryRetrievalDynamics? = nil,
+    episodicSegmentation requestedEpisodicSegmentation:
+      EpisodicSegmentationDynamics? = nil,
+    numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration,
+    initialGeneration: UInt64 = 0
+  ) throws {
+    try self.init(
+      device: device,
+      compiledSpeciesTemplate: compiledSpeciesTemplate,
+      regionalProgram: regionalProgram,
+      parameterVersion: parameterVersion,
+      sharedParameterArtifact: sharedParameterArtifact,
+      decisionDynamics: requestedDecisionDynamics,
+      acceptedConsequenceDynamics: requestedAcceptedConsequenceDynamics,
+      memoryRetrievalDynamics: requestedMemoryRetrievalDynamics,
+      episodicSegmentation: requestedEpisodicSegmentation,
+      numanXUncertaintyGate: Optional(numanXUncertaintyGate),
+      initialGeneration: initialGeneration
+    )
+  }
+
+  private init(
+    device: any MTLDevice,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
+    regionalProgram: RegionalTokenProgram,
+    parameterVersion: BrainParameterVersion,
+    sharedParameterArtifact: BrainSharedParameterArtifact?,
+    decisionDynamics requestedDecisionDynamics: DecisionDynamics?,
+    acceptedConsequenceDynamics requestedAcceptedConsequenceDynamics:
+      AcceptedConsequenceDynamics?,
+    memoryRetrievalDynamics requestedMemoryRetrievalDynamics:
+      MemoryRetrievalDynamics?,
+    episodicSegmentation requestedEpisodicSegmentation:
+      EpisodicSegmentationDynamics?,
+    numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration?,
+    initialGeneration: UInt64
   ) throws {
     let species = compiledSpeciesTemplate.species
     let sensoryProfile = compiledSpeciesTemplate.sensoryProfile
@@ -348,20 +419,26 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device
     )
     let numanXMotorReadyRuntime = try MetalNumanXMotorReadyRuntime(device: device)
+    var numanXImmutableFingerprints: [(String, UInt64)] = [
+      ("species", species.fingerprint),
+      ("compiledSpecies", compiledSpeciesTemplate.fingerprint),
+      ("parameterVersion", parameterVersion.fingerprint),
+      ("regionalProgram", regionalProgram.fingerprint),
+      ("schedule", regionalProgram.scheduleFingerprint),
+      ("hotLayout", agentStateRuntime.arena.layout.fingerprint),
+      ("memoryLayout", agentStateRuntime.arena.memoryLayout.fingerprint),
+      ("sharedParameterArtifact", sharedParameterBank.artifactFingerprint),
+      ("sensoryProfile", sensoryProfile.fingerprint),
+      ("somaticSynergyCatalog", somaticSynergyCatalog.fingerprint),
+    ]
+    if let numanXUncertaintyGate {
+      numanXImmutableFingerprints.append(
+        ("uncertaintyGate", numanXUncertaintyGate.fingerprint)
+      )
+    }
     let numanXHumanMatterRuntime = try MetalNumanXHumanMatterBrainRuntime(
       device: device,
-      immutableFingerprints: [
-        ("species", species.fingerprint),
-        ("compiledSpecies", compiledSpeciesTemplate.fingerprint),
-        ("parameterVersion", parameterVersion.fingerprint),
-        ("regionalProgram", regionalProgram.fingerprint),
-        ("schedule", regionalProgram.scheduleFingerprint),
-        ("hotLayout", agentStateRuntime.arena.layout.fingerprint),
-        ("memoryLayout", agentStateRuntime.arena.memoryLayout.fingerprint),
-        ("sharedParameterArtifact", sharedParameterBank.artifactFingerprint),
-        ("sensoryProfile", sensoryProfile.fingerprint),
-        ("somaticSynergyCatalog", somaticSynergyCatalog.fingerprint),
-      ]
+      immutableFingerprints: numanXImmutableFingerprints
     )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain embodied cognitive residency"
@@ -374,12 +451,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       + developmentalRuntime.residencyAllocations.count
       + decisionRuntime.residencyAllocations.count
       + acceptedConsequenceRuntime.residencyAllocations.count
-    let residencySet: any MTLResidencySet
-    do {
-      residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
-    } catch {
-      throw TissueError.metal("failed to create embodied brain residency: \(error)")
-    }
+    let residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
     for allocation in agentStateRuntime.arena.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
@@ -428,6 +500,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.acceptedPhysicsGateRuntime = acceptedPhysicsGateRuntime
     self.numanXHumanMatterRuntime = numanXHumanMatterRuntime
     self.numanXMotorReadyRuntime = numanXMotorReadyRuntime
+    self.numanXUncertaintyGate = numanXUncertaintyGate
     self.boundCompiledSpeciesTemplate = compiledSpeciesTemplate
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
@@ -610,7 +683,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       transaction: transaction,
       rawSensors: numanXSensors.rawSensors,
       regionalRecurrentInput: regionalRecurrentInput,
-      externalGoal: externalGoal
+      externalGoal: externalGoal,
+      allowsMatchingAcceptedFrameReuse:
+        numanXSensors.allowsMatchingAcceptedFrameReuse
     )
   }
 
@@ -619,6 +694,22 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     rawSensors: [MetalRawSensorBufferLease],
     regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
     externalGoal: ActiveGoal? = nil
+  ) throws -> DecisionBufferView {
+    try inferAndDecide(
+      transaction: transaction,
+      rawSensors: rawSensors,
+      regionalRecurrentInput: regionalRecurrentInput,
+      externalGoal: externalGoal,
+      allowsMatchingAcceptedFrameReuse: false
+    )
+  }
+
+  private func inferAndDecide(
+    transaction: MetalJointAgentStateTransaction,
+    rawSensors: [MetalRawSensorBufferLease],
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView?,
+    externalGoal: ActiveGoal?,
+    allowsMatchingAcceptedFrameReuse: Bool
   ) throws -> DecisionBufferView {
     lock.lock()
     defer { lock.unlock() }
@@ -667,7 +758,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
         randomCounterGeneration: transaction.cachedRandomCounterGeneration,
         targetTimestamp: transaction.jointToken.committedTimestamp,
-        deltaMicroseconds: UInt32(duration)
+        deltaMicroseconds: UInt32(duration),
+        allowsMatchingAcceptedFrameReuse: allowsMatchingAcceptedFrameReuse
       )
       encoder.barrier(
         afterEncoderStages: .dispatch,
@@ -861,7 +953,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       activeSensingCommandScale: activeSensingCommandScale,
       waitFor: waitPoint,
       signal: completionPoint,
-      retainedInputs: [numanXSensors]
+      retainedInputs: [numanXSensors],
+      allowsMatchingAcceptedFrameReuse:
+        numanXSensors.allowsMatchingAcceptedFrameReuse
     )
   }
 
@@ -881,7 +975,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       activeSensingCommandScale: 1,
       waitFor: waitPoint,
       signal: completionPoint,
-      retainedInputs: rawSensors
+      retainedInputs: rawSensors,
+      allowsMatchingAcceptedFrameReuse: false
     )
   }
 
@@ -893,7 +988,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     activeSensingCommandScale: Float,
     waitFor waitPoint: MetalSharedEventPoint?,
     signal completionPoint: MetalSharedEventPoint,
-    retainedInputs: [AnyObject]
+    retainedInputs: [AnyObject],
+    allowsMatchingAcceptedFrameReuse: Bool
   ) throws -> DecisionSubmissionTicket {
     lock.lock()
     defer { lock.unlock() }
@@ -952,7 +1048,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
         randomCounterGeneration: transaction.cachedRandomCounterGeneration,
         targetTimestamp: transaction.jointToken.committedTimestamp,
-        deltaMicroseconds: UInt32(duration)
+        deltaMicroseconds: UInt32(duration),
+        allowsMatchingAcceptedFrameReuse: allowsMatchingAcceptedFrameReuse
       )
       encoder.barrier(
         afterEncoderStages: .dispatch,
@@ -1010,7 +1107,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
           parameterVersionFingerprint: parameterVersionFingerprint,
           regionalProgramFingerprint: regionalProgramFingerprint,
           scheduleFingerprint: scheduleFingerprint,
-          brainProgramFingerprint: numanXBrainProgramFingerprint
+          brainProgramFingerprint: numanXBrainProgramFingerprint,
+          uncertaintyGate: numanXUncertaintyGate
         )
       let gateResidency = try numanXMotorReadyRuntime.makeResidencySet(
         device: device,
@@ -1056,7 +1154,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       }
       let options = MTL4CommitOptions()
       options.addFeedbackHandler { feedback in
-        if feedback.error != nil || !decisionGateEvaluation.hasValidSuccess() {
+        if feedback.error != nil || !decisionGateEvaluation.hasValidTerminal() {
           decisionGateEvaluation.markFailure()
         }
         feedbackState.record(feedback, label: "NumiBrain embodied cognitive control")
@@ -1163,6 +1261,39 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       activeAsyncSubmission = nil
       if transaction.status == .open { try? transaction.abort() }
       throw error
+    }
+    active.resources.release()
+    activeAsyncSubmission = nil
+    return feedback
+  }
+
+  /// Settles a command-buffer-successful decision whose fingerprinted
+  /// uncertainty gate deliberately rejected motor authority. The cognitive
+  /// shadow remains unpublished and the joint transaction stays open so the
+  /// physical owner can produce its canonical rejected/restore transcript.
+  func reapPolicyRejectedDecisionSubmissionIfCompleted(
+    _ ticket: DecisionSubmissionTicket,
+    transaction: MetalJointAgentStateTransaction
+  ) throws -> MetalGPUCompletionFeedback? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let active = activeAsyncSubmission,
+      active.identifier == ticket.identifier,
+      active.kind == .decision,
+      active.transactionFingerprint == transaction.jointToken.fingerprint,
+      active.feedbackState === ticket.feedbackState,
+      !active.abortRequested,
+      transaction.status == .open
+    else {
+      throw TissueError.transaction(
+        "policy-rejected decision ticket is stale or not owned here"
+      )
+    }
+    guard let feedback = try ticket.feedbackState.poll() else { return nil }
+    guard ticket.decisionGateEvaluation.hasValidPolicyRejection() else {
+      throw TissueError.transaction(
+        "decision failure is not a valid uncertainty-policy rejection"
+      )
     }
     active.resources.release()
     activeAsyncSubmission = nil
@@ -2621,6 +2752,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       arenaLayout: agentStateRuntime.arena.layout,
       species: species
     )
+    let controlHeader = controlLayout.section(.header)
     let autonomic = controlLayout.section(.autonomicCommands)
     let motorGoal = controlLayout.section(.motorGoal)
     let motorCommands = controlLayout.section(.motorCommands)
@@ -2654,6 +2786,13 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       decision.somaticOutputByteCount <= buffer.length - section.byteOffset,
       decision.somaticOutputGPUAddress
         == buffer.gpuAddress + UInt64(section.byteOffset),
+      controlHeader.byteOffset <= buffer.length,
+      controlHeader.byteCount <= buffer.length - controlHeader.byteOffset,
+      controlHeader.elementCount == 1,
+      controlHeader.elementStride == 256,
+      decision.activeControlGPUAddress
+        == buffer.gpuAddress + UInt64(controlLayout.baseByteOffset),
+      decision.activeControlByteCount >= controlLayout.totalByteCount,
       decision.descendingSomaticBaselineByteCount
         == decision.somaticOutputByteCount,
       descendingBaseline.byteOffset <= buffer.length,
@@ -2758,6 +2897,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       speciesTemplateFingerprint: speciesTemplateFingerprint,
       buffer: buffer,
       sourceOffset: section.byteOffset,
+      controlHeaderSourceOffset: controlHeader.byteOffset,
       descendingBaselineSourceOffset: descendingBaseline.byteOffset,
       autonomicSourceOffset: autonomic.byteOffset,
       activeSensingSourceOffset: activeSensing.byteOffset,

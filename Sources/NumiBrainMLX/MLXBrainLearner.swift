@@ -9,16 +9,25 @@ public struct MLXBrainLearnerConfiguration: Equatable, Sendable {
   public let gradientNormLimit: Float
   public let parameterMagnitudeLimit: Float
   public let lossWeights: [BrainSlowLossKind: Float]
+  public let delayedSupportObjectiveWeight: Float
+  public let headPostureObjectiveWeight: Float
 
   public init(
     learningRate: Float,
     gradientNormLimit: Float,
     parameterMagnitudeLimit: Float,
-    lossWeights: [BrainSlowLossKind: Float]
+    lossWeights: [BrainSlowLossKind: Float],
+    delayedSupportObjectiveWeight: Float = 0,
+    headPostureObjectiveWeight: Float = 0
   ) throws {
     guard learningRate.isFinite, learningRate > 0,
       gradientNormLimit.isFinite, gradientNormLimit > 0,
       parameterMagnitudeLimit.isFinite, parameterMagnitudeLimit > 0,
+      delayedSupportObjectiveWeight.isFinite,
+      delayedSupportObjectiveWeight >= 0,
+      headPostureObjectiveWeight.isFinite,
+      headPostureObjectiveWeight >= 0,
+      delayedSupportObjectiveWeight == 0 || headPostureObjectiveWeight == 0,
       Set(lossWeights.keys) == Set(BrainSlowLossKind.allCases),
       lossWeights.values.allSatisfy({ $0.isFinite && $0 >= 0 })
     else {
@@ -30,6 +39,8 @@ public struct MLXBrainLearnerConfiguration: Equatable, Sendable {
     self.gradientNormLimit = gradientNormLimit
     self.parameterMagnitudeLimit = parameterMagnitudeLimit
     self.lossWeights = lossWeights
+    self.delayedSupportObjectiveWeight = delayedSupportObjectiveWeight
+    self.headPostureObjectiveWeight = headPostureObjectiveWeight
   }
 
   public static var foundationV1: Self {
@@ -43,7 +54,9 @@ public struct MLXBrainLearnerConfiguration: Equatable, Sendable {
       learningRate: 0.0001,
       gradientNormLimit: 1,
       parameterMagnitudeLimit: 4,
-      lossWeights: weights
+      lossWeights: weights,
+      delayedSupportObjectiveWeight: 0,
+      headPostureObjectiveWeight: 0
     )
   }
 }
@@ -81,12 +94,16 @@ public final class MLXBrainLearner: @unchecked Sendable {
 
   public func update(
     parentPublication: BrainParameterPublication,
-    batch: MetalLearningBatch
+    batch: MetalLearningBatch,
+    delayedSupport: BrainPolicyNumanXDelayedSupportLearningArtifact? = nil,
+    headPosture: BrainPolicyNumanXHeadPostureLearningArtifact? = nil
   ) throws -> BrainLearnerUpdate {
     try update(
       parentVersion: parentPublication.version,
       parentArtifact: parentPublication.sharedArtifact,
-      batch: batch
+      batch: batch,
+      delayedSupport: delayedSupport,
+      headPosture: headPosture
     )
   }
 
@@ -108,7 +125,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
   public func update(
     parentVersion: BrainParameterVersion,
     parentArtifact: BrainSharedParameterArtifact,
-    batch sourceBatch: MetalLearningBatch
+    batch sourceBatch: MetalLearningBatch,
+    delayedSupport: BrainPolicyNumanXDelayedSupportLearningArtifact? = nil,
+    headPosture: BrainPolicyNumanXHeadPostureLearningArtifact? = nil
   ) throws -> BrainLearnerUpdate {
     guard sourceBatch.parameterVersionFingerprint == parentVersion.fingerprint,
       sourceBatch.regionalProgramFingerprint
@@ -120,11 +139,48 @@ public final class MLXBrainLearner: @unchecked Sendable {
         "MLX learner inputs do not share one immutable parent version"
       )
     }
+    guard delayedSupport == nil || headPosture == nil else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX update accepts only one physical objective"
+      )
+    }
+    if let delayedSupport {
+      try delayedSupport.validate()
+      guard configuration.delayedSupportObjectiveWeight > 0,
+        delayedSupport.objectiveWeight
+          == configuration.delayedSupportObjectiveWeight
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "MLX delayed-support objective does not match its configuration"
+        )
+      }
+    } else if configuration.delayedSupportObjectiveWeight > 0 {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX delayed-support configuration has no physical objective"
+      )
+    }
+    if let headPosture {
+      try headPosture.validate()
+      guard configuration.headPostureObjectiveWeight > 0,
+        headPosture.objectiveWeight
+          == configuration.headPostureObjectiveWeight
+      else {
+        throw BrainRuntimeError.invalidParameterVersion(
+          "MLX head-posture objective does not match its configuration"
+        )
+      }
+    } else if configuration.headPostureObjectiveWeight > 0 {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX head-posture configuration has no physical objective"
+      )
+    }
     return try update(
       parentVersion: parentVersion,
       parentArtifact: parentArtifact,
       sourceBatchFingerprint: sourceBatch.batchFingerprint,
-      sourceBatches: [sourceBatch]
+      sourceBatches: [sourceBatch],
+      delayedSupport: delayedSupport,
+      headPosture: headPosture
     )
   }
 
@@ -147,7 +203,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
       parentVersion: parentVersion,
       parentArtifact: parentArtifact,
       sourceBatchFingerprint: cohort.cohortFingerprint,
-      sourceBatches: cohort.members.map(\.batch)
+      sourceBatches: cohort.members.map(\.batch),
+      delayedSupport: nil,
+      headPosture: nil
     )
   }
 
@@ -155,7 +213,9 @@ public final class MLXBrainLearner: @unchecked Sendable {
     parentVersion: BrainParameterVersion,
     parentArtifact: BrainSharedParameterArtifact,
     sourceBatchFingerprint: UInt64,
-    sourceBatches: [MetalLearningBatch]
+    sourceBatches: [MetalLearningBatch],
+    delayedSupport: BrainPolicyNumanXDelayedSupportLearningArtifact?,
+    headPosture: BrainPolicyNumanXHeadPostureLearningArtifact?
   ) throws -> BrainLearnerUpdate {
     guard !sourceBatches.isEmpty,
       let sourceMindCount = UInt32(exactly: sourceBatches.count),
@@ -179,10 +239,30 @@ public final class MLXBrainLearner: @unchecked Sendable {
     }
     let differentiated = valueAndGrad(
       { [configuration] parameters -> [MLXArray] in
+        // Head-posture calibration is a causal intervention, not an ordinary
+        // multi-objective successor update. Its physical response may
+        // identify the sign of motor gains only when every other parameter is
+        // held at the immutable parent. The owning loss touches exactly motor
+        // parameters 3 and 4; MLX therefore emits zero gradients for every
+        // other component and motor scalar. Full slow-loss terms are still
+        // recomputed below for diagnostics, but cannot confound this probe.
+        if let headPosture {
+          return [
+            configuration.headPostureObjectiveWeight
+              * Self.headPostureLoss(
+                parameters: parameters,
+                artifact: headPosture
+              ),
+          ]
+        }
         let terms = Self.cohortLossTerms(
           parameters: parameters,
           parentParameters: parentParameters,
-          batches: preparedBatches
+          batches: preparedBatches,
+          delayedSupport: delayedSupport,
+          delayedSupportWeight: configuration.delayedSupportObjectiveWeight,
+          headPosture: headPosture,
+          headPostureWeight: configuration.headPostureObjectiveWeight
         )
         var total = MLXArray(Float(0))
         for (kind, term) in zip(BrainSlowLossKind.allCases, terms) {
@@ -198,8 +278,24 @@ public final class MLXBrainLearner: @unchecked Sendable {
         "MLX learner did not differentiate every parameter component"
       )
     }
+    let motorParameterIndex = kinds.firstIndex(of: .motor)!
+    let effectiveGradients: [MLXArray]
+    if headPosture != nil {
+      let motorElementCount = parentArtifact.payload(.motor).data.count
+        / MemoryLayout<Float>.stride
+      var motorMaskValues = [Float](repeating: 0, count: motorElementCount)
+      for index in [3, 4] where index < motorMaskValues.count {
+        motorMaskValues[index] = 1
+      }
+      let motorMask = MLXArray(motorMaskValues, [motorElementCount])
+      effectiveGradients = gradients.enumerated().map { index, gradient in
+        index == motorParameterIndex ? gradient * motorMask : gradient * Float(0)
+      }
+    } else {
+      effectiveGradients = gradients
+    }
     var squaredGradientNorm = MLXArray(Float(0))
-    for gradient in gradients {
+    for gradient in effectiveGradients {
       squaredGradientNorm = squaredGradientNorm + square(gradient).sum()
     }
     let gradientNorm = sqrt(squaredGradientNorm + Float(1.0e-12))
@@ -213,22 +309,34 @@ public final class MLXBrainLearner: @unchecked Sendable {
     let stabilityWeight = configuration.lossWeights[.stability] ?? 0
     let proximalRetention =
       Float(1) / (Float(1) + Float(2) * configuration.learningRate * stabilityWeight)
-    let updatedParameters = zip(parentParameters, gradients).map { parameter, gradient in
-      clip(
-        parameter - proximalRetention * configuration.learningRate
-          * gradientScale * gradient,
-        min: -configuration.parameterMagnitudeLimit,
-        max: configuration.parameterMagnitudeLimit
-      ).asType(.float32).contiguous()
+    let updatedParameters = zip(parentParameters, effectiveGradients)
+      .enumerated().map { index, pair in
+        let (parameter, gradient) = pair
+        if headPosture != nil, index != motorParameterIndex {
+          return parameter
+        }
+        return clip(
+          parameter - proximalRetention * configuration.learningRate
+            * gradientScale * gradient,
+          min: -configuration.parameterMagnitudeLimit,
+          max: configuration.parameterMagnitudeLimit
+        ).asType(.float32).contiguous()
     }
     let updatedTerms = Self.cohortLossTerms(
       parameters: updatedParameters,
       parentParameters: parentParameters,
-      batches: preparedBatches
+      batches: preparedBatches,
+      delayedSupport: delayedSupport,
+      delayedSupportWeight: configuration.delayedSupportObjectiveWeight,
+      headPosture: headPosture,
+      headPostureWeight: configuration.headPostureObjectiveWeight
     )
     eval(updatedParameters + updatedTerms)
     let payloads = try zip(kinds, updatedParameters).map { kind, parameter in
-      try BrainParameterPayload(
+      if headPosture != nil, kind != .motor {
+        return parentArtifact.payload(kind)
+      }
+      return try BrainParameterPayload(
         kind: kind,
         elementType: .fp32,
         data: parameter.asData(access: .copy).data
@@ -260,7 +368,11 @@ public final class MLXBrainLearner: @unchecked Sendable {
   private static func cohortLossTerms(
     parameters: [MLXArray],
     parentParameters: [MLXArray],
-    batches: [MLXPreparedMindLearningBatch]
+    batches: [MLXPreparedMindLearningBatch],
+    delayedSupport: BrainPolicyNumanXDelayedSupportLearningArtifact?,
+    delayedSupportWeight: Float,
+    headPosture: BrainPolicyNumanXHeadPostureLearningArtifact?,
+    headPostureWeight: Float
   ) -> [MLXArray] {
     precondition(!batches.isEmpty)
     var totals = lossTerms(
@@ -289,7 +401,91 @@ public final class MLXBrainLearner: @unchecked Sendable {
       }
     }
     let memberCount = Float(batches.count)
-    return totals.map { $0 / memberCount }
+    totals = totals.map { $0 / memberCount }
+    if let delayedSupport {
+      totals[9] = totals[9] + delayedSupportWeight * delayedSupportLoss(
+        parameters: parameters,
+        artifact: delayedSupport
+      )
+    }
+    if let headPosture {
+      totals[9] = totals[9] + headPostureWeight * headPostureLoss(
+        parameters: parameters,
+        artifact: headPosture
+      )
+    }
+    return totals
+  }
+
+  private static func headPostureLoss(
+    parameters: [MLXArray],
+    artifact: BrainPolicyNumanXHeadPostureLearningArtifact
+  ) -> MLXArray {
+    let motor = parameters[7]
+    let demand = artifact.responseDeficit
+    let direction = artifact.effectiveResponseGainDirection
+    // DecisionState owns this task-space excitation path. The target-body
+    // selector and learned anatomical effect choose muscles; these bounded
+    // gains control position error and velocity error without
+    // writing pose, force, or any authoritative physical state. The sign is
+    // either the initial positive-gain probe or an exact, transitive physical
+    // calibration; it is never inferred from task deficit alone.
+    let positionTarget = Float(1) + direction * Float(2) * demand
+    let velocityTarget = Float(1) + direction * Float(2) * demand
+    return square(motor[3] - positionTarget)
+      + square(motor[4] - velocityTarget)
+  }
+
+  private static func delayedSupportLoss(
+    parameters: [MLXArray],
+    artifact: BrainPolicyNumanXDelayedSupportLearningArtifact
+  ) -> MLXArray {
+    precondition(!artifact.examples.isEmpty)
+    let demand = artifact.examples.map(\.stabilizationDemand)
+      .reduce(Float(0), +) / Float(artifact.examples.count)
+    let velocityDemand = artifact.examples.map {
+      min(
+        abs($0.consequenceGroundNormalVelocity)
+          / artifact.thresholds.maximumAbsoluteGroundNormalVelocity,
+        1
+      )
+    }.reduce(Float(0), +) / Float(artifact.examples.count)
+    let clearanceSpan = artifact.thresholds.maximumHeadGroundClearance
+      - artifact.thresholds.minimumHeadGroundClearance
+    let clearanceDemand = artifact.examples.map { example -> Float in
+      if example.consequenceHeadGroundClearance
+          < artifact.thresholds.minimumHeadGroundClearance
+      {
+        return min(
+          (artifact.thresholds.minimumHeadGroundClearance
+            - example.consequenceHeadGroundClearance) / clearanceSpan,
+          1
+        )
+      }
+      if example.consequenceHeadGroundClearance
+          > artifact.thresholds.maximumHeadGroundClearance
+      {
+        return min(
+          (example.consequenceHeadGroundClearance
+            - artifact.thresholds.maximumHeadGroundClearance) / clearanceSpan,
+          1
+        )
+      }
+      return 0
+    }.reduce(Float(0), +) / Float(artifact.examples.count)
+    let motor = parameters[7]
+    // HumanIO v1 lends excitation, autonomic, and active-sensing commands to
+    // physics. Stiffness/damping records remain Brain-private, so supervising
+    // those values cannot change the physical consequence. These parameters
+    // are the owning DecisionState.metal excitation path: [4] is anatomical
+    // goal velocity feedback, [3] position feedback, and [0] overall motor
+    // drive. Targets remain bounded by the learner's parameter limit.
+    let velocityGainTarget = Float(1) + Float(2) * velocityDemand
+    let positionGainTarget = Float(1) + clearanceDemand
+    let motorGainTarget = Float(1) + Float(0.5) * demand
+    return square(motor[4] - velocityGainTarget)
+      + Float(0.5) * square(motor[3] - positionGainTarget)
+      + Float(0.25) * square(motor[0] - motorGainTarget)
   }
 
   private static func lossTerms(

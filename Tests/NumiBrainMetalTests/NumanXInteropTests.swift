@@ -565,38 +565,13 @@ func makeNumanXInteropCompiledTemplate(
 /// bridge. The two-body articulation remains an explicitly synthetic nervous-
 /// system fixture; the native full-body runtime separately owns and proves the
 /// 157-body 129-q/128-DoF physical asset.
-func makeNumanXFullBodyTransportCompiledTemplate() throws
+func makeNumanXFullBodyTransportCompiledTemplate(
+  latencyMicroseconds: UInt32 = 1_000
+) throws
   -> CompiledSpeciesTemplate
 {
-  try makeNumanXInteropCompiledTemplate(
-    actuatorCount: 416,
-    proprioceptorCount: 416,
-    proprioceptionFeatureDimension: 10,
-    proprioceptionLatencyMicroseconds: 1_000,
-    proprioceptionActiveSensingActionDimension: 0,
-    kinesthesiaReceptorCount: 128,
-    kinesthesiaFeatureDimension: 7,
-    kinesthesiaLatencyMicroseconds: 1_000,
-    vestibularReceptorCount: 1,
-    vestibularFeatureDimension: 22,
-    vestibularLatencyMicroseconds: 1_000,
-    auditionReceptorCount: 24,
-    auditionFeatureDimension: 8,
-    auditionLatencyMicroseconds: 1_000,
-    visionReceptorCount: 64 * 48,
-    visionFeatureDimension: 8,
-    visionLatencyMicroseconds: 1_000,
-    visionActiveSensingActionDimension: 1,
-    touchReceptorCount: 10,
-    touchFeatureDimension: 7,
-    touchLatencyMicroseconds: 1_000,
-    interoceptorCount: 416,
-    interoceptionFeatureDimension: 6,
-    interoceptionLatencyMicroseconds: 1_000,
-    somaticSynergyCount: 16,
-    planningHorizonSteps: 4,
-    workspaceCapacity: 16,
-    name: "NumanX 416-muscle transport qualification fixture"
+  try NumanXFullBodyTransportTemplate.compile(
+    latencyMicroseconds: latencyMicroseconds
   )
 }
 

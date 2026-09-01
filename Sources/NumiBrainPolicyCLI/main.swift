@@ -3,12 +3,19 @@ import Foundation
 import NumiBrainCore
 
 private struct PolicySummary: Codable {
+  let packageFormatVersion: UInt32
+  let qualificationEvidenceFormatVersion: UInt32
   let packageIdentifier: String
   let packageContentSHA256: String
   let modelIdentifier: String
   let modelRevision: String
   let modelWeightsSHA256: String
   let parameterVersionFingerprint: String
+  let ownerProgramFingerprint: String
+  let lowLevelControllerFingerprint: String
+  let hardSafetyProgramFingerprint: String
+  let supervisionRequestThreshold: Float
+  let rootRejectionThreshold: Float
   let sourceRevision: String
   let datasetSourceCount: Int
   let datasetPartitionCount: Int
@@ -53,12 +60,27 @@ do {
     ) : nil
   let publication = try package.publication()
   let summary = PolicySummary(
+    packageFormatVersion: package.formatVersion,
+    qualificationEvidenceFormatVersion:
+      BrainPolicyQualificationEvidence.formatVersion,
     packageIdentifier: package.packageIdentifier,
     packageContentSHA256: package.packageContentSHA256,
     modelIdentifier: package.architecture.modelIdentifier,
     modelRevision: package.architecture.modelRevision,
     modelWeightsSHA256: package.architecture.modelWeightsSHA256,
     parameterVersionFingerprint: publication.version.fingerprintHex,
+    ownerProgramFingerprint: String(
+      format: "%016llx", package.architecture.ownerProgramFingerprint
+    ),
+    lowLevelControllerFingerprint: String(
+      format: "%016llx", package.architecture.lowLevelControllerFingerprint
+    ),
+    hardSafetyProgramFingerprint: String(
+      format: "%016llx", package.architecture.hardSafetyProgramFingerprint
+    ),
+    supervisionRequestThreshold:
+      package.architecture.supervisionRequestThreshold,
+    rootRejectionThreshold: package.architecture.rootRejectionThreshold,
     sourceRevision: package.sourceRevision,
     datasetSourceCount: package.datasetSources.count,
     datasetPartitionCount: package.datasetPartitions.count,

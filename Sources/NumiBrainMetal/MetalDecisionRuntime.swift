@@ -79,6 +79,8 @@ private struct DecisionUniforms {
   var activeSensingEfficacyOffset: UInt64 = 0
   var actuatorCommandKind: UInt32 = 0
   var activeSensingCommandScaleBits: UInt32 = 0
+  var anatomicalMuscleCount: UInt32 = 0
+  var reservedAnatomy: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -263,7 +265,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 448,
+    guard MemoryLayout<DecisionUniforms>.stride == 456,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -747,11 +749,16 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       success.append(contentsOf: repeatElement(0, count: 16 - success.count))
       var failure = externalGoal.failureModel.values
       failure.append(contentsOf: repeatElement(0, count: 16 - failure.count))
+      var directiveFlags: UInt64 = 1
+      if let targetBodyIdentifier = externalGoal.targetBodyIdentifier {
+        directiveFlags |= UInt64(1) << 1
+        directiveFlags |= UInt64(targetBodyIdentifier) << 32
+      }
       externalDirective = ExternalGoalDirectiveRecord(
         identifier: externalGoal.identifier,
         deadlineTimestampMicroseconds: externalGoal.deadline?.rawValue ?? 0,
         createdTimestampMicroseconds: externalGoal.createdTimestamp.rawValue,
-        flags: 1,
+        flags: directiveFlags,
         priority: externalGoal.priority,
         damageRiskBudget: externalGoal.damageRiskBudget,
         persistence: externalGoal.persistence,
@@ -1051,7 +1058,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         arena.layout.section(.activeSensingEfficacy).byteOffset
       ),
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
-      activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern
+      activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern,
+      anatomicalMuscleCount: species.body.muscleCount,
+      reservedAnatomy: 0
     )
   }
 

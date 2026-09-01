@@ -416,9 +416,25 @@ kernel void extract_receptor_events(
   device uchar *hot_state [[buffer(0)]],
   device const NBSensoryDescriptor *descriptors [[buffer(1)]],
   device const NBReceptorEventRule *rules [[buffer(2)]],
-  constant NBSensoryUniforms &uniforms [[buffer(3)]],
+  device const float *input0 [[buffer(3)]],
+  device const float *input1 [[buffer(4)]],
+  device const float *input2 [[buffer(5)]],
+  device const float *input3 [[buffer(6)]],
+  device const float *input4 [[buffer(7)]],
+  device const float *input5 [[buffer(8)]],
+  device const float *input6 [[buffer(9)]],
+  device const float *input7 [[buffer(10)]],
   device const float *sensory_parameters [[buffer(11)]],
+  device const uint *validity0 [[buffer(12)]],
+  device const uint *validity1 [[buffer(13)]],
+  device const uint *validity2 [[buffer(14)]],
+  device const uint *validity3 [[buffer(15)]],
+  device const uint *validity4 [[buffer(16)]],
+  device const uint *validity5 [[buffer(17)]],
+  device const uint *validity6 [[buffer(18)]],
+  device const uint *validity7 [[buffer(19)]],
   device const uint *acceptance_gate [[buffer(20)]],
+  constant NBSensoryUniforms &uniforms [[buffer(21)]],
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
@@ -449,11 +465,31 @@ kernel void extract_receptor_events(
     const uint receptor_index = rule.receptor_start + receptor;
     const uint scalar_index = descriptor.output_scalar_offset
       + receptor_index * descriptor.feature_dimension + rule.feature_index;
-    if (validity[scalar_index] == 0u) continue;
-    const float value = observations[scalar_index];
+    const bool absolute_threshold = (rule.rule_flags & 1u) != 0u;
+    const uint raw_scalar_index =
+      receptor_index * descriptor.feature_dimension + rule.feature_index;
+    const uint raw_valid = nb_raw_validity(
+      descriptor.input_buffer_index, receptor_index, uniforms.flags,
+      validity0, validity1, validity2, validity3,
+      validity4, validity5, validity6, validity7
+    );
+    if (absolute_threshold ? raw_valid == 0u : validity[scalar_index] == 0u) {
+      continue;
+    }
+    // Species-critical boundaries are calibrated in physical receptor units.
+    // Learned bias, gain, adaptation and observation noise may shape the
+    // cognitive representation, but may never fabricate or suppress a vital
+    // interrupt. Generic learned rules continue to consume the transformed
+    // observation plane.
+    const float value = absolute_threshold
+      ? nb_raw_input(
+          descriptor.input_buffer_index, raw_scalar_index,
+          input0, input1, input2, input3, input4, input5, input6, input7
+        )
+      : observations[scalar_index];
     bool active = false;
     float magnitude = 0.0f;
-    const float threshold = (rule.rule_flags & 1u) != 0u
+    const float threshold = absolute_threshold
       ? rule.threshold
       : max(rule.threshold, sensory_parameters[6]);
     if (rule.comparison == 1u) {

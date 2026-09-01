@@ -48,6 +48,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
   private let lock = NSLock()
   private let configuration: MetalNumiBrainConfiguration
   private var publication: BrainParameterPublication
+  private let foundationPolicyArchitecture: BrainFoundationPolicyArchitecture?
   private let device: any MTLDevice
   private let numanXTerminalReleaseQueue = DispatchQueue(
     label: "org.numi.brain.numanx-handle-terminal-release"
@@ -59,11 +60,13 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     runtime: MetalNumiBrainRuntime,
     configuration: MetalNumiBrainConfiguration,
     publication: BrainParameterPublication,
+    foundationPolicyArchitecture: BrainFoundationPolicyArchitecture?,
     device: any MTLDevice
   ) {
     self.runtime = runtime
     self.configuration = configuration
     self.publication = publication
+    self.foundationPolicyArchitecture = foundationPolicyArchitecture
     self.device = device
     self.compiledSpeciesTemplateFingerprint =
       runtime.compiledSpeciesTemplateFingerprint
@@ -216,6 +219,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     let candidate = try MetalNumiBrainRuntime.makeRuntime(
       configuration: configuration,
       publication: publication,
+      foundationPolicyArchitecture: foundationPolicyArchitecture,
       device: device
     )
     try candidate.loadCheckpoint(
@@ -294,6 +298,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     let candidate = try MetalNumiBrainRuntime.makeRuntime(
       configuration: configuration,
       publication: successorPublication,
+      foundationPolicyArchitecture: foundationPolicyArchitecture,
       device: device
     )
     try candidate.validate(parameterCohort: parameterCohort)
@@ -617,6 +622,15 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction)
+    if let foundationPolicyArchitecture {
+      guard identity.programFingerprint
+        == foundationPolicyArchitecture.ownerProgramFingerprint
+      else {
+        throw TissueError.transaction(
+          "NumanX owner program does not match the admitted foundation policy"
+        )
+      }
+    }
     do {
       return try runtime.submitNumanXPreparedControl(
         transaction.transaction,

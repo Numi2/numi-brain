@@ -12,6 +12,10 @@ public enum NumanXJointCoordinateKind: UInt16, Codable, CaseIterable, Sendable {
 public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Sendable {
   public let identifier: UInt16
   public let kind: NumanXJointCoordinateKind
+  /// Exact row in the native NumanX 128-by-7 kinesthesia packet. Synthetic
+  /// topologies may omit this because they do not claim full-body transport
+  /// provenance.
+  public let kinesthesiaReceptorIndex: UInt32?
   public let parentLocalAxis: NumanXBodyLocalPoint
   public let minimumPosition: Float
   public let maximumPosition: Float
@@ -20,6 +24,7 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
   public init(
     identifier: UInt16,
     kind: NumanXJointCoordinateKind,
+    kinesthesiaReceptorIndex: UInt32? = nil,
     parentLocalAxis: NumanXBodyLocalPoint,
     minimumPosition: Float,
     maximumPosition: Float,
@@ -40,6 +45,7 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     }
     self.identifier = identifier
     self.kind = kind
+    self.kinesthesiaReceptorIndex = kinesthesiaReceptorIndex
     self.parentLocalAxis = parentLocalAxis
     self.minimumPosition = minimumPosition
     self.maximumPosition = maximumPosition
@@ -49,6 +55,7 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
   private enum CodingKeys: String, CodingKey {
     case identifier
     case kind
+    case kinesthesiaReceptorIndex
     case parentLocalAxis
     case minimumPosition
     case maximumPosition
@@ -60,6 +67,9 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     try self.init(
       identifier: values.decode(UInt16.self, forKey: .identifier),
       kind: values.decode(NumanXJointCoordinateKind.self, forKey: .kind),
+      kinesthesiaReceptorIndex: values.decodeIfPresent(
+        UInt32.self, forKey: .kinesthesiaReceptorIndex
+      ),
       parentLocalAxis: values.decode(
         NumanXBodyLocalPoint.self, forKey: .parentLocalAxis
       ),
@@ -110,6 +120,7 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
       try NumanXJointCoordinateTopology(
         identifier: $0.identifier,
         kind: $0.kind,
+        kinesthesiaReceptorIndex: $0.kinesthesiaReceptorIndex,
         parentLocalAxis: $0.parentLocalAxis,
         minimumPosition: $0.minimumPosition,
         maximumPosition: $0.maximumPosition,
@@ -117,7 +128,7 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
       )
     }
     guard parentBodyIdentifier != childBodyIdentifier,
-      (1...6).contains(validatedCoordinates.count),
+      (0...6).contains(validatedCoordinates.count),
       Set(validatedCoordinates.map(\.identifier)).count
         == validatedCoordinates.count
     else {
@@ -173,7 +184,7 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
 /// never sufficient to construct a production body schema.
 @frozen
 public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
 
   public let numanXModelFingerprint: UInt64
   public let bodyCount: UInt32
@@ -368,6 +379,10 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
       for coordinate in joint.coordinates {
         mix(UInt32(coordinate.identifier), into: &hash)
         mix(UInt32(coordinate.kind.rawValue), into: &hash)
+        mix(
+          coordinate.kinesthesiaReceptorIndex.map { UInt64($0) + 1 } ?? 0,
+          into: &hash
+        )
         mix(coordinate.parentLocalAxis.x.bitPattern, into: &hash)
         mix(coordinate.parentLocalAxis.y.bitPattern, into: &hash)
         mix(coordinate.parentLocalAxis.z.bitPattern, into: &hash)

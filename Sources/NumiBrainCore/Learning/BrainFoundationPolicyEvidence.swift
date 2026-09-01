@@ -136,6 +136,48 @@ public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
     self.appliedRecordFingerprint = appliedRecordFingerprint
     self.jointCommitFingerprint = jointCommitFingerprint
   }
+
+  public func encoded() throws -> Data {
+    try validate()
+    return try BrainPolicyEvidenceArtifact.encodeCanonical(self)
+  }
+
+  @discardableResult
+  public func write(to artifactDirectory: URL) throws -> String {
+    try BrainPolicyEvidenceArtifact.write(
+      encoded(),
+      to: artifactDirectory
+    )
+  }
+
+  public static func decode(_ data: Data) throws -> Self {
+    let execution = try JSONDecoder().decode(Self.self, from: data)
+    try execution.validate()
+    return execution
+  }
+
+  public func validate() throws {
+    guard try Self(
+      sampleSHA256: sampleSHA256,
+      ownerProgramFingerprint: ownerProgramFingerprint,
+      transactionFingerprint: transactionFingerprint,
+      linearizationEpoch: linearizationEpoch,
+      slotGeneration: slotGeneration,
+      transactionSlot: transactionSlot,
+      environment: environment,
+      stepIndex: stepIndex,
+      controlStep: controlStep,
+      substepIndex: substepIndex,
+      physicsSubstepCount: physicsSubstepCount,
+      outcome: outcome,
+      appliedRecordFingerprint: appliedRecordFingerprint,
+      jointCommitFingerprint: jointCommitFingerprint
+    ) == self else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "policy NumanX root execution is not canonical"
+      )
+    }
+  }
 }
 
 @frozen
@@ -287,13 +329,14 @@ public struct BrainPolicyQualificationMetricEvidence: Codable, Equatable, Sendab
 
 @frozen
 public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 3
+  public static let formatVersion: UInt32 = 4
 
   public let formatVersion: UInt32
   public let axis: BrainPolicyQualificationAxis
   public let executionKind: BrainPolicyQualificationExecutionKind
   public let modelWeightsSHA256: String
   public let runtimeProgramFingerprint: UInt64
+  public let ownerProgramFingerprint: UInt64
   public let lowLevelControllerFingerprint: UInt64
   public let hardSafetyProgramFingerprint: UInt64
   public let rootExecutions: [BrainPolicyNumanXRootExecution]
@@ -305,6 +348,7 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     executionKind: BrainPolicyQualificationExecutionKind,
     modelWeightsSHA256: String,
     runtimeProgramFingerprint: UInt64,
+    ownerProgramFingerprint: UInt64,
     lowLevelControllerFingerprint: UInt64,
     hardSafetyProgramFingerprint: UInt64,
     rootExecutions: [BrainPolicyNumanXRootExecution],
@@ -321,10 +365,11 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     }
     guard BrainPolicyEvidenceArtifact.isSHA256(modelWeightsSHA256),
       runtimeProgramFingerprint > 0,
+      ownerProgramFingerprint > 0,
       lowLevelControllerFingerprint > 0,
       hardSafetyProgramFingerprint > 0,
       canonicalExecutions.allSatisfy({
-        $0.ownerProgramFingerprint == lowLevelControllerFingerprint
+        $0.ownerProgramFingerprint == ownerProgramFingerprint
       }),
       Set(executionIdentities).count == executionIdentities.count,
       !canonicalPartitions.isEmpty,
@@ -343,6 +388,7 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
     self.executionKind = executionKind
     self.modelWeightsSHA256 = modelWeightsSHA256
     self.runtimeProgramFingerprint = runtimeProgramFingerprint
+    self.ownerProgramFingerprint = ownerProgramFingerprint
     self.lowLevelControllerFingerprint = lowLevelControllerFingerprint
     self.hardSafetyProgramFingerprint = hardSafetyProgramFingerprint
     self.rootExecutions = canonicalExecutions
@@ -400,6 +446,7 @@ public struct BrainPolicyQualificationEvidence: Codable, Equatable, Sendable {
         executionKind: executionKind,
         modelWeightsSHA256: modelWeightsSHA256,
         runtimeProgramFingerprint: runtimeProgramFingerprint,
+        ownerProgramFingerprint: ownerProgramFingerprint,
         lowLevelControllerFingerprint: lowLevelControllerFingerprint,
         hardSafetyProgramFingerprint: hardSafetyProgramFingerprint,
         rootExecutions: rootExecutions,
@@ -528,7 +575,7 @@ public enum BrainPolicyEvidenceArtifact {
     return hash
   }
 
-  fileprivate static func encodeCanonical<T: Encodable>(_ value: T) throws -> Data {
+  static func encodeCanonical<T: Encodable>(_ value: T) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     return try encoder.encode(value)
@@ -665,6 +712,8 @@ public enum BrainFoundationPolicyEvidenceVerifier {
         evidence.modelWeightsSHA256 == package.architecture.modelWeightsSHA256,
         evidence.runtimeProgramFingerprint
           == package.architecture.runtimeProgramFingerprint,
+        evidence.ownerProgramFingerprint
+          == package.architecture.ownerProgramFingerprint,
         evidence.lowLevelControllerFingerprint
           == package.architecture.lowLevelControllerFingerprint,
         evidence.hardSafetyProgramFingerprint

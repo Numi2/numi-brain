@@ -755,6 +755,9 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       MetalNumanXJointResolutionReservation?
     fileprivate var publicationProtocolViolationDetected = false
     fileprivate var preflightFailureDescriptionStorage: String?
+    fileprivate var qualificationOutcome: BrainPolicyNumanXRootOutcome?
+    fileprivate var qualificationAppliedRecordFingerprint: UInt64 = 0
+    fileprivate var qualificationJointCommitFingerprint: UInt64 = 0
     fileprivate let publicationCallbackState =
       MetalNumanXPublicationCallbackState()
     private let aggregateCloseState = MetalNumanXAggregateCloseState()
@@ -827,6 +830,30 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     /// only after the exact preflight has already failed closed.
     public var preflightFailureDescription: String? {
       owner.numanXPreparedPreflightFailureDescription(self)
+    }
+
+    /// Returns an evidence-grade transcript only after the exact owner root
+    /// has reached authoritative release. GPU failure and terminal quarantine
+    /// never fabricate a qualification execution.
+    func qualificationRootExecution(
+      sampleSHA256: String
+    ) throws -> BrainPolicyNumanXRootExecution {
+      try owner.numanXQualificationRootExecution(
+        self,
+        sampleSHA256: sampleSHA256
+      )
+    }
+
+    /// Evidence-grade terminal transcript bound to the exact canonical sample
+    /// manifest consumed by this control root. This is the production Gate C
+    /// surface; arbitrary caller-provided hashes are intentionally not public.
+    public func qualificationRootExecution(
+      capturedSample: MetalNumanXCapturedRootSample
+    ) throws -> BrainPolicyNumanXRootExecution {
+      try owner.numanXQualificationRootExecution(
+        self,
+        capturedSample: capturedSample
+      )
     }
 
     @discardableResult
@@ -1371,6 +1398,26 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     candidateDurationMicroseconds: UInt64,
     signal motorReadyPoint: MetalSharedEventPoint
   ) throws -> NumanXMotorSubmissionTicket {
+    try submitNumanXMotorCandidate(
+      decisionTicket,
+      transaction: transaction,
+      candidateDurationMicroseconds: candidateDurationMicroseconds,
+      qualificationInterruptEvents: [],
+      signal: motorReadyPoint
+    )
+  }
+
+  /// Qualification-only same-root safety challenge. The injected interrupts
+  /// enter the ordinary private fast-motor overlay after the learned command;
+  /// they do not alter accepted history or provide production mutation
+  /// authority to callers outside this module.
+  func submitNumanXMotorCandidate(
+    _ decisionTicket: DecisionSubmissionTicket,
+    transaction: ControlTransaction,
+    candidateDurationMicroseconds: UInt64,
+    qualificationInterruptEvents: [BrainInterruptEvent],
+    signal motorReadyPoint: MetalSharedEventPoint
+  ) throws -> NumanXMotorSubmissionTicket {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .decisionSubmitted)
@@ -1393,7 +1440,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         candidateDurationMicroseconds: candidateDurationMicroseconds,
         waitFor: decisionTicket.completionPoint,
         signal: motorReadyPoint,
-        brainProgramFingerprint: cognitive.numanXBrainProgramFingerprint
+        brainProgramFingerprint: cognitive.numanXBrainProgramFingerprint,
+        qualificationInterruptEvents: qualificationInterruptEvents
       )
       transaction.decision = decisionTicket.decision
       transaction.activeSubstep = motorTicket.fastSystems.substep
@@ -1487,6 +1535,82 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       )
     }
     return result
+  }
+
+  func qualificationProtectiveObservation(
+    _ ticket: NumanXMotorSubmissionTicket,
+    transaction: ControlTransaction
+  ) throws -> MetalTissueRuntime.NumanXProtectiveQualificationObservation {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction === transaction,
+      ticket.identifier == transaction.asyncSubmissionIdentifier
+        || transaction.asyncSubmissionIdentifier == nil,
+      ticket.decision.transactionFingerprint == transaction.token.fingerprint
+    else {
+      throw TissueError.transaction(
+        "NumanX protective qualification ticket is stale"
+      )
+    }
+    return try fastTissue.qualificationObservation(for: ticket.motorTicket)
+  }
+
+  /// Qualification/production safety boundary for a command-successful
+  /// uncertainty rejection. Unlike command failure, this preserves the open
+  /// joint transaction long enough for Human/Matter to restore and emit an
+  /// authoritative rejected root. No neural shadow is published here.
+  @_spi(NumanXInterop)
+  public func finishNumanXPolicyRejectedMotorSubmission(
+    _ ticket: NumanXMotorSubmissionTicket,
+    transaction: ControlTransaction,
+    timeoutMilliseconds: UInt64 = 30_000
+  ) throws -> NumanXPolicyRejectionSettlement {
+    guard timeoutMilliseconds > 0 else {
+      throw TissueError.transaction("GPU completion timeout must be positive")
+    }
+    _ = try ticket.cognitiveTicket.waitUntilCompleted(
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+    _ = try ticket.motorTicket.waitUntilCompleted(
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .numanXMotorSubmitted)
+    guard transaction.asyncSubmissionIdentifier == ticket.identifier,
+      transaction.activeSubstep == ticket.fastSystems.substep,
+      ticket.decision.transactionFingerprint == transaction.token.fingerprint,
+      let uncertainty = ticket.cognitiveTicket.decisionGateEvaluation
+        .qualificationUncertaintyObservation()
+    else {
+      throw TissueError.transaction(
+        "policy-rejected NumanX motor ticket is stale or unproven"
+      )
+    }
+    do {
+      guard try cognitive.reapPolicyRejectedDecisionSubmissionIfCompleted(
+        ticket.cognitiveTicket,
+        transaction: transaction.cognitiveTransaction
+      ) != nil,
+        try fastTissue.reapPolicyRejectedNumanXMotorSubmissionIfCompleted(
+          ticket.motorTicket
+        ) != nil
+      else {
+        throw TissueError.metal(
+          "policy-rejected NumanX feedback disappeared after completion"
+        )
+      }
+    } catch {
+      transaction.asyncSubmissionIdentifier = nil
+      abortLocked(transaction)
+      throw error
+    }
+    transaction.asyncSubmissionIdentifier = nil
+    transaction.status = .substepActive
+    return NumanXPolicyRejectionSettlement(
+      fastSystems: ticket.fastSystems,
+      uncertainty: uncertainty
+    )
   }
 
   /// Begins one retryable fast neural/physical candidate. Rejected attempts
@@ -2271,6 +2395,11 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       }
       ticket.publicationProtocolViolationDetected =
         publicationCallback.invocationCount != 1
+      ticket.qualificationOutcome = .accepted
+      ticket.qualificationAppliedRecordFingerprint =
+        validation.appliedDecisionFingerprint
+      ticket.qualificationJointCommitFingerprint =
+        validation.jointCommitFingerprint
       fastTissue.releaseResolvedProvisionalFastRootSubmission(ticket.fastTicket)
       cognitive.releaseResolvedNumanXPreparedSubmission(
         ticket.cognitiveTicket,
@@ -2289,6 +2418,10 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         ticket.transaction.status = .terminalQuarantined
         return
       }
+      ticket.qualificationOutcome = .rejected
+      ticket.qualificationAppliedRecordFingerprint =
+        validation.appliedDecisionFingerprint
+      ticket.qualificationJointCommitFingerprint = 0
       finishResolvedNumanXRejection(ticket)
 
     case .terminalNoTouch, .invalid:
@@ -2714,6 +2847,75 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     defer { lock.unlock() }
     guard activeNumanXPreparedTicket === ticket else { return nil }
     return ticket.preflightFailureDescriptionStorage
+  }
+
+  private func numanXQualificationRootExecution(
+    _ ticket: NumanXPreparedControlTicket,
+    sampleSHA256: String
+  ) throws -> BrainPolicyNumanXRootExecution {
+    lock.lock()
+    defer { lock.unlock() }
+    let identity = ticket.identity
+    guard let outcome = ticket.qualificationOutcome,
+      (outcome == .accepted && ticket.transaction.status == .committed)
+        || (outcome == .rejected && ticket.transaction.status == .aborted),
+      ticket.qualificationAppliedRecordFingerprint > 0,
+      outcome == .accepted
+        ? ticket.qualificationJointCommitFingerprint > 0
+        : ticket.qualificationJointCommitFingerprint == 0
+    else {
+      throw TissueError.transaction(
+        "NumanX root has no authoritative qualification outcome"
+      )
+    }
+    return try BrainPolicyNumanXRootExecution(
+      sampleSHA256: sampleSHA256,
+      ownerProgramFingerprint: identity.programFingerprint,
+      transactionFingerprint: identity.transactionFingerprint,
+      linearizationEpoch: identity.linearizationEpoch,
+      slotGeneration: identity.slotGeneration,
+      transactionSlot: identity.transactionSlot,
+      environment: identity.environment,
+      stepIndex: identity.stepIndex,
+      controlStep: identity.controlStep,
+      substepIndex: identity.substepIndex,
+      physicsSubstepCount: identity.physicsSubstepCount,
+      outcome: outcome,
+      appliedRecordFingerprint:
+        ticket.qualificationAppliedRecordFingerprint,
+      jointCommitFingerprint: ticket.qualificationJointCommitFingerprint
+    )
+  }
+
+  private func numanXQualificationRootExecution(
+    _ ticket: NumanXPreparedControlTicket,
+    capturedSample: MetalNumanXCapturedRootSample
+  ) throws -> BrainPolicyNumanXRootExecution {
+    let sampleArtifact = capturedSample.artifact
+    try sampleArtifact.validate()
+    let canonicalSampleSHA256 = try sampleArtifact.sampleSHA256
+    let transaction = ticket.transaction.token
+    guard sampleArtifact.transactionFingerprint == transaction.fingerprint,
+      UInt64(sampleArtifact.controlStep) == transaction.controlStepIdentifier,
+      sampleArtifact.committedTimestampMicroseconds
+        == transaction.committedTimestamp.rawValue,
+      sampleArtifact.targetTimestampMicroseconds
+        == transaction.targetTimestamp.rawValue,
+      sampleArtifact.basePhysicsGeneration == transaction.basePhysicsGeneration,
+      sampleArtifact.speciesTemplateFingerprint
+        == cognitive.speciesTemplateFingerprint,
+      sampleArtifact.sensoryProfileFingerprint
+        == cognitive.sensoryRuntime.profileFingerprint,
+      capturedSample.sampleSHA256 == canonicalSampleSHA256
+    else {
+      throw TissueError.transaction(
+        "NumanX qualification sample does not identify the exact prepared root"
+      )
+    }
+    return try numanXQualificationRootExecution(
+      ticket,
+      sampleSHA256: capturedSample.sampleSHA256
+    )
   }
 
   /// Returns the retained host-constructed close fingerprint only while the

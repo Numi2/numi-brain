@@ -1355,6 +1355,25 @@ final class MetalProvisionalFastRootTests: XCTestCase {
 
   func testABI4JointClosePublishesOneGenerationThroughOwnerFence() throws {
     let fixture = try makePreparedCloseFixture(controlStep: 75)
+    let captureDirectory = FileManager.default.temporaryDirectory.appending(
+      path: UUID().uuidString,
+      directoryHint: .isDirectory
+    )
+    defer { try? FileManager.default.removeItem(at: captureDirectory) }
+    let capturedSample = try MetalNumanXGateCCapture.writeSettledRootSample(
+      transaction: fixture.complete.transaction.token,
+      sensors: fixture.inputSensors,
+      coordinates: try BrainPolicyNumanXDatasetCoordinates(
+        datasetSourceIdentifier: "numanx-terminal-root-test",
+        datasetSourceRevision: "test-revision",
+        episodeIdentifier: 1,
+        taskFingerprint: 2,
+        sceneFingerprint: 3,
+        objectFingerprint: 4,
+        embodimentFingerprint: 5
+      ),
+      artifactDirectory: captureDirectory
+    )
     let proposal = try makeProposalFixture(fixture, accept: true)
     let ackEvent = try XCTUnwrap(fixture.complete.device.makeSharedEvent())
     let ackTicket = try fixture.complete.runtime.submitNumanXBrainAck(
@@ -1397,6 +1416,14 @@ final class MetalProvisionalFastRootTests: XCTestCase {
       releaseRejected: { probe.releaseRejected() }
     )
     let validationEvent = try XCTUnwrap(fixture.complete.device.makeSharedEvent())
+    let qualificationSample = BrainPolicyEvidenceArtifact.sha256(
+      Data("accepted-root-sample".utf8)
+    )
+    XCTAssertThrowsError(
+      try fixture.prepared.qualificationRootExecution(
+        sampleSHA256: qualificationSample
+      )
+    )
     _ = try fixture.complete.runtime.validateNumanXAppliedRoot(
       fixture.prepared,
       ack: ackTicket,
@@ -1425,6 +1452,33 @@ final class MetalProvisionalFastRootTests: XCTestCase {
     XCTAssertEqual(probeSnapshot.generation, 1)
     XCTAssertTrue(probeSnapshot.externalPublished)
     XCTAssertFalse(fixture.prepared.hasPublicationProtocolViolation)
+    let qualification = try fixture.prepared.qualificationRootExecution(
+      sampleSHA256: qualificationSample
+    )
+    XCTAssertEqual(qualification.outcome, .accepted)
+    XCTAssertEqual(
+      qualification.ownerProgramFingerprint,
+      fixture.identity.programFingerprint
+    )
+    XCTAssertEqual(
+      qualification.appliedRecordFingerprint,
+      applied.appliedBuffer.contents()
+        .advanced(by: applied.appliedByteOffset)
+        .load(as: NBNumanXHumanMatterAppliedOutcomeGPU.self)
+        .appliedFingerprint
+    )
+    XCTAssertEqual(
+      qualification.jointCommitFingerprint,
+      preflight.jointReceiptFingerprint
+    )
+    let capturedQualification = try fixture.prepared.qualificationRootExecution(
+      capturedSample: capturedSample
+    )
+    XCTAssertEqual(
+      capturedQualification.sampleSHA256,
+      capturedSample.sampleSHA256
+    )
+    XCTAssertEqual(capturedQualification.outcome, .accepted)
     let fence = proposal.fenceBuffer.contents().load(
       as: NBNumanXHumanMatterJointPublicationFenceGPU.self
     )
@@ -1733,6 +1787,20 @@ final class MetalProvisionalFastRootTests: XCTestCase {
     )
     XCTAssertEqual(probe.snapshot.accepted, 0)
     XCTAssertEqual(probe.snapshot.rejected, 1)
+    let qualification = try fixture.prepared.qualificationRootExecution(
+      sampleSHA256: BrainPolicyEvidenceArtifact.sha256(
+        Data("rejected-root-sample".utf8)
+      )
+    )
+    XCTAssertEqual(qualification.outcome, .rejected)
+    XCTAssertEqual(
+      qualification.appliedRecordFingerprint,
+      applied.appliedBuffer.contents()
+        .advanced(by: applied.appliedByteOffset)
+        .load(as: NBNumanXHumanMatterAppliedOutcomeGPU.self)
+        .appliedFingerprint
+    )
+    XCTAssertEqual(qualification.jointCommitFingerprint, 0)
     XCTAssertFalse(fixture.complete.runtime.hasOpenControl)
     XCTAssertThrowsError(
       try fixture.complete.runtime.numanXPreparedJointCommitFingerprint(
@@ -1981,6 +2049,7 @@ final class MetalProvisionalFastRootTests: XCTestCase {
 
   private struct PreparedCloseFixture {
     let complete: CompleteFixture
+    let inputSensors: NumanXSensorPacketLease
     let accepted: AcceptedPhysicsStateToken
     let sensorCandidate: MetalNumanXPendingSensorCandidateLease
     let prepared: MetalNumiBrainRuntime.NumanXPreparedControlTicket
@@ -2171,6 +2240,7 @@ final class MetalProvisionalFastRootTests: XCTestCase {
     }
     return PreparedCloseFixture(
       complete: complete,
+      inputSensors: initialSensors,
       accepted: accepted,
       sensorCandidate: sensorCandidate,
       prepared: prepared,

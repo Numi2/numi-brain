@@ -708,19 +708,30 @@ final class MetalJointTransactionTests: XCTestCase {
         .valid, .emergencyStop, .posturalBrace, .autonomicArousal,
       ])
     XCTAssertEqual(firstProtective.withdrawalDrive, 0)
-    XCTAssertEqual(firstProtective.posturalStiffness, 0.75)
+    XCTAssertEqual(firstProtective.posturalStiffness, 1)
     XCTAssertEqual(firstProtective.motorInhibition, 1)
-    XCTAssertEqual(firstProtective.autonomicArousal, 0.5)
+    XCTAssertEqual(firstProtective.autonomicArousal, 1)
+    var expectedImmediateProtective = try ProtectiveMotorCommand.reference(
+      timestamp: BrainTimestamp(microseconds: 1_000),
+      brainGeneration: token.shadowGeneration,
+      environmentIdentifier: runtime.schedulerEnvironmentIdentifier,
+      schedule: runtime.brainSchedule,
+      invocations: firstFastScheduler.invocations,
+      regionalStates: firstFastRegional.states
+    ).abiRecord
+    // The same-root interrupt reaches the motor mapper before the accepted
+    // scheduler/regional state can become the next root's command. Its exact
+    // magnitude therefore strengthens the scheduled brace and arousal now.
+    expectedImmediateProtective.postural_stiffness = supportLoss.magnitude
+    expectedImmediateProtective.autonomic_arousal = supportLoss.magnitude
+    expectedImmediateProtective.command_fingerprint = withUnsafePointer(
+      to: &expectedImmediateProtective
+    ) {
+      nb_brain_abi_protective_command_fingerprint($0)
+    }
     XCTAssertEqual(
       firstProtective,
-      try ProtectiveMotorCommand.reference(
-        timestamp: BrainTimestamp(microseconds: 1_000),
-        brainGeneration: token.shadowGeneration,
-        environmentIdentifier: runtime.schedulerEnvironmentIdentifier,
-        schedule: runtime.brainSchedule,
-        invocations: firstFastScheduler.invocations,
-        regionalStates: firstFastRegional.states
-      )
+      try ProtectiveMotorCommand(validating: expectedImmediateProtective)
     )
     XCTAssertEqual(
       firstProtectiveMotor,
@@ -813,16 +824,16 @@ final class MetalJointTransactionTests: XCTestCase {
       finalFastScheduler.invocations.contains(where: { $0.interruptMask.contains(.pain) })
     )
     XCTAssertEqual(finalFastRegional.states[emergencyBusIndex].interruptCount, 1)
+    var expectedRetainedProtective = firstProtective.abiRecord
+    expectedRetainedProtective.timestamp_microseconds = 2_000
+    expectedRetainedProtective.command_fingerprint = withUnsafePointer(
+      to: &expectedRetainedProtective
+    ) {
+      nb_brain_abi_protective_command_fingerprint($0)
+    }
     XCTAssertEqual(
       finalProtective,
-      try ProtectiveMotorCommand.reference(
-        timestamp: BrainTimestamp(microseconds: 2_000),
-        brainGeneration: token.shadowGeneration,
-        environmentIdentifier: runtime.schedulerEnvironmentIdentifier,
-        schedule: runtime.brainSchedule,
-        invocations: finalFastScheduler.invocations,
-        regionalStates: finalFastRegional.states
-      )
+      try ProtectiveMotorCommand(validating: expectedRetainedProtective)
     )
     XCTAssertEqual(
       finalProtectiveMotor,

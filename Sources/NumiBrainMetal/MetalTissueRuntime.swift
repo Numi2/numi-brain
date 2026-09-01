@@ -360,21 +360,27 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public final class NumanXMotorBufferLease: @unchecked Sendable {
     public let output: ProtectiveMotorOutputBufferView
 
+    let commandBuffer: any MTLBuffer
     let headerBuffer: any MTLBuffer
     let excitationBuffer: any MTLBuffer
+    let descendingBuffer: any MTLBuffer
     let autonomicBuffer: any MTLBuffer
     let activeSensingBuffer: any MTLBuffer
 
     fileprivate init(
       output: ProtectiveMotorOutputBufferView,
+      commandBuffer: any MTLBuffer,
       headerBuffer: any MTLBuffer,
       excitationBuffer: any MTLBuffer,
+      descendingBuffer: any MTLBuffer,
       autonomicBuffer: any MTLBuffer,
       activeSensingBuffer: any MTLBuffer
     ) {
       self.output = output
+      self.commandBuffer = commandBuffer
       self.headerBuffer = headerBuffer
       self.excitationBuffer = excitationBuffer
+      self.descendingBuffer = descendingBuffer
       self.autonomicBuffer = autonomicBuffer
       self.activeSensingBuffer = activeSensingBuffer
     }
@@ -457,6 +463,181 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     ) throws -> MetalGPUCompletionFeedback {
       try feedbackState.wait(timeoutMilliseconds: timeoutMilliseconds)
     }
+  }
+
+  /// Host-visible qualification record sampled only after terminal Metal
+  /// feedback. It proves what the ordinary motor gate exposed to NumanX; it is
+  /// never used as control authority.
+  struct NumanXProtectiveQualificationObservation: Sendable {
+    let command: ProtectiveMotorCommand
+    let output: ProtectiveMotorOutput
+    let interruptEvents: [BrainInterruptEvent]
+    let learnedDescendingCommands: [Float]
+    let autonomicCommands: [Float]
+    let activeSensingCommands: [Float]
+    let learnedDescendingPeak: Float
+  }
+
+  func qualificationObservation(
+    for ticket: NumanXMotorSubmissionTicket
+  ) throws -> NumanXProtectiveQualificationObservation {
+    guard try ticket.completionFeedbackIfAvailable() != nil else {
+      throw TissueError.transaction(
+        "NumanX protective qualification requires terminal motor feedback"
+      )
+    }
+    let expected = ticket.fastSystems.protectiveMotorOutput
+    try copy(
+      source: ticket.buffers.commandBuffer,
+      destination: stagingBuffer,
+      size: ProtectiveMotorCommand.byteCount,
+      label: "NumiBrain NumanX protective qualification command"
+    )
+    let command = try ProtectiveMotorCommand(
+      validating: stagingBuffer.contents().load(as: NBProtectiveCommand.self)
+    )
+    try copy(
+      source: ticket.buffers.headerBuffer,
+      destination: stagingBuffer,
+      size: ProtectiveMotorOutput.headerByteCount,
+      label: "NumiBrain NumanX protective qualification header"
+    )
+    let header = stagingBuffer.contents().load(as: NBMotorOutputHeader.self)
+    try copy(
+      source: ticket.buffers.excitationBuffer,
+      destination: stagingBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "NumiBrain NumanX protective qualification output"
+    )
+    let excitationPointer = stagingBuffer.contents().bindMemory(
+      to: Float.self, capacity: protectiveMotorProfile.channels.count
+    )
+    let excitations = Array(UnsafeBufferPointer(
+      start: excitationPointer,
+      count: protectiveMotorProfile.channels.count
+    ))
+    let output = try ProtectiveMotorOutput(
+      validating: header,
+      muscleExcitations: excitations,
+      expectedProfile: protectiveMotorProfile,
+      expectedCommand: command
+    )
+    try copy(
+      source: ticket.buffers.descendingBuffer,
+      destination: stagingBuffer,
+      size: protectiveMuscleExcitationByteCount,
+      label: "NumiBrain NumanX learned descending qualification command"
+    )
+    let descending = stagingBuffer.contents().bindMemory(
+      to: Float.self, capacity: protectiveMotorProfile.channels.count
+    )
+    var peak: Float = 0
+    var learnedDescendingCommands: [Float] = []
+    learnedDescendingCommands.reserveCapacity(protectiveMotorProfile.channels.count)
+    for index in protectiveMotorProfile.channels.indices {
+      let value = descending[index]
+      guard value.isFinite else {
+        throw TissueError.metal("learned descending command is nonfinite")
+      }
+      learnedDescendingCommands.append(value)
+      peak = max(peak, abs(value))
+    }
+    try copy(
+      source: ticket.buffers.autonomicBuffer,
+      destination: stagingBuffer,
+      size: ticket.fastSystems.fastAutonomicOutput.byteCount,
+      label: "NumiBrain NumanX autonomic qualification command"
+    )
+    let autonomicPointer = stagingBuffer.contents().bindMemory(
+      to: Float.self,
+      capacity: ticket.fastSystems.fastAutonomicOutput.channelCount
+    )
+    let autonomicCommands = Array(UnsafeBufferPointer(
+      start: autonomicPointer,
+      count: ticket.fastSystems.fastAutonomicOutput.channelCount
+    ))
+    try copy(
+      source: ticket.buffers.activeSensingBuffer,
+      destination: stagingBuffer,
+      size: ticket.fastSystems.activeSensingOutput.byteCount,
+      label: "NumiBrain NumanX active-sensing qualification command"
+    )
+    let activeSensingPointer = stagingBuffer.contents().bindMemory(
+      to: Float.self,
+      capacity: ticket.fastSystems.activeSensingOutput.channelCount
+    )
+    let activeSensingCommands = Array(UnsafeBufferPointer(
+      start: activeSensingPointer,
+      count: ticket.fastSystems.activeSensingOutput.channelCount
+    ))
+    guard autonomicCommands.allSatisfy(\.isFinite),
+      activeSensingCommands.allSatisfy(\.isFinite)
+    else {
+      throw TissueError.metal("NumanX qualification command is nonfinite")
+    }
+    guard command.timestamp == expected.timestamp,
+      command.brainGeneration == expected.brainGeneration,
+      output.timestamp == expected.timestamp,
+      output.brainGeneration == expected.brainGeneration
+    else {
+      throw TissueError.transaction(
+        "NumanX protective qualification identity drifted"
+      )
+    }
+    try copy(
+      source: receptorEventTransductionResultBuffer,
+      destination: stagingBuffer,
+      size: MemoryLayout<NBReceptorEventTransductionResult>.stride,
+      label: "NumiBrain NumanX interrupt qualification result"
+    )
+    let interruptResult = stagingBuffer.contents().load(
+      as: NBReceptorEventTransductionResult.self
+    )
+    guard interruptResult.status
+        == UInt32(NB_RECEPTOR_TRANSDUCTION_STATUS_VALID.rawValue),
+      interruptResult.event_count <= UInt32(maxSchedulerEvents)
+    else {
+      throw TissueError.metal(
+        "NumanX qualification interrupt transduction is invalid"
+      )
+    }
+    let interruptCount = Int(interruptResult.event_count)
+    var interruptEvents: [BrainInterruptEvent] = []
+    interruptEvents.reserveCapacity(interruptCount)
+    if interruptCount > 0 {
+      try copy(
+        source: transducedSchedulerEventBuffer,
+        destination: stagingBuffer,
+        size: interruptCount * MemoryLayout<NBInterruptEvent>.stride,
+        label: "NumiBrain NumanX interrupt qualification events"
+      )
+      let records = stagingBuffer.contents().bindMemory(
+        to: NBInterruptEvent.self,
+        capacity: interruptCount
+      )
+      for index in 0..<interruptCount {
+        let record = records[index]
+        interruptEvents.append(try BrainInterruptEvent(
+          timestamp: BrainTimestamp(
+            microseconds: record.timestamp_microseconds
+          ),
+          mask: BrainInterruptMask(rawValue: record.interrupt_mask),
+          identifier: record.identifier,
+          flags: record.flags,
+          magnitude: record.magnitude,
+          auxiliaryValue: record.auxiliary_value
+        ))
+      }
+    }
+    return NumanXProtectiveQualificationObservation(
+      command: command,
+      output: output,
+      interruptEvents: interruptEvents,
+      learnedDescendingCommands: learnedDescendingCommands,
+      autonomicCommands: autonomicCommands,
+      activeSensingCommands: activeSensingCommands,
+      learnedDescendingPeak: peak
+    )
   }
 
   public struct Submission: Equatable, Sendable, Codable {
@@ -4250,7 +4431,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
-    writeCognitiveEventTransductionUniforms(
+    try writeCognitiveEventTransductionUniforms(
       timestamp: lease.decision.decisionTimestamp,
       maximumEventCount: lease.decision.receptorEventMaximumCount
     )
@@ -4587,7 +4768,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     candidateDurationMicroseconds: UInt64,
     waitFor decisionReadyPoint: MetalSharedEventPoint,
     signal motorReadyPoint: MetalSharedEventPoint,
-    brainProgramFingerprint: UInt64
+    brainProgramFingerprint: UInt64,
+    qualificationInterruptEvents: [BrainInterruptEvent] = []
   ) throws -> NumanXMotorSubmissionTicket {
     guard activeNumanXMotorSubmission == nil,
       (commandLease.buffer as AnyObject)
@@ -4678,9 +4860,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       currentTimestamp: root.acceptedTimestamp,
       candidateTimestamp: substep.candidateTimestamp
     )
-    writeCognitiveEventTransductionUniforms(
+    try writeCognitiveEventTransductionUniforms(
       timestamp: commandLease.decision.decisionTimestamp,
-      maximumEventCount: commandLease.decision.receptorEventMaximumCount
+      maximumEventCount: commandLease.decision.receptorEventMaximumCount,
+      hostEvents: qualificationInterruptEvents
     )
     writeFastCPGUniforms(
       timestamp: commandLease.decision.decisionTimestamp,
@@ -4767,8 +4950,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     let buffers = NumanXMotorBufferLease(
       output: fastSystems.protectiveMotorOutput,
+      commandBuffer: protectiveCommandBuffers[initialMotorStateIndex],
       headerBuffer: protectiveMotorOutputHeaderBuffers[initialMotorStateIndex],
       excitationBuffer: protectiveMuscleExcitationBuffers[initialMotorStateIndex],
+      descendingBuffer: descendingSomaticBuffer,
       autonomicBuffer: stagedFastAutonomicOutputBuffer,
       activeSensingBuffer: stagedActiveSensingCommandBuffer
     )
@@ -4964,6 +5149,42 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       root.candidate?.substep == ticket.fastSystems.substep
     {
       root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? feedback.gpuStartSeconds
+      root.lastGPUEndSeconds = feedback.gpuEndSeconds
+      interactiveJointRoot = root
+    }
+    active.resources.release()
+    activeNumanXMotorSubmission = nil
+    return feedback
+  }
+
+  /// Settles the expected downstream motor-gate failure caused by an exact
+  /// upstream uncertainty rejection. Fast shadow state remains unpublished
+  /// until the ordinary owner rejection aborts the complete joint root.
+  func reapPolicyRejectedNumanXMotorSubmissionIfCompleted(
+    _ ticket: NumanXMotorSubmissionTicket
+  ) throws -> MetalGPUCompletionFeedback? {
+    guard let active = activeNumanXMotorSubmission,
+      active.identifier == ticket.identifier,
+      active.feedbackState === ticket.feedbackState,
+      active.resources === ticket.resources
+    else {
+      throw TissueError.transaction(
+        "policy-rejected NumanX motor ticket is stale"
+      )
+    }
+    guard let feedback = try ticket.feedbackState.poll() else { return nil }
+    guard ticket.motorEvaluation.hasValidPolicyRejection() else {
+      active.resources.release()
+      activeNumanXMotorSubmission = nil
+      throw TissueError.transaction(
+        "motor failure is not caused by an exact uncertainty rejection"
+      )
+    }
+    if var root = interactiveJointRoot,
+      root.candidate?.substep == ticket.fastSystems.substep
+    {
+      root.firstGPUStartSeconds = root.firstGPUStartSeconds
+        ?? feedback.gpuStartSeconds
       root.lastGPUEndSeconds = feedback.gpuEndSeconds
       interactiveJointRoot = root
     }
@@ -6094,8 +6315,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     return NumanXMotorBufferLease(
       output: output,
+      commandBuffer: protectiveCommandBuffers[candidate.motorStateIndex],
       headerBuffer: headerBuffer,
       excitationBuffer: excitationBuffer,
+      descendingBuffer: descendingSomaticBuffer,
       autonomicBuffer: stagedFastAutonomicOutputBuffer,
       activeSensingBuffer: stagedActiveSensingCommandBuffer
     )
@@ -8484,13 +8707,34 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   /// overlays for the first physical candidate.
   private func writeCognitiveEventTransductionUniforms(
     timestamp: BrainTimestamp,
-    maximumEventCount: Int
-  ) {
+    maximumEventCount: Int,
+    hostEvents: [BrainInterruptEvent] = []
+  ) throws {
+    guard hostEvents.count <= maxSchedulerEvents,
+      hostEvents.allSatisfy({ $0.timestamp == timestamp })
+    else {
+      throw TissueError.transaction(
+        "qualification interrupt events exceed capacity or root time"
+      )
+    }
+    let records = hostEvents.sorted {
+      if $0.identifier != $1.identifier { return $0.identifier < $1.identifier }
+      if $0.mask.rawValue != $1.mask.rawValue {
+        return $0.mask.rawValue < $1.mask.rawValue
+      }
+      return $0.flags < $1.flags
+    }.map(\.abiRecord)
+    records.withUnsafeBytes { bytes in
+      guard let source = bytes.baseAddress else { return }
+      schedulerEventUploadBuffer.contents().copyMemory(
+        from: source, byteCount: bytes.count
+      )
+    }
     var uniforms = NBReceptorEventTransductionUniforms()
     uniforms.committed_time_microseconds = timestamp.rawValue
     uniforms.target_time_microseconds = timestamp.rawValue
     uniforms.receptor_event_count = 0
-    uniforms.host_event_count = 0
+    uniforms.host_event_count = UInt32(records.count)
     uniforms.event_capacity = UInt32(maxSchedulerEvents)
     uniforms.flags = 0
     uniforms.reserved_0 = UInt32(maximumEventCount)

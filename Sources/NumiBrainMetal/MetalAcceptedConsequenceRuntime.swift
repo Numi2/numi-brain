@@ -2,6 +2,31 @@ import Foundation
 @preconcurrency import Metal
 import NumiBrainCore
 
+@inline(never)
+private func copyAcceptedConsequenceArray<Element>(
+  _ values: [Element],
+  to buffer: any MTLBuffer,
+  byteOffset: Int
+) -> Bool {
+  let byteCount = values.count.multipliedReportingOverflow(
+    by: MemoryLayout<Element>.stride
+  )
+  guard !byteCount.overflow,
+    byteOffset >= 0,
+    byteOffset <= buffer.length,
+    byteCount.partialValue <= buffer.length - byteOffset
+  else { return false }
+  guard byteCount.partialValue > 0 else { return true }
+  values.withUnsafeBytes { bytes in
+    guard let source = bytes.baseAddress else { return }
+    buffer.contents().advanced(by: byteOffset).copyMemory(
+      from: source,
+      byteCount: byteCount.partialValue
+    )
+  }
+  return true
+}
+
 private struct AcceptedConsequenceUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
   var deltaMicroseconds: UInt64 = 0
@@ -179,6 +204,703 @@ private struct ObservationRange: Sendable {
   let count: UInt32
 }
 
+private struct AcceptedBodyReceptorTables {
+  let bindings: [AcceptedBodyReceptorBindingRecord]
+  let ranges: [AcceptedBodyReceptorBindingRange]
+}
+
+private struct AcceptedJointReceptorTables {
+  let bindings: [AcceptedJointReceptorBindingRecord]
+  let ranges: [AcceptedBodyReceptorBindingRange]
+  let topologyRecords: [AcceptedJointTopologyRecord]
+}
+
+private struct AcceptedMuscleReceptorTables {
+  let bindings: [AcceptedMuscleReceptorBindingRecord]
+  let ranges: [AcceptedBodyReceptorBindingRange]
+  let topologyRecords: [AcceptedMuscleTopologyRecord]
+}
+
+private struct AcceptedConsequenceImmutableBuffers {
+  let actuatorDescriptors: any MTLBuffer
+  let bodyReceptorBindings: any MTLBuffer
+  let jointReceptorBindings: any MTLBuffer
+  let muscleReceptorBindings: any MTLBuffer
+  let neutralProtectiveCommand: any MTLBuffer
+}
+
+private struct AcceptedConsequenceProgramResources {
+  let pipelines: [any MTLComputePipelineState]
+  let argumentTable: any MTL4ArgumentTable
+  let uniformBuffer: any MTLBuffer
+  let unconditionalAcceptanceGate: any MTLBuffer
+  let plasticityParameterCount: UInt32
+}
+
+@inline(never)
+private func makeAcceptedConsequenceImmutableBuffer(
+  device: any MTLDevice,
+  length: Int,
+  label: String
+) throws -> any MTLBuffer {
+  guard length > 0,
+    let buffer = device.makeBuffer(
+      length: length,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    )
+  else {
+    throw TissueError.metal("failed to allocate accepted-consequence immutable buffer")
+  }
+  buffer.label = label
+  return buffer
+}
+
+@inline(never)
+private func makeAcceptedBodyReceptorTables(
+  species: SpeciesTemplate,
+  sensoryProfile: SensoryTransductionProfile,
+  observationRanges: [SensoryModality: ObservationRange],
+  observationCount: UInt32
+) throws -> AcceptedBodyReceptorTables {
+  let topologyByModality = Dictionary(
+    uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+  )
+  let canonicalBindings = sensoryProfile.bodyReceptorBindings.sorted {
+    if $0.bodyIdentifier != $1.bodyIdentifier {
+      return $0.bodyIdentifier < $1.bodyIdentifier
+    }
+    if $0.signal.rawValue != $1.signal.rawValue {
+      return $0.signal.rawValue < $1.signal.rawValue
+    }
+    return $0.identifier < $1.identifier
+  }
+  let bindings = try canonicalBindings.map {
+    binding -> AcceptedBodyReceptorBindingRecord in
+    guard let range = observationRanges[binding.modality],
+      let topology = topologyByModality[binding.modality]
+    else {
+      throw TissueError.metal("accepted body receptor topology is unavailable")
+    }
+    let scalarIndex =
+      UInt64(range.offset)
+      + UInt64(binding.receptorIndex)
+      * UInt64(topology.observationDimension)
+      + UInt64(binding.featureIndex)
+    guard scalarIndex < UInt64(observationCount),
+      scalarIndex <= UInt64(UInt32.max)
+    else {
+      throw TissueError.metal("accepted body receptor scalar exceeds its arena")
+    }
+    return AcceptedBodyReceptorBindingRecord(
+      bodyIdentifier: binding.bodyIdentifier,
+      signal: UInt32(binding.signal.rawValue),
+      observationScalarIndex: UInt32(scalarIndex),
+      flags: 1 | (UInt32(binding.component) << 16),
+      scale: binding.scale,
+      bias: binding.bias,
+      weight: binding.weight,
+      reserved: 0
+    )
+  }
+  var ranges = [AcceptedBodyReceptorBindingRange](
+    repeating: AcceptedBodyReceptorBindingRange(),
+    count: Int(species.body.bodyCount)
+  )
+  var bindingCursor = 0
+  for bodyIdentifier in 0..<Int(species.body.bodyCount) {
+    let begin = bindingCursor
+    while bindingCursor < canonicalBindings.count,
+      canonicalBindings[bindingCursor].bodyIdentifier == UInt32(bodyIdentifier)
+    {
+      bindingCursor += 1
+    }
+    ranges[bodyIdentifier] = AcceptedBodyReceptorBindingRange(
+      bindingOffset: UInt32(begin),
+      bindingCount: UInt32(bindingCursor - begin)
+    )
+  }
+  return AcceptedBodyReceptorTables(bindings: bindings, ranges: ranges)
+}
+
+@inline(never)
+private func makeAcceptedJointReceptorTables(
+  species: SpeciesTemplate,
+  sensoryProfile: SensoryTransductionProfile,
+  observationRanges: [SensoryModality: ObservationRange],
+  observationCount: UInt32,
+  jointTopologyCatalog: NumanXJointTopologyCatalog
+) throws -> AcceptedJointReceptorTables {
+  let topologyByModality = Dictionary(
+    uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+  )
+  let jointIndexByIdentifier = Dictionary(
+    uniqueKeysWithValues: jointTopologyCatalog.joints.enumerated().map {
+      ($0.element.jointIdentifier, $0.offset)
+    }
+  )
+  let indexedBindings = try sensoryProfile.jointReceptorBindings.map {
+    binding -> (binding: JointReceptorBinding, jointIndex: Int, coordinateSlot: Int) in
+    guard let jointIndex = jointIndexByIdentifier[binding.jointIdentifier],
+      let coordinateSlot = jointTopologyCatalog.joints[jointIndex].coordinates
+        .firstIndex(where: { $0.identifier == binding.coordinateIdentifier })
+    else {
+      throw TissueError.metal("accepted joint receptor endpoint is unavailable")
+    }
+    return (binding, jointIndex, coordinateSlot)
+  }.sorted {
+    if $0.jointIndex != $1.jointIndex { return $0.jointIndex < $1.jointIndex }
+    if $0.coordinateSlot != $1.coordinateSlot {
+      return $0.coordinateSlot < $1.coordinateSlot
+    }
+    if $0.binding.signal.rawValue != $1.binding.signal.rawValue {
+      return $0.binding.signal.rawValue < $1.binding.signal.rawValue
+    }
+    return $0.binding.identifier < $1.binding.identifier
+  }
+  let bindings = try indexedBindings.map {
+    entry -> AcceptedJointReceptorBindingRecord in
+    let binding = entry.binding
+    guard let range = observationRanges[binding.modality],
+      let topology = topologyByModality[binding.modality]
+    else {
+      throw TissueError.metal("accepted joint receptor modality is unavailable")
+    }
+    let scalarIndex =
+      UInt64(range.offset)
+      + UInt64(binding.receptorIndex) * UInt64(topology.observationDimension)
+      + UInt64(binding.featureIndex)
+    guard scalarIndex < UInt64(observationCount),
+      scalarIndex <= UInt64(UInt32.max)
+    else {
+      throw TissueError.metal("accepted joint receptor scalar exceeds its arena")
+    }
+    return AcceptedJointReceptorBindingRecord(
+      jointIndex: UInt32(entry.jointIndex),
+      coordinateSlot: UInt32(entry.coordinateSlot),
+      signal: UInt32(binding.signal.rawValue),
+      observationScalarIndex: UInt32(scalarIndex),
+      scale: binding.scale,
+      bias: binding.bias,
+      weight: binding.weight,
+      flags: 1
+    )
+  }
+  var ranges = [AcceptedBodyReceptorBindingRange](
+    repeating: AcceptedBodyReceptorBindingRange(),
+    count: jointTopologyCatalog.joints.count
+  )
+  var bindingCursor = 0
+  for jointIndex in jointTopologyCatalog.joints.indices {
+    let begin = bindingCursor
+    while bindingCursor < indexedBindings.count,
+      indexedBindings[bindingCursor].jointIndex == jointIndex
+    {
+      bindingCursor += 1
+    }
+    ranges[jointIndex] = AcceptedBodyReceptorBindingRange(
+      bindingOffset: UInt32(begin),
+      bindingCount: UInt32(bindingCursor - begin)
+    )
+  }
+  let topologyRecords = jointTopologyCatalog.joints.map { joint in
+    let axes = joint.coordinates.map {
+      SIMD4<Float>(
+        $0.parentLocalAxis.x,
+        $0.parentLocalAxis.y,
+        $0.parentLocalAxis.z,
+        Float($0.kind.rawValue)
+      )
+    } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
+    let limits = joint.coordinates.map {
+      SIMD4<Float>(
+        $0.minimumPosition,
+        $0.maximumPosition,
+        $0.restPosition,
+        0
+      )
+    } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
+    return AcceptedJointTopologyRecord(
+      identifiers: SIMD4<UInt32>(
+        joint.jointIdentifier,
+        joint.parentBodyIdentifier,
+        joint.childBodyIdentifier,
+        UInt32(joint.coordinates.count)
+      ),
+      axis0: axes[0], axis1: axes[1], axis2: axes[2],
+      axis3: axes[3], axis4: axes[4], axis5: axes[5],
+      limits0: limits[0], limits1: limits[1], limits2: limits[2],
+      limits3: limits[3], limits4: limits[4], limits5: limits[5],
+      parentLocalAnchor: SIMD4<Float>(
+        joint.parentLocalAnchor.x,
+        joint.parentLocalAnchor.y,
+        joint.parentLocalAnchor.z,
+        0
+      ),
+      childLocalAnchor: SIMD4<Float>(
+        joint.childLocalAnchor.x,
+        joint.childLocalAnchor.y,
+        joint.childLocalAnchor.z,
+        0
+      ),
+      restRelativeOrientation: SIMD4<Float>(
+        joint.restRelativeOrientation.x,
+        joint.restRelativeOrientation.y,
+        joint.restRelativeOrientation.z,
+        joint.restRelativeOrientation.w
+      )
+    )
+  }
+  return AcceptedJointReceptorTables(
+    bindings: bindings,
+    ranges: ranges,
+    topologyRecords: topologyRecords
+  )
+}
+
+@inline(never)
+private func makeAcceptedMuscleReceptorTables(
+  species: SpeciesTemplate,
+  sensoryProfile: SensoryTransductionProfile,
+  observationRanges: [SensoryModality: ObservationRange],
+  observationCount: UInt32,
+  muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?
+) throws -> AcceptedMuscleReceptorTables {
+  let topologyByModality = Dictionary(
+    uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+  )
+  let attachments = muscleAttachmentCatalog?.attachments ?? []
+  let topologyRecords = attachments.map { attachment in
+    AcceptedMuscleTopologyRecord(
+      identifiers: SIMD4<UInt32>(
+        attachment.muscleIdentifier,
+        attachment.firstBodyIdentifier,
+        attachment.terminalBodyIdentifier,
+        0
+      )
+    )
+  }
+  let muscleIndexByIdentifier = Dictionary(
+    uniqueKeysWithValues: attachments.enumerated().map {
+      ($0.element.muscleIdentifier, $0.offset)
+    }
+  )
+  let indexedBindings = try sensoryProfile.muscleReceptorBindings.map {
+    binding -> (binding: MuscleReceptorBinding, muscleIndex: Int) in
+    guard let muscleIndex = muscleIndexByIdentifier[binding.muscleIdentifier]
+    else {
+      throw TissueError.metal("accepted muscle receptor endpoint is unavailable")
+    }
+    return (binding, muscleIndex)
+  }.sorted {
+    if $0.muscleIndex != $1.muscleIndex {
+      return $0.muscleIndex < $1.muscleIndex
+    }
+    if $0.binding.signal.rawValue != $1.binding.signal.rawValue {
+      return $0.binding.signal.rawValue < $1.binding.signal.rawValue
+    }
+    return $0.binding.identifier < $1.binding.identifier
+  }
+  let bindings = try indexedBindings.map {
+    entry -> AcceptedMuscleReceptorBindingRecord in
+    let binding = entry.binding
+    guard let range = observationRanges[binding.modality],
+      let topology = topologyByModality[binding.modality]
+    else {
+      throw TissueError.metal("accepted muscle receptor modality is unavailable")
+    }
+    let scalarIndex = UInt64(range.offset)
+      + UInt64(binding.receptorIndex) * UInt64(topology.observationDimension)
+      + UInt64(binding.featureIndex)
+    guard scalarIndex < UInt64(observationCount),
+      scalarIndex <= UInt64(UInt32.max)
+    else {
+      throw TissueError.metal("accepted muscle receptor scalar exceeds its arena")
+    }
+    return AcceptedMuscleReceptorBindingRecord(
+      muscleIndex: UInt32(entry.muscleIndex),
+      signal: UInt32(binding.signal.rawValue),
+      observationScalarIndex: UInt32(scalarIndex),
+      flags: 1,
+      scale: binding.scale,
+      bias: binding.bias,
+      weight: binding.weight,
+      reserved: 0
+    )
+  }
+  var ranges = [AcceptedBodyReceptorBindingRange](
+    repeating: AcceptedBodyReceptorBindingRange(),
+    count: attachments.count
+  )
+  var bindingCursor = 0
+  for muscleIndex in attachments.indices {
+    let begin = bindingCursor
+    while bindingCursor < indexedBindings.count,
+      indexedBindings[bindingCursor].muscleIndex == muscleIndex
+    {
+      bindingCursor += 1
+    }
+    ranges[muscleIndex] = AcceptedBodyReceptorBindingRange(
+      bindingOffset: UInt32(begin),
+      bindingCount: UInt32(bindingCursor - begin)
+    )
+  }
+  return AcceptedMuscleReceptorTables(
+    bindings: bindings,
+    ranges: ranges,
+    topologyRecords: topologyRecords
+  )
+}
+
+@inline(never)
+private func makeAcceptedConsequenceImmutableBuffers(
+  device: any MTLDevice,
+  species: SpeciesTemplate,
+  sensoryProfile: SensoryTransductionProfile,
+  jointTopologyCatalog: NumanXJointTopologyCatalog,
+  muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
+  bodyTables: AcceptedBodyReceptorTables,
+  jointTables: AcceptedJointReceptorTables,
+  muscleTables: AcceptedMuscleReceptorTables
+) throws -> AcceptedConsequenceImmutableBuffers {
+  let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
+    AcceptedActuatorDescriptor(
+      actuatorIdentifier: channel.identifier,
+      commandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
+      flags: 1,
+      reserved: 0,
+      outputMinimum: channel.outputMinimum,
+      outputMaximum: channel.outputMaximum,
+      neutralCommand: channel.neutralCommand,
+      emergencyCommand: channel.emergencyCommand
+    )
+  }
+  guard actuatorDescriptors.count == Int(species.motor.actuatorCount) else {
+    throw TissueError.metal("accepted actuator descriptor count mismatch")
+  }
+  let actuatorDescriptorBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: actuatorDescriptors.count
+      * MemoryLayout<AcceptedActuatorDescriptor>.stride,
+    label: "NumiBrain immutable accepted actuator descriptors"
+  )
+  let bodyReceptorBindingBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
+      + bodyTables.ranges.count
+      * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+      + max(bodyTables.bindings.count, 1)
+      * MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride,
+    label: "NumiBrain immutable anatomical body receptor bindings"
+  )
+  let jointReceptorBindingBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: MemoryLayout<AcceptedJointReceptorBindingTableHeader>.stride
+      + jointTables.topologyRecords.count
+      * MemoryLayout<AcceptedJointTopologyRecord>.stride
+      + jointTables.ranges.count
+      * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+      + max(jointTables.bindings.count, 1)
+      * MemoryLayout<AcceptedJointReceptorBindingRecord>.stride,
+    label: "NumiBrain immutable anatomical joint receptor bindings"
+  )
+  let muscleReceptorBindingBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
+      + muscleTables.topologyRecords.count
+      * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
+      + muscleTables.ranges.count
+      * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+      + max(muscleTables.bindings.count, 1)
+      * MemoryLayout<AcceptedMuscleReceptorBindingRecord>.stride,
+    label: "NumiBrain immutable anatomical muscle receptor bindings"
+  )
+  let neutralProtectiveCommandBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: ProtectiveMotorCommand.byteCount,
+    label: "NumiBrain neutral accepted protective command"
+  )
+  neutralProtectiveCommandBuffer.contents().initializeMemory(
+    as: UInt8.self,
+    repeating: 0,
+    count: ProtectiveMotorCommand.byteCount
+  )
+  guard copyAcceptedConsequenceArray(
+      actuatorDescriptors,
+      to: actuatorDescriptorBuffer,
+      byteOffset: 0
+    ) else {
+    throw TissueError.metal("accepted actuator descriptor upload exceeds its buffer")
+  }
+  var bodyHeader = AcceptedBodyReceptorBindingTableHeader(
+    bindingCount: UInt32(bodyTables.bindings.count),
+    bodyCount: species.body.bodyCount,
+    profileFingerprint: sensoryProfile.fingerprint
+  )
+  withUnsafeBytes(of: &bodyHeader) { bytes in
+    guard let source = bytes.baseAddress else { return }
+    bodyReceptorBindingBuffer.contents().copyMemory(
+      from: source,
+      byteCount: bytes.count
+    )
+  }
+  let bodyRangeOffset = MemoryLayout<
+    AcceptedBodyReceptorBindingTableHeader
+  >.stride
+  guard copyAcceptedConsequenceArray(
+      bodyTables.ranges,
+      to: bodyReceptorBindingBuffer,
+      byteOffset: bodyRangeOffset
+    ) else {
+    throw TissueError.metal("accepted body receptor range upload exceeds its buffer")
+  }
+  guard copyAcceptedConsequenceArray(
+      bodyTables.bindings,
+      to: bodyReceptorBindingBuffer,
+      byteOffset: bodyRangeOffset
+        + bodyTables.ranges.count
+        * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+    ) else {
+    throw TissueError.metal("accepted body receptor upload exceeds its buffer")
+  }
+  var jointHeader = AcceptedJointReceptorBindingTableHeader(
+    bindingCount: UInt32(jointTables.bindings.count),
+    jointCount: UInt32(jointTables.topologyRecords.count),
+    profileFingerprint: sensoryProfile.fingerprint,
+    topologyFingerprint: jointTopologyCatalog.fingerprint
+  )
+  withUnsafeBytes(of: &jointHeader) { bytes in
+    guard let source = bytes.baseAddress else { return }
+    jointReceptorBindingBuffer.contents().copyMemory(
+      from: source,
+      byteCount: bytes.count
+    )
+  }
+  let jointTopologyOffset = MemoryLayout<
+    AcceptedJointReceptorBindingTableHeader
+  >.stride
+  guard copyAcceptedConsequenceArray(
+      jointTables.topologyRecords,
+      to: jointReceptorBindingBuffer,
+      byteOffset: jointTopologyOffset
+    ) else {
+    throw TissueError.metal("accepted joint topology upload exceeds its buffer")
+  }
+  let jointRangeOffset = jointTopologyOffset
+    + jointTables.topologyRecords.count
+    * MemoryLayout<AcceptedJointTopologyRecord>.stride
+  guard copyAcceptedConsequenceArray(
+      jointTables.ranges,
+      to: jointReceptorBindingBuffer,
+      byteOffset: jointRangeOffset
+    ) else {
+    throw TissueError.metal("accepted joint receptor range upload exceeds its buffer")
+  }
+  guard copyAcceptedConsequenceArray(
+      jointTables.bindings,
+      to: jointReceptorBindingBuffer,
+      byteOffset: jointRangeOffset
+        + jointTables.ranges.count
+        * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+    ) else {
+    throw TissueError.metal("accepted joint receptor upload exceeds its buffer")
+  }
+  var muscleHeader = AcceptedMuscleReceptorBindingTableHeader(
+    bindingCount: UInt32(muscleTables.bindings.count),
+    muscleCount: UInt32(muscleTables.topologyRecords.count),
+    profileFingerprint: sensoryProfile.fingerprint,
+    attachmentFingerprint: muscleAttachmentCatalog?.fingerprint ?? 0
+  )
+  withUnsafeBytes(of: &muscleHeader) { bytes in
+    guard let source = bytes.baseAddress else { return }
+    muscleReceptorBindingBuffer.contents().copyMemory(
+      from: source,
+      byteCount: bytes.count
+    )
+  }
+  let muscleTopologyOffset = MemoryLayout<
+    AcceptedMuscleReceptorBindingTableHeader
+  >.stride
+  guard copyAcceptedConsequenceArray(
+      muscleTables.topologyRecords,
+      to: muscleReceptorBindingBuffer,
+      byteOffset: muscleTopologyOffset
+    ) else {
+    throw TissueError.metal("accepted muscle topology upload exceeds its buffer")
+  }
+  let muscleRangeOffset = muscleTopologyOffset
+    + muscleTables.topologyRecords.count
+    * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
+  guard copyAcceptedConsequenceArray(
+      muscleTables.ranges,
+      to: muscleReceptorBindingBuffer,
+      byteOffset: muscleRangeOffset
+    ) else {
+    throw TissueError.metal("accepted muscle receptor range upload exceeds its buffer")
+  }
+  guard copyAcceptedConsequenceArray(
+      muscleTables.bindings,
+      to: muscleReceptorBindingBuffer,
+      byteOffset: muscleRangeOffset
+        + muscleTables.ranges.count
+        * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
+    ) else {
+    throw TissueError.metal("accepted muscle receptor upload exceeds its buffer")
+  }
+  return AcceptedConsequenceImmutableBuffers(
+    actuatorDescriptors: actuatorDescriptorBuffer,
+    bodyReceptorBindings: bodyReceptorBindingBuffer,
+    jointReceptorBindings: jointReceptorBindingBuffer,
+    muscleReceptorBindings: muscleReceptorBindingBuffer,
+    neutralProtectiveCommand: neutralProtectiveCommandBuffer
+  )
+}
+
+@inline(never)
+private func makeAcceptedConsequenceProgramResources(
+  device: any MTLDevice,
+  species: SpeciesTemplate,
+  sharedParameters: MetalSharedParameterBank,
+  immutableBuffers: AcceptedConsequenceImmutableBuffers
+) throws -> AcceptedConsequenceProgramResources {
+  let sourceURL =
+    Bundle.module.url(
+      forResource: "AcceptedConsequence",
+      withExtension: "metal",
+      subdirectory: "Shaders"
+    ) ?? Bundle.module.url(
+      forResource: "AcceptedConsequence",
+      withExtension: "metal"
+    )
+  guard let sourceURL else {
+    throw TissueError.metal("AcceptedConsequence.metal is missing from resources")
+  }
+  let source = try String(contentsOf: sourceURL, encoding: .utf8)
+  let options = MTLCompileOptions()
+  options.languageVersion = .version4_0
+  options.mathMode = .safe
+  options.mathFloatingPointFunctions = .precise
+  let library: any MTLLibrary
+  do {
+    library = try device.makeLibrary(source: source, options: options)
+  } catch {
+    throw TissueError.metal("accepted-consequence Metal compilation failed: \(error)")
+  }
+  let names = [
+    "assimilate_accepted_body_and_physiology",
+    "reconcile_accepted_world_model",
+    "update_active_sensing_efficacy",
+    "broadcast_accepted_prediction_error",
+    "adapt_cerebellar_experts_from_accepted_error",
+    "update_fast_plasticity_from_accepted_error",
+    "update_accepted_procedural_trace",
+    "assimilate_accepted_fast_body_schema",
+    "update_accepted_embodied_self_model",
+    "reconcile_accepted_sensorimotor_world_model",
+    "assimilate_accepted_joint_schema",
+    "assimilate_accepted_muscle_schema",
+    "reconcile_accepted_articulated_body_graph",
+    "learn_accepted_muscle_task_effect",
+  ]
+  let functions = try names.map { name -> any MTLFunction in
+    guard let function = library.makeFunction(name: name) else {
+      throw TissueError.metal("\(name) is missing from accepted-consequence Metal")
+    }
+    return function
+  }
+  let pipelines: [any MTLComputePipelineState]
+  do {
+    pipelines = try functions.map {
+      try device.makeComputePipelineState(function: $0)
+    }
+  } catch {
+    throw TissueError.metal("accepted-consequence pipeline creation failed: \(error)")
+  }
+  let descriptor = MTL4ArgumentTableDescriptor()
+  descriptor.label = "NumiBrain accepted-consequence arguments"
+  descriptor.maxBufferBindCount = 14
+  descriptor.initializeBindings = true
+  guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
+    let uniformBuffer = device.makeBuffer(
+      length: MemoryLayout<AcceptedConsequenceUniforms>.stride,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    ),
+    let unconditionalAcceptanceGateBuffer = device.makeBuffer(
+      length: 128,
+      options: [.storageModeShared, .hazardTrackingModeTracked]
+    )
+  else {
+    throw TissueError.metal("failed to allocate accepted-consequence bindings")
+  }
+  uniformBuffer.label = "NumiBrain accepted-consequence uniforms"
+  unconditionalAcceptanceGateBuffer.contents().storeBytes(
+    of: UInt32(1),
+    as: UInt32.self
+  )
+  argumentTable.setAddress(
+    try sharedParameters.gpuAddress(.belief, minimumScalarCount: 15),
+    index: 2
+  )
+  argumentTable.setAddress(
+    try sharedParameters.gpuAddress(.world, minimumScalarCount: 158),
+    index: 3
+  )
+  argumentTable.setAddress(
+    try sharedParameters.gpuAddress(.cerebellar, minimumScalarCount: 8),
+    index: 4
+  )
+  let regionCount = species.enabledModuleIdentifiers.count
+  let basisCapacity =
+    (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
+    / regionCount
+  let minimumPlasticityScalarCount = try BrainSharedParameterArtifact
+    .plasticityElementCount(
+      regionCount: regionCount,
+      basisCapacityPerRegion: basisCapacity
+    )
+  let plasticityScalarCount = sharedParameters.scalarCount(.plasticity)
+  guard plasticityScalarCount >= minimumPlasticityScalarCount,
+    plasticityScalarCount <= Int(UInt32.max)
+  else {
+    throw TissueError.metal(
+      "accepted plasticity receptor matrix does not cover the species graph"
+    )
+  }
+  argumentTable.setAddress(
+    try sharedParameters.gpuAddress(
+      .plasticity,
+      minimumScalarCount: minimumPlasticityScalarCount
+    ),
+    index: 5
+  )
+  argumentTable.setAddress(
+    immutableBuffers.actuatorDescriptors.gpuAddress,
+    index: 6
+  )
+  argumentTable.setAddress(
+    immutableBuffers.neutralProtectiveCommand.gpuAddress,
+    index: 8
+  )
+  argumentTable.setAddress(
+    immutableBuffers.bodyReceptorBindings.gpuAddress,
+    index: 9
+  )
+  argumentTable.setAddress(
+    immutableBuffers.jointReceptorBindings.gpuAddress,
+    index: 10
+  )
+  argumentTable.setAddress(
+    immutableBuffers.muscleReceptorBindings.gpuAddress,
+    index: 11
+  )
+  return AcceptedConsequenceProgramResources(
+    pipelines: pipelines,
+    argumentTable: argumentTable,
+    uniformBuffer: uniformBuffer,
+    unconditionalAcceptanceGate: unconditionalAcceptanceGateBuffer,
+    plasticityParameterCount: UInt32(plasticityScalarCount)
+  )
+}
+
 /// Applies receptor evidence from the accepted end of a root transaction to
 /// the already-computed shadow mind. It owns correction only; the predictive
 /// decision remains cached and is never resampled during physical retries.
@@ -267,538 +989,47 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     guard sensoryProfile.bodyReceptorBindings.count <= Int(UInt32.max) else {
       throw TissueError.metal("accepted body receptor bindings exceed UInt32")
     }
-    let topologyByModality = Dictionary(
-      uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
+    let bodyTables = try makeAcceptedBodyReceptorTables(
+      species: species,
+      sensoryProfile: sensoryProfile,
+      observationRanges: ranges,
+      observationCount: offset
     )
-    let canonicalBodyBindings = sensoryProfile.bodyReceptorBindings.sorted {
-      if $0.bodyIdentifier != $1.bodyIdentifier {
-        return $0.bodyIdentifier < $1.bodyIdentifier
-      }
-      if $0.signal.rawValue != $1.signal.rawValue {
-        return $0.signal.rawValue < $1.signal.rawValue
-      }
-      return $0.identifier < $1.identifier
-    }
-    let bodyReceptorBindings = try canonicalBodyBindings.map {
-      binding -> AcceptedBodyReceptorBindingRecord in
-      guard let range = ranges[binding.modality],
-        let topology = topologyByModality[binding.modality]
-      else {
-        throw TissueError.metal("accepted body receptor topology is unavailable")
-      }
-      let scalarIndex =
-        UInt64(range.offset)
-        + UInt64(binding.receptorIndex)
-        * UInt64(topology.observationDimension)
-        + UInt64(binding.featureIndex)
-      guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
-      else {
-        throw TissueError.metal("accepted body receptor scalar exceeds its arena")
-      }
-      return AcceptedBodyReceptorBindingRecord(
-        bodyIdentifier: binding.bodyIdentifier,
-        signal: UInt32(binding.signal.rawValue),
-        observationScalarIndex: UInt32(scalarIndex),
-        flags: 1 | (UInt32(binding.component) << 16),
-        scale: binding.scale,
-        bias: binding.bias,
-        weight: binding.weight,
-        reserved: 0
-      )
-    }
-    var bodyReceptorRanges = [AcceptedBodyReceptorBindingRange](
-      repeating: AcceptedBodyReceptorBindingRange(),
-      count: Int(species.body.bodyCount)
+    let jointTables = try makeAcceptedJointReceptorTables(
+      species: species,
+      sensoryProfile: sensoryProfile,
+      observationRanges: ranges,
+      observationCount: offset,
+      jointTopologyCatalog: jointTopologyCatalog
     )
-    var bindingCursor = 0
-    for bodyIdentifier in 0..<Int(species.body.bodyCount) {
-      let begin = bindingCursor
-      while bindingCursor < canonicalBodyBindings.count,
-        canonicalBodyBindings[bindingCursor].bodyIdentifier
-          == UInt32(bodyIdentifier)
-      {
-        bindingCursor += 1
-      }
-      bodyReceptorRanges[bodyIdentifier] = AcceptedBodyReceptorBindingRange(
-        bindingOffset: UInt32(begin),
-        bindingCount: UInt32(bindingCursor - begin)
-      )
-    }
-    let jointIndexByIdentifier = Dictionary(
-      uniqueKeysWithValues: jointTopologyCatalog.joints.enumerated().map {
-        ($0.element.jointIdentifier, $0.offset)
-      }
+    let muscleTables = try makeAcceptedMuscleReceptorTables(
+      species: species,
+      sensoryProfile: sensoryProfile,
+      observationRanges: ranges,
+      observationCount: offset,
+      muscleAttachmentCatalog: muscleAttachmentCatalog
     )
-    let indexedJointBindings = try sensoryProfile.jointReceptorBindings.map {
-      binding -> (binding: JointReceptorBinding, jointIndex: Int, coordinateSlot: Int) in
-      guard let jointIndex = jointIndexByIdentifier[binding.jointIdentifier],
-        let coordinateSlot = jointTopologyCatalog.joints[jointIndex].coordinates
-          .firstIndex(where: { $0.identifier == binding.coordinateIdentifier })
-      else {
-        throw TissueError.metal("accepted joint receptor endpoint is unavailable")
-      }
-      return (binding, jointIndex, coordinateSlot)
-    }.sorted {
-      if $0.jointIndex != $1.jointIndex { return $0.jointIndex < $1.jointIndex }
-      if $0.coordinateSlot != $1.coordinateSlot {
-        return $0.coordinateSlot < $1.coordinateSlot
-      }
-      if $0.binding.signal.rawValue != $1.binding.signal.rawValue {
-        return $0.binding.signal.rawValue < $1.binding.signal.rawValue
-      }
-      return $0.binding.identifier < $1.binding.identifier
-    }
-    let jointReceptorBindings = try indexedJointBindings.map {
-      entry -> AcceptedJointReceptorBindingRecord in
-      let binding = entry.binding
-      guard let range = ranges[binding.modality],
-        let topology = topologyByModality[binding.modality]
-      else {
-        throw TissueError.metal("accepted joint receptor modality is unavailable")
-      }
-      let scalarIndex =
-        UInt64(range.offset)
-        + UInt64(binding.receptorIndex) * UInt64(topology.observationDimension)
-        + UInt64(binding.featureIndex)
-      guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
-      else {
-        throw TissueError.metal("accepted joint receptor scalar exceeds its arena")
-      }
-      return AcceptedJointReceptorBindingRecord(
-        jointIndex: UInt32(entry.jointIndex),
-        coordinateSlot: UInt32(entry.coordinateSlot),
-        signal: UInt32(binding.signal.rawValue),
-        observationScalarIndex: UInt32(scalarIndex),
-        scale: binding.scale,
-        bias: binding.bias,
-        weight: binding.weight,
-        flags: 1
-      )
-    }
-    var jointReceptorRanges = [AcceptedBodyReceptorBindingRange](
-      repeating: AcceptedBodyReceptorBindingRange(),
-      count: jointTopologyCatalog.joints.count
+    let immutableBuffers = try makeAcceptedConsequenceImmutableBuffers(
+      device: device,
+      species: species,
+      sensoryProfile: sensoryProfile,
+      jointTopologyCatalog: jointTopologyCatalog,
+      muscleAttachmentCatalog: muscleAttachmentCatalog,
+      bodyTables: bodyTables,
+      jointTables: jointTables,
+      muscleTables: muscleTables
     )
-    var jointBindingCursor = 0
-    for jointIndex in jointTopologyCatalog.joints.indices {
-      let begin = jointBindingCursor
-      while jointBindingCursor < indexedJointBindings.count,
-        indexedJointBindings[jointBindingCursor].jointIndex == jointIndex
-      {
-        jointBindingCursor += 1
-      }
-      jointReceptorRanges[jointIndex] = AcceptedBodyReceptorBindingRange(
-        bindingOffset: UInt32(begin),
-        bindingCount: UInt32(jointBindingCursor - begin)
-      )
-    }
-    let jointTopologyRecords = jointTopologyCatalog.joints.map { joint in
-      let axes = joint.coordinates.map {
-        SIMD4<Float>(
-          $0.parentLocalAxis.x,
-          $0.parentLocalAxis.y,
-          $0.parentLocalAxis.z,
-          Float($0.kind.rawValue)
-        )
-      } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
-      let limits = joint.coordinates.map {
-        SIMD4<Float>(
-          $0.minimumPosition,
-          $0.maximumPosition,
-          $0.restPosition,
-          0
-        )
-      } + Array(repeating: SIMD4<Float>(repeating: 0), count: 6 - joint.coordinates.count)
-      return AcceptedJointTopologyRecord(
-        identifiers: SIMD4<UInt32>(
-          joint.jointIdentifier,
-          joint.parentBodyIdentifier,
-          joint.childBodyIdentifier,
-          UInt32(joint.coordinates.count)
-        ),
-        axis0: axes[0], axis1: axes[1], axis2: axes[2],
-        axis3: axes[3], axis4: axes[4], axis5: axes[5],
-        limits0: limits[0], limits1: limits[1], limits2: limits[2],
-        limits3: limits[3], limits4: limits[4], limits5: limits[5],
-        parentLocalAnchor: SIMD4<Float>(
-          joint.parentLocalAnchor.x,
-          joint.parentLocalAnchor.y,
-          joint.parentLocalAnchor.z,
-          0
-        ),
-        childLocalAnchor: SIMD4<Float>(
-          joint.childLocalAnchor.x,
-          joint.childLocalAnchor.y,
-          joint.childLocalAnchor.z,
-          0
-        ),
-        restRelativeOrientation: SIMD4<Float>(
-          joint.restRelativeOrientation.x,
-          joint.restRelativeOrientation.y,
-          joint.restRelativeOrientation.z,
-          joint.restRelativeOrientation.w
-        )
-      )
-    }
-    let muscleAttachments = muscleAttachmentCatalog?.attachments ?? []
-    let muscleTopologyRecords = muscleAttachments.map { attachment in
-      AcceptedMuscleTopologyRecord(
-        identifiers: SIMD4<UInt32>(
-          attachment.muscleIdentifier,
-          attachment.firstBodyIdentifier,
-          attachment.terminalBodyIdentifier,
-          0
-        )
-      )
-    }
-    let muscleIndexByIdentifier = Dictionary(
-      uniqueKeysWithValues: muscleAttachments.enumerated().map {
-        ($0.element.muscleIdentifier, $0.offset)
-      }
+    let actuatorDescriptorBuffer = immutableBuffers.actuatorDescriptors
+    let bodyReceptorBindingBuffer = immutableBuffers.bodyReceptorBindings
+    let jointReceptorBindingBuffer = immutableBuffers.jointReceptorBindings
+    let muscleReceptorBindingBuffer = immutableBuffers.muscleReceptorBindings
+    let neutralProtectiveCommandBuffer = immutableBuffers.neutralProtectiveCommand
+    let programResources = try makeAcceptedConsequenceProgramResources(
+      device: device,
+      species: species,
+      sharedParameters: sharedParameters,
+      immutableBuffers: immutableBuffers
     )
-    let indexedMuscleBindings = try sensoryProfile.muscleReceptorBindings.map {
-      binding -> (binding: MuscleReceptorBinding, muscleIndex: Int) in
-      guard let muscleIndex = muscleIndexByIdentifier[binding.muscleIdentifier]
-      else {
-        throw TissueError.metal("accepted muscle receptor endpoint is unavailable")
-      }
-      return (binding, muscleIndex)
-    }.sorted {
-      if $0.muscleIndex != $1.muscleIndex {
-        return $0.muscleIndex < $1.muscleIndex
-      }
-      if $0.binding.signal.rawValue != $1.binding.signal.rawValue {
-        return $0.binding.signal.rawValue < $1.binding.signal.rawValue
-      }
-      return $0.binding.identifier < $1.binding.identifier
-    }
-    let muscleReceptorBindings = try indexedMuscleBindings.map {
-      entry -> AcceptedMuscleReceptorBindingRecord in
-      let binding = entry.binding
-      guard let range = ranges[binding.modality],
-        let topology = topologyByModality[binding.modality]
-      else {
-        throw TissueError.metal("accepted muscle receptor modality is unavailable")
-      }
-      let scalarIndex = UInt64(range.offset)
-        + UInt64(binding.receptorIndex) * UInt64(topology.observationDimension)
-        + UInt64(binding.featureIndex)
-      guard scalarIndex < UInt64(offset), scalarIndex <= UInt64(UInt32.max)
-      else {
-        throw TissueError.metal("accepted muscle receptor scalar exceeds its arena")
-      }
-      return AcceptedMuscleReceptorBindingRecord(
-        muscleIndex: UInt32(entry.muscleIndex),
-        signal: UInt32(binding.signal.rawValue),
-        observationScalarIndex: UInt32(scalarIndex),
-        flags: 1,
-        scale: binding.scale,
-        bias: binding.bias,
-        weight: binding.weight,
-        reserved: 0
-      )
-    }
-    var muscleReceptorRanges = [AcceptedBodyReceptorBindingRange](
-      repeating: AcceptedBodyReceptorBindingRange(),
-      count: muscleAttachments.count
-    )
-    var muscleBindingCursor = 0
-    for muscleIndex in muscleAttachments.indices {
-      let begin = muscleBindingCursor
-      while muscleBindingCursor < indexedMuscleBindings.count,
-        indexedMuscleBindings[muscleBindingCursor].muscleIndex == muscleIndex
-      {
-        muscleBindingCursor += 1
-      }
-      muscleReceptorRanges[muscleIndex] = AcceptedBodyReceptorBindingRange(
-        bindingOffset: UInt32(begin),
-        bindingCount: UInt32(muscleBindingCursor - begin)
-      )
-    }
-    let actuatorDescriptors = species.motor.actuatorChannels.map { channel in
-      AcceptedActuatorDescriptor(
-        actuatorIdentifier: channel.identifier,
-        commandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
-        flags: 1,
-        reserved: 0,
-        outputMinimum: channel.outputMinimum,
-        outputMaximum: channel.outputMaximum,
-        neutralCommand: channel.neutralCommand,
-        emergencyCommand: channel.emergencyCommand
-      )
-    }
-    guard actuatorDescriptors.count == Int(species.motor.actuatorCount),
-      let actuatorDescriptorBuffer = device.makeBuffer(
-        length: actuatorDescriptors.count
-          * MemoryLayout<AcceptedActuatorDescriptor>.stride,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      ),
-      let bodyReceptorBindingBuffer = device.makeBuffer(
-        length: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
-          + bodyReceptorRanges.count
-          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-          + max(
-            bodyReceptorBindings.count,
-            1
-          ) * MemoryLayout<AcceptedBodyReceptorBindingRecord>.stride,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      ),
-      let jointReceptorBindingBuffer = device.makeBuffer(
-        length: MemoryLayout<AcceptedJointReceptorBindingTableHeader>.stride
-          + jointTopologyRecords.count
-          * MemoryLayout<AcceptedJointTopologyRecord>.stride
-          + jointReceptorRanges.count
-          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-          + max(jointReceptorBindings.count, 1)
-          * MemoryLayout<AcceptedJointReceptorBindingRecord>.stride,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      ),
-      let muscleReceptorBindingBuffer = device.makeBuffer(
-        length: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
-          + muscleTopologyRecords.count
-            * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
-          + muscleReceptorRanges.count
-            * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-          + max(muscleReceptorBindings.count, 1)
-            * MemoryLayout<AcceptedMuscleReceptorBindingRecord>.stride,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      ),
-      let neutralProtectiveCommandBuffer = device.makeBuffer(
-        length: ProtectiveMotorCommand.byteCount,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      )
-    else {
-      throw TissueError.metal("failed to allocate accepted actuator descriptors")
-    }
-    actuatorDescriptorBuffer.label =
-      "NumiBrain immutable accepted actuator descriptors"
-    bodyReceptorBindingBuffer.label =
-      "NumiBrain immutable anatomical body receptor bindings"
-    jointReceptorBindingBuffer.label =
-      "NumiBrain immutable anatomical joint receptor bindings"
-    muscleReceptorBindingBuffer.label =
-      "NumiBrain immutable anatomical muscle receptor bindings"
-    neutralProtectiveCommandBuffer.label =
-      "NumiBrain neutral accepted protective command"
-    neutralProtectiveCommandBuffer.contents().initializeMemory(
-      as: UInt8.self,
-      repeating: 0,
-      count: ProtectiveMotorCommand.byteCount
-    )
-    actuatorDescriptors.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      actuatorDescriptorBuffer.contents().copyMemory(
-        from: source, byteCount: bytes.count
-      )
-    }
-    var bodyReceptorHeader = AcceptedBodyReceptorBindingTableHeader(
-      bindingCount: UInt32(bodyReceptorBindings.count),
-      bodyCount: species.body.bodyCount,
-      profileFingerprint: sensoryProfile.fingerprint
-    )
-    withUnsafeBytes(of: &bodyReceptorHeader) { bytes in
-      guard let source = bytes.baseAddress else { return }
-      bodyReceptorBindingBuffer.contents().copyMemory(
-        from: source, byteCount: bytes.count
-      )
-    }
-    bodyReceptorRanges.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      bodyReceptorBindingBuffer.contents().advanced(
-        by: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
-      ).copyMemory(from: source, byteCount: bytes.count)
-    }
-    bodyReceptorBindings.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      bodyReceptorBindingBuffer.contents().advanced(
-        by: MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride
-          + bodyReceptorRanges.count
-          * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-      ).copyMemory(from: source, byteCount: bytes.count)
-    }
-    var jointReceptorHeader = AcceptedJointReceptorBindingTableHeader(
-      bindingCount: UInt32(jointReceptorBindings.count),
-      jointCount: UInt32(jointTopologyRecords.count),
-      profileFingerprint: sensoryProfile.fingerprint,
-      topologyFingerprint: jointTopologyCatalog.fingerprint
-    )
-    withUnsafeBytes(of: &jointReceptorHeader) { bytes in
-      guard let source = bytes.baseAddress else { return }
-      jointReceptorBindingBuffer.contents().copyMemory(
-        from: source, byteCount: bytes.count
-      )
-    }
-    let jointTopologyOffset = MemoryLayout<
-      AcceptedJointReceptorBindingTableHeader
-    >.stride
-    jointTopologyRecords.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      jointReceptorBindingBuffer.contents().advanced(by: jointTopologyOffset)
-        .copyMemory(from: source, byteCount: bytes.count)
-    }
-    let jointRangeOffset =
-      jointTopologyOffset
-      + jointTopologyRecords.count * MemoryLayout<AcceptedJointTopologyRecord>.stride
-    jointReceptorRanges.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      jointReceptorBindingBuffer.contents().advanced(by: jointRangeOffset)
-        .copyMemory(from: source, byteCount: bytes.count)
-    }
-    let jointBindingOffset =
-      jointRangeOffset
-      + jointReceptorRanges.count
-      * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-    jointReceptorBindings.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      jointReceptorBindingBuffer.contents().advanced(by: jointBindingOffset)
-        .copyMemory(from: source, byteCount: bytes.count)
-    }
-    var muscleReceptorHeader = AcceptedMuscleReceptorBindingTableHeader(
-      bindingCount: UInt32(muscleReceptorBindings.count),
-      muscleCount: UInt32(muscleAttachments.count),
-      profileFingerprint: sensoryProfile.fingerprint,
-      attachmentFingerprint: muscleAttachmentCatalog?.fingerprint ?? 0
-    )
-    withUnsafeBytes(of: &muscleReceptorHeader) { bytes in
-      guard let source = bytes.baseAddress else { return }
-      muscleReceptorBindingBuffer.contents().copyMemory(
-        from: source, byteCount: bytes.count
-      )
-    }
-    let muscleRangeOffset = MemoryLayout<
-      AcceptedMuscleReceptorBindingTableHeader
-    >.stride
-      + muscleTopologyRecords.count
-        * MemoryLayout<AcceptedMuscleTopologyRecord>.stride
-    muscleTopologyRecords.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      muscleReceptorBindingBuffer.contents().advanced(
-        by: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
-      ).copyMemory(from: source, byteCount: bytes.count)
-    }
-    muscleReceptorRanges.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      muscleReceptorBindingBuffer.contents().advanced(by: muscleRangeOffset)
-        .copyMemory(from: source, byteCount: bytes.count)
-    }
-    let muscleBindingOffset = muscleRangeOffset
-      + muscleReceptorRanges.count
-        * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
-    muscleReceptorBindings.withUnsafeBytes { bytes in
-      guard let source = bytes.baseAddress else { return }
-      muscleReceptorBindingBuffer.contents().advanced(by: muscleBindingOffset)
-        .copyMemory(from: source, byteCount: bytes.count)
-    }
-    let sourceURL =
-      Bundle.module.url(
-        forResource: "AcceptedConsequence",
-        withExtension: "metal",
-        subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "AcceptedConsequence", withExtension: "metal")
-    guard let sourceURL else {
-      throw TissueError.metal("AcceptedConsequence.metal is missing from resources")
-    }
-    let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let options = MTLCompileOptions()
-    options.languageVersion = .version4_0
-    options.mathMode = .safe
-    options.mathFloatingPointFunctions = .precise
-    let library: any MTLLibrary
-    do {
-      library = try device.makeLibrary(source: source, options: options)
-    } catch {
-      throw TissueError.metal("accepted-consequence Metal compilation failed: \(error)")
-    }
-    let names = [
-      "assimilate_accepted_body_and_physiology",
-      "reconcile_accepted_world_model",
-      "update_active_sensing_efficacy",
-      "broadcast_accepted_prediction_error",
-      "adapt_cerebellar_experts_from_accepted_error",
-      "update_fast_plasticity_from_accepted_error",
-      "update_accepted_procedural_trace",
-      "assimilate_accepted_fast_body_schema",
-      "update_accepted_embodied_self_model",
-      "reconcile_accepted_sensorimotor_world_model",
-      "assimilate_accepted_joint_schema",
-      "assimilate_accepted_muscle_schema",
-      "reconcile_accepted_articulated_body_graph",
-      "learn_accepted_muscle_task_effect",
-    ]
-    let functions = try names.map { name -> any MTLFunction in
-      guard let function = library.makeFunction(name: name) else {
-        throw TissueError.metal("\(name) is missing from accepted-consequence Metal")
-      }
-      return function
-    }
-    let pipelines: [any MTLComputePipelineState]
-    do {
-      pipelines = try functions.map { try device.makeComputePipelineState(function: $0) }
-    } catch {
-      throw TissueError.metal("accepted-consequence pipeline creation failed: \(error)")
-    }
-    let descriptor = MTL4ArgumentTableDescriptor()
-    descriptor.label = "NumiBrain accepted-consequence arguments"
-    descriptor.maxBufferBindCount = 14
-    descriptor.initializeBindings = true
-    guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
-      let uniformBuffer = device.makeBuffer(
-        length: MemoryLayout<AcceptedConsequenceUniforms>.stride,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      ),
-      let unconditionalAcceptanceGateBuffer = device.makeBuffer(
-        length: 128,
-        options: [.storageModeShared, .hazardTrackingModeTracked]
-      )
-    else {
-      throw TissueError.metal("failed to allocate accepted-consequence bindings")
-    }
-    uniformBuffer.label = "NumiBrain accepted-consequence uniforms"
-    unconditionalAcceptanceGateBuffer.contents().storeBytes(
-      of: UInt32(1), as: UInt32.self
-    )
-    argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.belief, minimumScalarCount: 15),
-      index: 2
-    )
-    argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.world, minimumScalarCount: 158),
-      index: 3
-    )
-    argumentTable.setAddress(
-      try sharedParameters.gpuAddress(.cerebellar, minimumScalarCount: 8),
-      index: 4
-    )
-    let regionCount = species.enabledModuleIdentifiers.count
-    let basisCapacity =
-      (Int(species.capacities.fastPlasticityCapacity) + regionCount - 1)
-      / regionCount
-    let minimumPlasticityScalarCount =
-      try BrainSharedParameterArtifact
-      .plasticityElementCount(
-        regionCount: regionCount,
-        basisCapacityPerRegion: basisCapacity
-      )
-    let plasticityScalarCount = sharedParameters.scalarCount(.plasticity)
-    guard plasticityScalarCount >= minimumPlasticityScalarCount,
-      plasticityScalarCount <= Int(UInt32.max)
-    else {
-      throw TissueError.metal(
-        "accepted plasticity receptor matrix does not cover the species graph"
-      )
-    }
-    argumentTable.setAddress(
-      try sharedParameters.gpuAddress(
-        .plasticity,
-        minimumScalarCount: minimumPlasticityScalarCount
-      ),
-      index: 5
-    )
-    argumentTable.setAddress(actuatorDescriptorBuffer.gpuAddress, index: 6)
-    argumentTable.setAddress(neutralProtectiveCommandBuffer.gpuAddress, index: 8)
-    argumentTable.setAddress(bodyReceptorBindingBuffer.gpuAddress, index: 9)
-    argumentTable.setAddress(jointReceptorBindingBuffer.gpuAddress, index: 10)
-    argumentTable.setAddress(muscleReceptorBindingBuffer.gpuAddress, index: 11)
     self.arena = arena
     self.species = species
     self.dynamics = dynamics
@@ -807,16 +1038,17 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       species: species
     )
     self.observationRanges = ranges
-    self.pipelines = pipelines
-    self.argumentTable = argumentTable
-    self.uniformBuffer = uniformBuffer
+    self.pipelines = programResources.pipelines
+    self.argumentTable = programResources.argumentTable
+    self.uniformBuffer = programResources.uniformBuffer
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
     self.bodyReceptorBindingBuffer = bodyReceptorBindingBuffer
     self.jointReceptorBindingBuffer = jointReceptorBindingBuffer
     self.muscleReceptorBindingBuffer = muscleReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
-    self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
-    self.plasticityParameterCount = UInt32(plasticityScalarCount)
+    self.unconditionalAcceptanceGateBuffer =
+      programResources.unconditionalAcceptanceGate
+    self.plasticityParameterCount = programResources.plasticityParameterCount
     self.sensorimotorWorldDimension = sensorimotorWorldDimension
   }
 

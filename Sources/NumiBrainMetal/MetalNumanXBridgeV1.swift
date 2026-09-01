@@ -34,6 +34,21 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   typealias RuntimeCopyInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UInt8
+  typealias RuntimeCopyAnatomyInfo = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_anatomy_info_v1>?
+  ) -> UInt8
+  typealias RuntimeCopyJointAnatomy = @convention(c) (
+    UnsafeMutableRawPointer?, UInt32,
+    UnsafeMutablePointer<mrnx_joint_anatomy_v1>?
+  ) -> UInt8
+  typealias RuntimeCopyJointCoordinateAnatomy = @convention(c) (
+    UnsafeMutableRawPointer?, UInt32,
+    UnsafeMutablePointer<mrnx_joint_coordinate_anatomy_v1>?
+  ) -> UInt8
+  typealias RuntimeCopyMuscleAttachmentAnatomy = @convention(c) (
+    UnsafeMutableRawPointer?, UInt32,
+    UnsafeMutablePointer<mrnx_muscle_attachment_anatomy_v1>?
+  ) -> UInt8
   typealias RuntimeBegin = @convention(c) (
     UnsafeMutableRawPointer?, UnsafePointer<mrnx_physical_root_request_v1>?,
     UnsafeMutableRawPointer?, MetalNumanXBridgeV1RootCallback?
@@ -98,6 +113,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
   let runtimeCopyInfo: RuntimeCopyInfo
+  let runtimeCopyAnatomyInfo: RuntimeCopyAnatomyInfo
+  let runtimeCopyJointAnatomy: RuntimeCopyJointAnatomy
+  let runtimeCopyJointCoordinateAnatomy: RuntimeCopyJointCoordinateAnatomy
+  let runtimeCopyMuscleAttachmentAnatomy: RuntimeCopyMuscleAttachmentAnatomy
   let runtimeBegin: RuntimeBegin
   let runtimeCopySnapshot: RuntimeCopySnapshot
   let runtimeCopySnapshotV2: RuntimeCopySnapshotV2
@@ -144,6 +163,18 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       runtimeDrop = try Self.symbol("mrnx_bridge_v1_runtime_drop", library: library)
       runtimeCopyInfo = try Self.symbol(
         "mrnx_bridge_v1_runtime_copy_info", library: library
+      )
+      runtimeCopyAnatomyInfo = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_anatomy_info", library: library
+      )
+      runtimeCopyJointAnatomy = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_joint_anatomy", library: library
+      )
+      runtimeCopyJointCoordinateAnatomy = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_joint_coordinate_anatomy", library: library
+      )
+      runtimeCopyMuscleAttachmentAnatomy = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_muscle_attachment_anatomy", library: library
       )
       runtimeBegin = try Self.symbol(
         "mrnx_bridge_v1_runtime_begin_physical_root", library: library
@@ -1085,6 +1116,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let dofCount: UInt32
     public let muscleCount: UInt32
     public let residentContinuationCount: UInt32
+    public let requestFailureStage: UInt32
     public let deviceRegistryID: UInt64
     public let acceptedStateProofProgramFingerprint: UInt64
     public let modelSourceFingerprint: UInt64
@@ -1125,7 +1157,8 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       return try NumanXSensorPacketLease(
         transaction: transaction,
         compiledSpeciesTemplate: compiledSpeciesTemplate,
-        rawSensors: channels.map(\.rawSensor)
+        rawSensors: channels.map(\.rawSensor),
+        allowsMatchingAcceptedFrameReuse: true
       )
     }
   }
@@ -1203,6 +1236,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       dofCount: rawInfo.dof_count,
       muscleCount: rawInfo.muscle_count,
       residentContinuationCount: rawInfo.resident_continuation_count,
+      requestFailureStage: rawInfo.request_failure_stage,
       deviceRegistryID: rawInfo.device_registry_id,
       acceptedStateProofProgramFingerprint:
         rawInfo.accepted_state_proof_program_fingerprint,
@@ -1235,10 +1269,180 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       dofCount: rawInfo.dof_count,
       muscleCount: rawInfo.muscle_count,
       residentContinuationCount: rawInfo.resident_continuation_count,
+      requestFailureStage: rawInfo.request_failure_stage,
       deviceRegistryID: rawInfo.device_registry_id,
       acceptedStateProofProgramFingerprint:
         rawInfo.accepted_state_proof_program_fingerprint,
       modelSourceFingerprint: rawInfo.model_source_fingerprint
+    )
+  }
+
+  /// Copies the immutable source anatomy retained by the native runtime and
+  /// recompiles it into the same content-addressed catalogs consumed by the
+  /// Brain. No simulation state or Metal payload bytes are read.
+  public func fullBodyAnatomy() throws -> NumanXFullBodyAnatomy {
+    var anatomyInfo = mrnx_runtime_anatomy_info_v1()
+    anatomyInfo.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+    anatomyInfo.struct_size = UInt32(
+      MemoryLayout<mrnx_runtime_anatomy_info_v1>.stride
+    )
+    guard symbols.runtimeCopyAnatomyInfo(runtime, &anatomyInfo) != 0,
+      anatomyInfo.body_count == info.bodyCount,
+      anatomyInfo.joint_count == info.bodyCount - 1,
+      anatomyInfo.coordinate_count == info.dofCount,
+      anatomyInfo.muscle_count == info.muscleCount,
+      anatomyInfo.head_body_identifier < anatomyInfo.body_count,
+      anatomyInfo.reserved0 == 0,
+      anatomyInfo.model_source_fingerprint == info.modelSourceFingerprint
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "native full-body anatomy header is inconsistent"
+      )
+    }
+    var joints: [NumanXJointTopology] = []
+    joints.reserveCapacity(Int(anatomyInfo.joint_count))
+    for jointIndex in 0..<anatomyInfo.joint_count {
+      var raw = mrnx_joint_anatomy_v1()
+      raw.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+      raw.struct_size = UInt32(MemoryLayout<mrnx_joint_anatomy_v1>.stride)
+      guard symbols.runtimeCopyJointAnatomy(runtime, jointIndex, &raw) != 0,
+        raw.joint_identifier == jointIndex,
+        raw.parent_body_identifier < anatomyInfo.body_count,
+        raw.child_body_identifier < anatomyInfo.body_count,
+        raw.reserved0 == 0,
+        raw.reserved1 == 0,
+        raw.reserved2 == 0
+      else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "native joint anatomy is malformed"
+        )
+      }
+      var coordinates: [NumanXJointCoordinateTopology] = []
+      coordinates.reserveCapacity(Int(raw.coordinate_count))
+      let (coordinateEnd, overflow) = raw.coordinate_offset
+        .addingReportingOverflow(raw.coordinate_count)
+      guard !overflow, coordinateEnd <= anatomyInfo.coordinate_count else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "native joint coordinate range overflows"
+        )
+      }
+      for coordinateIndex in raw.coordinate_offset..<coordinateEnd {
+        var coordinate = mrnx_joint_coordinate_anatomy_v1()
+        coordinate.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+        coordinate.struct_size = UInt32(
+          MemoryLayout<mrnx_joint_coordinate_anatomy_v1>.stride
+        )
+        guard symbols.runtimeCopyJointCoordinateAnatomy(
+          runtime, coordinateIndex, &coordinate
+        ) != 0,
+          coordinate.joint_identifier == jointIndex,
+          coordinate.v_index == coordinateIndex,
+          coordinate.coordinate_identifier < raw.coordinate_count,
+          coordinate.flags
+            & ~UInt32(MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1.rawValue) == 0,
+          coordinate.reserved0 == 0,
+          coordinate.reserved1 == 0,
+          let identifier = UInt16(exactly: coordinate.coordinate_identifier)
+        else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "native joint coordinate anatomy is malformed"
+          )
+        }
+        let kind: NumanXJointCoordinateKind
+        switch coordinate.kind {
+        case UInt32(MRNX_JOINT_COORDINATE_ANGULAR_V1.rawValue): kind = .angular
+        case UInt32(MRNX_JOINT_COORDINATE_LINEAR_V1.rawValue): kind = .linear
+        default:
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "native joint coordinate kind is unsupported"
+          )
+        }
+        coordinates.append(try NumanXJointCoordinateTopology(
+          identifier: identifier,
+          kind: kind,
+          kinesthesiaReceptorIndex: coordinate.v_index,
+          parentLocalAxis: try NumanXBodyLocalPoint(
+            x: coordinate.parent_local_axis.0,
+            y: coordinate.parent_local_axis.1,
+            z: coordinate.parent_local_axis.2
+          ),
+          minimumPosition: coordinate.minimum_position,
+          maximumPosition: coordinate.maximum_position,
+          restPosition: coordinate.rest_position
+        ))
+      }
+      joints.append(try NumanXJointTopology(
+        jointIdentifier: raw.joint_identifier,
+        parentBodyIdentifier: raw.parent_body_identifier,
+        childBodyIdentifier: raw.child_body_identifier,
+        parentLocalAnchor: try NumanXBodyLocalPoint(
+          x: raw.parent_local_anchor.0,
+          y: raw.parent_local_anchor.1,
+          z: raw.parent_local_anchor.2
+        ),
+        childLocalAnchor: try NumanXBodyLocalPoint(
+          x: raw.child_local_anchor.0,
+          y: raw.child_local_anchor.1,
+          z: raw.child_local_anchor.2
+        ),
+        restRelativeOrientation: try BrainQuaternion(
+          x: raw.rest_relative_orientation.0,
+          y: raw.rest_relative_orientation.1,
+          z: raw.rest_relative_orientation.2,
+          w: raw.rest_relative_orientation.3
+        ),
+        coordinates: coordinates
+      ))
+    }
+    var attachments: [NumanXMuscleAttachment] = []
+    attachments.reserveCapacity(Int(anatomyInfo.muscle_count))
+    for muscleIndex in 0..<anatomyInfo.muscle_count {
+      var raw = mrnx_muscle_attachment_anatomy_v1()
+      raw.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+      raw.struct_size = UInt32(
+        MemoryLayout<mrnx_muscle_attachment_anatomy_v1>.stride
+      )
+      guard symbols.runtimeCopyMuscleAttachmentAnatomy(
+        runtime, muscleIndex, &raw
+      ) != 0,
+        raw.muscle_identifier == muscleIndex,
+        raw.first_body_identifier < anatomyInfo.body_count,
+        raw.terminal_body_identifier < anatomyInfo.body_count,
+        raw.reserved0 == 0, raw.reserved1 == 0,
+        raw.reserved2 == 0, raw.reserved3 == 0
+      else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "native muscle attachment anatomy is malformed"
+        )
+      }
+      attachments.append(try NumanXMuscleAttachment(
+        muscleIdentifier: raw.muscle_identifier,
+        firstBodyIdentifier: raw.first_body_identifier,
+        terminalBodyIdentifier: raw.terminal_body_identifier,
+        routeNodeCount: raw.route_node_count,
+        firstLocalPoint: try NumanXBodyLocalPoint(
+          x: raw.first_local_point.0,
+          y: raw.first_local_point.1,
+          z: raw.first_local_point.2
+        ),
+        terminalLocalPoint: try NumanXBodyLocalPoint(
+          x: raw.terminal_local_point.0,
+          y: raw.terminal_local_point.1,
+          z: raw.terminal_local_point.2
+        )
+      ))
+    }
+    return try NumanXFullBodyAnatomy(
+      jointTopologyCatalog: try NumanXJointTopologyCatalog(
+        numanXModelFingerprint: anatomyInfo.model_source_fingerprint,
+        bodyCount: anatomyInfo.body_count,
+        joints: joints
+      ),
+      muscleAttachmentCatalog: try NumanXMuscleAttachmentCatalog(
+        bodyCount: anatomyInfo.body_count,
+        attachments: attachments
+      ),
+      headBodyIdentifier: anatomyInfo.head_body_identifier
     )
   }
 

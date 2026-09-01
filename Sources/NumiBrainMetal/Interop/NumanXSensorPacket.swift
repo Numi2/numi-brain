@@ -326,12 +326,32 @@ public struct NumanXSensorPacket: Equatable, Sendable {
 public final class NumanXSensorPacketLease: @unchecked Sendable {
   public let packet: NumanXSensorPacket
   public let rawSensors: [MetalRawSensorBufferLease]
+  /// True only when these exact Metal ranges are the jointly published sensor
+  /// frame already present in committed Brain state. Fresh or externally
+  /// substituted packets must be transduced even when their timestamp matches.
+  let allowsMatchingAcceptedFrameReuse: Bool
 
-  public init(
+  public convenience init(
     transaction: BrainJointTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
     compiledSpeciesTemplate: CompiledSpeciesTemplate,
     rawSensors: [MetalRawSensorBufferLease]
+  ) throws {
+    try self.init(
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      compiledSpeciesTemplate: compiledSpeciesTemplate,
+      rawSensors: rawSensors,
+      allowsMatchingAcceptedFrameReuse: false
+    )
+  }
+
+  init(
+    transaction: BrainJointTransactionToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
+    compiledSpeciesTemplate: CompiledSpeciesTemplate,
+    rawSensors: [MetalRawSensorBufferLease],
+    allowsMatchingAcceptedFrameReuse: Bool
   ) throws {
     packet = try NumanXSensorPacket(
       transaction: transaction,
@@ -342,6 +362,7 @@ public final class NumanXSensorPacketLease: @unchecked Sendable {
     self.rawSensors = rawSensors.sorted {
       $0.view.modality.rawValue < $1.view.modality.rawValue
     }
+    self.allowsMatchingAcceptedFrameReuse = allowsMatchingAcceptedFrameReuse
   }
 
   /// Imports a packet emitted by an external same-process NumanX bridge and
@@ -372,5 +393,6 @@ public final class NumanXSensorPacketLease: @unchecked Sendable {
     }
     self.packet = packet
     self.rawSensors = sortedSensors
+    allowsMatchingAcceptedFrameReuse = false
   }
 }
