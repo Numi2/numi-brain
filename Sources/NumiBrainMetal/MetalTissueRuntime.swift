@@ -421,6 +421,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let feedbackState: MetalAsyncFeedbackState
     let resources: MetalAsyncCommandResources
     let motorEvaluation: MetalNumanXMotorReadyEvaluation
+    let cultureAction: MetalNumanXAcceptedCultureAction?
 
     init(
       identifier: UUID,
@@ -432,7 +433,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       completionPoint: MetalSharedEventPoint,
       feedbackState: MetalAsyncFeedbackState,
       resources: MetalAsyncCommandResources,
-      motorEvaluation: MetalNumanXMotorReadyEvaluation
+      motorEvaluation: MetalNumanXMotorReadyEvaluation,
+      cultureAction: MetalNumanXAcceptedCultureAction?
     ) {
       self.identifier = identifier
       self.owner = owner
@@ -446,9 +448,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       self.feedbackState = feedbackState
       self.resources = resources
       self.motorEvaluation = motorEvaluation
+      self.cultureAction = cultureAction
     }
 
     public var hasCompleted: Bool { feedbackState.hasCompleted }
+
+    public var acceptedCultureActionGeneration: UInt64? {
+      cultureAction?.aggregate.culture.generation
+    }
 
     public func completionFeedbackIfAvailable() throws
       -> MetalGPUCompletionFeedback?
@@ -4769,6 +4776,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     waitFor decisionReadyPoint: MetalSharedEventPoint,
     signal motorReadyPoint: MetalSharedEventPoint,
     brainProgramFingerprint: UInt64,
+    acceptedCulture aggregateCulture:
+      MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
     qualificationInterruptEvents: [BrainInterruptEvent] = []
   ) throws -> NumanXMotorSubmissionTicket {
     guard activeNumanXMotorSubmission == nil,
@@ -4972,10 +4981,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       brainProgramFingerprint: brainProgramFingerprint,
       fastProgramFingerprint: numanXFastProgramFingerprint
     )
+    let cultureAction = try aggregateCulture.map {
+      try numanXMotorReadyRuntime.makeAcceptedCultureAction(
+        device: device,
+        aggregate: $0,
+        transaction: transaction
+      )
+    }
     let dynamicResidency = try numanXMotorReadyRuntime.makeResidencySet(
       device: device,
       label: "NumiBrain NumanX async motor residency",
       allocations: motorEvaluation.residencyAllocations
+        + (cultureAction?.residencyAllocations ?? [])
     )
     var residencyTransferred = false
     defer {
@@ -5043,6 +5060,18 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       visibilityOptions: .device
     )
     do {
+      if let cultureAction {
+        try numanXMotorReadyRuntime.encodeAcceptedCultureAction(
+          encoder: encoder,
+          action: cultureAction,
+          buffers: buffers
+        )
+        encoder.barrier(
+          afterEncoderStages: .dispatch,
+          beforeEncoderStages: .dispatch,
+          visibilityOptions: .device
+        )
+      }
       try numanXMotorReadyRuntime.encodeMotor(
         encoder: encoder,
         evaluation: motorEvaluation,
@@ -5092,6 +5121,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       decisionReadyPoint.event,
       value: decisionReadyPoint.value
     )
+    if let cultureAction {
+      commandQueue.waitForEvent(
+        cultureAction.aggregate.culture.readyPoint.event,
+        value: cultureAction.aggregate.culture.readyPoint.value
+      )
+    }
     let options = MTL4CommitOptions()
     options.addFeedbackHandler { feedback in
       if feedback.error != nil || !motorEvaluation.hasValidSuccess() {
@@ -5115,7 +5150,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       completionPoint: motorReadyPoint,
       feedbackState: feedbackState,
       resources: resources,
-      motorEvaluation: motorEvaluation
+      motorEvaluation: motorEvaluation,
+      cultureAction: cultureAction
     )
   }
 

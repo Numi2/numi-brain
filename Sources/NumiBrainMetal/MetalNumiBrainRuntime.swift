@@ -718,6 +718,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     public let brainPreparedPoint: MetalSharedEventPoint
     public let brainProgramFingerprint: UInt64
     public let brainCommitPreflightReadyPoint: MetalSharedEventPoint
+    @_spi(NumanXInterop) public let culturePrepared:
+      MetalNumanXCulturePreparedLease?
 
     public var status: ControlTransaction.Status {
       owner.numanXPreparedControlStatus(self)
@@ -774,6 +776,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       brainCommitWitnessByteCount: Int,
       brainCommitWitnessMetalBufferObject: UnsafeMutableRawPointer,
       brainProgramFingerprint: UInt64,
+      culturePrepared: MetalNumanXCulturePreparedLease?,
       preflightResources: NumanXBrainCommitPreflightResources,
       prepareFeedbackLatch: MetalNumanXPrepareFeedbackLatch
     ) {
@@ -793,6 +796,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       self.brainCommitWitnessMetalBufferObject =
         brainCommitWitnessMetalBufferObject
       self.brainProgramFingerprint = brainProgramFingerprint
+      self.culturePrepared = culturePrepared
       self.preflightResources = preflightResources
       publicationFenceResources = nil
       self.prepareFeedbackLatch = prepareFeedbackLatch
@@ -1392,16 +1396,19 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   /// cognitive decision. The decision ticket remains caller-owned until this
   /// method succeeds, so any fallible motor preflight leaves the original
   /// decision submission available for exact abort/teardown.
+  @_spi(NumanXInterop)
   public func submitNumanXMotorCandidate(
     _ decisionTicket: DecisionSubmissionTicket,
     transaction: ControlTransaction,
     candidateDurationMicroseconds: UInt64,
+    acceptedCulture: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
     signal motorReadyPoint: MetalSharedEventPoint
   ) throws -> NumanXMotorSubmissionTicket {
     try submitNumanXMotorCandidate(
       decisionTicket,
       transaction: transaction,
       candidateDurationMicroseconds: candidateDurationMicroseconds,
+      acceptedCulture: acceptedCulture,
       qualificationInterruptEvents: [],
       signal: motorReadyPoint
     )
@@ -1415,7 +1422,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     _ decisionTicket: DecisionSubmissionTicket,
     transaction: ControlTransaction,
     candidateDurationMicroseconds: UInt64,
-    qualificationInterruptEvents: [BrainInterruptEvent],
+    acceptedCulture: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
+    qualificationInterruptEvents: [BrainInterruptEvent] = [],
     signal motorReadyPoint: MetalSharedEventPoint
   ) throws -> NumanXMotorSubmissionTicket {
     lock.lock()
@@ -1441,6 +1449,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         waitFor: decisionTicket.completionPoint,
         signal: motorReadyPoint,
         brainProgramFingerprint: cognitive.numanXBrainProgramFingerprint,
+        acceptedCulture: acceptedCulture,
         qualificationInterruptEvents: qualificationInterruptEvents
       )
       transaction.decision = decisionTicket.decision
@@ -1789,6 +1798,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    culturePrepared: MetalNumanXCulturePreparedLease? = nil,
     developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil,
     signal brainPreparedPoint: MetalSharedEventPoint,
@@ -1803,6 +1813,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         identity: identity,
         acceptedPhysicsGate: acceptedPhysicsGate,
         sensorCandidate: sensorCandidate,
+        culturePrepared: culturePrepared,
         developmentalIntents: developmentalIntents,
         teacherState: teacherState,
         signal: brainPreparedPoint,
@@ -1827,6 +1838,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    culturePrepared: MetalNumanXCulturePreparedLease?,
     developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease?,
     teacherState: MetalTeacherStateBufferLease?,
     signal brainPreparedPoint: MetalSharedEventPoint,
@@ -1859,6 +1871,21 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       provisional: ticket.provisional,
       deviceRegistryID: deviceRegistryID
     )
+    if let culturePrepared {
+      let (expectedCultureGeneration, cultureGenerationOverflow) =
+        culturePrepared.acceptedGeneration.addingReportingOverflow(1)
+      guard culturePrepared.identity == identity,
+        culturePrepared.sourceRootFingerprint == identity.transactionFingerprint,
+        !cultureGenerationOverflow,
+        culturePrepared.preparedGeneration == expectedCultureGeneration,
+        culturePrepared.receiptFingerprint > 0,
+        culturePrepared.deviceRegistryID == deviceRegistryID
+      else {
+        throw TissueError.transaction(
+          "prepared culture receipt does not bind the NumanX root"
+        )
+      }
+    }
     if let developmentalIntents {
       guard developmentalIntents.view.timestamp == transaction.token.targetTimestamp
       else {
@@ -1955,6 +1982,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       brainCommitWitnessByteCount: witnessByteCount,
       brainCommitWitnessMetalBufferObject: witnessObject,
       brainProgramFingerprint: brainProgramFingerprint,
+      culturePrepared: culturePrepared,
       preflightResources: preflightResources,
       prepareFeedbackLatch: prepareFeedbackLatch
     )
@@ -2515,12 +2543,21 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       let publication = PreparedAtomicJointPublication(
         fast: fast,
         cognitive: transaction.cognitiveTransaction,
-        jointCommitFingerprint:
-          MetalNumanXPendingSensorCandidateLease.jointCloseFingerprint(
+        jointCommitFingerprint: {
+          let physicalAndSensor =
+            MetalNumanXPendingSensorCandidateLease.jointCloseFingerprint(
             receiptFingerprint: fast.receipt.fingerprint,
             sensorCandidateFingerprint:
               ticket.sensorCandidate.publicationFingerprint
           )
+          guard let culture = ticket.culturePrepared else {
+            return physicalAndSensor
+          }
+          return MetalNumanXPendingSensorCandidateLease.jointCloseFingerprint(
+            receiptFingerprint: physicalAndSensor,
+            sensorCandidateFingerprint: culture.receiptFingerprint
+          )
+        }()
       )
       ticket.acceptedPhysicsState = acceptedPhysicsState
       ticket.preparedPublication = publication

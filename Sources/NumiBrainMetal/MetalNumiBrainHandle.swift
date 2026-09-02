@@ -436,10 +436,12 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     }
   }
 
+  @_spi(NumanXInterop)
   public func submitNumanXMotorCandidate(
     _ decisionTicket: MetalNumiBrainRuntime.DecisionSubmissionTicket,
     transaction: ControlTransaction,
     candidateDurationMicroseconds: UInt64,
+    acceptedCulture: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
     signal motorReadyPoint: MetalSharedEventPoint
   ) throws -> MetalNumiBrainRuntime.NumanXMotorSubmissionTicket {
     lock.lock()
@@ -450,6 +452,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
         decisionTicket,
         transaction: transaction.transaction,
         candidateDurationMicroseconds: candidateDurationMicroseconds,
+        acceptedCulture: acceptedCulture,
         signal: motorReadyPoint
       )
     } catch {
@@ -614,6 +617,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
     identity: MetalNumanXHumanMatterRootIdentity,
     acceptedPhysicsGate: MetalAcceptedPhysicsGateLease,
     sensorCandidate: MetalNumanXPendingSensorCandidateLease,
+    culturePrepared: MetalNumanXCulturePreparedLease? = nil,
     developmentalIntents: MetalDevelopmentalCapabilityIntentBufferLease? = nil,
     teacherState: MetalTeacherStateBufferLease? = nil,
     signal brainPreparedPoint: MetalSharedEventPoint,
@@ -638,6 +642,7 @@ public final class MetalNumiBrainHandle: @unchecked Sendable {
         identity: identity,
         acceptedPhysicsGate: acceptedPhysicsGate,
         sensorCandidate: sensorCandidate,
+        culturePrepared: culturePrepared,
         developmentalIntents: developmentalIntents,
         teacherState: teacherState,
         signal: brainPreparedPoint,

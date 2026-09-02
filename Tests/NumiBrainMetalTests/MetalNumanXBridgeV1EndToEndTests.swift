@@ -1150,6 +1150,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       publication: publication,
       device: device
     )
+    let culturePack = ProcessInfo.processInfo.environment["NUMANX_CULTURE_PACK"]
     let native = try MetalNumanXBridgeV1Runtime(
       libraryPath: paths.library,
       device: device,
@@ -1163,7 +1164,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         matterMetallibPath: paths.matterMetallib,
         matterMaterialPath: paths.material,
         timestepMicroseconds: gateBTimestepMicroseconds,
-        transactionSlotCount: 2
+        transactionSlotCount: 2,
+        culturePackPath: culturePack
       )
     )
     XCTAssertEqual(native.info.bodyCount, 157)
@@ -1197,11 +1199,58 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     )
     let physical = first.physical
     let aggregate = first.aggregate
+    XCTAssertNil(first.cultureActionGeneration)
     XCTAssertEqual(aggregate.publicationEpoch, 1)
     XCTAssertEqual(aggregate.brainGeneration, brain.committedGeneration)
     XCTAssertEqual(aggregate.physicsGeneration, 1)
     XCTAssertEqual(aggregate.sensorGeneration, 1)
     XCTAssertEqual(aggregate.identity, physical.identity)
+    var acceptedCulture:
+      MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil
+    if culturePack != nil {
+      XCTAssertNotNil(physical.culture)
+      let aggregateV4 = try XCTUnwrap(native.aggregateSnapshotV4IfAvailable())
+      XCTAssertEqual(aggregateV4.base.publicationEpoch, aggregate.publicationEpoch)
+      XCTAssertEqual(aggregateV4.culture.generation, 1)
+      XCTAssertEqual(aggregateV4.culture.buffers.count, 11)
+      XCTAssertEqual(
+        aggregateV4.culture.sourceRootFingerprint,
+        aggregateV4.base.identity.transactionFingerprint
+      )
+      XCTAssertEqual(
+        aggregateV4.culture.receiptFingerprint,
+        physical.culture?.receiptFingerprint
+      )
+      XCTAssertEqual(
+        physical.culture?.preparedGeneration,
+        aggregateV4.culture.generation
+      )
+      let counts = try qualificationUInt32s(
+        from: qualificationReadback(
+          aggregateV4.culture.buffers[8].buffer,
+          device: device
+        )
+      )
+      XCTAssertEqual(counts.count, 60)
+      XCTAssertGreaterThan(counts.reduce(UInt64(0)) { $0 + UInt64($1) }, 0)
+      var electrode = 0
+      var weightedX: Int64 = 0
+      var weightedY: Int64 = 0
+      for row in 0..<8 {
+        for column in 0..<8 {
+          if (row == 0 || row == 7) && (column == 0 || column == 7) {
+            continue
+          }
+          let count = Int64(counts[electrode])
+          weightedX += count * Int64(2 * column - 7)
+          weightedY += count * Int64(2 * row - 7)
+          electrode += 1
+        }
+      }
+      XCTAssertNotEqual(weightedX, 0)
+      XCTAssertNotEqual(weightedY, 0)
+      acceptedCulture = aggregateV4
+    }
     XCTAssertEqual(aggregate.proprioception.receptorCount, 416)
     XCTAssertEqual(aggregate.proprioception.featureDimension, 10)
     XCTAssertEqual(aggregate.interoception.receptorCount, 416)
@@ -1294,8 +1343,13 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       native: native,
       transaction: secondTransaction,
       sensors: publishedSensors,
-      device: device
+      device: device,
+      acceptedCulture: acceptedCulture
     )
+    XCTAssertEqual(second.cultureActionGeneration, acceptedCulture?.culture.generation)
+    if acceptedCulture != nil {
+      XCTAssertNotEqual(second.motorExcitations, first.motorExcitations)
+    }
     XCTAssertEqual(second.physical.identity.controlStep, 2)
     XCTAssertEqual(second.aggregate.publicationEpoch, 2)
     XCTAssertEqual(second.aggregate.brainGeneration, 2)
@@ -1412,6 +1466,19 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(third.aggregate.sensorGeneration, 3)
     XCTAssertEqual(try native.currentInfo().residentContinuationCount, 2)
 
+    let cultureBeforeReject: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4?
+    let cultureBytesBeforeReject: [[UInt8]]?
+    if culturePack != nil {
+      cultureBeforeReject = try XCTUnwrap(native.aggregateSnapshotV4IfAvailable())
+      cultureBytesBeforeReject = try cultureBeforeReject?.culture.buffers.map {
+        try qualificationReadback($0, device: device)
+      }
+      XCTAssertEqual(cultureBeforeReject?.culture.generation, 3)
+    } else {
+      cultureBeforeReject = nil
+      cultureBytesBeforeReject = nil
+    }
+
     let rejectedTransaction = try brain.beginControl(
       controlStepIdentifier: 4,
       basePhysicsGeneration: third.aggregate.physicsGeneration,
@@ -1428,13 +1495,19 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       native: native,
       transaction: rejectedTransaction,
       sensors: rejectedSensors,
-      device: device
+      device: device,
+      acceptedCulture: cultureBeforeReject
+    )
+    XCTAssertEqual(
+      rejected.cultureActionGeneration,
+      cultureBeforeReject?.culture.generation
     )
     let rejectedAcceptedToken = acceptedGateBytes(
       rejected.physical.acceptedPhysicsGate
     )
-    let rejectedSensorPayload = sensorPayloadBytes(
-      rejected.physical.sensorCandidate
+    let rejectedSensorPayload = try sensorPayloadBytes(
+      rejected.physical.sensorCandidate,
+      device: device
     )
     XCTAssertTrue(rejected.physical.quarantineTimeout())
     let rejectProposalLatch =
@@ -1462,6 +1535,23 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(afterReject.physicsGeneration, 3)
     XCTAssertEqual(afterReject.sensorGeneration, 3)
     XCTAssertEqual(try native.currentInfo().residentContinuationCount, 3)
+    if let cultureBeforeReject, let cultureBytesBeforeReject {
+      let cultureAfterReject = try XCTUnwrap(native.aggregateSnapshotV4IfAvailable())
+      XCTAssertEqual(
+        cultureAfterReject.culture.generation,
+        cultureBeforeReject.culture.generation
+      )
+      XCTAssertEqual(
+        cultureAfterReject.culture.receiptFingerprint,
+        cultureBeforeReject.culture.receiptFingerprint
+      )
+      XCTAssertEqual(
+        try cultureAfterReject.culture.buffers.map {
+          try qualificationReadback($0, device: device)
+        },
+        cultureBytesBeforeReject
+      )
+    }
 
     // Retry the rejected causal step. Physics generation is reused from the
     // restored predecessor, while the private HumanIO sensor generation stays
@@ -1486,19 +1576,31 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       native: native,
       transaction: retryTransaction,
       sensors: retrySensors,
-      device: device
+      device: device,
+      acceptedCulture: cultureBeforeReject
+    )
+    XCTAssertEqual(
+      retried.cultureActionGeneration,
+      cultureBeforeReject?.culture.generation
     )
     XCTAssertEqual(retried.aggregate.publicationEpoch, 4)
     XCTAssertEqual(retried.aggregate.brainGeneration, 4)
     XCTAssertEqual(retried.aggregate.physicsGeneration, 4)
     XCTAssertEqual(retried.aggregate.sensorGeneration, 5)
     XCTAssertEqual(try native.currentInfo().residentContinuationCount, 4)
+    if let cultureBeforeReject {
+      let cultureAfterRetry = try XCTUnwrap(native.aggregateSnapshotV4IfAvailable())
+      XCTAssertEqual(
+        cultureAfterRetry.culture.generation,
+        cultureBeforeReject.culture.generation + 1
+      )
+    }
     XCTAssertEqual(
       acceptedGateBytes(retried.physical.acceptedPhysicsGate),
       rejectedAcceptedToken
     )
     XCTAssertEqual(
-      sensorPayloadBytes(retried.physical.sensorCandidate),
+      try sensorPayloadBytes(retried.physical.sensorCandidate, device: device),
       rejectedSensorPayload
     )
 
@@ -1667,6 +1769,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     transaction: MetalNumiBrainRuntime.ControlTransaction,
     sensors: NumanXSensorPacketLease,
     device: any MTLDevice,
+    acceptedCulture: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
     externalGoal: ActiveGoal? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
     developmentalIntentFingerprintXor: UInt64 = 0,
@@ -1678,7 +1781,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     motorExcitations: [Float],
     descendingSomatic: [Float],
     activeVisionCommand: Float,
-    activeVisionConfidence: Float
+    activeVisionConfidence: Float,
+    cultureActionGeneration: UInt64?
   ) {
     let staged = try prepareRoot(
       brain: brain,
@@ -1686,6 +1790,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       transaction: transaction,
       sensors: sensors,
       device: device,
+      acceptedCulture: acceptedCulture,
       externalGoal: externalGoal,
       developmentalCapabilityCodes: developmentalCapabilityCodes,
       developmentalIntentFingerprintXor: developmentalIntentFingerprintXor,
@@ -1749,7 +1854,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       staged.motorExcitations,
       staged.descendingSomatic,
       staged.activeVisionCommand,
-      staged.activeVisionConfidence
+      staged.activeVisionConfidence,
+      staged.cultureActionGeneration
     )
   }
 
@@ -2299,6 +2405,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     transaction: MetalNumiBrainRuntime.ControlTransaction,
     sensors: NumanXSensorPacketLease,
     device: any MTLDevice,
+    acceptedCulture: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4? = nil,
     externalGoal: ActiveGoal? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
     developmentalIntentFingerprintXor: UInt64 = 0,
@@ -2309,7 +2416,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     motorExcitations: [Float],
     descendingSomatic: [Float],
     activeVisionCommand: Float,
-    activeVisionConfidence: Float
+    activeVisionConfidence: Float,
+    cultureActionGeneration: UInt64?
   ) {
     let decisionPoint = try point(device, value: 1)
     let motorPoint = try point(device, value: 1)
@@ -2334,6 +2442,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       decision,
       transaction: transaction,
       candidateDurationMicroseconds: candidateDurationMicroseconds,
+      acceptedCulture: acceptedCulture,
       signal: motorPoint
     )
     let rootLatch = AsyncResultLatch<MetalNumanXBridgeV1PreparedRoot>()
@@ -2537,6 +2646,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       identity: physical.identity,
       acceptedPhysicsGate: physical.acceptedPhysicsGate,
       sensorCandidate: physical.sensorCandidate,
+      culturePrepared: physical.culture,
       developmentalIntents: developmentalIntents,
       signal: brainPoint,
       thenSignal: preflightPoint
@@ -2555,7 +2665,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       motorExcitations,
       descendingSomatic,
       activeSensingCommand,
-      activeSensingConfidence
+      activeSensingConfidence,
+      motor.acceptedCultureActionGeneration
     )
   }
 
@@ -2709,18 +2820,40 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   }
 
   private func sensorPayloadBytes(
-    _ candidate: MetalNumanXPendingSensorCandidateLease
-  ) -> [UInt8] {
-    candidate.rawSensors.flatMap { sensor in
-      var result = Array(UnsafeRawBufferPointer(
-        start: sensor.buffer.contents(), count: sensor.buffer.length
+    _ candidate: MetalNumanXPendingSensorCandidateLease,
+    device: any MTLDevice
+  ) throws -> [UInt8] {
+    try candidate.rawSensors.reduce(into: [UInt8]()) { result, sensor in
+      let valueRange = try MetalNumanXHumanIOCandidateRangeLease(
+        buffer: sensor.buffer,
+        metalBufferObject: Unmanaged.passUnretained(
+          sensor.buffer as AnyObject
+        ).toOpaque(),
+        gpuAddress: sensor.view.gpuAddress,
+        byteOffset: 0,
+        byteCount: sensor.view.byteCount,
+        elementType: MetalNumanXHumanIOCandidateRangeLease.float32ElementType,
+        elementByteCount: UInt32(MemoryLayout<Float>.stride)
+      )
+      result.append(contentsOf: try qualificationReadback(
+        valueRange, device: device
       ))
       if let validity = sensor.validityBuffer {
-        result.append(contentsOf: UnsafeRawBufferPointer(
-          start: validity.contents(), count: validity.length
+        let validityRange = try MetalNumanXHumanIOCandidateRangeLease(
+          buffer: validity,
+          metalBufferObject: Unmanaged.passUnretained(
+            validity as AnyObject
+          ).toOpaque(),
+          gpuAddress: sensor.view.validityGPUAddress,
+          byteOffset: 0,
+          byteCount: sensor.view.validityByteCount,
+          elementType: MetalNumanXHumanIOCandidateRangeLease.uint32ElementType,
+          elementByteCount: UInt32(MemoryLayout<UInt32>.stride)
+        )
+        result.append(contentsOf: try qualificationReadback(
+          validityRange, device: device
         ))
       }
-      return result
     }
   }
 

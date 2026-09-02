@@ -122,6 +122,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   private let productionUncertaintyGateEnabled: Bool
   private let lock = NSLock()
   private var aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot?
+  private var cultureAggregate:
+    MetalNumanXBridgeV1Runtime.AggregateSnapshotV4?
   private var committedTimestampMicroseconds: UInt64
   private var previousSettledSensorSnapshot:
     [MetalNumanXGateCCapture.SettledSensorChannel]?
@@ -424,6 +426,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         decision,
         transaction: transaction,
         candidateDurationMicroseconds: timestepMicroseconds,
+        acceptedCulture: cultureAggregate,
         qualificationInterruptEvents: hardSafetyEvents,
         signal: try Self.point(device)
       )
@@ -507,6 +510,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         identity: root.identity,
         acceptedPhysicsGate: root.acceptedPhysicsGate,
         sensorCandidate: root.sensorCandidate,
+        culturePrepared: root.culture,
         signal: try Self.point(device),
         thenSignal: try Self.point(device)
       )
@@ -583,7 +587,13 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         signal: try Self.point(device)
       )
       let closeStatus = Self.waitForClose(ticket)
-      let nextAggregate = try native.aggregateSnapshotIfAvailable()
+      let nextCultureAggregate = try native.aggregateSnapshotV4IfAvailable()
+      let nextAggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot?
+      if let nextCultureAggregate {
+        nextAggregate = nextCultureAggregate.base
+      } else {
+        nextAggregate = try native.aggregateSnapshotIfAvailable()
+      }
       if applied.commandDisposition == .rejectedReleased {
         let stableAggregate = aggregate
         let aggregateUnchanged = if let stableAggregate {
@@ -661,6 +671,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       )
       committedTimestampMicroseconds = targetMicros
       aggregate = nextAggregate
+      cultureAggregate = nextCultureAggregate
       return RootResult(
         sample: capturedSample,
         execution: execution,

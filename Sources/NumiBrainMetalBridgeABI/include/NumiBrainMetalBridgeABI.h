@@ -21,6 +21,11 @@
 #define MRNX_CANDIDATE_MODALITY_KINESTHESIA_V1 9u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V2 2u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V3 3u
+#define MRNX_RUNTIME_CONFIG_ABI_V2 2u
+#define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
+#define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
+#define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
+#define MRNX_CULTURE_ACCEPTED_BUFFER_COUNT_V1 11u
 #define MRNX_MAX_SENSOR_CHANNELS_V2 8u
 
 typedef struct mrnx_runtime_v1 mrnx_runtime_v1;
@@ -216,6 +221,29 @@ typedef struct mrnx_runtime_config_v1 {
   uint32_t reserved0;
 } mrnx_runtime_config_v1;
 
+typedef struct mrnx_runtime_config_v2 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  void *metal_device;
+  const char *rigid_payload_path;
+  const char *muscle_payload_path;
+  const char *support_contact_payload_path;
+  const char *visual_pack_path;
+  const char *vision_profile_path;
+  const char *metalrobo_metallib_path;
+  const char *matter_metallib_path;
+  const char *matter_material_path;
+  uint64_t timestep_microseconds;
+  uint64_t maximum_retained_bytes;
+  uint32_t transaction_slot_count;
+  uint32_t reserved0;
+  const char *culture_pack_path;
+  const char *culture_checkpoint_path;
+  const char *culture_protocol_path;
+  uint32_t culture_window_ticks;
+  float culture_current_per_newton;
+} mrnx_runtime_config_v2;
+
 typedef struct mrnx_runtime_info_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -343,6 +371,51 @@ typedef struct mrnx_aggregate_snapshot_v3 {
   mrnx_candidate_channel_v1 channels[MRNX_MAX_SENSOR_CHANNELS_V2];
 } mrnx_aggregate_snapshot_v3;
 
+typedef struct mrnx_culture_accepted_view_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t culture_fingerprint;
+  uint64_t generation;
+  uint64_t tick;
+  uint64_t growth_generation;
+  uint64_t source_root_fingerprint;
+  uint64_t receipt_fingerprint;
+  mrnx_event_point_v1 ready;
+  uint32_t buffer_count;
+  uint32_t reserved0;
+  mrnx_metal_range_v1 buffers[MRNX_CULTURE_ACCEPTED_BUFFER_COUNT_V1];
+} mrnx_culture_accepted_view_v1;
+
+typedef struct mrnx_culture_prepared_view_v1 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  mrnx_root_v1 root;
+  uint64_t culture_fingerprint;
+  uint64_t accepted_generation;
+  uint64_t prepared_generation;
+  uint64_t source_root_fingerprint;
+  uint64_t receipt_fingerprint;
+  mrnx_event_point_v1 ready;
+  uint32_t status;
+  uint32_t reserved0;
+} mrnx_culture_prepared_view_v1;
+
+typedef struct mrnx_aggregate_snapshot_v4 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t publication_epoch;
+  uint64_t brain_generation;
+  uint64_t physics_generation;
+  uint64_t sensor_generation;
+  mrnx_root_v1 root;
+  mrnx_candidate_view_v1 sensor;
+  mrnx_candidate_timing_v1 timing;
+  uint32_t channel_count;
+  uint32_t channel_capacity;
+  mrnx_candidate_channel_v1 channels[MRNX_MAX_SENSOR_CHANNELS_V2];
+  mrnx_culture_accepted_view_v1 culture;
+} mrnx_aggregate_snapshot_v4;
+
 typedef struct mrnx_physical_root_request_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -370,6 +443,9 @@ _Static_assert(sizeof(mrnx_wire_lease_v1) == 184u, "mrnx wire ABI");
 _Static_assert(sizeof(mrnx_proposal_view_v1) == 280u, "mrnx proposal ABI");
 _Static_assert(sizeof(mrnx_applied_view_v1) == 240u, "mrnx applied ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v1) == 104u, "mrnx config ABI");
+_Static_assert(sizeof(mrnx_runtime_config_v2) == 136u, "mrnx config v2 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v2, culture_pack_path) == 104u,
+               "mrnx config v2 culture offset");
 _Static_assert(sizeof(mrnx_runtime_info_v1) == 64u, "mrnx info ABI");
 _Static_assert(sizeof(mrnx_joint_anatomy_v1) == 80u,
                "mrnx joint anatomy ABI");
@@ -407,6 +483,19 @@ _Static_assert(offsetof(mrnx_aggregate_snapshot_v3, channel_count) == 288u,
                "mrnx snapshot v3 count offset");
 _Static_assert(offsetof(mrnx_aggregate_snapshot_v3, channels) == 296u,
                "mrnx snapshot v3 channels offset");
+_Static_assert(sizeof(mrnx_culture_accepted_view_v1) == 624u,
+               "mrnx culture accepted ABI");
+_Static_assert(offsetof(mrnx_culture_accepted_view_v1,
+                        receipt_fingerprint) == 48u,
+               "mrnx culture accepted receipt offset");
+_Static_assert(offsetof(mrnx_culture_accepted_view_v1, buffers) == 96u,
+               "mrnx culture accepted buffers offset");
+_Static_assert(sizeof(mrnx_culture_prepared_view_v1) == 184u,
+               "mrnx culture prepared ABI");
+_Static_assert(sizeof(mrnx_aggregate_snapshot_v4) == 1944u,
+               "mrnx snapshot v4 ABI");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v4, culture) == 1320u,
+               "mrnx snapshot v4 culture offset");
 _Static_assert(sizeof(mrnx_physical_root_request_v1) == 600u, "mrnx request ABI");
 _Static_assert(offsetof(mrnx_physical_root_request_v1, motor_header) == 328u,
                "mrnx request motor offset");

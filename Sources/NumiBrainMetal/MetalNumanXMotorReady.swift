@@ -91,6 +91,99 @@ private struct MetalNumanXUncertaintyPolicyRecord {
   var rootRejectionThreshold: Float = 0
 }
 
+@available(macOS 26.0, *)
+private struct MetalNumanXCultureActionRecord {
+  var abiVersion: UInt32 = 1
+  var structBytes: UInt32 = 96
+  var status: UInt32 = 1
+  var electrodeCount: UInt32 = 60
+  var cultureFingerprint: UInt64 = 0
+  var cultureGeneration: UInt64 = 0
+  var sourcePhysicsGeneration: UInt64 = 0
+  var transactionFingerprint: UInt64 = 0
+  var controlStep: UInt64 = 0
+  var countsByteCount: UInt64 = 240
+  var sourceRootFingerprint: UInt64 = 0
+  var receiptFingerprint: UInt64 = 0
+  var gain: Float = 0.05
+  var reserved0: UInt32 = 0
+  var actionFingerprint: UInt64 = 0
+}
+
+@available(macOS 26.0, *)
+final class MetalNumanXAcceptedCultureAction: @unchecked Sendable {
+  let aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4
+  let counts: MetalNumanXHumanIOCandidateRangeLease
+  let dispatchBuffer: any MTLBuffer
+
+  init(
+    device: any MTLDevice,
+    aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4,
+    transaction: BrainJointTransactionToken
+  ) throws {
+    let culture = aggregate.culture
+    try culture.readyPoint.validate(for: device)
+    guard culture.buffers.count == 11 else {
+      throw TissueError.transaction(
+        "accepted culture action has an incomplete state lease"
+      )
+    }
+    let counts = culture.buffers[8]
+    guard MemoryLayout<MetalNumanXCultureActionRecord>.stride == 96,
+      aggregate.base.brainGeneration == transaction.baseBrainGeneration,
+      aggregate.base.physicsGeneration == transaction.basePhysicsGeneration,
+      UInt64(aggregate.base.identity.controlStep) + 1
+        == transaction.controlStepIdentifier,
+      culture.cultureFingerprint != 0,
+      culture.generation != 0,
+      culture.sourceRootFingerprint
+        == aggregate.base.identity.transactionFingerprint,
+      culture.receiptFingerprint != 0,
+      counts.elementType == MetalNumanXHumanIOCandidateRangeLease.uint32ElementType,
+      counts.elementByteCount == UInt32(MemoryLayout<UInt32>.stride),
+      counts.byteCount == 60 * MemoryLayout<UInt32>.stride,
+      counts.buffer.device.registryID == device.registryID,
+      let dispatchBuffer = device.makeBuffer(
+        length: MemoryLayout<MetalNumanXCultureActionRecord>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      )
+    else {
+      throw TissueError.transaction(
+        "accepted culture action does not exactly precede this motor root"
+      )
+    }
+    var record = MetalNumanXCultureActionRecord(
+      cultureFingerprint: culture.cultureFingerprint,
+      cultureGeneration: culture.generation,
+      sourcePhysicsGeneration: aggregate.base.physicsGeneration,
+      transactionFingerprint: transaction.fingerprint,
+      controlStep: transaction.controlStepIdentifier,
+      sourceRootFingerprint: culture.sourceRootFingerprint,
+      receiptFingerprint: culture.receiptFingerprint
+    )
+    record.actionFingerprint = withUnsafeBytes(of: record) { bytes in
+      var hash = MetalNumanXReadyFingerprint.offset
+      for byte in bytes.prefix(88) {
+        hash = (hash ^ UInt64(byte)) &* MetalNumanXReadyFingerprint.prime
+      }
+      return hash == 0 ? MetalNumanXReadyFingerprint.offset : hash
+    }
+    withUnsafeBytes(of: &record) { bytes in
+      dispatchBuffer.contents().copyMemory(
+        from: bytes.baseAddress!, byteCount: bytes.count
+      )
+    }
+    dispatchBuffer.label = "NumiBrain accepted culture motor action"
+    self.aggregate = aggregate
+    self.counts = counts
+    self.dispatchBuffer = dispatchBuffer
+  }
+
+  var residencyAllocations: [any MTLAllocation] {
+    [dispatchBuffer, counts.buffer]
+  }
+}
+
 /// Host-readable qualification evidence copied from the exact fingerprinted
 /// decision gate after Metal completion. It is diagnostic only and carries no
 /// motor or publication authority.
@@ -734,8 +827,10 @@ final class MetalNumanXMotorReadyRuntime {
 
   private let deviceRegistryID: UInt64
   private let decisionPipeline: any MTLComputePipelineState
+  private let cultureActionPipeline: any MTLComputePipelineState
   private let motorPipeline: any MTLComputePipelineState
   private let decisionArguments: any MTL4ArgumentTable
+  private let cultureActionArguments: any MTL4ArgumentTable
   private let motorArguments: any MTL4ArgumentTable
 
   init(device: any MTLDevice) throws {
@@ -761,6 +856,8 @@ final class MetalNumanXMotorReadyRuntime {
     }
     guard let decisionFunction = library.makeFunction(
       name: "numanx_publish_decision_ready"
+    ), let cultureActionFunction = library.makeFunction(
+      name: "numanx_apply_accepted_culture_action"
     ), let motorFunction = library.makeFunction(
       name: "numanx_publish_motor_ready"
     ) else {
@@ -769,6 +866,9 @@ final class MetalNumanXMotorReadyRuntime {
     do {
       decisionPipeline = try device.makeComputePipelineState(
         function: decisionFunction
+      )
+      cultureActionPipeline = try device.makeComputePipelineState(
+        function: cultureActionFunction
       )
       motorPipeline = try device.makeComputePipelineState(function: motorFunction)
     } catch {
@@ -782,14 +882,21 @@ final class MetalNumanXMotorReadyRuntime {
     motorDescriptor.label = "NumiBrain NumanX motor-ready arguments"
     motorDescriptor.maxBufferBindCount = 14
     motorDescriptor.initializeBindings = true
+    let cultureActionDescriptor = MTL4ArgumentTableDescriptor()
+    cultureActionDescriptor.label = "NumiBrain accepted culture action arguments"
+    cultureActionDescriptor.maxBufferBindCount = 4
+    cultureActionDescriptor.initializeBindings = true
     guard let decisionArguments = try? device.makeArgumentTable(
       descriptor: decisionDescriptor
+    ), let cultureActionArguments = try? device.makeArgumentTable(
+      descriptor: cultureActionDescriptor
     ), let motorArguments = try? device.makeArgumentTable(
       descriptor: motorDescriptor
     ) else {
       throw TissueError.metal("failed to allocate NumanX motor-ready arguments")
     }
     self.decisionArguments = decisionArguments
+    self.cultureActionArguments = cultureActionArguments
     self.motorArguments = motorArguments
     self.deviceRegistryID = device.registryID
   }
@@ -951,6 +1058,18 @@ final class MetalNumanXMotorReadyRuntime {
     )
   }
 
+  func makeAcceptedCultureAction(
+    device: any MTLDevice,
+    aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshotV4,
+    transaction: BrainJointTransactionToken
+  ) throws -> MetalNumanXAcceptedCultureAction {
+    try MetalNumanXAcceptedCultureAction(
+      device: device,
+      aggregate: aggregate,
+      transaction: transaction
+    )
+  }
+
   func makeResidencySet(
     device: any MTLDevice,
     label: String,
@@ -1030,6 +1149,58 @@ final class MetalNumanXMotorReadyRuntime {
     )
     encoder.setComputePipelineState(motorPipeline)
     encoder.setArgumentTable(motorArguments)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+  }
+
+  func encodeAcceptedCultureAction(
+    encoder: any MTL4ComputeCommandEncoder,
+    action: MetalNumanXAcceptedCultureAction,
+    buffers: MetalTissueRuntime.NumanXMotorBufferLease
+  ) throws {
+    let countBytes = 60 * MemoryLayout<UInt32>.stride
+    let protected: [(any MTLBuffer, Int)] = [
+      (action.dispatchBuffer, 96),
+      (action.counts.buffer, countBytes),
+      (buffers.headerBuffer, MemoryLayout<NBMotorOutputHeader>.stride),
+      (buffers.excitationBuffer, buffers.excitationBuffer.length),
+    ]
+    var ranges: [BoundBufferRange] = []
+    for (buffer, count) in protected {
+      let (upper, overflow) = buffer.gpuAddress.addingReportingOverflow(
+        UInt64(count)
+      )
+      guard buffer.device.registryID == deviceRegistryID,
+        count > 0, buffer.length == count, !overflow
+      else {
+        throw TissueError.transaction(
+          "accepted culture action has stale or malformed Metal storage"
+        )
+      }
+      ranges.append(BoundBufferRange(
+        name: "culture action", lowerBound: buffer.gpuAddress,
+        upperBound: upper
+      ))
+    }
+    for index in ranges.indices {
+      for other in ranges.indices where other > index {
+        guard ranges[index].upperBound <= ranges[other].lowerBound
+          || ranges[other].upperBound <= ranges[index].lowerBound
+        else {
+          throw TissueError.transaction(
+            "accepted culture action aliases motor authority"
+          )
+        }
+      }
+    }
+    cultureActionArguments.setAddress(action.dispatchBuffer.gpuAddress, index: 0)
+    cultureActionArguments.setAddress(action.counts.gpuAddress, index: 1)
+    cultureActionArguments.setAddress(buffers.headerBuffer.gpuAddress, index: 2)
+    cultureActionArguments.setAddress(buffers.excitationBuffer.gpuAddress, index: 3)
+    encoder.setComputePipelineState(cultureActionPipeline)
+    encoder.setArgumentTable(cultureActionArguments)
     encoder.dispatchThreads(
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)

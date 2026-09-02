@@ -564,6 +564,13 @@ extension MetalNumiBrainRuntime {
     public var hasCompleted: Bool {
       cognitiveTicket.hasCompleted && motorTicket.hasCompleted
     }
+
+    /// Generation of the exact accepted culture whose device-side MEA action
+    /// was folded into this motor candidate. Nil is canonical for the first
+    /// root and for the default mesoscale-only path.
+    public var acceptedCultureActionGeneration: UInt64? {
+      motorTicket.acceptedCultureActionGeneration
+    }
   }
 
   /// Complete-brain ownership ticket for accepted consequence assimilation.

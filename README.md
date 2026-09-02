@@ -20,6 +20,10 @@ idea:
 
 > A brain must never learn from a future the body rejected.
 
+![Numi Neuron Lab showing phase and tubulin morphology, the authored neural and virtual-MEA geometry, accepted spike history, and synaptic weight and depression state.](docs/media/numi-neuron-lab.png)
+
+<p align="center"><sub>Real Apple-M4 Metal frame from the simulation-only Numi Neuron Lab. Quadrants: phase/tubulin, 1,000-neuron + 60-electrode activity, 256-tick raster, and 50,000-synapse weight/depression state.</sub></p>
+
 Every physical candidate and every neural consequence remain private until one
 root protocol accepts them together. Rejection restores the prior physical and
 neural reality; acceptance publishes one complete Brain + physics + sensor
@@ -104,13 +108,21 @@ The runtime includes:
 - deterministic counter-based randomness, rollback, retry, and replay; and
 - content-addressed Gate C datasets, evaluations, policies, and evidence roots.
 
-### Optional living-network research bridge
+### Optional synthetic-network research bridge
 
 NumiBrain now includes a deliberately optional, transactional controller for
-Numi Lab's synthetic neuron-culture twin: 1,000 LIF neurons, 50,000 plastic
+Numi Lab's synthetic neuron-culture simulation: 1,000 LIF neurons, 50,000 plastic
 synapses, a 60-electrode virtual MEA, and coupled phase/tubulin growth fields.
-Electrode activity can prepare a bounded embodied action, but it becomes visible
-only with the same accepted NumanX root; rejection publishes nothing. This keeps
+Its closed-loop benchmark follows the functional CPS/PTS/RBS architecture of
+[Chao, Bakkum, and Potter](https://doi.org/10.1371/journal.pcbi.1000042),
+without claiming a biological reproduction of their cultures or curves.
+Electrode activity prepares a bounded embodied action with an explicit
+one-root delay: physical root *N* consumes the action accepted at *N−1*, while
+root *N* support/tactile consequences prepare the next culture state. The
+culture receipt is folded into the GPU-validated joint preflight fingerprint;
+acceptance publishes Brain, Human/Matter, HumanIO, and culture together, while
+rejection publishes nothing. Runtime configuration v2 and aggregate snapshot
+v4 are additive—every v1 symbol and legacy root remains valid. This keeps
 detailed spiking research composable without replacing NumiBrain's production
 mesoscale architecture. See the [bridge contract](docs/NEURON_CULTURE_BRIDGE.md).
 

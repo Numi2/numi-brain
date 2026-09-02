@@ -30,6 +30,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v1>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV2 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v2>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias HandleVoid = @convention(c) (UnsafeMutableRawPointer?) -> Void
   typealias RuntimeCopyInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_info_v1>?
@@ -61,6 +65,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   ) -> UInt8
   typealias RuntimeCopySnapshotV3 = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_aggregate_snapshot_v3>?
+  ) -> UInt8
+  typealias RuntimeCopySnapshotV4 = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_aggregate_snapshot_v4>?
   ) -> UInt8
   typealias CopyRoot = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_root_v1>?
@@ -110,6 +117,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
 
   let library: UnsafeMutableRawPointer
   let runtimeCreate: RuntimeCreate
+  let runtimeCreateV2: RuntimeCreateV2
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
   let runtimeCopyInfo: RuntimeCopyInfo
@@ -121,12 +129,16 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCopySnapshot: RuntimeCopySnapshot
   let runtimeCopySnapshotV2: RuntimeCopySnapshotV2
   let runtimeCopySnapshotV3: RuntimeCopySnapshotV3
+  let runtimeCopySnapshotV4: RuntimeCopySnapshotV4
   let preparedRetain: HandleVoid
   let preparedDrop: HandleVoid
   let candidateRetain: HandleVoid
   let candidateDrop: HandleVoid
   let copyRoot: CopyRoot
   let copyPhysicalGate: CopyWire
+  let copyCultureView: @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_culture_prepared_view_v1>?
+  ) -> UInt8
   let copyCandidate: CopyCandidate
   let copyChannel: CopyChannel
   let copyTiming: CopyTiming
@@ -159,6 +171,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
         )
       }
       runtimeCreate = try Self.symbol("mrnx_bridge_v1_runtime_create", library: library)
+      runtimeCreateV2 = try Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v2", library: library
+      )
       runtimeRetain = try Self.symbol("mrnx_bridge_v1_runtime_retain", library: library)
       runtimeDrop = try Self.symbol("mrnx_bridge_v1_runtime_drop", library: library)
       runtimeCopyInfo = try Self.symbol(
@@ -188,6 +203,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       runtimeCopySnapshotV3 = try Self.symbol(
         "mrnx_bridge_v1_runtime_copy_aggregate_snapshot_v3", library: library
       )
+      runtimeCopySnapshotV4 = try Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_aggregate_snapshot_v4", library: library
+      )
       preparedRetain = try Self.symbol("mrnx_bridge_v1_prepared_retain", library: library)
       preparedDrop = try Self.symbol("mrnx_bridge_v1_prepared_drop", library: library)
       candidateRetain = try Self.symbol("mrnx_bridge_v1_candidate_retain", library: library)
@@ -195,6 +213,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       copyRoot = try Self.symbol("mrnx_bridge_v1_prepared_copy_root", library: library)
       copyPhysicalGate = try Self.symbol(
         "mrnx_bridge_v1_prepared_copy_physical_gate", library: library
+      )
+      copyCultureView = try Self.symbol(
+        "mrnx_bridge_v1_prepared_copy_culture_view", library: library
       )
       copyCandidate = try Self.symbol(
         "mrnx_bridge_v1_candidate_copy_view", library: library
@@ -396,12 +417,50 @@ private final class MetalNumanXBridgeV1CandidateOwner: @unchecked Sendable {
 }
 
 @available(macOS 26.0, *)
+public struct MetalNumanXCulturePreparedLease: Sendable {
+  public let identity: MetalNumanXHumanMatterRootIdentity
+  public let cultureFingerprint: UInt64
+  public let acceptedGeneration: UInt64
+  public let preparedGeneration: UInt64
+  public let sourceRootFingerprint: UInt64
+  public let receiptFingerprint: UInt64
+  public let readyPoint: MetalSharedEventPoint
+  public let deviceRegistryID: UInt64
+
+  fileprivate init(_ raw: mrnx_culture_prepared_view_v1) throws {
+    let (nextGeneration, generationOverflow) =
+      raw.accepted_generation.addingReportingOverflow(1)
+    guard raw.abi_version == UInt32(MRNX_CULTURE_PREPARED_VIEW_ABI_V1),
+      raw.struct_size == MemoryLayout<mrnx_culture_prepared_view_v1>.stride,
+      raw.status == 1, raw.reserved0 == 0,
+      raw.culture_fingerprint != 0,
+      !generationOverflow, raw.prepared_generation == nextGeneration,
+      raw.source_root_fingerprint == raw.root.transaction_fingerprint,
+      raw.receipt_fingerprint != 0
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "invalid prepared culture receipt"
+      )
+    }
+    identity = try MetalNumanXBridgeV1Convert.identity(raw.root)
+    cultureFingerprint = raw.culture_fingerprint
+    acceptedGeneration = raw.accepted_generation
+    preparedGeneration = raw.prepared_generation
+    sourceRootFingerprint = raw.source_root_fingerprint
+    receiptFingerprint = raw.receipt_fingerprint
+    readyPoint = try MetalNumanXBridgeV1Convert.point(raw.ready)
+    deviceRegistryID = raw.ready.device_registry_id
+  }
+}
+
+@available(macOS 26.0, *)
 @_spi(NumanXInterop)
 public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
   public let identity: MetalNumanXHumanMatterRootIdentity
   public let physicalPreparedPoint: MetalSharedEventPoint
   public let acceptedPhysicsGate: MetalAcceptedPhysicsGateLease
   public let sensorCandidate: MetalNumanXPendingSensorCandidateLease
+  public let culture: MetalNumanXCulturePreparedLease?
 
   private let symbols: MetalNumanXBridgeV1Symbols
   private let handle: UnsafeMutableRawPointer
@@ -412,7 +471,8 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
     symbols: MetalNumanXBridgeV1Symbols,
     device: any MTLDevice,
     prepared: UnsafeMutableRawPointer,
-    candidate: UnsafeMutableRawPointer
+    candidate: UnsafeMutableRawPointer,
+    expectsCulture: Bool
   ) throws {
     self.symbols = symbols
     handle = prepared
@@ -571,6 +631,29 @@ public final class MetalNumanXBridgeV1PreparedRoot: @unchecked Sendable {
       sensorCandidate = try MetalNumanXPendingSensorCandidateLease(
         bridgeCandidate: pendingView
       )
+      var cultureView = mrnx_culture_prepared_view_v1()
+      cultureView.abi_version = UInt32(MRNX_CULTURE_PREPARED_VIEW_ABI_V1)
+      cultureView.struct_size = UInt32(
+        MemoryLayout<mrnx_culture_prepared_view_v1>.stride
+      )
+      if symbols.copyCultureView(handle, &cultureView) != 0 {
+        let lease = try MetalNumanXCulturePreparedLease(cultureView)
+        guard lease.identity == identity,
+          lease.deviceRegistryID == device.registryID
+        else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "prepared culture receipt does not bind this root/device"
+          )
+        }
+        culture = lease
+      } else {
+        guard !expectsCulture else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "culture-enabled root omitted its prepared culture receipt"
+          )
+        }
+        culture = nil
+      }
     } catch {
       symbols.preparedDrop(handle)
       throw error
@@ -1010,7 +1093,8 @@ private let metalNumanXBridgeV1RootCallback: MetalNumanXBridgeV1RootCallback = {
       symbols: box.runtime.symbols,
       device: box.runtime.device,
       prepared: prepared,
-      candidate: candidate
+      candidate: candidate,
+      expectsCulture: box.runtime.cultureEnabled
     )))
   } catch {
     box.completion(.failure(error))
@@ -1082,6 +1166,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let timestepMicroseconds: UInt64
     public let maximumRetainedBytes: UInt64
     public let transactionSlotCount: UInt32
+    public let culturePackPath: String?
+    public let cultureCheckpointPath: String?
+    public let cultureProtocolPath: String?
+    public let cultureWindowTicks: UInt32
+    public let cultureCurrentPerNewton: Float
 
     public init(
       rigidPayloadPath: String,
@@ -1094,7 +1183,12 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       matterMaterialPath: String,
       timestepMicroseconds: UInt64,
       maximumRetainedBytes: UInt64 = 1 << 30,
-      transactionSlotCount: UInt32 = 2
+      transactionSlotCount: UInt32 = 2,
+      culturePackPath: String? = nil,
+      cultureCheckpointPath: String? = nil,
+      cultureProtocolPath: String? = nil,
+      cultureWindowTicks: UInt32 = 100,
+      cultureCurrentPerNewton: Float = 1
     ) {
       self.rigidPayloadPath = rigidPayloadPath
       self.musclePayloadPath = musclePayloadPath
@@ -1107,6 +1201,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.timestepMicroseconds = timestepMicroseconds
       self.maximumRetainedBytes = maximumRetainedBytes
       self.transactionSlotCount = transactionSlotCount
+      self.culturePackPath = culturePackPath
+      self.cultureCheckpointPath = cultureCheckpointPath
+      self.cultureProtocolPath = cultureProtocolPath
+      self.cultureWindowTicks = cultureWindowTicks
+      self.cultureCurrentPerNewton = cultureCurrentPerNewton
     }
   }
 
@@ -1163,9 +1262,29 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
   }
 
+  /// Retained accepted-only culture authority published in the same native
+  /// reader-gated tuple as Brain, physics, and HumanIO. Buffer order is the
+  /// canonical MetalNeuronCulture v1 order (membrane through tubulin).
+  public struct CultureAcceptedSnapshot: Sendable {
+    public let cultureFingerprint: UInt64
+    public let generation: UInt64
+    public let tick: UInt64
+    public let growthGeneration: UInt64
+    public let sourceRootFingerprint: UInt64
+    public let receiptFingerprint: UInt64
+    public let readyPoint: MetalSharedEventPoint
+    public let buffers: [MetalNumanXHumanIOCandidateRangeLease]
+  }
+
+  public struct AggregateSnapshotV4: Sendable {
+    public let base: AggregateSnapshot
+    public let culture: CultureAcceptedSnapshot
+  }
+
   fileprivate let symbols: MetalNumanXBridgeV1Symbols
   fileprivate let device: any MTLDevice
   private let runtime: UnsafeMutableRawPointer
+  fileprivate let cultureEnabled: Bool
   public let info: Info
 
   public init(
@@ -1178,6 +1297,12 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     var rawInfo = mrnx_runtime_info_v1()
     rawInfo.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
     rawInfo.struct_size = UInt32(MemoryLayout<mrnx_runtime_info_v1>.stride)
+    func withOptionalCString<R>(
+      _ value: String?, _ body: (UnsafePointer<CChar>?) throws -> R
+    ) rethrows -> R {
+      guard let value else { return try body(nil) }
+      return try value.withCString(body)
+    }
     let created: UnsafeMutableRawPointer? = configuration.rigidPayloadPath.withCString {
       rigid in configuration.musclePayloadPath.withCString {
         muscles in configuration.supportContactPayloadPath.withCString {
@@ -1186,22 +1311,51 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
               visionProfile in configuration.metalRoboMetallibPath.withCString {
                 metalRobo in configuration.matterMetallibPath.withCString {
                   matter in configuration.matterMaterialPath.withCString { material in
-              var config = mrnx_runtime_config_v1()
-              config.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
-              config.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v1>.stride)
-              config.metal_device = Unmanaged.passUnretained(device as AnyObject).toOpaque()
-              config.rigid_payload_path = rigid
-              config.muscle_payload_path = muscles
-              config.support_contact_payload_path = contacts
-              config.visual_pack_path = visualPack
-              config.vision_profile_path = visionProfile
-              config.metalrobo_metallib_path = metalRobo
-              config.matter_metallib_path = matter
-              config.matter_material_path = material
-              config.timestep_microseconds = configuration.timestepMicroseconds
-              config.maximum_retained_bytes = configuration.maximumRetainedBytes
-              config.transaction_slot_count = configuration.transactionSlotCount
-              return symbols.runtimeCreate(&config, &rawInfo)
+                    if configuration.culturePackPath != nil {
+                      return withOptionalCString(configuration.culturePackPath) { culturePack in
+                        withOptionalCString(configuration.cultureCheckpointPath) { checkpoint in
+                          withOptionalCString(configuration.cultureProtocolPath) { protocolPath in
+                            var config = mrnx_runtime_config_v2()
+                            config.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V2)
+                            config.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v2>.stride)
+                            config.metal_device = Unmanaged.passUnretained(device as AnyObject).toOpaque()
+                            config.rigid_payload_path = rigid
+                            config.muscle_payload_path = muscles
+                            config.support_contact_payload_path = contacts
+                            config.visual_pack_path = visualPack
+                            config.vision_profile_path = visionProfile
+                            config.metalrobo_metallib_path = metalRobo
+                            config.matter_metallib_path = matter
+                            config.matter_material_path = material
+                            config.timestep_microseconds = configuration.timestepMicroseconds
+                            config.maximum_retained_bytes = configuration.maximumRetainedBytes
+                            config.transaction_slot_count = configuration.transactionSlotCount
+                            config.culture_pack_path = culturePack
+                            config.culture_checkpoint_path = checkpoint
+                            config.culture_protocol_path = protocolPath
+                            config.culture_window_ticks = configuration.cultureWindowTicks
+                            config.culture_current_per_newton = configuration.cultureCurrentPerNewton
+                            return symbols.runtimeCreateV2(&config, &rawInfo)
+                          }
+                        }
+                      }
+                    }
+                    var config = mrnx_runtime_config_v1()
+                    config.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+                    config.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v1>.stride)
+                    config.metal_device = Unmanaged.passUnretained(device as AnyObject).toOpaque()
+                    config.rigid_payload_path = rigid
+                    config.muscle_payload_path = muscles
+                    config.support_contact_payload_path = contacts
+                    config.visual_pack_path = visualPack
+                    config.vision_profile_path = visionProfile
+                    config.metalrobo_metallib_path = metalRobo
+                    config.matter_metallib_path = matter
+                    config.matter_material_path = material
+                    config.timestep_microseconds = configuration.timestepMicroseconds
+                    config.maximum_retained_bytes = configuration.maximumRetainedBytes
+                    config.transaction_slot_count = configuration.transactionSlotCount
+                    return symbols.runtimeCreate(&config, &rawInfo)
                   }
                 }
               }
@@ -1230,6 +1384,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     self.symbols = symbols
     self.device = device
     runtime = created
+    cultureEnabled = configuration.culturePackPath != nil
     info = Info(
       bodyCount: rawInfo.body_count,
       qCoordinateCount: rawInfo.q_coordinate_count,
@@ -1510,6 +1665,101 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     )
   }
 
+  /// Copies the culture-enabled aggregate tuple under the native shared
+  /// publication gate. It performs descriptor validation only; payload bytes
+  /// remain GPU resident and are not read back.
+  public func aggregateSnapshotV4IfAvailable() throws -> AggregateSnapshotV4? {
+    guard cultureEnabled else { return nil }
+    var value = mrnx_aggregate_snapshot_v4()
+    value.abi_version = UInt32(MRNX_AGGREGATE_SNAPSHOT_ABI_V4)
+    value.struct_size = UInt32(MemoryLayout<mrnx_aggregate_snapshot_v4>.stride)
+    guard symbols.runtimeCopySnapshotV4(runtime, &value) != 0 else { return nil }
+    guard value.abi_version == UInt32(MRNX_AGGREGATE_SNAPSHOT_ABI_V4),
+      value.struct_size == MemoryLayout<mrnx_aggregate_snapshot_v4>.stride,
+      value.publication_epoch > 0, value.brain_generation > 0,
+      value.physics_generation > 0, value.sensor_generation > 0,
+      value.channel_capacity == UInt32(MRNX_MAX_SENSOR_CHANNELS_V2),
+      value.channel_count >= 2, value.channel_count <= value.channel_capacity,
+      value.sensor.channel_count == value.channel_count,
+      value.sensor.accepted_brain_generation == value.brain_generation,
+      value.sensor.key.sensor_generation == value.sensor_generation
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "native aggregate v4 publication tuple is malformed"
+      )
+    }
+    let timing = try MetalNumanXBridgeV1Convert.timing(value.timing)
+    let channelRecords = withUnsafeBytes(of: value.channels) { raw in
+      Array(raw.bindMemory(to: mrnx_candidate_channel_v1.self)
+        .prefix(Int(value.channel_count)))
+    }
+    let channels = try channelRecords.map {
+      try Self.snapshotChannel($0, timing: timing)
+    }
+    guard Set(channels.map(\.modality)).count == channels.count,
+      let proprioception = channels.first(where: { $0.modality == .proprioception }),
+      let interoception = channels.first(where: { $0.modality == .interoception }),
+      let touch = channels.first(where: { $0.modality == .touch }),
+      let audition = channels.first(where: { $0.modality == .audition })
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "native aggregate v4 sensor modality set is malformed"
+      )
+    }
+    let culture = value.culture
+    guard culture.abi_version == UInt32(MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1),
+      culture.struct_size == MemoryLayout<mrnx_culture_accepted_view_v1>.stride,
+      culture.culture_fingerprint != 0, culture.generation > 0,
+      culture.source_root_fingerprint == value.root.transaction_fingerprint,
+      culture.receipt_fingerprint != 0,
+      culture.buffer_count == UInt32(MRNX_CULTURE_ACCEPTED_BUFFER_COUNT_V1),
+      culture.reserved0 == 0
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "native accepted culture view is malformed"
+      )
+    }
+    let rawBuffers = withUnsafeBytes(of: culture.buffers) { raw in
+      Array(raw.bindMemory(to: mrnx_metal_range_v1.self)
+        .prefix(Int(culture.buffer_count)))
+    }
+    let buffers = try rawBuffers.enumerated().map { index, raw in
+      let unsigned = index == 6 || index == 7 || index == 8
+      return try MetalNumanXBridgeV1Convert.range(
+        raw,
+        expectedType: unsigned
+          ? UInt32(MRNX_ELEMENT_UINT32_V1.rawValue)
+          : UInt32(MRNX_ELEMENT_FLOAT32_V1.rawValue),
+        expectedElementBytes: UInt32(MemoryLayout<UInt32>.stride)
+      )
+    }
+    let base = AggregateSnapshot(
+      publicationEpoch: value.publication_epoch,
+      brainGeneration: value.brain_generation,
+      physicsGeneration: value.physics_generation,
+      sensorGeneration: value.sensor_generation,
+      identity: try MetalNumanXBridgeV1Convert.identity(value.root),
+      channels: channels,
+      proprioception: proprioception,
+      interoception: interoception,
+      touch: touch,
+      audition: audition
+    )
+    return AggregateSnapshotV4(
+      base: base,
+      culture: CultureAcceptedSnapshot(
+        cultureFingerprint: culture.culture_fingerprint,
+        generation: culture.generation,
+        tick: culture.tick,
+        growthGeneration: culture.growth_generation,
+        sourceRootFingerprint: culture.source_root_fingerprint,
+        receiptFingerprint: culture.receipt_fingerprint,
+        readyPoint: try MetalNumanXBridgeV1Convert.point(culture.ready),
+        buffers: buffers
+      )
+    )
+  }
+
   public func beginPhysicalRoot(
     transaction: BrainJointTransactionToken,
     motor ticket: MetalNumiBrainRuntime.NumanXMotorSubmissionTicket,
@@ -1547,15 +1797,15 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     )
     request.autonomic_command = try makeRange(
       object: ticket.buffers.autonomicMetalBufferObject,
-      address: ticket.fastSystems.fastAutonomicOutput.gpuAddress,
-      byteCount: ticket.fastSystems.fastAutonomicOutput.byteCount,
+      address: ticket.candidate.autonomicCommandGPUAddress,
+      byteCount: Int(ticket.candidate.autonomicCommandByteCount),
       elementType: UInt32(MRNX_ELEMENT_RAW_BYTES_V1.rawValue),
       elementByteCount: 1
     )
     request.active_sensing_command = try makeRange(
       object: ticket.buffers.activeSensingMetalBufferObject,
-      address: ticket.fastSystems.activeSensingOutput.gpuAddress,
-      byteCount: ticket.fastSystems.activeSensingOutput.byteCount,
+      address: ticket.candidate.activeSensingCommandGPUAddress,
+      byteCount: Int(ticket.candidate.activeSensingCommandByteCount),
       elementType: UInt32(MRNX_ELEMENT_RAW_BYTES_V1.rawValue),
       elementByteCount: 1
     )

@@ -122,6 +122,26 @@ struct NBControlHeaderGPU {
   ulong reserved3;
 };
 
+struct NBNumanXCultureActionGPU {
+  uint abiVersion;
+  uint structBytes;
+  uint status;
+  uint electrodeCount;
+  ulong cultureFingerprint;
+  ulong cultureGeneration;
+  ulong sourcePhysicsGeneration;
+  ulong transactionFingerprint;
+  ulong controlStep;
+  ulong countsByteCount;
+  ulong sourceRootFingerprint;
+  ulong receiptFingerprint;
+  float gain;
+  uint reserved0;
+  ulong actionFingerprint;
+};
+
+static_assert(sizeof(NBNumanXCultureActionGPU) == 96);
+
 struct NBNumanXMotorCandidateGPU {
   uint formatVersion;
   uint flags;
@@ -315,6 +335,83 @@ inline ulong nb_somatic_output_fingerprint(
     nb_mix_float(hash, commands[index]);
   }
   return hash;
+}
+
+kernel void numanx_apply_accepted_culture_action(
+  constant NBNumanXCultureActionGPU &action [[buffer(0)]],
+  device const uint *electrodeCounts [[buffer(1)]],
+  device NBMotorOutputHeaderGPU *motorHeader [[buffer(2)]],
+  device float *muscleCommands [[buffer(3)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u) return;
+  ulong fingerprint = NB_FNV_OFFSET;
+  constant const uchar *actionBytes =
+    reinterpret_cast<constant const uchar *>(&action);
+  for (uint index = 0u; index < 88u; ++index) {
+    nb_mix_byte(fingerprint, actionBytes[index]);
+  }
+  if (fingerprint == 0ul) fingerprint = NB_FNV_OFFSET;
+  NBMotorOutputHeaderGPU header = motorHeader[0];
+  const bool valid = action.abiVersion == 1u
+    && action.structBytes == 96u
+    && action.status == 1u
+    && action.electrodeCount == 60u
+    && action.cultureFingerprint != 0ul
+    && action.cultureGeneration != 0ul
+    && action.sourcePhysicsGeneration != 0ul
+    && action.transactionFingerprint != 0ul
+    && action.controlStep != 0ul
+    && action.countsByteCount == 240ul
+    && action.sourceRootFingerprint != 0ul
+    && action.receiptFingerprint != 0ul
+    && isfinite(action.gain) && action.gain > 0.0f && action.gain <= 0.10f
+    && action.reserved0 == 0u
+    && action.actionFingerprint == fingerprint
+    && header.formatVersion == NB_MOTOR_OUTPUT_VERSION
+    && header.muscleCount != 0u;
+  if (!valid) {
+    motorHeader[0].outputFingerprint = 0ul;
+    return;
+  }
+  ulong total = 0ul;
+  float weightedX = 0.0f;
+  float weightedY = 0.0f;
+  uint electrode = 0u;
+  for (uint row = 0u; row < 8u; ++row) {
+    for (uint column = 0u; column < 8u; ++column) {
+      const bool corner = (row == 0u || row == 7u)
+        && (column == 0u || column == 7u);
+      if (corner) continue;
+      const uint count = electrodeCounts[electrode++];
+      total += ulong(count);
+      weightedX += float(count) * (float(column) - 3.5f);
+      weightedY += float(count) * (float(row) - 3.5f);
+    }
+  }
+  if (total != 0ul) {
+    const float inverse = 1.0f / (float(total) * 3.5f);
+    const float2 actionVector = clamp(
+      float2(weightedX, weightedY) * inverse,
+      float2(-1.0f),
+      float2(1.0f)
+    );
+    const float span = header.outputMaximum - header.outputMinimum;
+    for (uint index = 0u; index < header.muscleCount; ++index) {
+      const uint phase = index & 3u;
+      const float drive = phase == 0u ? actionVector.x
+        : (phase == 1u ? -actionVector.x
+          : (phase == 2u ? actionVector.y : -actionVector.y));
+      muscleCommands[index] = clamp(
+        muscleCommands[index] + action.gain * span * drive,
+        header.outputMinimum,
+        header.outputMaximum
+      );
+    }
+  }
+  motorHeader[0].outputFingerprint = nb_somatic_output_fingerprint(
+    header, muscleCommands, header.muscleCount
+  );
 }
 
 kernel void numanx_publish_decision_ready(
