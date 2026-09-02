@@ -179,25 +179,22 @@ and its exact parameter bytes hash to
 Candidate verification produced transitive evidence root
 `d7bf7d0f1e4187fe2b0b3ae39b5c2be1e13c14ca71dd0af9bcff6a47964e6594`.
 
-The current prepared Human/Matter v1 path does **not** provide contact-support
-authority. It submits an unconstrained `A0`, sets `contacts = {}` and
-`enableContact = false`, and disables root assistance. Constrained support
-dynamics require an exact nullspace/KKT/Schur tangent contract that is not yet
-present. Consequently, the older artifacts below whose task labels contain
-"support" qualify bridge execution, replay, rejection, latency, memory, and
-artifact integrity only; they are not evidence of active ground contact,
-balance control, or learned support improvement.
+The pinned native Human/Matter path now has one support-force owner. Matter
+imports all ten exact NHCNT point-plane rows through Human candidate point
+Jacobians and solves their unilateral/friction state inside the same
+Newton/FGMRES system as the attached material. Its residual contains
+`J^T lambda`; its matrix-free operator contains the locally condensed
+`J^T D J` contribution. The separate Stand contact pass remains disabled to
+prevent a duplicate solve.
 
-The next constrained-dynamics slice has one force owner. Matter imports the
-exact NHCNT point-plane rows through Human candidate point Jacobians and solves
-their unilateral/friction state inside the same monolithic Newton/FGMRES KKT
-as the attached material. Its staged Human reaction must reproduce the
-accepted constrained `deltaV` through the existing `A0` publication contract;
-the separate Stand contact pass remains disabled to prevent a duplicate solve.
-The support active set, friction/multiplier state, and exact NHCNT payload
-identity are accepted-state proof/checkpoint authority and must feed the
-published support/tactile consequences. A precomputed square projector cannot
-qualify this seam because unilateral Coulomb activity is solution-dependent.
+Support multiplier history and the per-row consequence stream now participate
+in checkpoint, accepted-state proof, rollback, snapshot persistence, and
+causal touch publication. A controlled downward-contact GPU fixture proves a
+nonzero multiplier and both KKT contributions. This does not retroactively
+promote older artifacts: captures below whose labels contain "support" still
+qualify only their recorded bridge, replay, rejection, latency, memory, and
+artifact properties unless they pin the new native revision. Nor does the new
+seam by itself establish balance control or learned support improvement.
 
 A 1,000-root, 100-microsecond Apple M4 trace makes that boundary measurable.
 All 1,000 roots were accepted, but root vertical velocity reached

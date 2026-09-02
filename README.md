@@ -190,11 +190,14 @@ paths. It does **not** establish consciousness, human-equivalent cognition,
 an anatomically calibrated brain, a clinically validated digital human,
 production GPU performance, or a generally capable learned policy.
 
-In particular, the present prepared Human/Matter path does not yet own active
-ground-support contact. Support-labelled historical captures qualify their
-named runtime and artifact properties, not balance. The next constrained
-physics slice places NHCNT support rows inside Matter's monolithic KKT so
-contact is solved once and participates in accepted-state proof authority.
+The pinned native Human/Matter path now owns ten NHCNT ground-support rows
+inside Matter's monolithic Newton/FGMRES solve. Their friction histories and
+support consequences participate in checkpoint, accepted-state proof,
+rollback, snapshot persistence, and causal touch publication. This establishes
+the transactional contact boundary; it does not by itself establish balanced
+locomotion, biological calibration, or held-out policy advantage. An unloaded
+root may correctly carry zero normal force, while a controlled downward-contact
+GPU fixture separately proves nonzero support coupling.
 
 ## Vision
 
