@@ -104,6 +104,19 @@ The runtime includes:
 - deterministic counter-based randomness, rollback, retry, and replay; and
 - content-addressed Gate C datasets, evaluations, policies, and evidence roots.
 
+### Optional living-network research bridge
+
+NumiBrain now includes a deliberately optional, transactional controller for
+Numi Lab's synthetic neuron-culture twin: 1,000 LIF neurons, 50,000 plastic
+synapses, a 60-electrode virtual MEA, and coupled phase/tubulin growth fields.
+Electrode activity can prepare a bounded embodied action, but it becomes visible
+only with the same accepted NumanX root; rejection publishes nothing. This keeps
+detailed spiking research composable without replacing NumiBrain's production
+mesoscale architecture. See the [bridge contract](docs/NEURON_CULTURE_BRIDGE.md).
+
+The current evidence is simulation-only. It is not a cultured neuronal network,
+hardware MEA validation, biological calibration, or evidence of task advantage.
+
 ## Quick start
 
 ### Requirements
