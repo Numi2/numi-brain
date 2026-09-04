@@ -73,7 +73,7 @@ private struct MLXPreparedMindLearningBatch {
   init(_ source: MetalLearningBatch) throws {
     let transitions = try MLXCommittedTransitionBatch(source)
     self.transitions = transitions
-    self.sequences = MLXCommittedSequenceBatch(transitions)
+    self.sequences = try MLXCommittedSequenceBatch(transitions)
     self.replay = try MLXReplayLearningBatch(source)
     self.counterfactuals = try MLXCounterfactualLearningBatch(source)
     self.semantics = try MLXSemanticLearningBatch(source)
@@ -226,8 +226,29 @@ public final class MLXBrainLearner: @unchecked Sendable {
         "MLX learner requires at least one committed mind"
       )
     }
+    guard minimumSourceGeneration > 0,
+      (delayedSupport != nil) == (configuration.delayedSupportObjectiveWeight > 0),
+      (headPosture != nil) == (configuration.headPostureObjectiveWeight > 0)
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX update requires committed experience and every configured physical objective"
+      )
+    }
     try parentArtifact.validate(parameterVersion: parentVersion)
     let preparedBatches = try sourceBatches.map(MLXPreparedMindLearningBatch.init)
+    // One bounded synchronization at the immutable learning boundary. An empty
+    // or wholly invalid mind must not publish a sparsity-only update or dilute
+    // the equal-per-mind cohort objective.
+    let validTransitionCounts = preparedBatches.map { $0.transitions.validMask.sum() }
+    eval(validTransitionCounts)
+    guard validTransitionCounts.allSatisfy({
+      let count = $0.item(Float.self)
+      return count.isFinite && count > 0
+    }) else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "MLX update contains a mind with no valid accepted transitions"
+      )
+    }
     let kinds = BrainSharedParameterArtifact.requiredKinds
     let parentParameters = kinds.map { kind -> MLXArray in
       let payload = parentArtifact.payload(kind)
@@ -280,6 +301,7 @@ public final class MLXBrainLearner: @unchecked Sendable {
     }
     let motorParameterIndex = kinds.firstIndex(of: .motor)!
     let effectiveGradients: [MLXArray]
+    let motorMutationMask: MLXArray?
     if headPosture != nil {
       let motorElementCount = parentArtifact.payload(.motor).data.count
         / MemoryLayout<Float>.stride
@@ -288,10 +310,12 @@ public final class MLXBrainLearner: @unchecked Sendable {
         motorMaskValues[index] = 1
       }
       let motorMask = MLXArray(motorMaskValues, [motorElementCount])
+      motorMutationMask = motorMask
       effectiveGradients = gradients.enumerated().map { index, gradient in
         index == motorParameterIndex ? gradient * motorMask : gradient * Float(0)
       }
     } else {
+      motorMutationMask = nil
       effectiveGradients = gradients
     }
     var squaredGradientNorm = MLXArray(Float(0))
@@ -315,12 +339,13 @@ public final class MLXBrainLearner: @unchecked Sendable {
         if headPosture != nil, index != motorParameterIndex {
           return parameter
         }
-        return clip(
-          parameter - proximalRetention * configuration.learningRate
+        return MLXImmutableParameterUpdate.project(
+          parent: parameter,
+          delta: proximalRetention * configuration.learningRate
             * gradientScale * gradient,
-          min: -configuration.parameterMagnitudeLimit,
-          max: configuration.parameterMagnitudeLimit
-        ).asType(.float32).contiguous()
+          magnitudeLimit: configuration.parameterMagnitudeLimit,
+          mutableMask: index == motorParameterIndex ? motorMutationMask : nil
+        )
     }
     let updatedTerms = Self.cohortLossTerms(
       parameters: updatedParameters,
@@ -574,7 +599,15 @@ public final class MLXBrainLearner: @unchecked Sendable {
       prior[0..., (19 + level)..<(20 + level)]
     }
     let structuredWorldGain = world[185..<190].mean()
-    let predictedPolicyAction = tanh(actionState * policy[0] + policy[8])
+    // Match the deployed sensor-conditioned head. The accepted posterior is
+    // an outcome target, not an input available when this action was chosen.
+    let predictedPolicyAction = MLXEmbodiedPolicyHead.predict(
+      prior: prior,
+      observations: observation,
+      observationMask: observationMask,
+      belief: belief,
+      policy: policy
+    )
     let activeSensingTrace = batch.activeSensingTrace
     let predictedActiveSensingGain = clip(
       activeSensingTrace[0..., 2..<3]

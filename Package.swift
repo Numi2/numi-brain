@@ -87,7 +87,10 @@ let package = Package(
     ),
     .testTarget(
       name: "NumiBrainMetalTests",
-      dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
+      dependencies: [
+        "NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX",
+        .product(name: "MLX", package: "mlx-swift"),
+      ]
     ),
   ],
   cxxLanguageStandard: .cxx20
