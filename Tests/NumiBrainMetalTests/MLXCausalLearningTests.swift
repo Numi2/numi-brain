@@ -191,4 +191,37 @@ final class MLXCausalLearningTests: XCTestCase {
     XCTAssertEqual(gathers.oneStepMask.shape, [count, 1])
     XCTAssertEqual(gathers.twoStepMask.shape, [count, 1])
   }
+
+  func testTimestampShiftClearsMissingEvidenceAndPreservesDonorValidity() {
+    let indices = MLXArray([Int32](arrayLiteral: 0, 0))
+    let exists = MLXArray([Float](arrayLiteral: 0, 1), [2, 1])
+    let values = MLXArray([Float](arrayLiteral: 2, 4, 6, 8, 10, 12), [2, 3])
+    let validity = MLXArray([Float](arrayLiteral: 1, 0, 1, 1, 1, 1), [2, 3])
+    let shiftedValues = MLXGateBCausalEvaluator.shiftedGroup(
+      values, range: 0..<3, indices: indices, exists: exists
+    ).asArray(Float.self)
+    let shiftedValidity = MLXGateBCausalEvaluator.shiftedGroup(
+      validity, range: 0..<3, indices: indices, exists: exists
+    ).asArray(Float.self)
+    XCTAssertEqual(shiftedValues, [0, 0, 0, 2, 4, 6])
+    XCTAssertEqual(shiftedValidity, [0, 0, 0, 1, 0, 1])
+  }
+
+  func testMaskedEvaluationExcludesNaNsWithoutHidingSelectedCorruption() {
+    let prediction = MLXArray(
+      [Float](repeating: .nan, count: 16) + [Float](repeating: 2, count: 16),
+      [2, 16]
+    )
+    let target = MLXArray([Float](repeating: 0, count: 32), [2, 16])
+    let mask = MLXArray([Float](arrayLiteral: 0, 1), [2, 1])
+    XCTAssertEqual(
+      MLXGateBCausalEvaluator.maskedMSE(prediction, target, mask: mask).item(Float.self),
+      4, accuracy: 1.0e-6
+    )
+    let corruptMask = MLXArray([Float](arrayLiteral: 1, 0), [2, 1])
+    XCTAssertFalse(
+      MLXGateBCausalEvaluator.maskedMSE(prediction, target, mask: corruptMask)
+        .item(Float.self).isFinite
+    )
+  }
 }

@@ -93,12 +93,17 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
     }
     try publication.sharedArtifact.validate(parameterVersion: publication.version)
     let batch = try MLXCommittedTransitionBatch(source)
+    let sequences = try MLXCommittedSequenceBatch(batch)
     let metadata = try Self.transitionMetadata(source)
+    // Resolve the full finite/format/version mask at this immutable offline
+    // boundary. Reported counts and intervention donors must use that same
+    // mask, not a weaker metadata-only approximation.
+    let validRows = batch.validMask.asArray(Float.self)
     let selectedRows = metadata.indices.filter {
-      metadata[$0].valid
+      metadata[$0].valid && validRows[$0] > 0
         && metadata[$0].generation >= minimumGeneration
         && metadata[$0].generation <= maximumGeneration
-    }
+    }.sorted { metadata[$0].generation < metadata[$1].generation }
     guard !selectedRows.isEmpty, let transitionCount = UInt32(exactly: selectedRows.count)
     else {
       throw BrainRuntimeError.invalidParameterVersion(
@@ -107,10 +112,8 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
     }
 
     let capacity = source.transitionCapacity
-    let rowMaskValues = metadata.map { entry -> Float in
-      entry.valid && entry.generation >= minimumGeneration
-          && entry.generation <= maximumGeneration ? 1 : 0
-    }
+    var rowMaskValues = [Float](repeating: 0, count: capacity)
+    for row in selectedRows { rowMaskValues[row] = 1 }
     let rowMask = MLXArray(rowMaskValues, [capacity, 1]) * batch.validMask
     let belief = Self.parameter(.belief, publication: publication)
     let policy = Self.parameter(.policy, publication: publication)
@@ -134,33 +137,19 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
     let zeroGroup = MLXArray(
       [Float](repeating: 0, count: capacity * 3), [capacity, 3]
     )
-    let identityIndices = Array(0..<capacity).map(Int32.init)
-    var shuffledIndices = identityIndices
-    if selectedRows.count > 1 {
-      let offset = Int(shuffleSeed % UInt64(selectedRows.count - 1)) + 1
-      for (position, row) in selectedRows.enumerated() {
-        shuffledIndices[row] = Int32(
-          selectedRows[(position + offset) % selectedRows.count]
-        )
-      }
-    }
-    let generationToRow = Dictionary(
-      metadata.indices.compactMap { index -> (UInt64, Int32)? in
-        let entry = metadata[index]
-        return entry.valid ? (entry.generation, Int32(index)) : nil
-      },
-      uniquingKeysWith: { first, _ in first }
+    let interventionIndex = try BrainObservationInterventionIndex(
+      sequenceIndex: sequences.index,
+      selectedRows: selectedRows,
+      observationValidityBits: metadata.map(\.observationValidityBits),
+      componentStart: componentStart,
+      shuffleSeed: shuffleSeed
     )
-    var shiftedIndices = identityIndices
-    var shiftedExists = [Float](repeating: 0, count: capacity)
-    for row in selectedRows {
-      let generation = metadata[row].generation
-      if generation > 0, let predecessor = generationToRow[generation - 1] {
-        shiftedIndices[row] = predecessor
-        shiftedExists[row] = 1
-      }
-    }
-    let shiftedExistsMask = MLXArray(shiftedExists, [capacity, 1])
+    let shuffledIndices = MLXArray(interventionIndex.shuffledRows)
+    let shiftedIndices = MLXArray(interventionIndex.shiftedRows.map { max($0, 0) })
+    let shiftedExistsMask = MLXArray(
+      interventionIndex.shiftedRows.map { $0 >= 0 ? Float(1) : Float(0) },
+      [capacity, 1]
+    )
     let variants: [(NumanXGateBInterventionKind, MLXArray, MLXArray)] = [
       (.intact, batch.observations, batch.observationMask),
       (
@@ -178,7 +167,7 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
           batch.observations,
           range: componentRange,
           with: batch.observations.take(
-            MLXArray(shuffledIndices), axis: 0
+            shuffledIndices, axis: 0
           )[0..., componentRange]
         ),
         batch.observationMask
@@ -188,11 +177,19 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
         Self.replacingColumns(
           batch.observations,
           range: componentRange,
-          with: batch.observations.take(
-            MLXArray(shiftedIndices), axis: 0
-          )[0..., componentRange] * shiftedExistsMask
+          with: Self.shiftedGroup(
+            batch.observations, range: componentRange,
+            indices: shiftedIndices, exists: shiftedExistsMask
+          )
         ),
-        batch.observationMask
+        Self.replacingColumns(
+          batch.observationMask,
+          range: componentRange,
+          with: Self.shiftedGroup(
+            batch.observationMask, range: componentRange,
+            indices: shiftedIndices, exists: shiftedExistsMask
+          )
+        )
       ),
     ]
     let predictions = variants.map { _, observations, mask in
@@ -229,6 +226,7 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
   private struct TransitionMetadata {
     let valid: Bool
     let generation: UInt64
+    let observationValidityBits: UInt32
   }
 
   private static func transitionMetadata(
@@ -245,7 +243,8 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
         valid: identifier > 0
           && format == MetalLearningBatch.transitionRecordVersion
           && (flags & 1) == 1,
-        generation: generation
+        generation: generation,
+        observationValidityBits: record.advanced(by: 92).load(as: UInt32.self)
       )
     }
   }
@@ -267,30 +266,34 @@ public final class MLXGateBCausalEvaluator: @unchecked Sendable {
     belief: MLXArray,
     policy: MLXArray
   ) -> MLXArray {
-    let rowCount = observations.shape[0]
-    let zeroTail = MLXArray(
-      [Float](repeating: 0, count: rowCount * 8), [rowCount, 8]
+    MLXEmbodiedPolicyHead.predict(
+      prior: prior, observations: observations, observationMask: observationMask,
+      belief: belief, policy: policy
     )
-    let foldedObservation = observations[0..., 0..<16] + Float(0.25)
-      * concatenated([observations[0..., 16..<24], zeroTail], axis: 1)
-    let foldedMask = observationMask[0..., 0..<16] + Float(0.25)
-      * concatenated([observationMask[0..., 16..<24], zeroTail], axis: 1)
-    // Mirror Metal exactly: validity gates a projected observation but never
-    // becomes an additive action coordinate of its own.
-    let posterior = tanh(
-      belief[7] * prior[0..., 0..<16] + belief[0] * foldedObservation
-        * (foldedMask .> Float(0)).asType(.float32) + belief[4]
-    )
-    return tanh(posterior * policy[0] + policy[8])
   }
 
-  private static func maskedMSE(
+  /// A missing or non-held-out predecessor means unavailable evidence, not a
+  /// zero-valued valid receptor. Apply the same selection to values and masks.
+  static func shiftedGroup(
+    _ source: MLXArray,
+    range: Range<Int>,
+    indices: MLXArray,
+    exists: MLXArray
+  ) -> MLXArray {
+    which(
+      exists .> Float(0), source.take(indices, axis: 0)[0..., range],
+      MLXArray(Float(0))
+    )
+  }
+
+  static func maskedMSE(
     _ prediction: MLXArray,
     _ target: MLXArray,
     mask: MLXArray
   ) -> MLXArray {
     let denominator = maximum(mask.sum() * Float(16), MLXArray(Float(1)))
-    return (square(prediction - target) * mask).sum() / denominator
+    let difference = which(mask .> Float(0), prediction - target, MLXArray(Float(0)))
+    return (square(difference) * mask).sum() / denominator
   }
 
   private static func replacingColumns(
