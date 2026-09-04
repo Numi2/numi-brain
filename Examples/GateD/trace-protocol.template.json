@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "identifier": "replace-with-predeclared-study-id",
+  "expectedRuntimeSourceRevision": "REPLACE_EXACT_RUNTIME_REVISION",
+  "expectedNativeModelSourceFingerprint": 0,
+  "expectedParameterVersionFingerprint": 0,
+  "expectedAcceptedStateProofProgramFingerprint": 0,
+  "sensorSchemaSHA256": "REPLACE_SCHEMA_SHA256",
+  "receptorIndex": 0,
+  "featureIndex": 0,
+  "referenceKind": "independentModel",
+  "referenceTraceSHA256": "REPLACE_REFERENCE_WRAPPER_SHA256",
+  "referenceSourceSHA256": "REPLACE_RETAINED_SOURCE_SHA256",
+  "referenceSourceURI": "urn:numi:replace-reference-source",
+  "referenceSourceRevision": "REPLACE_SOURCE_REVISION",
+  "referenceLicense": "REPLACE_VERIFIED_LICENSE",
+  "referenceProcessingRevision": "physical-reference-import-v1",
+  "referenceImportSpecificationSHA256": "REPLACE_IMPORT_SPECIFICATION_SHA256",
+  "calibrationArtifactSHA256": [],
+  "minimumAcceptedRootCount": 2,
+  "maximumRejectedRootFraction": 0,
+  "comparison": {
+    "alignment": "exact",
+    "candidateTimeOriginMicroseconds": 0,
+    "referenceTimeOriginMicroseconds": 0,
+    "maximumInterpolationGapMicroseconds": 0,
+    "minimumDurationMicroseconds": 0,
+    "physicalScale": 0,
+    "maximumNormalizedRMSE": 0,
+    "maximumNormalizedPeakError": 0,
+    "maximumNormalizedAbsoluteBias": 0
+  }
+}

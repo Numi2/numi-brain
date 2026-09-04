@@ -24,6 +24,7 @@ public enum MechanicsValidation {
     minusActiveSet: UInt64, tolerance: Double
   ) throws -> PhysicalValidationResult {
     try ValidationNumerics.positive(epsilon, "finite-difference step")
+    try ValidationNumerics.positive(2 * epsilon, "central-difference denominator")
     try ValidationNumerics.finite(action)
     try ValidationNumerics.finite(residualPlus, count: action.count)
     try ValidationNumerics.finite(residualMinus, count: action.count)
@@ -132,6 +133,7 @@ public enum MechanicsValidation {
     let speed = try ValidationNumerics.norm(slipVelocityMetersPerSecond)
     let power = try ValidationNumerics.dot(tangentialForceNewtons, slipVelocityMetersPerSecond)
     let coneRadius = friction * max(0, normalForceNewtons)
+    try ValidationNumerics.nonnegative(coneRadius, "Coulomb cone radius")
     var metrics = try [
       ValidationNumerics.metric("normal_gap", max(0, -gapMeters) / lengthScaleMeters, tolerance),
       ValidationNumerics.metric("normal_force", max(0, -normalForceNewtons) / forceScaleNewtons, tolerance),
@@ -181,6 +183,8 @@ public enum MechanicsValidation {
         "force source identity is missing")
       try ValidationNumerics.finite(source.generalizedForce, count: appliedTotal.count)
     }
+    try ValidationNumerics.require(contributions.count <= ValidationNumerics.maximumElements / appliedTotal.count,
+      "force accounting exceeds bounded reference capacity")
     let applied = contributions.filter(\.applied)
     let ids = applied.map(\.physicalSource)
     let duplicateCount = ids.count - Set(ids).count

@@ -1,0 +1,13 @@
+{
+  "openSimStorage": {
+    "selection": {
+      "column": "tendon_force",
+      "quantity": "tendonForce",
+      "unit": "N",
+      "frame": "muscleLocal",
+      "coordinate": "fixture-muscle:0",
+      "timeOriginSeconds": 0,
+      "maximumTimeQuantizationErrorMicroseconds": 0.01
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "tangent": {
+    "action": [
+      1
+    ],
+    "residualPlus": [
+      1
+    ],
+    "residualMinus": [
+      0
+    ],
+    "epsilon": 0.5,
+    "residualScales": [
+      1
+    ],
+    "baseActiveSet": 1,
+    "plusActiveSet": 2,
+    "minusActiveSet": 1,
+    "tolerance": 1e-06
+  }
+}

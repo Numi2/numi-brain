@@ -137,4 +137,14 @@ final class MechanicsValidationTests: XCTestCase {
     XCTAssertEqual(try decoded.evaluate().diagnosticStatus, .passed)
     XCTAssertEqual(data, try encoder.encode(decoded))
   }
+  func testOverflowCannotBecomeAZeroFiniteDifference() {
+    XCTAssertThrowsError(try MechanicsValidation.tangent(action: [0], residualPlus: [1], residualMinus: [-1],
+      epsilon: Double.greatestFiniteMagnitude, residualScales: [1],
+      baseActiveSet: 0, plusActiveSet: 0, minusActiveSet: 0, tolerance: 0))
+  }
+
+  func testOverflowingFrictionConeCannotPassStiction() {
+    XCTAssertThrowsError(try contact(normal: 2, tangent: [0, 0], slip: [0, 0], mu: Double.greatestFiniteMagnitude))
+  }
+
 }
