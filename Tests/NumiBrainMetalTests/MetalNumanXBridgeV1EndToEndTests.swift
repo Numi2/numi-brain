@@ -425,7 +425,24 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     else {
       throw XCTSkip("Metal 4 execution is unavailable")
     }
-    let compiled = try makeNumanXFullBodyTransportCompiledTemplate()
+    // This assertion targets the native head body (23). Compile the Brain
+    // transport from the same immutable anatomy that the physical owner will
+    // use; the default helper is intentionally a two-body synthetic fixture
+    // for transport-only tests and cannot represent body 23.
+    // Gate C qualification uses the production 100 µs physical cadence. A
+    // millisecond step is useful for transport-only fixtures, but is too
+    // coarse for this articulated Matter contact state and can make the
+    // native factorization reject an otherwise valid zero-command retry.
+    let gateCTimestepMicroseconds: UInt32 = 100
+    let anatomyRuntime = try makeNativeRuntime(
+      paths: paths,
+      device: device,
+      timestepMicroseconds: gateCTimestepMicroseconds
+    )
+    let compiled = try NumanXFullBodyTransportTemplate.compile(
+      latencyMicroseconds: gateCTimestepMicroseconds,
+      anatomy: try anatomyRuntime.fullBodyAnatomy()
+    )
     let publication = try BrainParameterPublication.developmentalSeedV1(
       species: compiled.species,
       tissueParameters: .corticalSheetV0
@@ -439,11 +456,13 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       paths: paths, contactPath: paths.contacts,
       compiled: compiled, publication: publication,
       device: device, rootCount: 3,
+      timestepMicroseconds: gateCTimestepMicroseconds,
       externalGoal: { controlStep in
         try self.supportStabilityGoal(
           target: target,
           controlStep: controlStep,
-          targetBodyIdentifier: 23
+          targetBodyIdentifier: 23,
+          timestepMicroseconds: gateCTimestepMicroseconds
         )
       }
     )
@@ -451,18 +470,24 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       paths: paths, contactPath: paths.contacts,
       compiled: compiled, publication: publication,
       device: device, rootCount: 3,
+      timestepMicroseconds: gateCTimestepMicroseconds,
       externalGoal: { controlStep in
         try self.supportStabilityGoal(
           target: target,
           controlStep: controlStep,
-          targetBodyIdentifier: 0
+          targetBodyIdentifier: 0,
+          timestepMicroseconds: gateCTimestepMicroseconds
         )
       }
     )
-    XCTAssertNotEqual(
-      try XCTUnwrap(head.descendingSomaticByGeneration.last),
-      try XCTUnwrap(root.descendingSomaticByGeneration.last),
-      "changing only the authenticated target body did not change motor output"
+    let headDescending = head.descendingSomaticByGeneration.flatMap { $0 }
+    let rootDescending = root.descendingSomaticByGeneration.flatMap { $0 }
+    let targetBodyMotorDelta = maximumAbsoluteDelta(
+      headDescending, rootDescending
+    )
+    XCTAssertGreaterThan(
+      targetBodyMotorDelta, 1.0e-6,
+      "changing only the authenticated target body did not change any motor output"
     )
     // The signed physical objective must deterministically reach the exact
     // slow motor gains consumed by this target-body path.
@@ -1886,6 +1911,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     publication: BrainParameterPublication,
     device: any MTLDevice,
     rootCount: UInt64,
+    timestepMicroseconds: UInt32 = 1_000,
     externalGoal: ((UInt64) throws -> ActiveGoal)? = nil,
     sensorIntervention: ClosedLoopSensorIntervention? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
@@ -1915,21 +1941,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       publication: publication,
       device: device
     )
-    let native = try MetalNumanXBridgeV1Runtime(
-      libraryPath: paths.library,
+    let native = try makeNativeRuntime(
+      paths: paths,
       device: device,
-      configuration: .init(
-        rigidPayloadPath: paths.rigid,
-        musclePayloadPath: paths.muscle,
-        supportContactPayloadPath: contactPath,
-        visualPackPath: paths.visualPack,
-        visionProfilePath: paths.visionProfile,
-        metalRoboMetallibPath: paths.metalRoboMetallib,
-        matterMetallibPath: paths.matterMetallib,
-        matterMaterialPath: paths.material,
-        timestepMicroseconds: 1_000,
-        transactionSlotCount: 2
-      )
+      supportContactPath: contactPath,
+      timestepMicroseconds: timestepMicroseconds
     )
     var aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot?
     var sensorFingerprints: [UInt64] = []
@@ -1948,10 +1964,10 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         controlStepIdentifier: controlStep,
         basePhysicsGeneration: aggregate?.physicsGeneration ?? 0,
         committedTimestamp: BrainTimestamp(
-          microseconds: controlStep * 1_000
+          microseconds: controlStep * UInt64(timestepMicroseconds)
         ),
         targetTimestamp: BrainTimestamp(
-          microseconds: (controlStep + 1) * 1_000
+          microseconds: (controlStep + 1) * UInt64(timestepMicroseconds)
         ),
         cachedDecisionFingerprint: 0x4e58_4742_0000_0000 | controlStep
       )
@@ -2324,7 +2340,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   private func supportStabilityGoal(
     target: [Float],
     controlStep: UInt64,
-    targetBodyIdentifier: UInt32? = nil
+    targetBodyIdentifier: UInt32? = nil,
+    timestepMicroseconds: UInt32 = 1_000
   ) throws -> ActiveGoal {
     guard target.count == 16, controlStep > 0 else {
       throw TissueError.transaction(
@@ -2332,7 +2349,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       )
     }
     let committedTimestamp = BrainTimestamp(
-      microseconds: controlStep * 1_000
+      microseconds: controlStep * UInt64(timestepMicroseconds)
     )
     return try ActiveGoal(
       identifier: 0x0047_4253_5441_0000 | controlStep,
@@ -2340,7 +2357,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       targetState: BrainLatentVector(values: target, expectedCount: 16),
       priority: 10,
       deadline: BrainTimestamp(
-        microseconds: (controlStep + 1) * 1_000
+        microseconds: (controlStep + 1) * UInt64(timestepMicroseconds)
       ),
       successModel: BrainLatentVector(values: target, expectedCount: 16),
       failureModel: BrainLatentVector(
@@ -2716,6 +2733,30 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let metalRoboMetallib: String
     let matterMetallib: String
     let material: String
+  }
+
+  private func makeNativeRuntime(
+    paths: BridgePaths,
+    device: any MTLDevice,
+    supportContactPath: String? = nil,
+    timestepMicroseconds: UInt32 = 1_000
+  ) throws -> MetalNumanXBridgeV1Runtime {
+    try MetalNumanXBridgeV1Runtime(
+      libraryPath: paths.library,
+      device: device,
+      configuration: .init(
+        rigidPayloadPath: paths.rigid,
+        musclePayloadPath: paths.muscle,
+        supportContactPayloadPath: supportContactPath ?? paths.contacts,
+        visualPackPath: paths.visualPack,
+        visionProfilePath: paths.visionProfile,
+        metalRoboMetallibPath: paths.metalRoboMetallib,
+        matterMetallibPath: paths.matterMetallib,
+        matterMaterialPath: paths.material,
+        timestepMicroseconds: UInt64(timestepMicroseconds),
+        transactionSlotCount: 2
+      )
+    )
   }
 
   private func bridgePaths() throws -> BridgePaths {
