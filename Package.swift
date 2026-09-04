@@ -22,6 +22,7 @@ let package = Package(
       targets: ["NumiBrainNumanXInteropCLI"]
     ),
     .executable(name: "numi-brain-gate-c", targets: ["NumiBrainGateCCLI"]),
+    .executable(name: "numi-brain-gate-d", targets: ["NumiBrainGateDCLI"]),
   ],
   dependencies: [
     .package(
@@ -37,7 +38,7 @@ let package = Package(
     ),
     .target(
       name: "NumiBrainCore",
-      dependencies: ["NumiBrainABI"]
+      dependencies: ["NumiBrainABI", "NumiBrainValidation"]
     ),
     .target(
       name: "NumiBrainMetalBridgeABI",
@@ -83,9 +84,13 @@ let package = Package(
       name: "NumiBrainGateCCLI",
       dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
     ),
+    .executableTarget(
+      name: "NumiBrainGateDCLI",
+      dependencies: ["NumiBrainCore", "NumiBrainValidation"]
+    ),
     .testTarget(
       name: "NumiBrainCoreTests",
-      dependencies: ["NumiBrainABI", "NumiBrainCore"]
+      dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainValidation"]
     ),
     .testTarget(
       name: "NumiBrainMetalTests",
