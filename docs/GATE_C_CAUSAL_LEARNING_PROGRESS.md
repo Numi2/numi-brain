@@ -1,6 +1,6 @@
-# Gate C causal-learning development — 2026-09-04
+# Gate C causal-learning development — 2026-09-05
 
-Status: implementation changes awaiting Apple validation; Gate C remains open.
+Status: implementation changes Apple-validated; Gate C remains open.
 Base revision: `59892e55eca06dc00d3fb80f0979afd9ef419e26`.
 Development branch: `codex/gate-c-causal-learning`.
 
@@ -108,6 +108,29 @@ linear tensor shapes, shifted validity, and masked evaluation.
 
 No macOS build, MLX execution, Metal execution, native bridge run, inference
 latency measurement, or new physical rollout was performed in this environment.
+
+## Follow-up Apple validation
+
+The implementation branch was validated on the configured Apple Silicon Mac
+mini with the pinned repository dependencies and the exact native full-body
+assets. The Gate C end-to-end test initially used the two-body transport
+fixture at a 1 ms native step even though its authenticated target is native
+body 23 and the production Gate C cadence is 100 microseconds. That fixture
+could reach a native Matter factorization rejection at root 3, and its
+last-root-only assertion then compared two safety-stopped zero traces. The
+test now compiles the transport from the immutable native anatomy, uses the
+100-microsecond cadence, and compares the complete accepted motor trace.
+
+Fresh Apple runs passed:
+
+* `testGateCExternalTaskUsesExactTargetBody` — 1 test, 0 failures, 14.4 s.
+* `testGateBExternalTaskOptionAdmission` — 1 test, 0 failures, 6.4 s.
+* `testRealFullBodyBrainProposalApplyAndJointPublication` — 1 test, 0
+  failures, 19.5 s.
+
+These are runtime and bridge checks only. They do not demonstrate the required
+physical-policy improvement, cross-embodiment transfer, safety, or latency
+qualification, and no policy was promoted.
 
 ## Apple validation and qualification sequence
 
