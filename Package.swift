@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
     .library(name: "NumiBrainMLX", targets: ["NumiBrainMLX"]),
+    .library(name: "NumiBrainValidation", targets: ["NumiBrainValidation"]),
     .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
     .executable(name: "numi-brain-dispatch", targets: ["NumiBrainDispatchCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
@@ -29,6 +30,7 @@ let package = Package(
     )
   ],
   targets: [
+    .target(name: "NumiBrainValidation"),
     .target(
       name: "NumiBrainABI",
       publicHeadersPath: "include"
@@ -89,6 +91,7 @@ let package = Package(
       name: "NumiBrainMetalTests",
       dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
     ),
+    .testTarget(name: "NumiBrainValidationTests", dependencies: ["NumiBrainValidation"]),
   ],
   cxxLanguageStandard: .cxx20
 )
