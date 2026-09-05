@@ -1,0 +1,9 @@
+{
+  "maximumP99RootLatencyMicroseconds": 1000,
+  "minimumSimulatedSecondsPerWallSecond": 1,
+  "minimumEnvironmentStepsPerSecond": 1,
+  "maximumBytesPerEnvironment": 1073741824,
+  "requireZeroCPUWaits": true,
+  "requireZeroQueueCreation": true,
+  "requireZeroHostPayloadReadback": true
+}
