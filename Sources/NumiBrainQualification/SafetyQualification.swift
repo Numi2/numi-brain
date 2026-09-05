@@ -19,7 +19,7 @@ public struct SafetyVector: Codable, Equatable, Sendable {
     staleGeneration: Bool = false, malformedRecord: Bool = false,
     resourceAlias: Bool = false, deviceFault: Bool = false) throws {
     let values = [semanticRisk, kinematicRisk, contactRisk, forceRisk, thermalRisk, actuatorRisk, uncertainty]
-    guard values.allSatisfy({$0.isFinite && (0...1).contains($0)}) else {
+    guard values.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
       throw QualificationError.invalid("safety vector risks must be finite [0,1]")
     }
     self.semanticRisk = semanticRisk; self.kinematicRisk = kinematicRisk; self.contactRisk = contactRisk
@@ -45,7 +45,7 @@ public struct SafetyEnvelope: Codable, Equatable, Sendable {
     uncertaintySupervision: Double, uncertaintyStop: Double) throws {
     let values = [semanticStop, kinematicStop, contactStop, forceStop, thermalStop, actuatorStop,
       uncertaintySupervision, uncertaintyStop]
-    guard values.allSatisfy({$0.isFinite && $0 > 0 && $0 <= 1}), uncertaintySupervision <= uncertaintyStop else {
+    guard values.allSatisfy({ $0.isFinite && $0 > 0 && $0 <= 1 }), uncertaintySupervision <= uncertaintyStop else {
       throw QualificationError.invalid("safety envelope is invalid")
     }
     self.semanticStop = semanticStop; self.kinematicStop = kinematicStop; self.contactStop = contactStop
@@ -55,7 +55,7 @@ public struct SafetyEnvelope: Codable, Equatable, Sendable {
 }
 
 @frozen
-public enum SafetyDisposition: String, Codable, Sendable {
+public enum SafetyDisposition: String, Codable, Equatable, Hashable, Sendable {
   case allow
   case requestSupervision
   case protectiveStop
@@ -83,7 +83,7 @@ public struct SafetyDecision: Codable, Equatable, Sendable {
       ("thermal", vector.thermalRisk, envelope.thermalStop),
       ("actuator", vector.actuatorRisk, envelope.actuatorStop),
     ]
-    reasons = limits.filter({$0.1 >= $0.2}).map(\.0)
+    reasons = limits.filter({ $0.1 >= $0.2 }).map(\.0)
     if vector.uncertainty >= envelope.uncertaintyStop { reasons.append("uncertainty_stop") }
     if !reasons.isEmpty { self.disposition = .protectiveStop; self.reasons = reasons; return }
     if vector.uncertainty >= envelope.uncertaintySupervision {
@@ -113,7 +113,9 @@ public struct WatchdogHeartbeat: Codable, Equatable, Sendable {
 }
 
 @frozen
-public enum WatchdogStatus: String, Codable, Sendable { case healthy, stale, restarted, regressed }
+public enum WatchdogStatus: String, Codable, Equatable, Hashable, Sendable {
+  case healthy, stale, restarted, regressed
+}
 
 public enum WatchdogVerifier {
   public static func status(previous: WatchdogHeartbeat?, current: WatchdogHeartbeat,
@@ -160,14 +162,16 @@ public struct SafetyIncidentArtifact: Codable, Equatable, Sendable {
 
 @frozen
 public struct SafetyCampaignScenario: Codable, Equatable, Hashable, Sendable {
-  public enum Kind: String, Codable, Sendable, CaseIterable {
+  public enum Kind: String, Codable, Equatable, Hashable, Sendable, CaseIterable {
     case semanticLimit, kinematicLimit, contactLimit, forceLimit, thermalLimit, actuatorLimit
     case uncertainty, malformedRecord, staleGeneration, resourceAlias, eventReplay, gpuFault, processRestart
   }
   public let kind: Kind
   public let identifier: String
   public init(kind: Kind, identifier: String) throws {
-    guard !identifier.isEmpty else { throw QualificationError.invalid("scenario identifier is empty") }
+    guard !identifier.isEmpty, identifier.utf8.count <= 256 else {
+      throw QualificationError.invalid("scenario identifier is empty or too large")
+    }
     self.kind = kind; self.identifier = identifier
   }
 }
