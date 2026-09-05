@@ -25,7 +25,6 @@ public struct NumanXReleaseManifest: Codable, Equatable, Sendable {
       !sourceRevision.isEmpty, sourceRevision.utf8.count <= 256, hashes.allSatisfy(PerformanceRunArtifact.isSHA256),
       previousReleaseManifestSHA256 == nil || PerformanceRunArtifact.isSHA256(previousReleaseManifestSHA256!),
       createdUnixSeconds > 0, deploymentGeneration > 0 else { throw QualificationError.invalid("release manifest is incomplete") }
-    }
     formatVersion = Self.formatVersion; self.releaseIdentifier = releaseIdentifier; self.sourceRevision = sourceRevision
     self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256; self.modelSHA256 = modelSHA256
     self.datasetManifestSHA256 = datasetManifestSHA256; self.qualificationManifestSHA256 = qualificationManifestSHA256
