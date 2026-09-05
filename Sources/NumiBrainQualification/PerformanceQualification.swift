@@ -20,13 +20,9 @@ public struct QualificationHardwareIdentity: Codable, Equatable, Hashable, Senda
     guard memoryBytes > 0, strings.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) else {
       throw QualificationError.invalid("hardware identity is incomplete")
     }
-    self.machineIdentifier = machineIdentifier
-    self.chipIdentifier = chipIdentifier
-    self.gpuFamily = gpuFamily
-    self.memoryBytes = memoryBytes
-    self.osBuild = osBuild
-    self.swiftVersion = swiftVersion
-    self.metalVersion = metalVersion
+    self.machineIdentifier = machineIdentifier; self.chipIdentifier = chipIdentifier
+    self.gpuFamily = gpuFamily; self.memoryBytes = memoryBytes; self.osBuild = osBuild
+    self.swiftVersion = swiftVersion; self.metalVersion = metalVersion
   }
 }
 
@@ -50,16 +46,14 @@ public struct PerformanceWorkloadIdentity: Codable, Equatable, Hashable, Sendabl
     deterministic: Bool, fastMath: Bool) throws {
     guard !identifier.isEmpty, identifier.utf8.count <= 256,
       environmentCount > 0, logicalDoF > 0, horizonRoots > 0, timestepMicroseconds > 0,
-      sensorScalarCount > 0, modelParameterCount > 0,
-      !(deterministic && fastMath) else {
+      sensorScalarCount > 0, modelParameterCount > 0, !(deterministic && fastMath) else {
       throw QualificationError.invalid("performance workload identity is invalid")
     }
     self.identifier = identifier; self.environmentCount = environmentCount
     self.logicalDoF = logicalDoF; self.attachmentCount = attachmentCount
     self.femElementCount = femElementCount; self.sensorScalarCount = sensorScalarCount
     self.modelParameterCount = modelParameterCount; self.horizonRoots = horizonRoots
-    self.timestepMicroseconds = timestepMicroseconds
-    self.deterministic = deterministic; self.fastMath = fastMath
+    self.timestepMicroseconds = timestepMicroseconds; self.deterministic = deterministic; self.fastMath = fastMath
   }
 }
 
@@ -82,16 +76,23 @@ public struct LatencyDistribution: Codable, Equatable, Sendable {
     func quantile(_ p: Double) -> Double {
       let x = p * Double(sorted.count - 1)
       let lo = Int(x), hi = min(lo + 1, sorted.count - 1)
-      let a = x - Double(lo)
-      return sorted[lo] * (1 - a) + sorted[hi] * a
+      let fraction = x - Double(lo)
+      let legacy = sorted[lo] * (1 - fraction) + sorted[hi] * fraction
+      return legacy.isFinite ? legacy : sorted[lo] + (sorted[hi] - sorted[lo]) * fraction
     }
-    sampleCount = UInt64(sorted.count)
-    minimumMicroseconds = sorted[0]
-    p50Microseconds = quantile(0.50)
-    p95Microseconds = quantile(0.95)
-    p99Microseconds = quantile(0.99)
+    sampleCount = UInt64(sorted.count); minimumMicroseconds = sorted[0]
+    p50Microseconds = quantile(0.50); p95Microseconds = quantile(0.95); p99Microseconds = quantile(0.99)
     maximumMicroseconds = sorted[sorted.count - 1]
-    meanMicroseconds = samplesMicroseconds.reduce(0, +) / Double(samplesMicroseconds.count)
+    // Preserve version-1 finite arithmetic for retained historical summaries.
+    // Only the overflowing path needs a scale-normalized fallback.
+    let legacySum = samplesMicroseconds.reduce(0, +)
+    if legacySum.isFinite { meanMicroseconds = legacySum / Double(samplesMicroseconds.count) }
+    else {
+      let scale = sorted[sorted.count - 1]
+      let mean = scale * (sorted.reduce(0) { $0 + $1 / scale } / Double(sorted.count))
+      meanMicroseconds = min(maximumMicroseconds, max(minimumMicroseconds, mean))
+    }
+    try validateSummary()
   }
 }
 
@@ -110,25 +111,20 @@ public struct PerformanceCounterSummary: Codable, Equatable, Sendable {
     cpuWaitCount: UInt64, queueCreationCountDuringMeasuredRegion: UInt64,
     hostPayloadReadbackBytes: UInt64) throws {
     for value in [gpuActiveFraction, cacheHitFraction].compactMap({ $0 }) {
-      guard value.isFinite, (0...1).contains(value) else {
-        throw QualificationError.invalid("fraction counter is invalid")
-      }
+      guard value.isFinite, (0...1).contains(value) else { throw QualificationError.invalid("fraction counter is invalid") }
     }
     if let bandwidth = gpuBandwidthBytesPerSecond {
-      guard bandwidth.isFinite, bandwidth >= 0 else {
-        throw QualificationError.invalid("bandwidth counter is invalid")
-      }
+      guard bandwidth.isFinite, bandwidth >= 0 else { throw QualificationError.invalid("bandwidth counter is invalid") }
     }
-    self.gpuActiveFraction = gpuActiveFraction
-    self.gpuBandwidthBytesPerSecond = gpuBandwidthBytesPerSecond
-    self.cacheHitFraction = cacheHitFraction
-    self.commandBufferCount = commandBufferCount
-    self.cpuWaitCount = cpuWaitCount
-    self.queueCreationCountDuringMeasuredRegion = queueCreationCountDuringMeasuredRegion
+    self.gpuActiveFraction = gpuActiveFraction; self.gpuBandwidthBytesPerSecond = gpuBandwidthBytesPerSecond
+    self.cacheHitFraction = cacheHitFraction; self.commandBufferCount = commandBufferCount
+    self.cpuWaitCount = cpuWaitCount; self.queueCreationCountDuringMeasuredRegion = queueCreationCountDuringMeasuredRegion
     self.hostPayloadReadbackBytes = hostPayloadReadbackBytes
   }
 }
 
+/// Legacy version-1 summary retained for inspection and historical comparison.
+/// Use PerformanceAttemptLedger for explicit accepted/rejected/fault accounting.
 @frozen
 public struct PerformanceRunArtifact: Codable, Equatable, Sendable {
   public static let formatVersion: UInt32 = 1
@@ -157,18 +153,20 @@ public struct PerformanceRunArtifact: Codable, Equatable, Sendable {
     peakResidentBytes: UInt64, steadyResidentBytes: UInt64, bytesPerEnvironment: Double,
     meanPowerWatts: Double? = nil, energyJoulesPerSimulatedSecond: Double? = nil,
     counters: PerformanceCounterSummary) throws {
-    guard !sourceRevision.isEmpty, Self.isSHA256(binarySHA256), Self.isSHA256(metallibSHA256),
+    try hardware.validate(); try workload.validate(); try latency.validateSummary(); try counters.validate()
+    guard !sourceRevision.isEmpty, sourceRevision.utf8.count <= 256,
+      Self.isSHA256(binarySHA256), Self.isSHA256(metallibSHA256),
       warmupRoots > 0, measuredRoots == latency.sampleCount, measuredRoots >= 100,
       simulatedSecondsPerWallSecond.isFinite, simulatedSecondsPerWallSecond > 0,
       environmentStepsPerSecond.isFinite, environmentStepsPerSecond > 0,
       peakResidentBytes >= steadyResidentBytes, steadyResidentBytes > 0,
       bytesPerEnvironment.isFinite, bytesPerEnvironment > 0,
-      (meanPowerWatts == nil || (meanPowerWatts!.isFinite && meanPowerWatts! > 0)),
-      (energyJoulesPerSimulatedSecond == nil || (energyJoulesPerSimulatedSecond!.isFinite && energyJoulesPerSimulatedSecond! > 0)) else {
+      meanPowerWatts == nil || (meanPowerWatts!.isFinite && meanPowerWatts! > 0),
+      energyJoulesPerSimulatedSecond == nil || (energyJoulesPerSimulatedSecond!.isFinite && energyJoulesPerSimulatedSecond! > 0) else {
       throw QualificationError.invalid("performance run artifact is incomplete")
     }
-    formatVersion = Self.formatVersion
-    self.sourceRevision = sourceRevision; self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256
+    formatVersion = Self.formatVersion; self.sourceRevision = sourceRevision
+    self.binarySHA256 = binarySHA256; self.metallibSHA256 = metallibSHA256
     self.hardware = hardware; self.workload = workload; self.warmupRoots = warmupRoots; self.measuredRoots = measuredRoots
     self.latency = latency; self.simulatedSecondsPerWallSecond = simulatedSecondsPerWallSecond
     self.environmentStepsPerSecond = environmentStepsPerSecond; self.peakResidentBytes = peakResidentBytes
@@ -178,10 +176,7 @@ public struct PerformanceRunArtifact: Codable, Equatable, Sendable {
   }
 
   public static func isSHA256(_ value: String) -> Bool {
-    guard value.utf8.count == 64 else { return false }
-    return value.utf8.allSatisfy { byte in
-      (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
-    }
+    value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
   }
 }
 
@@ -199,27 +194,29 @@ public struct PerformanceQualificationProtocol: Codable, Equatable, Sendable {
     minimumSimulatedSecondsPerWallSecond: Double, minimumEnvironmentStepsPerSecond: Double,
     maximumBytesPerEnvironment: Double, requireZeroCPUWaits: Bool = true,
     requireZeroQueueCreation: Bool = true, requireZeroHostPayloadReadback: Bool = true) throws {
-    let values = [maximumP99RootLatencyMicroseconds, minimumSimulatedSecondsPerWallSecond,
-      minimumEnvironmentStepsPerSecond, maximumBytesPerEnvironment]
-    guard values.allSatisfy({ $0.isFinite && $0 > 0 }) else {
+    guard [maximumP99RootLatencyMicroseconds, minimumSimulatedSecondsPerWallSecond,
+      minimumEnvironmentStepsPerSecond, maximumBytesPerEnvironment].allSatisfy({ $0.isFinite && $0 > 0 }) else {
       throw QualificationError.invalid("performance protocol is invalid")
     }
     self.maximumP99RootLatencyMicroseconds = maximumP99RootLatencyMicroseconds
     self.minimumSimulatedSecondsPerWallSecond = minimumSimulatedSecondsPerWallSecond
     self.minimumEnvironmentStepsPerSecond = minimumEnvironmentStepsPerSecond
     self.maximumBytesPerEnvironment = maximumBytesPerEnvironment
-    self.requireZeroCPUWaits = requireZeroCPUWaits
-    self.requireZeroQueueCreation = requireZeroQueueCreation
+    self.requireZeroCPUWaits = requireZeroCPUWaits; self.requireZeroQueueCreation = requireZeroQueueCreation
     self.requireZeroHostPayloadReadback = requireZeroHostPayloadReadback
   }
 }
 
+/// Numeric summary check only. This is not native performance qualification.
 @frozen
 public struct PerformanceQualificationResult: Codable, Equatable, Sendable {
   public let passed: Bool
   public let failures: [String]
 
   public init(run: PerformanceRunArtifact, protocol p: PerformanceQualificationProtocol) {
+    guard (try? run.validate()) != nil, (try? p.validate()) != nil else {
+      passed = false; failures = ["invalid_summary_or_protocol"]; return
+    }
     var failures: [String] = []
     if run.latency.p99Microseconds > p.maximumP99RootLatencyMicroseconds { failures.append("p99_root_latency") }
     if run.simulatedSecondsPerWallSecond < p.minimumSimulatedSecondsPerWallSecond { failures.append("simulated_seconds_per_wall_second") }
@@ -228,22 +225,23 @@ public struct PerformanceQualificationResult: Codable, Equatable, Sendable {
     if p.requireZeroCPUWaits && run.counters.cpuWaitCount != 0 { failures.append("cpu_waits") }
     if p.requireZeroQueueCreation && run.counters.queueCreationCountDuringMeasuredRegion != 0 { failures.append("queue_creation") }
     if p.requireZeroHostPayloadReadback && run.counters.hostPayloadReadbackBytes != 0 { failures.append("host_payload_readback") }
-    self.failures = failures; self.passed = failures.isEmpty
+    self.failures = failures; passed = failures.isEmpty
   }
 }
 
 public enum PerformanceSweepVerifier {
   public static func verify(expected: [PerformanceWorkloadIdentity], observed: [PerformanceRunArtifact]) throws {
-    guard !expected.isEmpty, Set(expected).count == expected.count,
-      observed.count == expected.count else { throw QualificationError.invalid("performance sweep is incomplete") }
+    guard !expected.isEmpty, expected.count <= 100_000, observed.count == expected.count else {
+      throw QualificationError.invalid("performance sweep is incomplete or unbounded")
+    }
+    for workload in expected { try workload.validate() }
+    for run in observed { try run.validate() }
     let actual = observed.map(\.workload)
-    guard Set(actual).count == actual.count, Set(actual) == Set(expected) else {
+    guard Set(expected).count == expected.count, Set(actual).count == actual.count, Set(actual) == Set(expected) else {
       throw QualificationError.invalid("performance sweep has missing, duplicate, or foreign workloads")
     }
-    guard Set(observed.map(\.sourceRevision)).count == 1,
-      Set(observed.map(\.binarySHA256)).count == 1,
-      Set(observed.map(\.metallibSHA256)).count == 1,
-      Set(observed.map(\.hardware)).count == 1 else {
+    guard Set(observed.map(\.sourceRevision)).count == 1, Set(observed.map(\.binarySHA256)).count == 1,
+      Set(observed.map(\.metallibSHA256)).count == 1, Set(observed.map(\.hardware)).count == 1 else {
       throw QualificationError.invalid("performance sweep mixes runtime or hardware identities")
     }
   }
