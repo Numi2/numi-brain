@@ -52,7 +52,6 @@ public actor BrainJointPreparedManifestStore {
   public func close() throws {
     guard !closed else { return }
     closed = true
-    // FileHandle closes both descriptors independently, including a prior sync failure.
     var failure: Error?
     do { try writerLock.close() } catch { failure = error }
     do { try directory.close() } catch { if failure == nil { failure = error } }
@@ -76,8 +75,8 @@ public actor BrainJointPreparedManifestStore {
     return artifact.payloadSHA256
   }
 
-  /// Changed from digest-only prepare: old records with missing payloads cannot be promoted. Import
-  /// their exact bytes using storeParticipant before prepare/decide/recover; never synthesize them.
+  /// Old digest-only records require their exact payload bytes before prepare/decide/recover.
+  /// Never synthesize missing native state to make an older manifest pass verification.
   @discardableResult
   public func prepare(_ source: BrainJointPreparedManifest) throws -> BrainJointPreparedManifest {
     try usable()
@@ -103,7 +102,6 @@ public actor BrainJointPreparedManifestStore {
     guard manifest.root.fingerprint == rootFingerprint else {
       throw BrainRuntimeError.transaction("joint prepared manifest root mismatch")
     }
-    // No successful commit decision can be emitted solely from an unmaterialized manifest.
     if decision == .commit { try verifyParticipants(manifest) }
     let record = try BrainJointPreparedDecisionRecord(manifest: manifest, decision: decision)
     let name = decisionName(rootFingerprint)
@@ -130,8 +128,8 @@ public actor BrainJointPreparedManifestStore {
       }
       decision = value
     }
-    // An explicit abort can be inspected even when a corrupt participant cannot be reconstructed.
-    // Undecided/committed roots must still carry all bytes; absent decision never means abort.
+    // An explicit abort remains inspectable even when damaged candidate files cannot be restored.
+    // Undecided and committed roots still require all exact bytes. Absent decision never means abort.
     if decision?.decision != .abort { try verifyParticipants(manifest) }
     return (manifest, decision)
   }
@@ -234,6 +232,10 @@ public actor BrainJointPreparedManifestStore {
     let file = try openRegular(name, maximumBytes: 65_536)
     defer { try? file.close() }
     let count = try file.seekToEnd()
+    // A file can grow between fstat and seek. Recheck before Int conversion/allocation.
+    guard count > 0, count <= 65_536 else {
+      throw BrainRuntimeError.capacity("joint metadata changed size before reading")
+    }
     try file.seek(toOffset: 0)
     let data = try readExactly(file, count: Int(count))
     guard (try file.read(upToCount: 1) ?? Data()).isEmpty else { throw BrainRuntimeError.transaction("record grew during read") }
@@ -241,6 +243,9 @@ public actor BrainJointPreparedManifestStore {
   }
 
   private func readExactly(_ file: FileHandle, count: Int) throws -> Data {
+    guard count > 0, UInt64(count) <= max(maximumParticipantBytes, 65_536) else {
+      throw BrainRuntimeError.capacity("joint artifact read budget")
+    }
     var result = Data(); result.reserveCapacity(count)
     while result.count < count {
       guard let bytes = try file.read(upToCount: min(1_048_576, count - result.count)), !bytes.isEmpty else {
