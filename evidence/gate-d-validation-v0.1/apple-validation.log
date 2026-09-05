@@ -2,7 +2,7 @@
 Date: 2026-09-05
 Host: Apple M4 Pro Mac mini (Mac16,11), macOS 26.6, 24 GB
 Swift: 6.3.3; package target arm64-apple-macosx26.0
-Branch revision under test: d935450a10a109608879cd9aa40e40c8952b955a
+Branch revision under test: 851979a (fix commit; source baseline d935450a)
 
 Initial failure addressed:
   scripts/validate-gate-d-portable.sh generated a temporary Package.swift
