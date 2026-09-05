@@ -54,6 +54,11 @@ public actor BrainSafetyAdmissionController {
       stale = stale || scope.environmentIdentifier != transaction.environmentIdentifier
         || scope.episodeIdentifier != transaction.episodeIdentifier
         || scope.parameterVersionFingerprint != transaction.parameterVersionFingerprint
+      if lastAccepted == nil {
+        stale = stale || scope.baseBrainGeneration != transaction.baseBrainGeneration
+          || scope.basePhysicsGeneration != transaction.basePhysicsGeneration
+          || scope.committedTimestamp != transaction.committedTimestamp
+      }
     }
     if let accepted = lastAccepted {
       if configuration.requireContiguousBrainGeneration {
@@ -62,6 +67,11 @@ public actor BrainSafetyAdmissionController {
       stale = stale || transaction.committedTimestamp != accepted.targetTimestamp
     }
     if let resolved = lastResolved {
+      if lastWasRejected {
+        stale = stale || transaction.baseBrainGeneration != resolved.baseBrainGeneration
+          || transaction.basePhysicsGeneration != resolved.basePhysicsGeneration
+          || transaction.committedTimestamp != resolved.committedTimestamp
+      }
       let exactRejectedRetry = lastWasRejected && transaction == resolved
       if !exactRejectedRetry {
         if configuration.requireContiguousControlStep {

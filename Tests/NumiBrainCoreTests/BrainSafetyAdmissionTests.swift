@@ -62,4 +62,18 @@ final class BrainSafetyAdmissionTests: XCTestCase {
     let c = try controller()
     do { try await c.resetAfterVerifiedRecovery(baseBrainGeneration: 1, controlStepIdentifier: 1, transactionFingerprint: 1); XCTFail("unverified reset") } catch {}
   }
+  func testRejectedInitialRootCannotAdvanceItsUnpublishedState() async throws {
+    let c = try controller(), first = try token(step: 1, generation: 0)
+    let receipt = try await c.evaluate(transaction: first, vector: vector())
+    try await c.recordRejected(transaction: first, receipt: receipt)
+    let later = try await c.evaluate(transaction: token(step: 2, generation: 1), vector: vector())
+    XCTAssertEqual(later.disposition, .failClosed)
+  }
+  func testStoppedInitialRootCannotChangeBaseOnReevaluation() async throws {
+    let c = try controller(), first = try token(step: 1, generation: 0)
+    _ = try await c.evaluate(transaction: first, vector: vector())
+    _ = try await c.evaluate(transaction: first, vector: vector(uncertainty: 1))
+    let later = try await c.evaluate(transaction: token(step: 2, generation: 1), vector: vector())
+    XCTAssertEqual(later.disposition, .failClosed)
+  }
 }

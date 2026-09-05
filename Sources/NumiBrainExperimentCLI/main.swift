@@ -8,6 +8,8 @@ import Darwin
 
 /// One experiment frontend; all physical stepping reuses the existing native
 /// root runner. Configurations and products are retained, never gate admission.
+private struct SettingsInput: Codable { let artifactDirectory: String; let settings: MLXPhysicalMotorCalibration.Settings }
+private struct ProtocolInput: Codable { let artifactDirectory: String; let experiment: BrainReachHoldProtocol }
 private struct SeedInput: Codable { let artifactDirectory: String; let timestepMicroseconds: UInt32 }
 private struct ProbeInput: Codable {
   let artifactDirectory: String; let parentPublicationSHA256: String; let coordinate: Int; let offset: Float
@@ -29,6 +31,7 @@ private struct CommandResult: Encodable {
   let configurationSHA256: String
   let artifactSHA256: String
   let kind: String
+  var parameterVersionFingerprint: UInt64? = nil
 }
 private struct FailureRecord: Encodable {
   let promotable = false
@@ -44,7 +47,7 @@ private func emit<T: Encodable>(_ value: T) throws {
 }
 private func directory(_ path: String) throws -> URL {
   let url = URL(fileURLWithPath: path, isDirectory: true)
-  _ = try QualificationFileDirectory(url: url)
+  _ = try QualificationFileDirectory(url: url) // existing, nonsymlinked destination
   return url
 }
 private func publication(_ sha: String, _ directory: URL) throws -> BrainMotorStudyPublication {
@@ -61,27 +64,27 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
     input.nativePaths.values.allSatisfy({ !$0.isEmpty }), let device = MTLCreateSystemDefaultDevice() else {
     throw BrainRuntimeError.transaction("experiment configuration, model identity or Metal device is invalid")
   }
-  let paths = input.nativePaths
-  let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
-    bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
-      musclePayloadPath: paths["muscle"]!, supportContactPayloadPath: paths["contacts"]!,
-      visualPackPath: paths["visualPack"]!, visionProfilePath: paths["visionProfile"]!,
-      metalRoboMetallibPath: paths["metalRoboMetallib"]!, matterMetallibPath: paths["matterMetallib"]!,
-      matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2),
-    publication: weights.unverifiedPublication, artifactDirectory: directory,
-    episodeIdentifier: protocolValue.episodeIdentifier, randomSeed: protocolValue.randomSeed,
-    enableProductionUncertaintyGate: true, device: device)
-  guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
-    throw BrainRuntimeError.transaction("native model differs from frozen experiment")
-  }
-  let coordinates = try BrainPolicyNumanXDatasetCoordinates(datasetSourceIdentifier: "numibrain.reach-hold.v1",
-    datasetSourceRevision: input.protocolSHA256, episodeIdentifier: protocolValue.episodeIdentifier,
-    taskFingerprint: protocolValue.taskFingerprint, sceneFingerprint: protocolValue.sceneFingerprint,
-    objectFingerprint: protocolValue.objectFingerprint, embodimentFingerprint: protocolValue.embodimentFingerprint)
   var roots: [MetalNumanXGateCRootRunner.RootResult] = []
-  let rootCount = try protocolValue.captureRootCount
-  roots.reserveCapacity(Int(rootCount))
   do {
+    let paths = input.nativePaths
+    let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
+      bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
+        musclePayloadPath: paths["muscle"]!, supportContactPayloadPath: paths["contacts"]!,
+        visualPackPath: paths["visualPack"]!, visionProfilePath: paths["visionProfile"]!,
+        metalRoboMetallibPath: paths["metalRoboMetallib"]!, matterMetallibPath: paths["matterMetallib"]!,
+        matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2),
+      publication: weights.unverifiedPublication, artifactDirectory: directory,
+      episodeIdentifier: protocolValue.episodeIdentifier, randomSeed: protocolValue.randomSeed,
+      enableProductionUncertaintyGate: true, device: device)
+    guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
+      throw BrainRuntimeError.transaction("native model differs from frozen experiment")
+    }
+    let coordinates = try BrainPolicyNumanXDatasetCoordinates(datasetSourceIdentifier: "numibrain.reach-hold.v1",
+      datasetSourceRevision: input.protocolSHA256, episodeIdentifier: protocolValue.episodeIdentifier,
+      taskFingerprint: protocolValue.taskFingerprint, sceneFingerprint: protocolValue.sceneFingerprint,
+      objectFingerprint: protocolValue.objectFingerprint, embodimentFingerprint: protocolValue.embodimentFingerprint)
+    let rootCount = try protocolValue.captureRootCount
+    roots.reserveCapacity(Int(rootCount))
     for step in UInt32(1)...rootCount {
       let root = try runner.runRoot(controlStep: step, coordinates: coordinates, externalGoalProvider: { committed, target in
         try protocolValue.goal(controlStep: step, committed: committed, target: target)
@@ -91,6 +94,8 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
     return try runner.writeCaptureRunArtifact(runIdentifier: input.runIdentifier, sourceRevision: protocolValue.sourceRevision,
       roots: roots, learningBatch: runner.captureLearningBatch())
   } catch {
+    // A command failure cannot fabricate a successful root transcript. Retain
+    // completed terminal identities and the fault separately before returning.
     let failure = FailureRecord(configurationSHA256: configSHA, protocolSHA256: input.protocolSHA256,
       completedExecutionSHA256: roots.map(\.executionArtifactSHA256), error: String(describing: error))
     let hash = try BrainReachHoldExperiment.retain(failure, directory: directory)
@@ -102,13 +107,26 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
 let args = Array(CommandLine.arguments.dropFirst())
 do {
   guard args.count == 3, args[1] == "--config",
-    ["seed", "probe", "capture", "evaluate", "calibrate"].contains(args[0]) else {
-    print("numi-brain-experiment seed|probe|capture|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
+    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "evaluate", "calibrate"].contains(args[0]) else {
+    print("numi-brain-experiment seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
     exit(64)
   }
   let bytes = try QualificationFileDirectory.readFile(URL(fileURLWithPath: args[2]), maximumBytes: 1_048_576)
   let result: CommandResult
   switch args[0] {
+  case "freeze-settings":
+    let input = try read(SettingsInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    try input.settings.validate()
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(input.settings, directory: store), kind: "predeclared-calibration-settings")
+  case "freeze-protocol":
+    let input = try read(ProtocolInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    try input.experiment.validate()
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(input.experiment, directory: store), kind: "predeclared-physical-task",
+      parameterVersionFingerprint: input.experiment.parameterVersionFingerprint)
   case "seed":
     let input = try read(SeedInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     guard input.timestepMicroseconds > 0 else { throw BrainRuntimeError.transaction("invalid seed timestep") }
@@ -117,14 +135,14 @@ do {
     let seed = try BrainParameterPublication.developmentalSeedV1(species: compiled.species, tissueParameters: .corticalSheetV0)
     let artifact = try BrainMotorStudyPublication(publication: seed)
     let hash = try BrainReachHoldExperiment.retain(artifact, directory: store)
-    result = CommandResult(configurationSHA256: configHash, artifactSHA256: hash, kind: "untrained-publication")
+    result = CommandResult(configurationSHA256: configHash, artifactSHA256: hash, kind: "untrained-publication", parameterVersionFingerprint: seed.version.fingerprint)
   case "probe":
     let input = try read(ProbeInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
     let probe = try MLXPhysicalMotorCalibration.probe(parent: publication(input.parentPublicationSHA256, store),
       coordinate: input.coordinate, offset: input.offset)
     result = CommandResult(configurationSHA256: configHash,
-      artifactSHA256: try BrainReachHoldExperiment.retain(probe, directory: store), kind: "unverified-gain-probe")
+      artifactSHA256: try BrainReachHoldExperiment.retain(probe, directory: store), kind: "unverified-gain-probe", parameterVersionFingerprint: probe.version.fingerprint)
   case "capture":
     let input = try read(CaptureInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
@@ -146,7 +164,7 @@ do {
       negative: publication(input.negativePublicationSHA256, store), positive: publication(input.positivePublicationSHA256, store),
       negativeEvaluation: negative, positiveEvaluation: positive, settings: input.settings)
     result = CommandResult(configurationSHA256: configHash,
-      artifactSHA256: try BrainReachHoldExperiment.retain(candidate, directory: store), kind: "unevaluated-physical-loss-proposal")
+      artifactSHA256: try BrainReachHoldExperiment.retain(candidate, directory: store), kind: "unevaluated-physical-loss-proposal", parameterVersionFingerprint: candidate.version.fingerprint)
   }
   let storePath: String = try {
     let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
