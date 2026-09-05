@@ -94,7 +94,7 @@ public enum PerformanceEvidenceVerifier {
   private static func close(_ a: Double, _ b: Double,
     relativeTolerance: Double = 1.0e-10) -> Bool {
     guard a.isFinite, b.isFinite else { return false }
-    let scale = max(1, abs(a), abs(b))
+    let scale = max(1, max(abs(a), abs(b)))
     return abs(a - b) <= relativeTolerance * scale
   }
 }
