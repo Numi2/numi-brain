@@ -5,7 +5,7 @@ public enum QualificationError: Error, Equatable, Sendable {
 }
 
 @frozen
-public struct QualificationHardwareIdentity: Codable, Equatable, Sendable {
+public struct QualificationHardwareIdentity: Codable, Equatable, Hashable, Sendable {
   public let machineIdentifier: String
   public let chipIdentifier: String
   public let gpuFamily: String
@@ -109,7 +109,7 @@ public struct PerformanceCounterSummary: Codable, Equatable, Sendable {
     cacheHitFraction: Double? = nil, commandBufferCount: UInt64,
     cpuWaitCount: UInt64, queueCreationCountDuringMeasuredRegion: UInt64,
     hostPayloadReadbackBytes: UInt64) throws {
-    for value in [gpuActiveFraction, cacheHitFraction].compactMap({$0}) {
+    for value in [gpuActiveFraction, cacheHitFraction].compactMap({ $0 }) {
       guard value.isFinite, (0...1).contains(value) else {
         throw QualificationError.invalid("fraction counter is invalid")
       }
@@ -178,7 +178,10 @@ public struct PerformanceRunArtifact: Codable, Equatable, Sendable {
   }
 
   public static func isSHA256(_ value: String) -> Bool {
-    value.utf8.count == 64 && value.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    guard value.utf8.count == 64 else { return false }
+    return value.utf8.allSatisfy { byte in
+      (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+    }
   }
 }
 
@@ -198,7 +201,7 @@ public struct PerformanceQualificationProtocol: Codable, Equatable, Sendable {
     requireZeroQueueCreation: Bool = true, requireZeroHostPayloadReadback: Bool = true) throws {
     let values = [maximumP99RootLatencyMicroseconds, minimumSimulatedSecondsPerWallSecond,
       minimumEnvironmentStepsPerSecond, maximumBytesPerEnvironment]
-    guard values.allSatisfy({$0.isFinite && $0 > 0}) else {
+    guard values.allSatisfy({ $0.isFinite && $0 > 0 }) else {
       throw QualificationError.invalid("performance protocol is invalid")
     }
     self.maximumP99RootLatencyMicroseconds = maximumP99RootLatencyMicroseconds
