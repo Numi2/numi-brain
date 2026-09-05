@@ -2,10 +2,46 @@ import XCTest
 @testable import NumiBrainQualification
 
 final class QualificationTests: XCTestCase {
+  private let hashA = String(repeating: "a", count: 64)
+  private let hashB = String(repeating: "b", count: 64)
+
+  private func hardware() throws -> QualificationHardwareIdentity {
+    try .init(machineIdentifier: "Mac16,11", chipIdentifier: "Apple M4 Pro",
+      gpuFamily: "Apple9", memoryBytes: 24 * 1024 * 1024 * 1024,
+      osBuild: "26.6-test", swiftVersion: "6.3.3", metalVersion: "Metal4")
+  }
+
+  private func workload(_ identifier: String, environments: UInt32) throws -> PerformanceWorkloadIdentity {
+    try .init(identifier: identifier, environmentCount: environments, logicalDoF: 128,
+      attachmentCount: 1, femElementCount: 1, sensorScalarCount: 4_576,
+      modelParameterCount: 1_000, horizonRoots: 100, timestepMicroseconds: 1_000,
+      deterministic: true, fastMath: false)
+  }
+
+  private func run(_ workload: PerformanceWorkloadIdentity, binary: String = String(repeating: "a", count: 64)) throws
+    -> PerformanceRunArtifact
+  {
+    try .init(sourceRevision: "revision", binarySHA256: binary, metallibSHA256: hashB,
+      hardware: hardware(), workload: workload, warmupRoots: 10, measuredRoots: 100,
+      latency: LatencyDistribution(samplesMicroseconds: [Double](repeating: 100, count: 100)),
+      simulatedSecondsPerWallSecond: 2, environmentStepsPerSecond: 2_000,
+      peakResidentBytes: 1_000_000, steadyResidentBytes: 900_000,
+      bytesPerEnvironment: 900_000 / Double(workload.environmentCount),
+      counters: PerformanceCounterSummary(commandBufferCount: 100, cpuWaitCount: 0,
+        queueCreationCountDuringMeasuredRegion: 0, hostPayloadReadbackBytes: 0))
+  }
+
   func testLatencyDistribution() throws {
     let value = try LatencyDistribution(samplesMicroseconds: [1,2,3,4,5])
     XCTAssertEqual(value.sampleCount, 5); XCTAssertEqual(value.p50Microseconds, 3)
     XCTAssertGreaterThan(value.p95Microseconds, value.p50Microseconds)
+  }
+
+  func testSHA256RequiresCanonicalLowercaseHex() {
+    XCTAssertTrue(PerformanceRunArtifact.isSHA256(hashA))
+    XCTAssertFalse(PerformanceRunArtifact.isSHA256(String(repeating: "A", count: 64)))
+    XCTAssertFalse(PerformanceRunArtifact.isSHA256(String(repeating: "g", count: 64)))
+    XCTAssertFalse(PerformanceRunArtifact.isSHA256(String(repeating: "a", count: 63)))
   }
 
   func testSafetyPrecedence() throws {
@@ -22,7 +58,7 @@ final class QualificationTests: XCTestCase {
     XCTAssertEqual(SafetyDecision(vector: malformed, envelope: envelope).disposition, .failClosed)
   }
 
-  func testWatchdogDetectsRegressionAndRestart() throws {
+  func testWatchdogDetectsRegressionRestartAndStaleness() throws {
     let id = UUID()
     let a = try WatchdogHeartbeat(processInstance: id, sequence: 1, monotonicNanoseconds: 100,
       publicGeneration: 4, transactionFingerprint: 1)
@@ -32,10 +68,39 @@ final class QualificationTests: XCTestCase {
       maximumAgeNanoseconds: 100), .healthy)
     XCTAssertEqual(try WatchdogVerifier.status(previous: b, current: a, nowNanoseconds: 250,
       maximumAgeNanoseconds: 1000), .regressed)
+    XCTAssertEqual(try WatchdogVerifier.status(previous: nil, current: a, nowNanoseconds: 500,
+      maximumAgeNanoseconds: 100), .stale)
+    let restarted = try WatchdogHeartbeat(processInstance: UUID(), sequence: 1, monotonicNanoseconds: 300,
+      publicGeneration: 5, transactionFingerprint: 3)
+    XCTAssertEqual(try WatchdogVerifier.status(previous: b, current: restarted, nowNanoseconds: 350,
+      maximumAgeNanoseconds: 100), .restarted)
   }
 
-  func testSweepRejectsMixedBinaries() throws {
-    // Coverage behavior is exercised in Apple/full-package qualification with retained runs.
-    XCTAssertTrue(true)
+  func testPerformanceSweepRejectsMixedBinariesAndMissingCells() throws {
+    let a = try workload("one", environments: 1)
+    let b = try workload("many", environments: 16)
+    XCTAssertNoThrow(try PerformanceSweepVerifier.verify(expected: [a,b], observed: [try run(a), try run(b)]))
+    XCTAssertThrowsError(try PerformanceSweepVerifier.verify(expected: [a,b], observed: [try run(a)]))
+    XCTAssertThrowsError(try PerformanceSweepVerifier.verify(expected: [a,b], observed: [
+      try run(a), try run(b, binary: String(repeating: "c", count: 64)),
+    ]))
+  }
+
+  func testPerformanceProtocolRejectsHotPathCPUWork() throws {
+    let workload = try workload("one", environments: 1)
+    let hardware = try hardware()
+    let run = try PerformanceRunArtifact(sourceRevision: "revision", binarySHA256: hashA,
+      metallibSHA256: hashB, hardware: hardware, workload: workload, warmupRoots: 10,
+      measuredRoots: 100, latency: LatencyDistribution(samplesMicroseconds: [Double](repeating: 100, count: 100)),
+      simulatedSecondsPerWallSecond: 2, environmentStepsPerSecond: 2_000,
+      peakResidentBytes: 1_000_000, steadyResidentBytes: 900_000, bytesPerEnvironment: 900_000,
+      counters: PerformanceCounterSummary(commandBufferCount: 100, cpuWaitCount: 1,
+        queueCreationCountDuringMeasuredRegion: 0, hostPayloadReadbackBytes: 0))
+    let protocolValue = try PerformanceQualificationProtocol(maximumP99RootLatencyMicroseconds: 1_000,
+      minimumSimulatedSecondsPerWallSecond: 1, minimumEnvironmentStepsPerSecond: 1,
+      maximumBytesPerEnvironment: 1_000_000)
+    let result = PerformanceQualificationResult(run: run, protocol: protocolValue)
+    XCTAssertFalse(result.passed)
+    XCTAssertEqual(result.failures, ["cpu_waits"])
   }
 }
