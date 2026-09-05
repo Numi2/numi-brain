@@ -28,12 +28,9 @@ public extension LatencyDistribution {
     let values = [minimumMicroseconds, p50Microseconds, p95Microseconds,
       p99Microseconds, maximumMicroseconds, meanMicroseconds]
     guard sampleCount > 0, values.allSatisfy({ $0.isFinite && $0 >= 0 }),
-      minimumMicroseconds <= p50Microseconds,
-      p50Microseconds <= p95Microseconds,
-      p95Microseconds <= p99Microseconds,
-      p99Microseconds <= maximumMicroseconds,
-      meanMicroseconds >= minimumMicroseconds,
-      meanMicroseconds <= maximumMicroseconds else {
+      minimumMicroseconds <= p50Microseconds, p50Microseconds <= p95Microseconds,
+      p95Microseconds <= p99Microseconds, p99Microseconds <= maximumMicroseconds,
+      meanMicroseconds >= minimumMicroseconds, meanMicroseconds <= maximumMicroseconds else {
       throw QualificationError.invalid("latency summary is invalid")
     }
   }
@@ -84,53 +81,16 @@ public extension PerformanceQualificationProtocol {
   }
 }
 
-public extension SafetyVector {
-  func validate() throws {
-    guard try Self(semanticRisk: semanticRisk, kinematicRisk: kinematicRisk,
-      contactRisk: contactRisk, forceRisk: forceRisk, thermalRisk: thermalRisk,
-      actuatorRisk: actuatorRisk, uncertainty: uncertainty,
-      staleGeneration: staleGeneration, malformedRecord: malformedRecord,
-      resourceAlias: resourceAlias, deviceFault: deviceFault) == self else {
-      throw QualificationError.invalid("safety vector is noncanonical")
-    }
-  }
-}
-
-public extension SafetyEnvelope {
-  func validate() throws {
-    guard try Self(semanticStop: semanticStop, kinematicStop: kinematicStop,
-      contactStop: contactStop, forceStop: forceStop, thermalStop: thermalStop,
-      actuatorStop: actuatorStop, uncertaintySupervision: uncertaintySupervision,
-      uncertaintyStop: uncertaintyStop) == self else {
-      throw QualificationError.invalid("safety envelope is noncanonical")
-    }
-  }
-}
-
-public extension WatchdogHeartbeat {
-  func validate() throws {
-    guard try Self(processInstance: processInstance, sequence: sequence,
-      monotonicNanoseconds: monotonicNanoseconds, publicGeneration: publicGeneration,
-      transactionFingerprint: transactionFingerprint) == self else {
-      throw QualificationError.invalid("watchdog heartbeat is noncanonical")
-    }
-  }
-}
-
+// SafetyVector, SafetyEnvelope and WatchdogHeartbeat validate in their owning
+// source and their Decodable initializers; do not maintain a second definition.
 public extension SafetyIncidentArtifact {
   func validate() throws {
     try vector.validate()
-    let expectedDecision = SafetyDecision(vector: vector,
-      envelope: try SafetyEnvelope(semanticStop: 1, kinematicStop: 1,
-        contactStop: 1, forceStop: 1, thermalStop: 1, actuatorStop: 1,
-        uncertaintySupervision: 1, uncertaintyStop: 1))
-    _ = expectedDecision // Decision-envelope provenance is campaign-level; retain structural validation here.
-    guard formatVersion == Self.formatVersion,
-      try Self(sourceRevision: sourceRevision,
-        parameterVersionFingerprint: parameterVersionFingerprint,
-        publicGeneration: publicGeneration,
-        transactionFingerprint: transactionFingerprint, vector: vector,
-        decision: decision, rejectedShadowExposed: rejectedShadowExposed,
+    guard formatVersion == Self.formatVersion, decision.reasons.count <= 64,
+      decision.reasons.allSatisfy({ $0.utf8.count <= 512 }),
+      try Self(sourceRevision: sourceRevision, parameterVersionFingerprint: parameterVersionFingerprint,
+        publicGeneration: publicGeneration, transactionFingerprint: transactionFingerprint,
+        vector: vector, decision: decision, rejectedShadowExposed: rejectedShadowExposed,
         recoveryArtifactSHA256: recoveryArtifactSHA256) == self else {
       throw QualificationError.invalid("safety incident artifact is noncanonical")
     }

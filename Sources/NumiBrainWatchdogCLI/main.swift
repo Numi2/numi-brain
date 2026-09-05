@@ -8,39 +8,67 @@ import Glibc
 #endif
 
 private func usage() {
-  print("numi-brain-watchdog check --heartbeat FILE --max-age-ns N [--stop-request FILE]")
+  print("""
+  numi-brain-watchdog check|watch --heartbeat FILE --stop-request FILE \
+    --expected-process UUID --max-age-ns N --max-progress-age-ns N [--poll-ns N]
+  watch retains sequence, generation and process history. Any fault latches a
+  sticky stop request. The native/hardware owner must independently enforce it.
+  check is one observation only, not a deployment-safety qualification.
+  """)
 }
 
-let args = Array(CommandLine.arguments.dropFirst())
-do {
-  guard args.count == 5 || args.count == 7, args[0] == "check", args[1] == "--heartbeat",
-    args[3] == "--max-age-ns", let maximumAge = UInt64(args[4]) else {
-    usage(); exit(64)
+private func run() throws -> Int32 {
+  let args = Array(CommandLine.arguments.dropFirst())
+  guard let command = args.first, ["check", "watch"].contains(command), args.count % 2 == 1 else { usage(); return 64 }
+  var options: [String: String] = [:]
+  for index in stride(from: 1, to: args.count, by: 2) {
+    guard options[args[index]] == nil else { usage(); return 64 }
+    options[args[index]] = args[index + 1]
   }
-  let stopURL: URL?
-  if args.count == 7 {
-    guard args[5] == "--stop-request" else { usage(); exit(64) }
-    stopURL = URL(fileURLWithPath: args[6])
-  } else { stopURL = nil }
-
-  let heartbeat = try WatchdogFileProtocol.readHeartbeat(URL(fileURLWithPath: args[2]))
-  let now = DispatchTime.now().uptimeNanoseconds
-  let decision = try WatchdogDecision(previous: nil, current: heartbeat,
-    nowNanoseconds: now, maximumAgeNanoseconds: maximumAge)
-  if decision.mustRequestSafeState, let stopURL, let reason = decision.reason {
-    let seconds = Date().timeIntervalSince1970
-    guard seconds.isFinite, seconds > 0, seconds <= Double(UInt64.max) / 1_000_000_000 else {
-      throw QualificationError.invalid("wall clock lies outside watchdog incident range")
+  let required: Set<String> = ["--heartbeat", "--stop-request", "--expected-process", "--max-age-ns", "--max-progress-age-ns"]
+  guard required.isSubset(of: Set(options.keys)), Set(options.keys).isSubset(of: required.union(["--poll-ns"])),
+    let expected = UUID(uuidString: options["--expected-process"]!),
+    let age = UInt64(options["--max-age-ns"]!), let progressAge = UInt64(options["--max-progress-age-ns"]!),
+    age >= 1_000_000, progressAge >= age,
+    let poll = UInt64(options["--poll-ns"] ?? String(min(age / 4, 100_000_000))),
+    poll >= 100_000, poll <= age / 2 else { usage(); return 64 }
+  let heartbeatURL = URL(fileURLWithPath: options["--heartbeat"]!)
+  let stopURL = URL(fileURLWithPath: options["--stop-request"]!)
+  guard heartbeatURL.standardizedFileURL != stopURL.standardizedFileURL else {
+    throw QualificationError.invalid("heartbeat and stop marker must be disjoint")
+  }
+  // Validate the stop transport before entering the monitoring loop. Existing
+  // markers, including markers from prior sessions, are never cleared here.
+  if let existing = try WatchdogFileProtocol.readStopRequestIfPresent(stopURL) {
+    var data = try QualificationFileDirectory.canonicalJSON(existing); data.append(10)
+    FileHandle.standardOutput.write(data); return 1
+  }
+  var monitor = try WatchdogMonitor(expectedProcessInstance: expected,
+    maximumAgeNanoseconds: age, maximumProgressAgeNanoseconds: progressAge)
+  let watchdogInstance = UUID()
+  while true {
+    var heartbeat: WatchdogHeartbeat?, failed = false
+    do { heartbeat = try WatchdogFileProtocol.readHeartbeat(heartbeatURL) }
+    catch QualificationFileError.missing { heartbeat = nil }
+    catch { failed = true }
+    let decision = monitor.observe(heartbeat, readFailed: failed, nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
+    if decision.mustRequestSafeState {
+      let wall = Date().timeIntervalSince1970 * 1_000_000_000
+      guard wall.isFinite, wall >= 1, wall < Double(UInt64.max) else {
+        throw QualificationError.invalid("wall clock outside incident timestamp range")
+      }
+      let request = try WatchdogStopRequest(watchdogInstance: watchdogInstance,
+        expectedProcessInstance: expected, observed: heartbeat,
+        reason: decision.reason ?? "watchdog_fault", createdUnixNanoseconds: UInt64(wall.rounded(.down)))
+      try WatchdogFileProtocol.publishStopRequest(request, to: stopURL)
     }
-    let wall = UInt64((seconds * 1_000_000_000).rounded(.down))
-    let request = try WatchdogStopRequest(watchdogInstance: UUID(), observed: heartbeat,
-      reason: reason, createdUnixNanoseconds: wall)
-    try WatchdogFileProtocol.publishStopRequest(request, to: stopURL)
+    if command == "check" || decision.mustRequestSafeState {
+      var data = try QualificationFileDirectory.canonicalJSON(decision); data.append(10)
+      FileHandle.standardOutput.write(data); return decision.mustRequestSafeState ? 1 : 0
+    }
+    Thread.sleep(forTimeInterval: Double(poll) / 1_000_000_000)
   }
-  let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-  var output = try encoder.encode(decision); output.append(10)
-  FileHandle.standardOutput.write(output)
-  exit(decision.mustRequestSafeState ? 1 : 0)
-} catch {
-  FileHandle.standardError.write(Data("numi-brain-watchdog: \(error)\n".utf8)); exit(65)
 }
+
+do { exit(try run()) }
+catch { FileHandle.standardError.write(Data("numi-brain-watchdog: \(error)\n".utf8)); exit(65) }
