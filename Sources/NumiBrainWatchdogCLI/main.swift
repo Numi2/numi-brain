@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import NumiBrainQualification
 #if canImport(Darwin)
@@ -27,7 +28,11 @@ do {
   let decision = try WatchdogDecision(previous: nil, current: heartbeat,
     nowNanoseconds: now, maximumAgeNanoseconds: maximumAge)
   if decision.mustRequestSafeState, let stopURL, let reason = decision.reason {
-    let wall = UInt64(max(1, Date().timeIntervalSince1970 * 1_000_000_000))
+    let seconds = Date().timeIntervalSince1970
+    guard seconds.isFinite, seconds > 0, seconds <= Double(UInt64.max) / 1_000_000_000 else {
+      throw QualificationError.invalid("wall clock lies outside watchdog incident range")
+    }
+    let wall = UInt64((seconds * 1_000_000_000).rounded(.down))
     let request = try WatchdogStopRequest(watchdogInstance: UUID(), observed: heartbeat,
       reason: reason, createdUnixNanoseconds: wall)
     try WatchdogFileProtocol.publishStopRequest(request, to: stopURL)
