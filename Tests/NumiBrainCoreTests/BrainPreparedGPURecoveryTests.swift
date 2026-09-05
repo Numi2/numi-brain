@@ -23,8 +23,11 @@ final class BrainPreparedGPURecoveryTests: XCTestCase {
     for (index, destination) in destinations.enumerated() {
       let offset = 48 + index * 64
       put(destination, at: offset); put(UInt64(10), at: offset + 8)
+      // NBAgentMemoryMutation stores four payload words at byte 16, not at byte 48.
+      put(UInt32(0x3f800000) + UInt32(index), at: offset + 16)
       put(UInt32(4), at: offset + 32); put(UInt32(1), at: offset + 36)
-      put(UInt32(0x3f800000), at: offset + 48)
+      put(UInt32(index), at: offset + 40)
+      put(UInt64(0xfedcba9876543210), at: offset + 48) // record identifier, never a write payload
     }
     return bytes
   }
@@ -61,9 +64,33 @@ final class BrainPreparedGPURecoveryTests: XCTestCase {
     let source = try image()
     XCTAssertEqual(source.basePersistentMemory.prefix(4), Data(repeating: 0, count: 4))
     let payload = source.shadowJournal.withUnsafeBytes {
-      UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 96, as: UInt32.self))
+      UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 48 + 16, as: UInt32.self))
+    }
+    let identifier = source.shadowJournal.withUnsafeBytes {
+      UInt64(littleEndian: $0.loadUnaligned(fromByteOffset: 48 + 48, as: UInt64.self))
     }
     XCTAssertEqual(payload, 0x3f800000)
+    XCTAssertEqual(identifier, 0xfedcba9876543210)
+  }
+  func testJournalMaterializationCopiesPayloadNotRecordIdentifier() throws {
+    let source = try image()
+    let materialized = try source.materializedCommittedMemory()
+    XCTAssertEqual(materialized.prefix(4), Data([0x00, 0x00, 0x80, 0x3f]))
+    XCTAssertEqual(materialized.dropFirst(4), Data(repeating: 0, count: 60))
+    XCTAssertEqual(source.basePersistentMemory, Data(repeating: 0, count: 64))
+    XCTAssertEqual(try source.materializedCommittedMemory(), materialized)
+  }
+  func testMaterializationPreservesMultipleNonoverlappingWritesAndUntouchedBytes() throws {
+    let source = try image(journal: journal(destinations: [0, 12]))
+    let result = try source.materializedCommittedMemory()
+    XCTAssertEqual(result.subdata(in: 0..<4), Data([0x00, 0x00, 0x80, 0x3f]))
+    XCTAssertEqual(result.subdata(in: 4..<12), Data(repeating: 0, count: 8))
+    XCTAssertEqual(result.subdata(in: 12..<16), Data([0x01, 0x00, 0x80, 0x3f]))
+    XCTAssertEqual(result.subdata(in: 16..<64), Data(repeating: 0, count: 48))
+  }
+  func testEmptyJournalPreservesBaseMemoryExactly() throws {
+    let source = try image(journal: journal(destinations: []))
+    XCTAssertEqual(try source.materializedCommittedMemory(), source.basePersistentMemory)
   }
   func testOverlappingJournalWritesAreRejected() throws {
     XCTAssertThrowsError(try image(journal: journal(destinations: [0, 0])))
