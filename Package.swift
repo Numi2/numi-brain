@@ -12,6 +12,7 @@ let package = Package(
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
     .library(name: "NumiBrainMLX", targets: ["NumiBrainMLX"]),
+    .library(name: "NumiBrainValidation", targets: ["NumiBrainValidation"]),
     .executable(name: "numi-brain-scheduler", targets: ["NumiBrainSchedulerCLI"]),
     .executable(name: "numi-brain-dispatch", targets: ["NumiBrainDispatchCLI"]),
     .executable(name: "numi-brain-tissue", targets: ["NumiBrainTissueCLI"]),
@@ -21,6 +22,7 @@ let package = Package(
       targets: ["NumiBrainNumanXInteropCLI"]
     ),
     .executable(name: "numi-brain-gate-c", targets: ["NumiBrainGateCCLI"]),
+    .executable(name: "numi-brain-gate-d", targets: ["NumiBrainGateDCLI"]),
   ],
   dependencies: [
     .package(
@@ -29,13 +31,14 @@ let package = Package(
     )
   ],
   targets: [
+    .target(name: "NumiBrainValidation"),
     .target(
       name: "NumiBrainABI",
       publicHeadersPath: "include"
     ),
     .target(
       name: "NumiBrainCore",
-      dependencies: ["NumiBrainABI"]
+      dependencies: ["NumiBrainABI", "NumiBrainValidation"]
     ),
     .target(
       name: "NumiBrainMetalBridgeABI",
@@ -81,9 +84,13 @@ let package = Package(
       name: "NumiBrainGateCCLI",
       dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX"]
     ),
+    .executableTarget(
+      name: "NumiBrainGateDCLI",
+      dependencies: ["NumiBrainCore", "NumiBrainValidation"]
+    ),
     .testTarget(
       name: "NumiBrainCoreTests",
-      dependencies: ["NumiBrainABI", "NumiBrainCore"]
+      dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainValidation"]
     ),
     .testTarget(
       name: "NumiBrainMetalTests",
@@ -92,6 +99,7 @@ let package = Package(
         .product(name: "MLX", package: "mlx-swift"),
       ]
     ),
+    .testTarget(name: "NumiBrainValidationTests", dependencies: ["NumiBrainValidation"]),
   ],
   cxxLanguageStandard: .cxx20
 )

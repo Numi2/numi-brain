@@ -1,0 +1,34 @@
+# Gate D Apple validation follow-up
+Date: 2026-09-05
+Host: Apple M4 Pro Mac mini (Mac16,11), macOS 26.6, 24 GB
+Swift: 6.3.3; package target arm64-apple-macosx26.0
+Branch source revision under test: 851979a (fix commit; source baseline d935450a)
+Published evidence revision: 7ee34c3; final full-package rerun was executed at this revision.
+
+Initial failure addressed:
+  scripts/validate-gate-d-portable.sh generated a temporary Package.swift
+  without a macOS deployment target. Swift availability checking rejected the
+  FileHandle and JSON encoder APIs used by the CLI. The generated package now
+  declares platforms: [.macOS("10.15.4")]. Production Package.swift and the
+  Metal/MLX runtime were not changed.
+
+Command: swift test --filter NumiBrainValidationTests
+Result: 55 tests passed, 0 failures.
+
+Command: swift test --filter BrainGateDEvidenceTests
+Result: 6 tests passed, 0 failures.
+
+Command: swift test
+Result: 245 tests passed, 9 explicitly skipped, 0 failures. Skips are the
+existing unconfigured real-NumanX bridge and isolated Gate B qualification
+paths; they are not counted as passes.
+
+Command: bash scripts/validate-gate-d-portable.sh
+Result: 55 tests passed, 0 failures. CLI fixtures retained pass=0, fail=1,
+inconclusive=2, import=0, unknown-option=64 and invalid-data=65 behavior.
+All diagnostic reports retained promotable=false.
+
+Boundary: no native post-commit physical snapshot, force-ledger, tangent,
+physical sweep, independent biological/material dataset, or latency
+qualification was performed. This is Apple build/test evidence for the
+offline validation layer, not Gate D physical promotion.

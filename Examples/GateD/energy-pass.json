@@ -1,0 +1,11 @@
+{
+  "energy": {
+    "beforeJoules": 10,
+    "afterJoules": 12,
+    "externalWorkJoules": 1,
+    "actuatorWorkJoules": 3,
+    "dissipatedJoules": 2,
+    "scaleJoules": 10,
+    "tolerance": 1e-09
+  }
+}

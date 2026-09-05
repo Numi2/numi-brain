@@ -1,0 +1,10 @@
+Synthetic Gate D fixture, not experimental data
+nRows=3
+nColumns=2
+version=1
+inDegrees=no
+endheader
+time tendon_force
+0 10
+0.001 11
+0.003 13

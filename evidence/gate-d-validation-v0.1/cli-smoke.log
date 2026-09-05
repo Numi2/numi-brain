@@ -1,0 +1,113 @@
+$ numi-brain-gate-d probe --input /mnt/data/gate-d-work/Examples/GateD/energy-pass.json
+{
+  "formatVersion" : 1,
+  "output" : {
+    "residuals" : {
+      "_0" : {
+        "metrics" : [
+          {
+            "name" : "energy_balance",
+            "residual" : 0,
+            "tolerance" : 1e-09
+          },
+          {
+            "name" : "unaccounted_energy_creation",
+            "residual" : 0,
+            "tolerance" : 1e-09
+          }
+        ],
+        "notes" : [
+
+        ],
+        "status" : "passed"
+      }
+    }
+  },
+  "promotable" : false,
+  "scope" : "offline-measurement-diagnostic"
+}
+exit=0; expected=0
+
+$ numi-brain-gate-d probe --input /mnt/data/gate-d-work/Examples/GateD/energy-fail.json
+{
+  "formatVersion" : 1,
+  "output" : {
+    "residuals" : {
+      "_0" : {
+        "metrics" : [
+          {
+            "name" : "energy_balance",
+            "residual" : 0.1,
+            "tolerance" : 1e-09
+          },
+          {
+            "name" : "unaccounted_energy_creation",
+            "residual" : 0.1,
+            "tolerance" : 1e-09
+          }
+        ],
+        "notes" : [
+
+        ],
+        "status" : "failed"
+      }
+    }
+  },
+  "promotable" : false,
+  "scope" : "offline-measurement-diagnostic"
+}
+exit=1; expected=1
+
+$ numi-brain-gate-d probe --input /mnt/data/gate-d-work/Examples/GateD/tangent-inconclusive.json
+{
+  "formatVersion" : 1,
+  "output" : {
+    "residuals" : {
+      "_0" : {
+        "metrics" : [
+
+        ],
+        "notes" : [
+          "active set changed; use a declared one-sided/generalized derivative experiment"
+        ],
+        "status" : "inconclusive"
+      }
+    }
+  },
+  "promotable" : false,
+  "scope" : "offline-measurement-diagnostic"
+}
+exit=2; expected=2
+
+$ numi-brain-gate-d import-reference --input /mnt/data/gate-d-work/Examples/GateD/synthetic-force.sto --specification /mnt/data/gate-d-work/Examples/GateD/force-import.json
+{
+  "coordinate" : "fixture-muscle:0",
+  "frame" : "muscleLocal",
+  "quantity" : "tendonForce",
+  "timestampsMicroseconds" : [
+    0,
+    1000,
+    3000
+  ],
+  "unit" : "N",
+  "validity" : [
+    true,
+    true,
+    true
+  ],
+  "values" : [
+    10,
+    11,
+    13
+  ]
+}
+exit=0; expected=0
+
+$ numi-brain-gate-d probe --unknown x
+numi-brain-gate-d: invalid("unknown or missing command options")
+exit=64; expected=64
+
+$ numi-brain-gate-d probe --input /mnt/data/gate-d-work/Examples/GateD/force-import.json
+numi-brain-gate-d: typeMismatch(NumiBrainValidation.GateDProbe, Swift.DecodingError.Context(codingPath: [], debugDescription: "Invalid number of keys found, expected one.", underlyingError: nil))
+exit=65; expected=65
+
