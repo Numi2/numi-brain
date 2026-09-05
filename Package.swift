@@ -42,7 +42,7 @@ let package = Package(
     .executableTarget(name: "NumiBrainGateECLI", dependencies: ["NumiBrainQualification"]),
     .executableTarget(name: "NumiBrainGateFCLI", dependencies: ["NumiBrainQualification"]),
     .executableTarget(name: "NumiBrainWatchdogCLI", dependencies: ["NumiBrainQualification"]),
-    .testTarget(name: "NumiBrainCoreTests", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainValidation"]),
+    .testTarget(name: "NumiBrainCoreTests", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainValidation", "NumiBrainQualification"]),
     .testTarget(name: "NumiBrainMetalTests", dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX", .product(name: "MLX", package: "mlx-swift")]),
     .testTarget(name: "NumiBrainValidationTests", dependencies: ["NumiBrainValidation"]),
     .testTarget(name: "NumiBrainQualificationTests", dependencies: ["NumiBrainQualification"]),
