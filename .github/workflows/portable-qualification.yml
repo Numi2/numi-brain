@@ -1,0 +1,28 @@
+name: Portable qualification checks
+
+on:
+  pull_request:
+    paths:
+      - 'Sources/NumiBrainQualification/**'
+      - 'Sources/NumiBrainGateECLI/**'
+      - 'Sources/NumiBrainGateFCLI/**'
+      - 'Sources/NumiBrainWatchdogCLI/**'
+      - 'Sources/NumiBrainQualificationCLI/**'
+      - 'Tests/NumiBrainQualificationTests/**'
+      - 'scripts/validate-gates-ef-portable.sh'
+      - '.github/workflows/portable-qualification.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Compile and test Gate E/F reference layer
+        run: bash scripts/validate-gates-ef-portable.sh
