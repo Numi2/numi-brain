@@ -36,6 +36,7 @@ public struct PerformanceMeasurementArtifact: Codable, Equatable, Sendable {
   }
 
   public func validate() throws {
+    try counters.validate()
     guard formatVersion == Self.formatVersion,
       try Self(rootLatencyMicroseconds: rootLatencyMicroseconds,
         wallDurationSeconds: wallDurationSeconds,
@@ -53,9 +54,9 @@ public enum PerformanceEvidenceVerifier {
   /// scalars from being entered independently in a passing report.
   public static func verify(run: PerformanceRunArtifact,
     measurements: PerformanceMeasurementArtifact) throws {
+    try run.validate()
     try measurements.validate()
-    guard run.formatVersion == PerformanceRunArtifact.formatVersion,
-      run.measuredRoots == UInt64(measurements.rootLatencyMicroseconds.count) else {
+    guard run.measuredRoots == UInt64(measurements.rootLatencyMicroseconds.count) else {
       throw QualificationError.invalid("Gate E run does not bind its raw root count")
     }
     let latency = try LatencyDistribution(samplesMicroseconds: measurements.rootLatencyMicroseconds)
