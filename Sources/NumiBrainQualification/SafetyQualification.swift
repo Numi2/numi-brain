@@ -199,9 +199,11 @@ public struct SafetyCampaignOutcome: Codable, Equatable, Sendable {
 public enum SafetyCampaignVerifier {
   public static func verify(required: [SafetyCampaignScenario], outcomes: [SafetyCampaignOutcome],
     maximumProtectiveLatencyMicroseconds: Double) throws {
+    let requiredKinds = Set(required.map(\.kind))
     guard maximumProtectiveLatencyMicroseconds.isFinite, maximumProtectiveLatencyMicroseconds > 0,
-      !required.isEmpty, Set(required).count == required.count, outcomes.count == required.count else {
-      throw QualificationError.invalid("safety campaign protocol is invalid or incomplete")
+      !required.isEmpty, Set(required).count == required.count, outcomes.count == required.count,
+      requiredKinds == Set(SafetyCampaignScenario.Kind.allCases) else {
+      throw QualificationError.invalid("safety campaign protocol is invalid, incomplete, or missing a required scenario class")
     }
     guard Set(outcomes.map(\.scenario)) == Set(required), Set(outcomes.map(\.scenario)).count == outcomes.count else {
       throw QualificationError.invalid("safety campaign has missing, duplicate, or foreign scenarios")
