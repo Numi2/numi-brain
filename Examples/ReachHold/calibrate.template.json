@@ -1,0 +1,16 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "parentPublicationSHA256": "REPLACE_PARENT_SHA",
+  "negativePublicationSHA256": "REPLACE_NEGATIVE_PUBLICATION_SHA",
+  "positivePublicationSHA256": "REPLACE_POSITIVE_PUBLICATION_SHA",
+  "negativeEvaluationSHA256": "REPLACE_NEGATIVE_EVALUATION_SHA",
+  "positiveEvaluationSHA256": "REPLACE_POSITIVE_EVALUATION_SHA",
+  "settings": {
+    "coordinate": 3,
+    "learningRate": 0.01,
+    "gradientLimit": 1.0,
+    "trustRadius": 0.05,
+    "magnitudeLimit": 4.0,
+    "minimumResolvableLossDifference": 0.0
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "timestepMicroseconds": 100
+}

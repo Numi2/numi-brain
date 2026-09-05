@@ -1,45 +1,82 @@
-# NumanX A–F completion state
+# NumanX A–F implementation and qualification state
 
-This is an engineering completion map, not a substitute for retained evidence. It distinguishes source implementation from qualification. A gate requiring external physics, biological data, matched performance measurements, or deployment fault injection remains open until those measurements exist and verify.
+Source presence, successful execution, physical validity and deployment
+qualification are different results. This map does not authorize promotion.
+The current repair and experiment handoff is [CREDIBLE_ROUTE_PROGRESS.md](CREDIBLE_ROUTE_PROGRESS.md).
 
-## Gate A — exact transactional root
+## Gate A — transactional root
 
-Runtime/evidence status: complete for the bounded qualified production shape documented in `NUMANX_STATE_OF_THE_ART_ROADMAP.md`. Do not extrapolate that qualification to unmeasured scale or physical fidelity.
+The roadmap records bounded native root qualification on its named revisions
+and production shape. Those historical results are not automatically new-source
+qualification. Preserve accepted/rejected publication, retry and same-device
+ownership checks while integrating the current recovery work.
 
 ## Gate B — causal sensorium
 
-Runtime/evidence status: bounded Gate B matrix complete. Broader sensor fidelity, systemic physiology, speech/language input and autonomous capability discovery remain research extensions.
+The recorded bounded modality/intervention matrix remains the reference.
+New physical trace processing requires explicit per-field validity semantics;
+Gate D schema version 2 no longer assumes bit zero validates all features.
+Broader physiology, calibrated sensors and task-relevant representation remain
+separate questions from causal transport integrity.
 
-## Gate C — learned embodied foundation policy
+## Gate C — learned embodied policy
 
-Implementation status: policy packaging, evidence verification, causal MLX learning, linear-memory temporal learning, uncertainty/safety binding, long-horizon artifacts and Apple validation are implemented. Gate C remains capability/evidence-open until one immutable learned policy passes the unchanged held-out physical/generalization, adaptation, memory, OOD and safety requirements.
+The policy package, retained capture and learner infrastructure are present.
+The new `numi-brain-experiment` frontend reuses the native root runner for a
+one-dimensional head-relative reach-and-hold study. It scores physical tracking,
+terminal holding and separately timed muscle-excitation effort. Its bounded MLX
+motor proposals use verified outcome losses, not hand-assigned gain targets.
+
+This is a local research calibration path, not a generalist policy or a proved
+physical improvement. Learned task success, held-out adaptation, useful memory,
+cross-embodiment performance and the existing complete Gate C criteria remain
+open. Research publications cannot substitute for production policy receipts.
 
 ## Gate D — physical and biological validation
 
-Implementation status: `codex/gate-d-physical-validation` / PR #2 contains independent FP64 mechanics, convergence, trace, perturbation, reference-import and capture-verification infrastructure and has been rerun on Apple. PR #2 remains draft and is not silently merged here. Gate D remains physically/biologically open until native tangent/force/state exporters and independent held-out mechanical/biological campaigns populate all required suites.
+PR #2 is merged; its offline reference and retained-capture infrastructure is
+in main. The v2 sensor schema and shared decoder repair a field-validity gap.
+Native post-commit state/tangent/force-ledger exporters and independent held-out
+mechanical/biological measurements are still needed for full qualification.
+The new task objective does not establish biological calibration.
 
 ## Gate E — scale and performance
 
-Implementation status: `NumiBrainQualification` defines exact hardware/workload/run identities, root-latency distributions, throughput, memory, GPU/cache/bandwidth counters, hot-path wait/queue/readback counters, optional power/energy, complete sweep verification and predeclared qualification thresholds. `numi-brain-gate-e` summarizes raw latency samples and verifies retained run artifacts.
+Outcome-aware attempt ledgers now distinguish accepted progress, rejection,
+retry and command failure per environment. Legacy v1 summaries remain numerical
+consistency diagnostics, not evidence of accepted throughput. The new supplied
+ledger evaluator retains failed/incomplete horizons and worst-environment
+latency; it does not authenticate the native collector or protocol bytes.
 
-Qualification status: open until matched Apple campaigns are measured. Results must bind source, binary, metallib, hardware, OS, logical DoF, contacts, sensors, model size, mode, timestep and horizon. Deterministic and fast-math campaigns remain separate. Comparative SOTA claims require workload-equivalent baselines.
+Production low-overhead collection, outcome/evidence binding and matched Apple
+performance campaigns remain open. The artifact-heavy learning capture must
+not be relabeled a production throughput benchmark.
 
 ## Gate F — safety and deployment
 
-Implementation status: layered semantic/kinematic/contact/force/thermal/actuator and uncertainty decisions are explicit and deterministic. Malformed records, stale generation, resource alias/replay and device faults fail closed. `BrainSafetyAdmissionController` binds an allow receipt to the exact authoritative root and advances continuity only after publication. `numi-brain-watchdog` supplies an independent-process heartbeat check and sticky safe-state request. Existing durable prepared-generation recovery remains part of restart authority. Release manifests chain exact runtime/model/data/qualification identities and expose verified rollback authorization.
+Safety decoding, exact campaign responses, one-use host admission bookkeeping,
+a stateful fail-closed watchdog and durable semantic archive integrity are
+implemented. The existing protective GPU path remains physical control
+protection. The host actor does not become a mandatory physical gate merely
+because it issues a receipt, and a stop marker does not actuate hardware.
 
-Qualification status: open until executable red-team and deployment campaigns demonstrate bounded stop latency, no rejected-root publication/shadow exposure, GPU/process/device failure behavior, watchdog-to-safe-state integration, verified restart, calibrated supervision transitions and rollback on the target deployment configuration.
+Independent stop enforcement/acknowledgement, native limit instrumentation,
+complete coordinated restart and target-platform fault campaigns remain open.
+Concurrent native prepared-state recovery changes are preserved and must be
+validated together with the physical owner, not replaced by semantic archives.
+Release-chain checks are structural diagnostics, not deployment authorization.
 
-## Promotion rule
+## Admission and immediate work
 
-`NumanXQualificationManifest` requires exactly A through F for one source revision. No command automatically upgrades an open gate. Gate C needs promotion-ready learned-policy evidence; Gate D needs physical validation; Gate E needs measured performance; Gate F needs promotion-ready deployment evidence.
+`NumanXQualificationManifest` is an evidence declaration. Its deprecated
+`promotionReady` property cannot grant authority; `declaredPromotionReady`
+reports declared status only. `numi-brain-qualify inspect` names that limitation,
+and its legacy `verify` path fails closed until authoritative gate adapters
+exist. Existing gate-specific policy verification remains the admission path.
 
-## Integration order
-
-1. Review/merge Gate D PR #2 after its draft status is intentionally cleared.
-2. Review/merge the E/F implementation branch after Apple build checks.
-3. Capture native Gate D direct-state/tangent/force-ledger evidence.
-4. Produce one qualifying Gate C policy using unchanged requirements.
-5. Run Gate E matrices on that exact runtime/model.
-6. Run Gate F red-team, watchdog, failure/recovery and rollback campaigns against the same release candidate.
-7. Create the final A–F qualification manifest only from retained evidence of that exact release revision.
+Run the new Apple integration suites with real native prerequisites, then
+execute the frozen physical task and matched outcome-based probes. Preserve
+failed runs and require a useful held-out parent/candidate advantage before
+expanding the learner. Implement native observation, enforcement and collection
+where the handoff marks them missing. Do not lower the gate criteria or mark
+all gates complete because the source has merged.

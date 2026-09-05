@@ -1,0 +1,6 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "parentPublicationSHA256": "REPLACE_PARENT_SHA",
+  "coordinate": 3,
+  "offset": 0.05
+}

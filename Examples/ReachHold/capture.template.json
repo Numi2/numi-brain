@@ -1,0 +1,17 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "protocolSHA256": "REPLACE_FROZEN_PROTOCOL_SHA",
+  "publicationSHA256": "REPLACE_PUBLICATION_SHA",
+  "runIdentifier": "reach-hold-study",
+  "nativePaths": {
+    "library": "/absolute/path/to/library",
+    "rigid": "/absolute/path/to/rigid",
+    "muscle": "/absolute/path/to/muscle",
+    "contacts": "/absolute/path/to/contacts",
+    "visualPack": "/absolute/path/to/visualPack",
+    "visionProfile": "/absolute/path/to/visionProfile",
+    "metalRoboMetallib": "/absolute/path/to/metalRoboMetallib",
+    "matterMetallib": "/absolute/path/to/matterMetallib",
+    "material": "/absolute/path/to/material"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "experiment": {
+    "formatVersion": 1,
+    "identifier": "head-relative-reach-hold-v1",
+    "sourceRevision": "REPLACE_EXACT_RUNTIME_REVISION",
+    "expectedNativeModelFingerprint": 0,
+    "parameterVersionFingerprint": 0,
+    "taskFingerprint": 1,
+    "sceneFingerprint": 1,
+    "objectFingerprint": 1,
+    "embodimentFingerprint": 1,
+    "episodeIdentifier": 1,
+    "randomSeed": 1,
+    "timestepMicroseconds": 100,
+    "targetState": [0, 0, 0.25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    "objective": {
+      "targetPositionMeters": [0.25],
+      "durationMicroseconds": 1000000,
+      "holdDurationMicroseconds": 250000,
+      "maximumSampleGapMicroseconds": 1000,
+      "positionScaleMeters": 0.1,
+      "maximumHoldErrorMeters": 0.01,
+      "maximumHoldSecantSpeedMetersPerSecond": 0.05,
+      "maximumMeanSquaredExcitation": 0.5,
+      "effortWeight": 0.1
+    },
+    "calibrationSettingsSHA256": "REPLACE_PREDECLARED_SETTINGS_SHA"
+  }
+}

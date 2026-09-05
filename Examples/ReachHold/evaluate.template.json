@@ -1,0 +1,5 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "protocolSHA256": "REPLACE_FROZEN_PROTOCOL_SHA",
+  "runSHA256": "REPLACE_CAPTURE_RUN_SHA"
+}

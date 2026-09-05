@@ -79,8 +79,10 @@ public enum MLXPhysicalMotorCalibration {
     }
     let old = try scalar(parent, settings.coordinate)
     let lo = try scalar(negative, settings.coordinate), hi = try scalar(positive, settings.coordinate)
-    guard lo < old, old < hi, hi - lo <= 0.5 else {
-      throw BrainRuntimeError.invalidParameterVersion("physical probes do not bracket the immutable parent")
+    guard lo < old, old < hi, hi - lo <= 0.5,
+      old - lo <= 0.25, hi - old <= 0.25,
+      [lo, old, hi].allSatisfy({ abs($0) <= settings.magnitudeLimit }) else {
+      throw BrainRuntimeError.invalidParameterVersion("physical probes must bracket a bounded immutable parent within the declared study radius")
     }
     let gradient = (positiveLoss - negativeLoss) / Double(hi - lo)
     let gradientFP32 = Float(gradient)

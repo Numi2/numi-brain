@@ -1,0 +1,11 @@
+{
+  "artifactDirectory": "/absolute/path/to/retained-artifacts",
+  "settings": {
+    "coordinate": 3,
+    "learningRate": 0.01,
+    "gradientLimit": 1.0,
+    "trustRadius": 0.05,
+    "magnitudeLimit": 4.0,
+    "minimumResolvableLossDifference": 0.0
+  }
+}
