@@ -42,6 +42,24 @@ public final class QualificationFileDirectory: @unchecked Sendable {
     directory = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
   }
 
+  /// Retain the returned handle for the lifetime of a single-writer store.
+  /// Lock acquisition never waits. This lock coordinates cooperating local
+  /// processes; it is not authorization against a malicious same-user writer.
+  public func acquireExclusiveWriterLock(named name: String) throws -> FileHandle {
+    try Self.validateName(name)
+    let fd = openat(directory.fileDescriptor, name,
+      O_RDWR | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, mode_t(0o600))
+    guard fd >= 0 else { throw QualificationFileError.systemCall("open writer lock", errno) }
+    var info = stat()
+    guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+      _ = close(fd); throw QualificationFileError.unsafe("writer lock is not a regular file")
+    }
+    guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+      let code = errno; _ = close(fd); throw QualificationFileError.systemCall("exclusive writer lock", code)
+    }
+    return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+  }
+
   public func read(_ name: String, maximumBytes: Int) throws -> Data {
     guard let bytes = try readIfPresent(name, maximumBytes: maximumBytes) else {
       throw QualificationFileError.missing(name)
@@ -52,7 +70,6 @@ public final class QualificationFileDirectory: @unchecked Sendable {
   public func readIfPresent(_ name: String, maximumBytes: Int) throws -> Data? {
     try Self.validateName(name)
     guard maximumBytes > 0, maximumBytes <= 536_870_912 else { throw QualificationFileError.sizeLimit }
-    // O_NONBLOCK ensures that a malicious FIFO cannot block before fstat.
     let fd = openat(directory.fileDescriptor, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
     if fd < 0 {
       if errno == ENOENT { return nil }
@@ -114,8 +131,6 @@ public final class QualificationFileDirectory: @unchecked Sendable {
         throw QualificationFileError.systemCall("stat destination", errno)
       }
       if replaceExisting {
-        // renameat replaces the directory entry atomically. Never unlink the
-        // old generation first; readers retain either the old or the new file.
         guard renameat(directory.fileDescriptor, temporary, directory.fileDescriptor, name) == 0 else {
           throw QualificationFileError.systemCall("atomic replacement", errno)
         }

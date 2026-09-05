@@ -73,4 +73,14 @@ final class QualificationFileIOTests: XCTestCase {
     XCTAssertThrowsError(try store.publish(Data([3]), named: "state", replaceExisting: true))
     XCTAssertEqual(try store.read("state", maximumBytes: 8), Data([1]))
   }
+
+  func testExclusiveWriterLocksExcludeSecondStoreAndReleaseOnClose() throws {
+    let url = try directory()
+    let a = try QualificationFileDirectory(url: url), b = try QualificationFileDirectory(url: url)
+    let first = try a.acquireExclusiveWriterLock(named: ".writer.lock")
+    XCTAssertThrowsError(try b.acquireExclusiveWriterLock(named: ".writer.lock"))
+    try first.close()
+    let second = try b.acquireExclusiveWriterLock(named: ".writer.lock")
+    try second.close()
+  }
 }

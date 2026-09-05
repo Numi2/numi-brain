@@ -1,11 +1,12 @@
 import Foundation
+import NumiBrainQualification
 
-/// Crash-recovery record for a fully materialized brain generation. This record owns the complete
-/// BrainAgentState rather than GPU pointers. A Metal runtime may reconstruct device buffers from it
-/// after process death, then verify all immutable fingerprints before publication.
+/// Versioned semantic brain-state archive. Native candidate arena recovery is
+/// owned by BrainPreparedGPUImage/Store; neither format includes every physical
+/// participant. A local archive never grants joint brain/physics publication.
 @frozen
 public struct BrainDurablePreparedGeneration: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 1
+  public static let formatVersion: UInt32 = 2
   public let formatVersion: UInt32
   public let transactionFingerprint: UInt64
   public let environmentIdentifier: UInt32
@@ -19,109 +20,80 @@ public struct BrainDurablePreparedGeneration: Codable, Equatable, Sendable {
   public let acceptedPhysicsTokenFingerprint: UInt64
   public let scheduleFingerprint: UInt64
   public let state: BrainAgentState
+  public let stateSHA256: String
+  public let payloadSHA256: String
+  /// Compatibility identifier only. SHA-256, not this truncated scalar,
+  /// establishes complete archive integrity.
   public let payloadFingerprint: UInt64
 
-  public init(
-    transactionFingerprint: UInt64,
-    basePhysicsGeneration: UInt64,
-    expectedPhysicsGeneration: UInt64,
-    acceptedPhysicsTokenFingerprint: UInt64,
-    scheduleFingerprint: UInt64,
-    state: BrainAgentState,
-    targetTimestamp: BrainTimestamp
-  ) throws {
-    let (expectedBrain, brainOverflow) = state.generation.subtractingReportingOverflow(1)
-    guard transactionFingerprint > 0, acceptedPhysicsTokenFingerprint > 0,
-      scheduleFingerprint > 0, !brainOverflow,
+  private struct Identity: Encodable {
+    let version: UInt32
+    let transaction: UInt64
+    let environment: UInt32
+    let baseBrain: UInt64
+    let candidateBrain: UInt64
+    let basePhysics: UInt64
+    let candidatePhysics: UInt64
+    let timestamp: UInt64
+    let parameter: UInt64
+    let acceptedPhysics: UInt64
+    let schedule: UInt64
+    let state: String
+  }
+
+  public init(transactionFingerprint: UInt64, basePhysicsGeneration: UInt64,
+    expectedPhysicsGeneration: UInt64, acceptedPhysicsTokenFingerprint: UInt64,
+    scheduleFingerprint: UInt64, state: BrainAgentState, targetTimestamp: BrainTimestamp) throws {
+    let (base, overflow) = state.generation.subtractingReportingOverflow(1)
+    guard !overflow, transactionFingerprint > 0, acceptedPhysicsTokenFingerprint > 0,
+      scheduleFingerprint > 0, state.parameterVersionFingerprint > 0,
       expectedPhysicsGeneration > basePhysicsGeneration,
-      state.committedTimestamp == targetTimestamp,
-      state.parameterVersionFingerprint > 0
-    else {
-      throw BrainRuntimeError.transaction("durable prepared brain generation identity is invalid")
+      state.committedTimestamp == targetTimestamp else {
+      throw BrainRuntimeError.transaction("invalid semantic recovery identity")
     }
-    formatVersion = Self.formatVersion
-    self.transactionFingerprint = transactionFingerprint
-    environmentIdentifier = state.environmentIdentifier
-    baseGeneration = expectedBrain
-    shadowGeneration = state.generation
-    self.basePhysicsGeneration = basePhysicsGeneration
-    self.expectedPhysicsGeneration = expectedPhysicsGeneration
-    committedTimestampMicroseconds = targetTimestamp.rawValue
-    targetTimestampMicroseconds = targetTimestamp.rawValue
+    formatVersion = Self.formatVersion; self.transactionFingerprint = transactionFingerprint
+    environmentIdentifier = state.environmentIdentifier; baseGeneration = base; shadowGeneration = state.generation
+    self.basePhysicsGeneration = basePhysicsGeneration; self.expectedPhysicsGeneration = expectedPhysicsGeneration
+    committedTimestampMicroseconds = targetTimestamp.rawValue; targetTimestampMicroseconds = targetTimestamp.rawValue
     parameterVersionFingerprint = state.parameterVersionFingerprint
-    self.acceptedPhysicsTokenFingerprint = acceptedPhysicsTokenFingerprint
-    self.scheduleFingerprint = scheduleFingerprint
+    self.acceptedPhysicsTokenFingerprint = acceptedPhysicsTokenFingerprint; self.scheduleFingerprint = scheduleFingerprint
     self.state = state
-    payloadFingerprint = Self.fingerprint(
-      transactionFingerprint: transactionFingerprint,
-      environmentIdentifier: state.environmentIdentifier,
-      baseGeneration: expectedBrain,
-      shadowGeneration: state.generation,
-      basePhysicsGeneration: basePhysicsGeneration,
-      expectedPhysicsGeneration: expectedPhysicsGeneration,
-      targetTimestamp: targetTimestamp.rawValue,
-      parameterVersionFingerprint: state.parameterVersionFingerprint,
-      acceptedPhysicsTokenFingerprint: acceptedPhysicsTokenFingerprint,
-      scheduleFingerprint: scheduleFingerprint
-    )
+    // Canonical serialization includes ALL semantic state fields, including
+    // memories and recurrent values. Non-finite Float/Double values fail JSON encoding.
+    stateSHA256 = BrainPolicyEvidenceArtifact.sha256(try BrainPolicyEvidenceArtifact.encodeCanonical(state))
+    let identity = Identity(version: Self.formatVersion, transaction: transactionFingerprint,
+      environment: state.environmentIdentifier, baseBrain: base, candidateBrain: state.generation,
+      basePhysics: basePhysicsGeneration, candidatePhysics: expectedPhysicsGeneration,
+      timestamp: targetTimestamp.rawValue, parameter: state.parameterVersionFingerprint,
+      acceptedPhysics: acceptedPhysicsTokenFingerprint, schedule: scheduleFingerprint, state: stateSHA256)
+    payloadSHA256 = try Self.digest(identity, domain: "NumiBrain.SemanticRecovery.v2")
+    payloadFingerprint = UInt64(payloadSHA256.prefix(16), radix: 16).map { max($0, 1) }!
   }
 
   public func validated() throws -> Self {
-    let expected = Self.fingerprint(
-      transactionFingerprint: transactionFingerprint,
-      environmentIdentifier: environmentIdentifier,
-      baseGeneration: baseGeneration,
-      shadowGeneration: shadowGeneration,
-      basePhysicsGeneration: basePhysicsGeneration,
-      expectedPhysicsGeneration: expectedPhysicsGeneration,
-      targetTimestamp: targetTimestampMicroseconds,
-      parameterVersionFingerprint: parameterVersionFingerprint,
-      acceptedPhysicsTokenFingerprint: acceptedPhysicsTokenFingerprint,
-      scheduleFingerprint: scheduleFingerprint
-    )
-    guard formatVersion == Self.formatVersion, transactionFingerprint > 0,
-      environmentIdentifier == state.environmentIdentifier,
-      shadowGeneration == state.generation,
-      shadowGeneration == baseGeneration &+ 1,
-      expectedPhysicsGeneration > basePhysicsGeneration,
-      targetTimestampMicroseconds == state.committedTimestamp.rawValue,
-      committedTimestampMicroseconds == targetTimestampMicroseconds,
-      parameterVersionFingerprint == state.parameterVersionFingerprint,
-      acceptedPhysicsTokenFingerprint > 0, scheduleFingerprint > 0,
-      payloadFingerprint == expected
-    else {
-      throw BrainRuntimeError.transaction("durable prepared brain generation failed validation")
+    guard formatVersion == Self.formatVersion,
+      try Self(transactionFingerprint: transactionFingerprint,
+        basePhysicsGeneration: basePhysicsGeneration, expectedPhysicsGeneration: expectedPhysicsGeneration,
+        acceptedPhysicsTokenFingerprint: acceptedPhysicsTokenFingerprint, scheduleFingerprint: scheduleFingerprint,
+        state: state, targetTimestamp: BrainTimestamp(microseconds: targetTimestampMicroseconds)) == self else {
+      throw BrainRuntimeError.transaction("semantic recovery state/identity failed verification; legacy v1 is not trusted")
     }
     return self
   }
 
-  private static func fingerprint(
-    transactionFingerprint: UInt64, environmentIdentifier: UInt32,
-    baseGeneration: UInt64, shadowGeneration: UInt64,
-    basePhysicsGeneration: UInt64, expectedPhysicsGeneration: UInt64,
-    targetTimestamp: UInt64, parameterVersionFingerprint: UInt64,
-    acceptedPhysicsTokenFingerprint: UInt64, scheduleFingerprint: UInt64
-  ) -> UInt64 {
-    var hash: UInt64 = 14_695_981_039_346_656_037
-    for value in [transactionFingerprint, UInt64(environmentIdentifier), baseGeneration,
-                  shadowGeneration, basePhysicsGeneration, expectedPhysicsGeneration,
-                  targetTimestamp, parameterVersionFingerprint,
-                  acceptedPhysicsTokenFingerprint, scheduleFingerprint] {
-      var little = value.littleEndian
-      withUnsafeBytes(of: &little) { bytes in
-        for byte in bytes { hash ^= UInt64(byte); hash &*= 1_099_511_628_211 }
-      }
-    }
-    return hash
+  fileprivate static func digest<T: Encodable>(_ value: T, domain: String) throws -> String {
+    let payload = try BrainPolicyEvidenceArtifact.encodeCanonical(value)
+    var data = Data(domain.utf8); data.append(0)
+    var count = UInt64(payload.count).littleEndian
+    withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+    data.append(payload)
+    return BrainPolicyEvidenceArtifact.sha256(data)
   }
 }
 
 @frozen
 public enum BrainRecoveryDecision: String, Codable, Sendable {
-  case prepared
-  case commitDecided
-  case committed
-  case aborted
+  case prepared, commitDecided, committed, aborted
 }
 
 @frozen
@@ -134,18 +106,17 @@ public struct BrainRecoveryRecord: Codable, Equatable, Sendable {
   public let recordFingerprint: UInt64
 
   public init(sequence: UInt64, decision: BrainRecoveryDecision,
-              transactionFingerprint: UInt64, preparedPayloadFingerprint: UInt64,
-              previousRecordFingerprint: UInt64) throws {
+    transactionFingerprint: UInt64, preparedPayloadFingerprint: UInt64,
+    previousRecordFingerprint: UInt64) throws {
     guard transactionFingerprint > 0, preparedPayloadFingerprint > 0 else {
       throw BrainRuntimeError.transaction("recovery record identity is incomplete")
     }
-    self.sequence = sequence; self.decision = decision
-    self.transactionFingerprint = transactionFingerprint
-    self.preparedPayloadFingerprint = preparedPayloadFingerprint
-    self.previousRecordFingerprint = previousRecordFingerprint
+    self.sequence = sequence; self.decision = decision; self.transactionFingerprint = transactionFingerprint
+    self.preparedPayloadFingerprint = preparedPayloadFingerprint; self.previousRecordFingerprint = previousRecordFingerprint
     var hash: UInt64 = 14_695_981_039_346_656_037
-    for value in [sequence, transactionFingerprint, preparedPayloadFingerprint,
-                  previousRecordFingerprint, UInt64(Self.code(decision))] {
+    let code: UInt64
+    switch decision { case .prepared: code = 1; case .commitDecided: code = 2; case .committed: code = 3; case .aborted: code = 4 }
+    for value in [sequence, transactionFingerprint, preparedPayloadFingerprint, previousRecordFingerprint, code] {
       var little = value.littleEndian
       withUnsafeBytes(of: &little) { bytes in
         for byte in bytes { hash ^= UInt64(byte); hash &*= 1_099_511_628_211 }
@@ -154,132 +125,135 @@ public struct BrainRecoveryRecord: Codable, Equatable, Sendable {
     recordFingerprint = hash
   }
 
-  private static func code(_ decision: BrainRecoveryDecision) -> UInt8 {
-    switch decision { case .prepared: 1; case .commitDecided: 2; case .committed: 3; case .aborted: 4 }
+  /// Recompute every record AND enforce the legal decision sequence. The
+  /// archive's outer SHA-256 binds these records to the complete prepared state.
+  public static func validateChain(_ records: [Self], transactionFingerprint: UInt64,
+    preparedPayloadFingerprint: UInt64) throws {
+    guard !records.isEmpty, records.count <= 3 else { throw BrainRuntimeError.transaction("invalid recovery chain length") }
+    var previous: Self?
+    for (index, record) in records.enumerated() {
+      guard record.sequence == UInt64(index), record.transactionFingerprint == transactionFingerprint,
+        record.preparedPayloadFingerprint == preparedPayloadFingerprint,
+        record.previousRecordFingerprint == (previous?.recordFingerprint ?? 0),
+        try Self(sequence: record.sequence, decision: record.decision,
+          transactionFingerprint: record.transactionFingerprint, preparedPayloadFingerprint: record.preparedPayloadFingerprint,
+          previousRecordFingerprint: record.previousRecordFingerprint) == record else {
+        throw BrainRuntimeError.transaction("recovery chain identity or fingerprint mismatch")
+      }
+      switch (previous?.decision, record.decision) {
+      case (nil, .prepared), (.prepared?, .commitDecided), (.prepared?, .aborted), (.commitDecided?, .committed): break
+      default: throw BrainRuntimeError.transaction("illegal or reversed recovery decision")
+      }
+      previous = record
+    }
   }
 }
 
-/// File format: one canonical JSON envelope containing the prepared state and an append-only logical
-/// decision chain. Writes use atomic replacement + fsync; a commit decision is never rewritten to abort.
+/// Single-writer semantic archive with full-payload integrity and atomic durable
+/// replacement. A durable COMMIT decision cannot subsequently become ABORT.
+/// Version-1 metadata-only archives are retained on disk but refused here.
 public actor BrainDurableRecoveryStore {
-  private struct Envelope: Codable {
+  private struct Body: Codable {
+    let version: UInt32
     var prepared: BrainDurablePreparedGeneration
     var records: [BrainRecoveryRecord]
   }
-  private let directory: URL
+  private struct Envelope: Codable {
+    let body: Body
+    let sha256: String
+  }
+  private let directory: QualificationFileDirectory
+  private let writerLock: FileHandle
   private let maximumBytes: Int
 
+  /// The existing directory must be absolute and nonsymlinked. Use the same
+  /// explicit storage-directory setup as BrainPreparedGPUStore.
   public init(directory: URL, maximumBytes: Int = 512 * 1024 * 1024) throws {
-    guard directory.isFileURL, maximumBytes > 0 else {
-      throw BrainRuntimeError.capacity("invalid recovery-store configuration")
+    guard maximumBytes > 0, maximumBytes <= 536_870_912 else {
+      throw BrainRuntimeError.capacity("invalid semantic recovery archive limit")
     }
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    self.directory = directory.resolvingSymlinksInPath()
-    self.maximumBytes = maximumBytes
+    let storage = try QualificationFileDirectory(url: directory)
+    let writer = try storage.acquireExclusiveWriterLock(named: ".semantic-recovery.writer.lock")
+    self.directory = storage; self.writerLock = writer; self.maximumBytes = maximumBytes
   }
 
-  public func persistPrepared(_ prepared: BrainDurablePreparedGeneration) throws {
-    let prepared = try prepared.validated()
-    let url = file(prepared.transactionFingerprint)
-    guard !FileManager.default.fileExists(atPath: url.path) else {
-      let existing = try load(prepared.transactionFingerprint)
-      guard existing.prepared == prepared else {
-        throw BrainRuntimeError.transaction("conflicting durable prepare already exists")
+  public func persistPrepared(_ value: BrainDurablePreparedGeneration) throws {
+    let prepared = try value.validated()
+    if let data = try directory.readIfPresent(name(prepared.transactionFingerprint), maximumBytes: maximumBytes) {
+      guard try decode(data, fingerprint: prepared.transactionFingerprint).prepared == prepared else {
+        throw BrainRuntimeError.transaction("conflicting semantic prepare already exists")
       }
       return
     }
     let first = try BrainRecoveryRecord(sequence: 0, decision: .prepared,
-      transactionFingerprint: prepared.transactionFingerprint,
-      preparedPayloadFingerprint: prepared.payloadFingerprint,
+      transactionFingerprint: prepared.transactionFingerprint, preparedPayloadFingerprint: prepared.payloadFingerprint,
       previousRecordFingerprint: 0)
-    try write(Envelope(prepared: prepared, records: [first]), to: url, createOnly: true)
+    let body = Body(version: 2, prepared: prepared, records: [first])
+    try write(body, createOnly: true)
   }
 
   public func decideCommit(transactionFingerprint: UInt64) throws {
-    var envelope = try load(transactionFingerprint)
-    if envelope.records.contains(where: { $0.decision == .commitDecided }) { return }
-    guard envelope.records.last?.decision == .prepared else {
-      throw BrainRuntimeError.transaction("commit decision requires prepared state")
-    }
-    try append(.commitDecided, to: &envelope)
-    try write(envelope, to: file(transactionFingerprint), createOnly: false)
+    var body = try load(transactionFingerprint)
+    if body.records.last?.decision == .commitDecided || body.records.last?.decision == .committed { return }
+    try append(.commitDecided, to: &body); try write(body)
   }
 
   public func markCommitted(transactionFingerprint: UInt64) throws {
-    var envelope = try load(transactionFingerprint)
-    if envelope.records.last?.decision == .committed { return }
-    guard envelope.records.contains(where: { $0.decision == .commitDecided }) else {
-      throw BrainRuntimeError.transaction("cannot publish without durable commit decision")
-    }
-    try append(.committed, to: &envelope)
-    try write(envelope, to: file(transactionFingerprint), createOnly: false)
+    var body = try load(transactionFingerprint)
+    if body.records.last?.decision == .committed { return }
+    try append(.committed, to: &body); try write(body)
   }
 
   public func abortPrepared(transactionFingerprint: UInt64) throws {
-    var envelope = try load(transactionFingerprint)
-    guard !envelope.records.contains(where: { $0.decision == .commitDecided }) else {
-      throw BrainRuntimeError.transaction("commit decision is irrevocable")
-    }
-    if envelope.records.last?.decision == .aborted { return }
-    try append(.aborted, to: &envelope)
-    try write(envelope, to: file(transactionFingerprint), createOnly: false)
+    var body = try load(transactionFingerprint)
+    if body.records.last?.decision == .aborted { return }
+    try append(.aborted, to: &body); try write(body)
   }
 
+  /// Diagnostic candidate only. The joint owner must reconcile its own
+  /// physical participant and release receipt before publishing anything.
   public func recoveryCandidate(transactionFingerprint: UInt64) throws -> BrainDurablePreparedGeneration? {
-    let envelope = try load(transactionFingerprint)
-    guard envelope.records.contains(where: { $0.decision == .commitDecided }),
-          envelope.records.last?.decision != .committed else { return nil }
-    return try envelope.prepared.validated()
+    let body = try load(transactionFingerprint)
+    return body.records.last?.decision == .commitDecided ? body.prepared : nil
   }
 
-  private func append(_ decision: BrainRecoveryDecision, to envelope: inout Envelope) throws {
-    guard envelope.records.count < 1024, let last = envelope.records.last else {
-      throw BrainRuntimeError.capacity("recovery decision chain capacity")
+  private func append(_ decision: BrainRecoveryDecision, to body: inout Body) throws {
+    guard let last = body.records.last, body.records.count < 3 else {
+      throw BrainRuntimeError.transaction("semantic recovery chain is terminal")
     }
-    envelope.records.append(try BrainRecoveryRecord(sequence: UInt64(envelope.records.count),
-      decision: decision, transactionFingerprint: envelope.prepared.transactionFingerprint,
-      preparedPayloadFingerprint: envelope.prepared.payloadFingerprint,
-      previousRecordFingerprint: last.recordFingerprint))
+    body.records.append(try BrainRecoveryRecord(sequence: UInt64(body.records.count), decision: decision,
+      transactionFingerprint: body.prepared.transactionFingerprint,
+      preparedPayloadFingerprint: body.prepared.payloadFingerprint, previousRecordFingerprint: last.recordFingerprint))
+    try BrainRecoveryRecord.validateChain(body.records, transactionFingerprint: body.prepared.transactionFingerprint,
+      preparedPayloadFingerprint: body.prepared.payloadFingerprint)
   }
 
-  private func load(_ fingerprint: UInt64) throws -> Envelope {
-    let data = try Data(contentsOf: file(fingerprint), options: [.mappedIfSafe])
-    guard !data.isEmpty, data.count <= maximumBytes else {
-      throw BrainRuntimeError.capacity("recovery artifact size")
-    }
+  private func load(_ fingerprint: UInt64) throws -> Body {
+    try decode(directory.read(name(fingerprint), maximumBytes: maximumBytes), fingerprint: fingerprint)
+  }
+
+  private func decode(_ data: Data, fingerprint: UInt64) throws -> Body {
     let envelope = try JSONDecoder().decode(Envelope.self, from: data)
-    _ = try envelope.prepared.validated()
-    guard !envelope.records.isEmpty else { throw BrainRuntimeError.transaction("empty recovery decision chain") }
-    var previous: UInt64 = 0
-    for (index, record) in envelope.records.enumerated() {
-      guard record.sequence == UInt64(index), record.transactionFingerprint == fingerprint,
-            record.preparedPayloadFingerprint == envelope.prepared.payloadFingerprint,
-            record.previousRecordFingerprint == previous else {
-        throw BrainRuntimeError.transaction("recovery decision chain mismatch")
-      }
-      previous = record.recordFingerprint
+    guard envelope.body.version == 2, envelope.body.prepared.transactionFingerprint == fingerprint,
+      try BrainDurablePreparedGeneration.digest(envelope.body, domain: "NumiBrain.SemanticRecoveryEnvelope.v2") == envelope.sha256 else {
+      throw BrainRuntimeError.transaction("semantic recovery envelope digest/root mismatch")
     }
-    return envelope
+    _ = try envelope.body.prepared.validated()
+    try BrainRecoveryRecord.validateChain(envelope.body.records, transactionFingerprint: fingerprint,
+      preparedPayloadFingerprint: envelope.body.prepared.payloadFingerprint)
+    return envelope.body
   }
 
-  private func file(_ fingerprint: UInt64) -> URL {
-    directory.appendingPathComponent(String(format: "%016llx.brain-prepare.json", fingerprint), isDirectory: false)
+  private func write(_ body: Body, createOnly: Bool = false) throws {
+    let hash = try BrainDurablePreparedGeneration.digest(body, domain: "NumiBrain.SemanticRecoveryEnvelope.v2")
+    let data = try QualificationFileDirectory.canonicalJSON(Envelope(body: body, sha256: hash))
+    guard data.count <= maximumBytes else { throw BrainRuntimeError.capacity("semantic recovery archive exceeds limit") }
+    guard try directory.publish(data, named: name(body.prepared.transactionFingerprint), replaceExisting: !createOnly) else {
+      throw BrainRuntimeError.transaction("semantic recovery archive already exists")
+    }
   }
 
-  private func write(_ envelope: Envelope, to url: URL, createOnly: Bool) throws {
-    let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-    let data = try encoder.encode(envelope)
-    guard data.count <= maximumBytes else { throw BrainRuntimeError.capacity("recovery artifact exceeds maximum") }
-    let temporary = directory.appendingPathComponent(".\(UUID().uuidString).tmp")
-    guard !createOnly || !FileManager.default.fileExists(atPath: url.path) else {
-      throw BrainRuntimeError.transaction("recovery artifact already exists")
-    }
-    try data.write(to: temporary, options: [.atomic])
-    let handle = try FileHandle(forWritingTo: temporary)
-    try handle.synchronize(); try handle.close()
-    if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
-    try FileManager.default.moveItem(at: temporary, to: url)
-    let directoryHandle = try FileHandle(forReadingFrom: directory)
-    try directoryHandle.synchronize(); try directoryHandle.close()
+  private func name(_ fingerprint: UInt64) -> String {
+    String(format: "%016llx.brain-prepare.json", fingerprint)
   }
 }
