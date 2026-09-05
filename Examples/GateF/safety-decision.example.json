@@ -1,0 +1,25 @@
+{
+  "vector": {
+    "semanticRisk": 0.1,
+    "kinematicRisk": 0.1,
+    "contactRisk": 0.1,
+    "forceRisk": 0.1,
+    "thermalRisk": 0.1,
+    "actuatorRisk": 0.1,
+    "uncertainty": 0.2,
+    "staleGeneration": false,
+    "malformedRecord": false,
+    "resourceAlias": false,
+    "deviceFault": false
+  },
+  "envelope": {
+    "semanticStop": 0.8,
+    "kinematicStop": 0.8,
+    "contactStop": 0.8,
+    "forceStop": 0.8,
+    "thermalStop": 0.8,
+    "actuatorStop": 0.8,
+    "uncertaintySupervision": 0.5,
+    "uncertaintyStop": 0.9
+  }
+}
