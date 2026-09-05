@@ -23,6 +23,6 @@
   "Tests/NumiBrainValidationTests/PerturbationValidationTests.swift": "08eb68cf3bfd9f9278c543227bf164f14918c386cf163157cb6be4a062e255db",
   "Tests/NumiBrainValidationTests/PhysicalReferenceImportTests.swift": "ed1228315e179e250e53ec45d0a52322982b19dec73eaab72debab6903e1bb4a",
   "Tests/NumiBrainValidationTests/PhysicalTraceValidationTests.swift": "e7b86f8c38cc846ed172d7b5eca77d4d0dd7765e3411ccea9f658fac073c821f",
-  "docs/NUMANX_GATE_D_REQUIREMENTS.md": "70f3a9c6b5532a9ae05cc0390a97677ca9a5b57cdbe03bdabe36cb68fc22febd",
-  "scripts/validate-gate-d-portable.sh": "3efe198f4573cf2d25ff3ebc48859d149caa008f409537df8fca07a1d66a5a99"
+  "docs/NUMANX_GATE_D_REQUIREMENTS.md": "5e2ca726ef63d7579688c1111cc16bd34b582c54f947f9453e9678787dfad161",
+  "scripts/validate-gate-d-portable.sh": "688421e2525cf5c10ac40bc8183f1355be116d15393600f76ba1ed482e438a8e"
 }

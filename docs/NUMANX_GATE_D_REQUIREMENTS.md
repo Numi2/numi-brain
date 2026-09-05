@@ -226,6 +226,34 @@ checks with configured assets. Keep skips distinct from passes. Populate the
 native/independent evidence matrix above and preserve all failed outcomes before
 making a physical-validation claim. Gate C remains unchanged and open.
 
+## Follow-up Apple validation
+
+On 2026-09-05, the portable harness was first run on the Apple host and exposed
+a real portability failure: its generated temporary `Package.swift` had no
+macOS deployment target, so the Foundation `FileHandle` and JSON encoder APIs
+used by the retained-capture CLI failed availability checking. The harness now
+declares the API floor explicitly with `.macOS("10.15.4")`; this changes only
+the temporary validation package and not the production package or runtime.
+
+The corrected branch was validated on the Apple M4 Pro Mac mini with Swift
+6.3.3:
+
+* `swift test --filter NumiBrainValidationTests`: 55 passed, 0 failed.
+* `swift test --filter BrainGateDEvidenceTests`: 6 passed, 0 failed.
+* Full `swift test`: 245 passed, 9 explicitly skipped, 0 failed. The skips are
+  the existing unconfigured real-NumanX bridge or isolated Gate B qualification
+  paths; they are not counted as passes.
+* `scripts/validate-gate-d-portable.sh`: 55 passed, 0 failed, with the CLI
+  retaining pass (`0`), fail (`1`), inconclusive (`2`), import (`0`) and
+  invalid-input (`64`/`65`) semantics. Every diagnostic remains
+  `promotable=false`.
+
+This closes the harness deployment-target and Apple/Core test-execution
+failure. It does not close Gate D qualification: no native NumanX post-commit
+state, force-ledger, tangent, physical sweep, independent biological/material
+dataset, or latency result was produced. The evidence matrix and the capture
+phase boundary above remain authoritative.
+
 ## Method sources
 
 [1] NASA NPARC Alliance, *Examining Spatial (Grid) Convergence*, including temporal

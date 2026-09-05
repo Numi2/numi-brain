@@ -12,7 +12,8 @@ cp -R "$repo/Tests/NumiBrainValidationTests" "$work/Tests/"
 cat > "$work/Package.swift" <<'PACKAGE'
 // swift-tools-version: 6.2
 import PackageDescription
-let package = Package(name: "NumiBrainGateDPortableChecks", products: [
+let package = Package(name: "NumiBrainGateDPortableChecks",
+  platforms: [.macOS("10.15.4")], products: [
   .executable(name: "numi-brain-gate-d", targets: ["NumiBrainGateDCLI"])
 ], targets: [
   .target(name: "NumiBrainValidation"),

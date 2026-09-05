@@ -14,7 +14,15 @@ repository manifest, tests, examples and script for this implementation. The
 manifest's membership does not expand what was tested: Apple-only integration
 and its six Core tests were parsed but not compiled or executed here.
 
-This is not a full NumiBrain build, an Apple execution result, physical or
-biological calibration, an independent dataset evaluation, or Gate D promotion.
-The tests verify the reference algorithms and diagnostic command behavior, not
-that NumanX's native physical model satisfies the evaluated equations.
+This original log is not a full NumiBrain build, an Apple execution result,
+physical or biological calibration, an independent dataset evaluation, or Gate
+D promotion. The tests verify the reference algorithms and diagnostic command
+behavior, not that NumanX's native physical model satisfies the evaluated
+equations.
+
+`apple-validation.log` records the later Apple M4 Pro Mac mini follow-up. It
+includes the corrected deployment-target harness, the six Core integration
+tests, the 55 validation tests, and the full package result (245 passed, 9
+explicit skips, zero failures). The skips are retained separately because the
+real NumanX bridge paths are not configured. This follow-up still does not
+constitute native physical qualification.
