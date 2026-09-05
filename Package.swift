@@ -24,7 +24,7 @@ let package = Package(
   targets: [
     .target(name: "NumiBrainQualification"),
     .target(name: "NumiBrainABI", publicHeadersPath: "include"),
-    .target(name: "NumiBrainCore", dependencies: ["NumiBrainABI"]),
+    .target(name: "NumiBrainCore", dependencies: ["NumiBrainABI", "NumiBrainQualification"]),
     .target(name: "NumiBrainMetalBridgeABI", dependencies: ["NumiBrainABI"], publicHeadersPath: "include"),
     .target(name: "NumiBrainMetal", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainMetalBridgeABI"], resources: [.process("Shaders")]),
     .target(name: "NumiBrainMLX", dependencies: ["NumiBrainCore", "NumiBrainMetal", .product(name: "MLX", package: "mlx-swift")]),
