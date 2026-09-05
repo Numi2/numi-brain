@@ -22,6 +22,7 @@ let package = Package(
     .executable(name: "numi-brain-gate-e", targets: ["NumiBrainGateECLI"]),
     .executable(name: "numi-brain-gate-f", targets: ["NumiBrainGateFCLI"]),
     .executable(name: "numi-brain-watchdog", targets: ["NumiBrainWatchdogCLI"]),
+    .executable(name: "numi-brain-qualify", targets: ["NumiBrainQualificationCLI"]),
   ],
   dependencies: [.package(url: "https://github.com/ml-explore/mlx-swift.git", exact: "0.31.3")],
   targets: [
@@ -42,6 +43,7 @@ let package = Package(
     .executableTarget(name: "NumiBrainGateECLI", dependencies: ["NumiBrainQualification"]),
     .executableTarget(name: "NumiBrainGateFCLI", dependencies: ["NumiBrainQualification"]),
     .executableTarget(name: "NumiBrainWatchdogCLI", dependencies: ["NumiBrainQualification"]),
+    .executableTarget(name: "NumiBrainQualificationCLI", dependencies: ["NumiBrainQualification"]),
     .testTarget(name: "NumiBrainCoreTests", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainValidation", "NumiBrainQualification"]),
     .testTarget(name: "NumiBrainMetalTests", dependencies: ["NumiBrainCore", "NumiBrainMetal", "NumiBrainMLX", .product(name: "MLX", package: "mlx-swift")]),
     .testTarget(name: "NumiBrainValidationTests", dependencies: ["NumiBrainValidation"]),
