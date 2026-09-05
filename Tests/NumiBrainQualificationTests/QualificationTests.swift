@@ -18,13 +18,14 @@ final class QualificationTests: XCTestCase {
       deterministic: true, fastMath: false)
   }
 
-  private func run(_ workload: PerformanceWorkloadIdentity, binary: String = String(repeating: "a", count: 64)) throws
-    -> PerformanceRunArtifact
-  {
-    try .init(sourceRevision: "revision", binarySHA256: binary, metallibSHA256: hashB,
+  private func run(_ workload: PerformanceWorkloadIdentity,
+    binary: String = String(repeating: "a", count: 64)) throws -> PerformanceRunArtifact {
+    let wallSeconds = 0.05
+    return try .init(sourceRevision: "revision", binarySHA256: binary, metallibSHA256: hashB,
       hardware: hardware(), workload: workload, warmupRoots: 10, measuredRoots: 100,
       latency: LatencyDistribution(samplesMicroseconds: [Double](repeating: 100, count: 100)),
-      simulatedSecondsPerWallSecond: 2, environmentStepsPerSecond: 2_000,
+      simulatedSecondsPerWallSecond: 100 * 0.001 / wallSeconds,
+      environmentStepsPerSecond: 100 * Double(workload.environmentCount) / wallSeconds,
       peakResidentBytes: 1_000_000, steadyResidentBytes: 900_000,
       bytesPerEnvironment: 900_000 / Double(workload.environmentCount),
       counters: PerformanceCounterSummary(commandBufferCount: 100, cpuWaitCount: 0,
@@ -86,6 +87,29 @@ final class QualificationTests: XCTestCase {
     ]))
   }
 
+  func testRawPerformanceEvidenceRecomputesSummary() throws {
+    let workload = try workload("one", environments: 1)
+    let run = try run(workload)
+    let measurements = try PerformanceMeasurementArtifact(
+      rootLatencyMicroseconds: [Double](repeating: 100, count: 100),
+      wallDurationSeconds: 0.05, peakResidentBytes: 1_000_000,
+      steadyResidentBytes: 900_000,
+      counters: PerformanceCounterSummary(commandBufferCount: 100, cpuWaitCount: 0,
+        queueCreationCountDuringMeasuredRegion: 0, hostPayloadReadbackBytes: 0))
+    XCTAssertNoThrow(try PerformanceEvidenceVerifier.verify(run: run, measurements: measurements))
+
+    let forged = try PerformanceRunArtifact(sourceRevision: run.sourceRevision,
+      binarySHA256: run.binarySHA256, metallibSHA256: run.metallibSHA256,
+      hardware: run.hardware, workload: run.workload, warmupRoots: run.warmupRoots,
+      measuredRoots: run.measuredRoots,
+      latency: LatencyDistribution(samplesMicroseconds: [Double](repeating: 99, count: 100)),
+      simulatedSecondsPerWallSecond: run.simulatedSecondsPerWallSecond,
+      environmentStepsPerSecond: run.environmentStepsPerSecond,
+      peakResidentBytes: run.peakResidentBytes, steadyResidentBytes: run.steadyResidentBytes,
+      bytesPerEnvironment: run.bytesPerEnvironment, counters: run.counters)
+    XCTAssertThrowsError(try PerformanceEvidenceVerifier.verify(run: forged, measurements: measurements))
+  }
+
   func testPerformanceProtocolRejectsHotPathCPUWork() throws {
     let workload = try workload("one", environments: 1)
     let hardware = try hardware()
@@ -102,5 +126,20 @@ final class QualificationTests: XCTestCase {
     let result = PerformanceQualificationResult(run: run, protocol: protocolValue)
     XCTAssertFalse(result.passed)
     XCTAssertEqual(result.failures, ["cpu_waits"])
+  }
+
+  func testSafetyCampaignRequiresEveryScenarioClass() throws {
+    let required = try SafetyCampaignScenario.Kind.allCases.map {
+      try SafetyCampaignScenario(kind: $0, identifier: $0.rawValue)
+    }
+    let outcomes = try required.map {
+      try SafetyCampaignOutcome(scenario: $0, disposition: .protectiveStop,
+        publicRootChangedOnRejectedAttempt: false, rejectedShadowExposed: false,
+        boundedLatencyMicroseconds: 100)
+    }
+    XCTAssertNoThrow(try SafetyCampaignVerifier.verify(required: required,
+      outcomes: outcomes, maximumProtectiveLatencyMicroseconds: 1_000))
+    XCTAssertThrowsError(try SafetyCampaignVerifier.verify(required: Array(required.dropLast()),
+      outcomes: Array(outcomes.dropLast()), maximumProtectiveLatencyMicroseconds: 1_000))
   }
 }
