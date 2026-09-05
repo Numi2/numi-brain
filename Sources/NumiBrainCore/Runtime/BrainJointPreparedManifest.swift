@@ -21,15 +21,20 @@ public struct BrainPreparedParticipantArtifact: Codable, Equatable, Sendable {
               baseGeneration: UInt64, shadowGeneration: UInt64,
               immutableProgramFingerprint: UInt64, payloadSHA256: String,
               payloadBytes: UInt64) throws {
+    self.kind = kind; self.transactionFingerprint = transactionFingerprint
+    self.baseGeneration = baseGeneration; self.shadowGeneration = shadowGeneration
+    self.immutableProgramFingerprint = immutableProgramFingerprint
+    self.payloadSHA256 = payloadSHA256; self.payloadBytes = payloadBytes
+    _ = try validated()
+  }
+
+  public func validated() throws -> Self {
     let next = baseGeneration.addingReportingOverflow(1)
     guard transactionFingerprint > 0, !next.overflow, shadowGeneration == next.partialValue,
       immutableProgramFingerprint > 0, payloadBytes > 0, Self.isSHA256(payloadSHA256) else {
       throw BrainRuntimeError.transaction("invalid prepared participant artifact")
     }
-    self.kind = kind; self.transactionFingerprint = transactionFingerprint
-    self.baseGeneration = baseGeneration; self.shadowGeneration = shadowGeneration
-    self.immutableProgramFingerprint = immutableProgramFingerprint
-    self.payloadSHA256 = payloadSHA256; self.payloadBytes = payloadBytes
+    return self
   }
 
   private static func isSHA256(_ value: String) -> Bool {
@@ -53,16 +58,9 @@ public struct BrainJointPreparedManifest: Codable, Equatable, Sendable {
               participants input: [BrainPreparedParticipantArtifact]) throws {
     let token = try root.validatedToken()
     let participants = input.sorted { $0.kind.rawValue < $1.kind.rawValue }
-    guard parameterVersionFingerprint == token.parameterVersionFingerprint,
-      participants.count == BrainPreparedParticipantKind.allCases.count,
-      Set(participants.map(\.kind)) == Set(BrainPreparedParticipantKind.allCases),
-      Set(participants.map(\.kind)).count == participants.count,
-      participants.allSatisfy({ $0.transactionFingerprint == token.fingerprint }),
-      participants.first(where: { $0.kind == .cognitiveArena })?.baseGeneration == token.baseBrainGeneration,
-      participants.first(where: { $0.kind == .cognitiveArena })?.shadowGeneration == token.shadowGeneration,
-      participants.first(where: { $0.kind == .physicalSolver })?.baseGeneration == token.basePhysicsGeneration else {
-      throw BrainRuntimeError.transaction("prepared participant set does not bind the joint root")
-    }
+    for participant in participants { _ = try participant.validated() }
+    try Self.validateParticipantSet(participants, token: token,
+      parameterVersionFingerprint: parameterVersionFingerprint)
     version = Self.currentVersion; self.root = root
     targetTimestampMicroseconds = token.targetTimestamp.rawValue
     self.parameterVersionFingerprint = parameterVersionFingerprint
@@ -74,14 +72,16 @@ public struct BrainJointPreparedManifest: Codable, Equatable, Sendable {
 
   public func validated() throws -> Self {
     let token = try root.validatedToken()
-    guard version == Self.currentVersion, targetTimestampMicroseconds == token.targetTimestamp.rawValue,
-      parameterVersionFingerprint == token.parameterVersionFingerprint,
-      participants.count == BrainPreparedParticipantKind.allCases.count,
-      participants.map(\.kind) == BrainPreparedParticipantKind.allCases.sorted(by: { $0.rawValue < $1.rawValue }),
-      participants.allSatisfy({ $0.transactionFingerprint == token.fingerprint }),
-      manifestSHA256 == Self.digest(version: version, root: root,
-        targetTimestampMicroseconds: targetTimestampMicroseconds,
-        parameterVersionFingerprint: parameterVersionFingerprint, participants: participants) else {
+    guard version == Self.currentVersion,
+      targetTimestampMicroseconds == token.targetTimestamp.rawValue else {
+      throw BrainRuntimeError.transaction("joint prepared manifest version/time mismatch")
+    }
+    for participant in participants { _ = try participant.validated() }
+    try Self.validateParticipantSet(participants, token: token,
+      parameterVersionFingerprint: parameterVersionFingerprint)
+    guard manifestSHA256 == Self.digest(version: version, root: root,
+      targetTimestampMicroseconds: targetTimestampMicroseconds,
+      parameterVersionFingerprint: parameterVersionFingerprint, participants: participants) else {
       throw BrainRuntimeError.transaction("joint prepared manifest integrity mismatch")
     }
     return self
@@ -91,22 +91,39 @@ public struct BrainJointPreparedManifest: Codable, Equatable, Sendable {
     participants.first(where: { $0.kind == kind })!
   }
 
+  private static func validateParticipantSet(_ participants: [BrainPreparedParticipantArtifact],
+    token: BrainJointTransactionToken, parameterVersionFingerprint: UInt64) throws {
+    let orderedKinds = BrainPreparedParticipantKind.allCases.sorted { $0.rawValue < $1.rawValue }
+    guard parameterVersionFingerprint == token.parameterVersionFingerprint,
+      participants.count == orderedKinds.count,
+      participants.map(\.kind) == orderedKinds,
+      participants.allSatisfy({ $0.transactionFingerprint == token.fingerprint }),
+      participants.first(where: { $0.kind == .cognitiveArena })?.baseGeneration == token.baseBrainGeneration,
+      participants.first(where: { $0.kind == .cognitiveArena })?.shadowGeneration == token.shadowGeneration,
+      participants.first(where: { $0.kind == .fastTissue })?.baseGeneration == token.baseBrainGeneration,
+      participants.first(where: { $0.kind == .fastTissue })?.shadowGeneration == token.shadowGeneration,
+      participants.first(where: { $0.kind == .physicalSolver })?.baseGeneration == token.basePhysicsGeneration,
+      participants.first(where: { $0.kind == .physicalSolver })?.shadowGeneration == token.basePhysicsGeneration &+ 1 else {
+      throw BrainRuntimeError.transaction("prepared participant set does not bind the joint root")
+    }
+  }
+
   private static func digest(version: UInt32, root: BrainPreparedRoot,
     targetTimestampMicroseconds: UInt64, parameterVersionFingerprint: UInt64,
     participants: [BrainPreparedParticipantArtifact]) -> String {
     var hash = SHA256()
     hash.update(data: Data("NumiBrain.joint-prepared-manifest.v1\0".utf8))
-    var scalars: [UInt64] = [UInt64(version), root.fingerprint, targetTimestampMicroseconds,
-      parameterVersionFingerprint, UInt64(participants.count)]
-    for participant in participants {
-      scalars += [UInt64(participant.kind.rawValue), participant.transactionFingerprint,
-        participant.baseGeneration, participant.shadowGeneration,
-        participant.immutableProgramFingerprint, participant.payloadBytes]
-      hash.update(data: Data(participant.payloadSHA256.utf8))
-    }
-    for scalar in scalars {
-      var little = scalar.littleEndian
+    func scalar(_ value: UInt64) {
+      var little = value.littleEndian
       withUnsafeBytes(of: &little) { hash.update(bufferPointer: $0) }
+    }
+    scalar(UInt64(version)); scalar(root.fingerprint); scalar(targetTimestampMicroseconds)
+    scalar(parameterVersionFingerprint); scalar(UInt64(participants.count))
+    for participant in participants {
+      scalar(UInt64(participant.kind.rawValue)); scalar(participant.transactionFingerprint)
+      scalar(participant.baseGeneration); scalar(participant.shadowGeneration)
+      scalar(participant.immutableProgramFingerprint); scalar(participant.payloadBytes)
+      hash.update(data: Data(participant.payloadSHA256.utf8))
     }
     return hash.finalize().map { String(format: "%02x", $0) }.joined()
   }
