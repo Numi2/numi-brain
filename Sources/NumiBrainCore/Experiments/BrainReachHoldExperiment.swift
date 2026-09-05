@@ -106,6 +106,7 @@ public enum BrainReachHoldExperiment {
     var expectedNextTime: UInt64?, expectedNextGeneration: UInt64?
     var sensorProfile: UInt64?, firstSensor: UInt64?, endSensor: UInt64?
     var lastAcquisitionIdentity: String?
+    var previousAcquisitionTime: UInt64?
     for (index, root) in run.roots.enumerated() {
       guard root.controlStep == UInt32(index + 1), let goalHash = root.externalGoalArtifactSHA256,
         let actionHash = root.motorActionArtifactSHA256 else {
@@ -154,6 +155,10 @@ public enum BrainReachHoldExperiment {
       // create an apparently successful shortened trace.
       if index > 0 && verified.rejectedRootCount == 0 {
         let position = try relativeHeadPosition(sample: sample, directory: directory)
+        guard previousAcquisitionTime == nil || position.timestampMicroseconds >= previousAcquisitionTime! else {
+          throw BrainRuntimeError.transaction("receptor acquisition clock moved backward")
+        }
+        previousAcquisitionTime = position.timestampMicroseconds
         if firstSensor == nil {
           let (end, overflow) = position.timestampMicroseconds.addingReportingOverflow(experiment.objective.durationMicroseconds)
           guard !overflow else { throw BrainRuntimeError.transaction("reach/hold sensor horizon overflow") }
@@ -203,16 +208,12 @@ public enum BrainReachHoldExperiment {
     }
     let values = try BrainPolicyNumanXCaptureVerifier.verifiedData(sha256: channel.valuesSHA256, directory: directory)
     let mask = try BrainPolicyNumanXCaptureVerifier.verifiedData(sha256: maskHash, directory: directory)
-    guard values.count == 88, mask.count == 4 else { throw BrainRuntimeError.transaction("vestibular field shape mismatch") }
-    let validity = mask.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self)) }
-    let required: UInt32 = (1 << 2) | (1 << 15)
-    guard validity & required == required else { throw BrainRuntimeError.transaction("root/head height observation unavailable") }
-    func scalar(_ index: Int) -> Double {
-      values.withUnsafeBytes { Double(Float(bitPattern: UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: index * 4, as: UInt32.self)))) }
-    }
-    let root = scalar(2), head = scalar(15)
-    guard root.isFinite, head.isFinite else { throw BrainRuntimeError.transaction("non-finite physical height") }
-    return .init(timestampMicroseconds: channel.receptorTimestampMicroseconds, positionMeters: [head - root])
+    let root = try PhysicalSensorField.decode(values: values, validity: mask, receptorCount: 1,
+      featureDimension: 22, receptorIndex: 0, featureIndex: 2, requiredValidityMask: 1 << 2)
+    let head = try PhysicalSensorField.decode(values: values, validity: mask, receptorCount: 1,
+      featureDimension: 22, receptorIndex: 0, featureIndex: 15, requiredValidityMask: 1 << 15)
+    guard root.valid, head.valid else { throw BrainRuntimeError.transaction("root/head height observation unavailable") }
+    return .init(timestampMicroseconds: channel.receptorTimestampMicroseconds, positionMeters: [head.value - root.value])
   }
 }
 
