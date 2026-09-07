@@ -1,0 +1,3 @@
+downloaded and verified body-annotations-male-cns-v1.0-minconf-0.5.feather
+downloaded and verified body-neurotransmitters-male-cns-v1.0.feather
+downloaded and verified connectome-weights-male-cns-v1.0-minconf-0.5.feather

@@ -115,6 +115,9 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   public let parameterVersionFingerprint: UInt64
   public let declaredMaximumInferenceLatencyMicroseconds: UInt64?
 
+  public let connectomeProgram: ConnectomeProgram?
+  private var connectomeTrainingRows: [ConnectomeTrainingRow] = []
+
   private let device: any MTLDevice
   private let brain: MetalNumiBrainRuntime
   private let native: MetalNumanXBridgeV1Runtime
@@ -137,9 +140,12 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     randomSeed: UInt64,
     declaredMaximumInferenceLatencyMicroseconds: UInt64? = nil,
     enableProductionUncertaintyGate: Bool = false,
+    connectomeGraph: ConnectomeGraph? = nil,
+    connectomeLaunch: ConnectomeLaunch? = nil,
     device: any MTLDevice
   ) throws {
-    guard episodeIdentifier > 0, randomSeed > 0,
+    guard (connectomeGraph == nil) == (connectomeLaunch == nil),
+      episodeIdentifier > 0, randomSeed > 0,
       declaredMaximumInferenceLatencyMicroseconds == nil
         || declaredMaximumInferenceLatencyMicroseconds! > 0,
       let timestepMicroseconds = UInt32(exactly:
@@ -172,6 +178,11 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       latencyMicroseconds: timestepMicroseconds,
       anatomy: anatomy
     )
+    let connectomeProgram: ConnectomeProgram?
+    if let connectomeGraph, let connectomeLaunch {
+      connectomeProgram = try connectomeLaunch.compile(graph: connectomeGraph, template: compiled,
+        parameterVersionFingerprint: publication.version.fingerprint)
+    } else { connectomeProgram = nil }
     let parameters = TissueParameters.corticalSheetV0
     let brain = try MetalNumiBrainRuntime.makeRuntime(
       configuration: MetalNumiBrainConfiguration(
@@ -189,7 +200,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
           episodeIdentifier: episodeIdentifier32
         ),
         schedulerEnvironmentIdentifier: 0,
-        maximumEncodedSubsteps: 1
+        maximumEncodedSubsteps: 1,
+        connectomeProgram: connectomeProgram
       ),
       publication: publication,
       numanXUncertaintyGate: enableProductionUncertaintyGate
@@ -197,6 +209,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       device: device
     )
     self.device = device
+    self.connectomeProgram = connectomeProgram
     self.compiledSpeciesTemplate = compiled
     self.artifactDirectory = artifactDirectory
     self.episodeIdentifier = episodeIdentifier
@@ -209,6 +222,16 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     self.timestepMicroseconds = UInt64(timestepMicroseconds)
     self.productionUncertaintyGateEnabled = enableProductionUncertaintyGate
     self.committedTimestampMicroseconds = UInt64(timestepMicroseconds)
+  }
+
+  /// Finalize a teacher dataset only after the native capture has retained its
+  /// complete accepted/rejected transcript. Rejected roots never appear here.
+  public func writeConnectomeTrainingRunArtifact(nativeRunSHA256: String) throws -> String? {
+    lock.lock(); defer { lock.unlock() }
+    guard let connectomeProgram, connectomeProgram.executionMode == .observeTeacher else { return nil }
+    let run = try ConnectomeTrainingRun(nativeRunSHA256: nativeRunSHA256,
+      program: connectomeProgram, rows: connectomeTrainingRows)
+    return try BrainReachHoldExperiment.retain(run, directory: artifactDirectory)
   }
 
   public func writeCaptureRunArtifact(
@@ -672,6 +695,14 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       committedTimestampMicroseconds = targetMicros
       aggregate = nextAggregate
       cultureAggregate = nextCultureAggregate
+      if let row = try brain.captureConnectomeTrainingRow(root: transaction.token,
+        executionSHA256: executionHash, motorActionSHA256: motorActionArtifactSHA256,
+        normalizedDrives: motorObservation.learnedDescendingCommands) {
+        guard connectomeTrainingRows.count < 65_536 else {
+          throw ConnectomeError.invalid("teacher capture row capacity exceeded after retained terminal root")
+        }
+        connectomeTrainingRows.append(row)
+      }
       return RootResult(
         sample: capturedSample,
         execution: execution,

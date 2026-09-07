@@ -1,0 +1,102 @@
+{
+  "graphFingerprint": "02961e5c21cadb02",
+  "sha256": "db2a30c4d4989ff036733d72764b06c08988cd97016774e68d91421b6bf6a647",
+  "bytes": 216220498,
+  "portsSHA256": "bebd2a6e200b6cb013f452cfca9ddcea8a4f8f1d76740c65e3848106d2f1ab9c",
+  "manifest": {
+    "format": "NUMICNS1",
+    "compiler_version": 1,
+    "dataset": "male-cns:v1.0",
+    "license": "CC-BY-4.0",
+    "sources": {
+      "annotations": {
+        "name": "body-annotations-male-cns-v1.0-minconf-0.5.feather",
+        "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/body-annotations-male-cns-v1.0-minconf-0.5.feather",
+        "bytes": 14483314,
+        "sha256": "2177e246113e4cfbf1e7772ec37c6da1955ff22e8063d0b1f833101f99a9a3b2"
+      },
+      "neurotransmitters": {
+        "name": "body-neurotransmitters-male-cns-v1.0.feather",
+        "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/body-neurotransmitters-male-cns-v1.0.feather",
+        "bytes": 43282834,
+        "sha256": "95c9289220663abeb3409f3ad9e5a7f8a53f8093f5139d15502cd08da8879621"
+      },
+      "weights": {
+        "name": "connectome-weights-male-cns-v1.0-minconf-0.5.feather",
+        "url": "https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/connectome-weights-male-cns-v1.0-minconf-0.5.feather",
+        "bytes": 1051241946,
+        "sha256": "e35da783d1c686b2b58b3b87cd6a403ae43bfcfba8bff28e08ef752c1a56afc1"
+      }
+    },
+    "compiler_sha256": "c243b5bda242854ff8a55ba16ce39a5a9a6cfe6d0ac041539a8c0299db8385d8",
+    "dependencies": {
+      "numpy": "2.3.5",
+      "pyarrow": "19.0.1"
+    },
+    "selection": "status not Glia/Unimportant AND (Traced OR superclass is nonnull)",
+    "resolution": "neuron",
+    "minimum_synapses_after_pair_aggregation": 1,
+    "preserve_isolated_neurons": true,
+    "alpha_at_nominal_step": 0.2,
+    "recurrent_scale": 1.0,
+    "nt_prior": {
+      "acetylcholine": 1,
+      "gaba": -1,
+      "glutamate": -1,
+      "histamine": -1,
+      "dopamine": 0,
+      "octopamine": 0,
+      "serotonin": 0,
+      "unclear": 0,
+      "": 0
+    },
+    "normalization": "scale*log1p(count)*prior(source)/max(destination_L1,1)",
+    "counts": {
+      "source_annotation_rows": 211577,
+      "neurons": 167216,
+      "source_weight_rows": 151856684,
+      "mapped_positive_weight_rows": 25587572,
+      "neuron_pair_edges": 25587572,
+      "isolated_neurons": 548,
+      "removed_pairs_by_threshold": 0,
+      "mapped_synapses_before_threshold": 124193283,
+      "retained_synapses": 124193283,
+      "zero_prior_edges": 1025089,
+      "nt_labels": {
+        "acetylcholine": 103746,
+        "gaba": 22073,
+        "unclear": 3142,
+        "glutamate": 29303,
+        "octopamine": 101,
+        "serotonin": 48,
+        "dopamine": 392,
+        "histamine": 7897,
+        "": 514
+      }
+    },
+    "scientific_boundary": "Anatomical connectivity with assumed rate dynamics/signs; no biological or behavioral qualification."
+  }
+}
+	Command being timed: "python tools/import_male_cns.py compile --cache /home/runner/.cache/numibrain-male-cns-v1 --output diagnostics/male-cns-v1.numicns"
+	User time (seconds): 29.86
+	System time (seconds): 0.99
+	Percent of CPU this job got: 102%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:30.05
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 2980128
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 2
+	Minor (reclaiming a frame) page faults: 202958
+	Voluntary context switches: 16394
+	Involuntary context switches: 331
+	Swaps: 0
+	File system inputs: 360
+	File system outputs: 438336
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

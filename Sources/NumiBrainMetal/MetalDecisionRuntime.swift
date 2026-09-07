@@ -1060,7 +1060,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
       activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern,
       anatomicalMuscleCount: species.body.muscleCount,
-      connectomeControlOffset: arena.layout.connectomeProgramFingerprint == nil ? 0
+      connectomeControlOffset: arena.layout.connectomeExecutionMode != .actuate ? 0
         : UInt32(arena.layout.section(.connectomeControl).byteOffset)
     )
   }

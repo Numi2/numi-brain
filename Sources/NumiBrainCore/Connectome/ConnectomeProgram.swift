@@ -1,6 +1,13 @@
 import Foundation
 import NumiBrainConnectomeABI
 
+/// Observation mode leaves the existing somatic controller authoritative. The
+/// graph still advances from the same causal sensory frame and commits with it.
+public enum ConnectomeExecutionMode: String, Codable, Sendable {
+  case actuate
+  case observeTeacher
+}
+
 /// Versioned, reviewed robot-specific decoder. Inputs are descending neural
 /// features, outputs are logits in the EXISTING normalized motor-drive domain.
 /// The normal spinal, inhibition and physical actuator adapters remain active.
@@ -49,6 +56,16 @@ public struct ConnectomeMotorDecoder: Codable, Equatable, Sendable {
     self.weights = weights; self.bias = bias; fingerprint = hash
   }
 
+  /// Off-rollout coefficient publication. Preserves exact morphology, ports,
+  /// normalization and slew contract; does not admit the result as trained/safe.
+  public func replacing(weights: [Float], bias: [Float]) throws -> Self {
+    _ = try validated()
+    return try Self(bindingFingerprint: bindingFingerprint,
+      compiledSpeciesFingerprint: compiledSpeciesFingerprint,
+      channelCount: channelCount, actuatorCount: actuatorCount, commandKind: commandKind,
+      maximumDriveChangePerSecond: maximumDriveChangePerSecond, weights: weights, bias: bias)
+  }
+
   public func validated() throws -> Self {
     let canonical = try Self(bindingFingerprint: bindingFingerprint,
       compiledSpeciesFingerprint: compiledSpeciesFingerprint,
@@ -67,10 +84,12 @@ public struct ConnectomeProgram: Sendable {
   public let binding: ConnectomeBinding
   public let decoder: ConnectomeMotorDecoder
   public let maximumSubsteps: Int
+  public let executionMode: ConnectomeExecutionMode
   public let fingerprint: UInt64
 
   public init(graph: ConnectomeGraph, binding: ConnectomeBinding,
-    decoder: ConnectomeMotorDecoder, maximumSubsteps: Int = 256) throws {
+    decoder: ConnectomeMotorDecoder, maximumSubsteps: Int = 256,
+    executionMode: ConnectomeExecutionMode = .actuate) throws {
     let decoder = try decoder.validated()
     guard graph.fingerprint == binding.graphFingerprint,
       decoder.bindingFingerprint == binding.fingerprint,
@@ -79,9 +98,9 @@ public struct ConnectomeProgram: Sendable {
       throw ConnectomeError.invalid("program components do not share one identity")
     }
     self.graph = graph; self.binding = binding; self.decoder = decoder
-    self.maximumSubsteps = maximumSubsteps
-    var words: [UInt64] = [0x4e42435052470001, graph.fingerprint,
-      binding.fingerprint, decoder.fingerprint, UInt64(maximumSubsteps)]
+    self.maximumSubsteps = maximumSubsteps; self.executionMode = executionMode
+    var words: [UInt64] = [0x4e42435052470002, graph.fingerprint,
+      binding.fingerprint, decoder.fingerprint, UInt64(maximumSubsteps), executionMode == .actuate ? 1 : 2]
     words = words.map(\.littleEndian)
     fingerprint = words.withUnsafeBytes {
       nb_connectome_fnv1a_update(14_695_981_039_346_656_037, $0.baseAddress, $0.count)
@@ -127,6 +146,7 @@ public struct ConnectomeLaunch: Codable, Sendable {
   public let nominalStepMicroseconds: UInt32
   public let integrationStepMicroseconds: UInt32
   public let maximumSubsteps: Int
+  public let executionMode: ConnectomeExecutionMode
   public let receptors: [ConnectomeReceptorProjection]
   public let descending: [ConnectomeDescendingProjection]
   public let decoder: ConnectomeMotorDecoder
@@ -135,8 +155,8 @@ public struct ConnectomeLaunch: Codable, Sendable {
     parameterVersionFingerprint: UInt64, nominalStepMicroseconds: UInt32,
     integrationStepMicroseconds: UInt32, maximumSubsteps: Int = 256,
     receptors: [ConnectomeReceptorProjection], descending: [ConnectomeDescendingProjection],
-    decoder: ConnectomeMotorDecoder) throws {
-    version = 1; graphFingerprint = graph.fingerprint; compiledSpeciesFingerprint = template.fingerprint
+    decoder: ConnectomeMotorDecoder, executionMode: ConnectomeExecutionMode = .actuate) throws {
+    version = 2; self.executionMode = executionMode; graphFingerprint = graph.fingerprint; compiledSpeciesFingerprint = template.fingerprint
     self.parameterVersionFingerprint = parameterVersionFingerprint
     self.nominalStepMicroseconds = nominalStepMicroseconds; self.integrationStepMicroseconds = integrationStepMicroseconds
     self.maximumSubsteps = maximumSubsteps; self.receptors = receptors; self.descending = descending; self.decoder = decoder
@@ -145,7 +165,7 @@ public struct ConnectomeLaunch: Codable, Sendable {
 
   public func compile(graph: ConnectomeGraph, template: CompiledSpeciesTemplate,
     parameterVersionFingerprint expected: UInt64) throws -> ConnectomeProgram {
-    guard version == 1, graphFingerprint == graph.fingerprint,
+    guard version == 2, graphFingerprint == graph.fingerprint,
       compiledSpeciesFingerprint == template.fingerprint, parameterVersionFingerprint == expected else {
       throw ConnectomeError.invalid("launch artifact names a different graph, body or publication")
     }
@@ -153,7 +173,7 @@ public struct ConnectomeLaunch: Codable, Sendable {
       parameterVersionFingerprint: expected, channelCount: decoder.channelCount,
       nominalStepMicroseconds: nominalStepMicroseconds, integrationStepMicroseconds: integrationStepMicroseconds,
       receptors: receptors, descending: descending)
-    let program = try ConnectomeProgram(graph: graph, binding: binding, decoder: decoder, maximumSubsteps: maximumSubsteps)
+    let program = try ConnectomeProgram(graph: graph, binding: binding, decoder: decoder, maximumSubsteps: maximumSubsteps, executionMode: executionMode)
     try program.validate(template: template, parameterVersionFingerprint: expected)
     return program
   }

@@ -173,6 +173,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let archivePageRequestHeaderByteCount = 32
 
   public let connectomeProgramFingerprint: UInt64?
+  public let connectomeExecutionMode: ConnectomeExecutionMode?
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let sections: [MetalArenaSectionLayout<MetalAgentHotSection>]
@@ -506,6 +507,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       }
     }
     connectomeProgramFingerprint = connectomeProgram?.fingerprint
+    connectomeExecutionMode = connectomeProgram?.executionMode
     var hash: UInt64 = 14_695_981_039_346_656_037
     // Preserve legacy non-connectome layout identities exactly.
     if let program = connectomeProgram {

@@ -557,6 +557,37 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     try arena.markCheckpointRestored(generation: payload.generation)
   }
 
+  /// Offline capture only: one immutable committed hot section, never a
+  /// shadow candidate. Reuses the owner's existing range-copy pipeline/queue.
+  func snapshotCommittedHotSection(_ section: MetalAgentHotSection) throws -> PersistentSectionSnapshot {
+    lock.lock(); defer { lock.unlock() }
+    if arena.committedJournalNeedsConsolidation { try consolidateCommittedMemoryJournalLocked() }
+    _ = try arena.checkpointSourceView()
+    let layout = arena.layout.section(section)
+    let source = try arena.committedHotSectionAddress(section)
+    guard layout.byteCount > 0, layout.byteCount.isMultiple(of: 4),
+      let snapshot = device.makeBuffer(length: layout.byteCount,
+        options: [.storageModeShared, .hazardTrackingModeTracked]) else {
+      throw TissueError.metal("failed to allocate immutable hot-section capture")
+    }
+    addTemporaryResidency([snapshot]); defer { removeTemporaryResidency([snapshot]) }
+    var uniforms = MemoryRangeCopyUniforms(byteCount: UInt64(layout.byteCount))
+    withUnsafeBytes(of: &uniforms) {
+      memoryRangeCopyUniformBuffer.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+    }
+    try submit(label: "NumiBrain freeze accepted connectome readout") { encoder in
+      memoryRangeSnapshotArguments.setAddress(source, index: 0)
+      memoryRangeSnapshotArguments.setAddress(snapshot.gpuAddress, index: 1)
+      memoryRangeSnapshotArguments.setAddress(memoryRangeCopyUniformBuffer.gpuAddress, index: 2)
+      encoder.setComputePipelineState(memoryRangeSnapshotPipeline)
+      encoder.setArgumentTable(memoryRangeSnapshotArguments)
+      encoder.dispatchThreads(threadsPerGrid: MTLSize(width: layout.byteCount/4, height: 1, depth: 1),
+        threadsPerThreadgroup: self.threadgroupSize(for: memoryRangeSnapshotPipeline))
+    }
+    return PersistentSectionSnapshot(buffer: snapshot, generation: arena.committedGeneration,
+      elementCount: layout.elementCount, elementStride: layout.elementStride)
+  }
+
   func snapshotPersistentSection(
     _ section: MetalAgentPersistentSection
   ) throws -> PersistentSectionSnapshot {

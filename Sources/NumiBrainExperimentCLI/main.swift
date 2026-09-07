@@ -20,11 +20,33 @@ private struct WatchdogLifecycleInput: Codable {
   let readyPath: String
   let completionPath: String
 }
+private struct ConnectomeInput: Codable {
+  let graphPath: String
+  let graphSHA256: String
+  let launchSHA256: String
+}
+private struct AuthoredMatterInput: Codable {
+  let packagePath: String
+  let humanSourceFingerprint: UInt64
+  let worldFingerprint: UInt64
+  func compiled() throws -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld {
+    guard packagePath.hasPrefix("/") else { throw ConnectomeError.invalid("authored Matter package path must be absolute") }
+    return try .init(packagePath: packagePath, humanSourceFingerprint: humanSourceFingerprint, worldFingerprint: worldFingerprint)
+  }
+}
+private struct DescribeNativeInput: Codable {
+  let artifactDirectory: String
+  let nativePaths: [String: String]
+  let timestepMicroseconds: UInt32
+  let authoredMatterWorld: AuthoredMatterInput?
+}
 private struct CaptureInput: Codable {
   let artifactDirectory: String; let protocolSHA256: String; let publicationSHA256: String
   let runIdentifier: String; let nativePaths: [String: String]
   let watchdog: WatchdogOwnerFileConfiguration?
   let watchdogLifecycle: WatchdogLifecycleInput?
+  let connectome: ConnectomeInput?
+  let authoredMatterWorld: AuthoredMatterInput?
 }
 private struct EvaluationInput: Codable { let artifactDirectory: String; let protocolSHA256: String; let runSHA256: String }
 private struct CalibrationInput: Codable {
@@ -40,6 +62,9 @@ private struct CommandResult: Encodable {
   let artifactSHA256: String
   let kind: String
   var parameterVersionFingerprint: UInt64? = nil
+  var connectomeTrainingSHA256: String? = nil
+  var publicationSHA256: String? = nil
+  var nativeModelSourceFingerprint: UInt64? = nil
 }
 private struct FailureRecord: Encodable {
   let promotable = false
@@ -62,14 +87,26 @@ private func publication(_ sha: String, _ directory: URL) throws -> BrainMotorSt
   let value = try BrainReachHoldExperiment.read(BrainMotorStudyPublication.self, hash: sha, directory: directory)
   try value.validate(); return value
 }
-private func capture(_ input: CaptureInput, configSHA: String, directory: URL) throws -> String {
+private func nativeConfiguration(_ paths: [String: String], timestep: UInt32, authored: AuthoredMatterInput?) throws -> MetalNumanXBridgeV1Runtime.Configuration {
+  let required = Set(["library", "rigid", "muscle", "contacts", "visualPack", "visionProfile", "metalRoboMetallib", "matterMetallib", "material"])
+  guard timestep > 0, Set(paths.keys) == required,
+    paths.values.allSatisfy({ $0.hasPrefix("/") }) else {
+    throw BrainRuntimeError.transaction("native configuration requires exact absolute asset paths")
+  }
+  return MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
+    musclePayloadPath: paths["muscle"]!, supportContactPayloadPath: paths["contacts"]!,
+    visualPackPath: paths["visualPack"]!, visionProfilePath: paths["visionProfile"]!,
+    metalRoboMetallibPath: paths["metalRoboMetallib"]!, matterMetallibPath: paths["matterMetallib"]!,
+    matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(timestep), transactionSlotCount: 2,
+    authoredMatterWorld: try authored?.compiled())
+}
+
+private func capture(_ input: CaptureInput, configSHA: String, directory: URL) throws -> (native: String, training: String?) {
   let protocolValue = try BrainReachHoldExperiment.read(BrainReachHoldProtocol.self, hash: input.protocolSHA256, directory: directory)
   try protocolValue.validate()
   let weights = try publication(input.publicationSHA256, directory)
   guard weights.version.fingerprint == protocolValue.parameterVersionFingerprint,
     !input.runIdentifier.isEmpty, input.runIdentifier.utf8.count <= 256,
-    Set(input.nativePaths.keys) == Set(["library", "rigid", "muscle", "contacts", "visualPack", "visionProfile", "metalRoboMetallib", "matterMetallib", "material"]),
-    input.nativePaths.values.allSatisfy({ !$0.isEmpty }),
     (input.watchdog == nil) == (input.watchdogLifecycle == nil),
     let device = MTLCreateSystemDefaultDevice() else {
     throw BrainRuntimeError.transaction("experiment configuration, model identity, watchdog lifecycle or Metal device is invalid")
@@ -91,15 +128,25 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
       return value
     }()
     let paths = input.nativePaths
+    let nativeConfig = try nativeConfiguration(paths, timestep: protocolValue.timestepMicroseconds, authored: input.authoredMatterWorld)
+    let graph: ConnectomeGraph?
+    let launch: ConnectomeLaunch?
+    if let input = input.connectome {
+      guard input.graphPath.hasPrefix("/"), BrainPolicyEvidenceArtifact.isSHA256(input.graphSHA256) else {
+        throw ConnectomeError.invalid("graph input needs an absolute path and exact SHA-256")
+      }
+      let value = try ConnectomeGraph(contentsOf: URL(fileURLWithPath: input.graphPath))
+      guard BrainPolicyEvidenceArtifact.sha256(value.bytes) == input.graphSHA256 else {
+        throw ConnectomeError.invalid("graph SHA-256 differs from the configured release")
+      }
+      graph = value
+      launch = try BrainReachHoldExperiment.read(ConnectomeLaunch.self, hash: input.launchSHA256, directory: directory)
+    } else { graph = nil; launch = nil }
     let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
-      bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
-        musclePayloadPath: paths["muscle"]!, supportContactPayloadPath: paths["contacts"]!,
-        visualPackPath: paths["visualPack"]!, visionProfilePath: paths["visionProfile"]!,
-        metalRoboMetallibPath: paths["metalRoboMetallib"]!, matterMetallibPath: paths["matterMetallib"]!,
-        matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2),
+      bridgeConfiguration: nativeConfig,
       publication: weights.unverifiedPublication, artifactDirectory: directory,
       episodeIdentifier: protocolValue.episodeIdentifier, randomSeed: protocolValue.randomSeed,
-      enableProductionUncertaintyGate: true, device: device)
+      enableProductionUncertaintyGate: true, connectomeGraph: graph, connectomeLaunch: launch, device: device)
     guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
       throw BrainRuntimeError.transaction("native model differs from frozen experiment")
     }
@@ -140,7 +187,8 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
       _ = try lifecycle.complete(terminalEvidenceArtifactSHA256: runHash,
         nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
     }
-    return runHash
+    let trainingHash = try runner.writeConnectomeTrainingRunArtifact(nativeRunSHA256: runHash)
+    return (runHash, trainingHash)
   } catch {
     let failure = FailureRecord(configurationSHA256: configSHA, protocolSHA256: input.protocolSHA256,
       completedExecutionSHA256: roots.map(\.executionArtifactSHA256), error: String(describing: error))
@@ -153,13 +201,27 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
 let args = Array(CommandLine.arguments.dropFirst())
 do {
   guard args.count == 3, args[1] == "--config",
-    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "evaluate", "calibrate"].contains(args[0]) else {
-    print("numi-brain-experiment seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
+    ["seed", "describe-native", "freeze-settings", "freeze-protocol", "probe", "capture", "evaluate", "calibrate"].contains(args[0]) else {
+    print("numi-brain-experiment seed|describe-native|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
     exit(64)
   }
   let bytes = try QualificationFileDirectory.readFile(URL(fileURLWithPath: args[2]), maximumBytes: 1_048_576)
   let result: CommandResult
   switch args[0] {
+  case "describe-native":
+    let input = try read(DescribeNativeInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    let nativeConfig = try nativeConfiguration(input.nativePaths, timestep: input.timestepMicroseconds, authored: input.authoredMatterWorld)
+    guard let device = MTLCreateSystemDefaultDevice() else { throw ConnectomeError.invalid("Metal device unavailable") }
+    let native = try MetalNumanXBridgeV1Runtime(libraryPath: input.nativePaths["library"]!, device: device, configuration: nativeConfig)
+    let compiled = try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: input.timestepMicroseconds,
+      anatomy: native.fullBodyAnatomy())
+    let seed = try BrainParameterPublication.developmentalSeedV1(species: compiled.species, tissueParameters: .corticalSheetV0)
+    let publicationHash = try BrainReachHoldExperiment.retain(BrainMotorStudyPublication(publication: seed), directory: store)
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(compiled, directory: store), kind: "native-body-contract",
+      parameterVersionFingerprint: seed.version.fingerprint, publicationSHA256: publicationHash,
+      nativeModelSourceFingerprint: native.info.modelSourceFingerprint)
   case "freeze-settings":
     let input = try read(SettingsInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     try input.settings.validate()
@@ -192,8 +254,9 @@ do {
   case "capture":
     let input = try read(CaptureInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    let captured = try capture(input, configSHA: configHash, directory: store)
     result = CommandResult(configurationSHA256: configHash,
-      artifactSHA256: try capture(input, configSHA: configHash, directory: store), kind: "retained-native-run")
+      artifactSHA256: captured.native, kind: "retained-native-run", connectomeTrainingSHA256: captured.training)
   case "evaluate":
     let input = try read(EvaluationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)

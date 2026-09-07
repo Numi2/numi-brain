@@ -1117,6 +1117,34 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   /// Captures one causally complete brain checkpoint. The caller supplies the
   /// fingerprint returned by the simultaneously saved NumanX body checkpoint;
   /// the envelope refuses to exist if cognitive and fast generations diverge.
+  /// Explicit offline capture after the native owner has published this exact
+  /// root. No uncommitted neural activity enters teacher data. The small range
+  /// snapshot reuses the existing agent-state queue and capture machinery.
+  func captureConnectomeTrainingRow(root: BrainJointTransactionToken,
+    executionSHA256: String, motorActionSHA256: String, normalizedDrives: [Float]) throws -> ConnectomeTrainingRow? {
+    lock.lock(); defer { lock.unlock() }
+    guard let program = cognitive.connectomeRuntime?.program,
+      program.executionMode == .observeTeacher else { return nil }
+    guard activeTransaction == nil, publishedGeneration == root.shadowGeneration,
+      fastTissue.schedulerCommittedGeneration == publishedGeneration,
+      fastTissue.schedulerCommittedTimestamp == root.targetTimestamp,
+      let controlStep = UInt32(exactly: root.controlStepIdentifier) else {
+      throw ConnectomeError.invalid("teacher capture requires the exact settled joint root")
+    }
+    let snapshot = try cognitive.agentStateRuntime.snapshotCommittedHotSection(.connectomeReadout)
+    guard snapshot.generation == root.shadowGeneration, snapshot.elementStride == 4,
+      snapshot.elementCount == Int(program.binding.channelCount) else {
+      throw ConnectomeError.invalid("committed neural readout capture has a foreign generation/layout")
+    }
+    let features = Array(UnsafeBufferPointer(start: snapshot.buffer.contents().assumingMemoryBound(to: Float.self),
+      count: snapshot.elementCount))
+    return try ConnectomeTrainingRow(program: program, episodeIdentifier: root.episodeIdentifier,
+      generation: snapshot.generation, controlStep: controlStep,
+      transactionFingerprint: root.fingerprint, timestampMicroseconds: root.targetTimestamp.rawValue,
+      executionSHA256: executionSHA256, motorActionSHA256: motorActionSHA256,
+      features: features, normalizedDrives: normalizedDrives)
+  }
+
   public func saveCheckpoint(
     controlStepIdentifier: UInt64,
     physicalCheckpointFingerprint: UInt64
