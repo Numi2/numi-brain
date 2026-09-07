@@ -76,6 +76,10 @@ public final class WatchdogOwnerFileSession: @unchecked Sendable {
 
   public var lastSettledHeartbeat: WatchdogHeartbeat? { interlock.lastSettledHeartbeat }
   public var admissionClosed: Bool { interlock.admissionClosed }
+  public var hasActiveRoot: Bool {
+    lock.lock(); defer { lock.unlock() }
+    return active
+  }
 
   public func beginRoot(nowNanoseconds: UInt64) throws -> WatchdogRootInterlock.Permit {
     lock.lock(); defer { lock.unlock() }
