@@ -1,0 +1,47 @@
+name: Inspect official weighted CNS release
+on:
+  push:
+    branches: [integration/connectome-native-20260907]
+    paths: [.github/workflows/connectome-weights-catalog.yml]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/numibrain-male-cns-v1
+          key: male-cns-v1-source-20260907
+      - name: Inspect the official weighted graph
+        run: |
+          python -m pip install pyarrow==19.0.1
+          python - <<'PY'
+          from pathlib import Path
+          import urllib.request,hashlib,json
+          import pyarrow as pa
+          root=Path.home()/'.cache/numibrain-male-cns-v1'; root.mkdir(parents=True,exist_ok=True)
+          name='connectome-weights-male-cns-v1.0-minconf-0.5.feather'
+          url='https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/'+name
+          digest=hashlib.sha256(); count=0
+          with urllib.request.urlopen(url,timeout=120) as response, (root/name).open('wb') as output:
+              headers=dict(response.headers)
+              for chunk in iter(lambda: response.read(8*1024*1024),b''):
+                  count+=len(chunk)
+                  if count>2*1024**3: raise ValueError('source exceeds byte budget')
+                  output.write(chunk); digest.update(chunk)
+          with pa.memory_map(str(root/name),'r') as f:
+              r=pa.ipc.RecordBatchFileReader(f)
+              report={'url':url,'name':name,'sha256':digest.hexdigest(),'bytes':count,'schema':str(r.schema),'batches':r.num_record_batches,'sample':r.get_batch(0).slice(0,5).to_pylist(),'headers':headers}
+              report['rows']=sum(r.get_batch(i).num_rows for i in range(r.num_record_batches))
+          Path('report.json').write_text(json.dumps(report,indent=2,default=str)); print(Path('report.json').read_text())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: male-cns-v1-weights-schema
+          path: report.json
+          retention-days: 7
