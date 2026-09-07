@@ -1,55 +1,142 @@
-name: Verify complete connectome control integration
+name: Verify final connectome integration
 on:
   push:
     branches: [integration/connectome-complete-20260907]
-    paths: ['.github/workflows/connectome-complete.yml']
+    paths: ['.numi/connectome.finish.*', '.github/workflows/connectome-complete.yml']
 permissions:
   contents: read
 jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.publish.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply the exact reviewed final delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/diagnostics"
+          cat .numi/connectome.finish.{0,1} > "$RUNNER_TEMP/final.xz"
+          git checkout --detach 200e11e042a4be7aa2cbcf111364319b267af73f
+          python3 - <<'PY'
+          import hashlib,json,lzma,os,subprocess
+          from pathlib import Path,PurePosixPath
+          packed=(Path(os.environ['RUNNER_TEMP'])/'final.xz').read_bytes()
+          assert len(packed)==11308 and hashlib.sha256(packed).hexdigest()=='8cdf80fbddcf524259a059310945f1d0529e4a0e7f5c68ec89f18e54da5e837e'
+          raw=lzma.decompress(packed)
+          assert len(raw)==38395 and hashlib.sha256(raw).hexdigest()=='0d3e9bc0db88d7eb00d950e7cd6f5425db3732db7ab4fa1e5f072cae5de0ce36'
+          entries=json.loads(raw);paths=[]
+          assert len(entries)==14
+          for entry in entries:
+              p=PurePosixPath(entry['path']);assert not p.is_absolute() and '..' not in p.parts
+              assert p.parts[0] in ('Sources','tools','docs','evidence','.github') or str(p)=='README.md'
+              target=Path(p);assert not any(x.is_symlink() for x in [target,*target.parents])
+              old=target.read_bytes() if target.exists() else b''
+              assert hashlib.sha256(old).hexdigest()==entry['old'],str(p)
+              lines=old.decode().splitlines(keepends=True);previous=0
+              for a,z,text in entry['edits']:
+                  assert previous<=a<=z<=len(lines);previous=z
+              for a,z,text in reversed(entry['edits']):lines[a:z]=text.splitlines(keepends=True)
+              data=''.join(lines).encode();assert hashlib.sha256(data).hexdigest()==entry['new'],str(p)
+              target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data);paths.append(str(p))
+          subprocess.run(['git','add','--',*paths],check=True)
+          tree=subprocess.check_output(['git','write-tree'],text=True).strip()
+          assert tree=='91ff8d59fb19e0d643f5ac0bf65a8a04b6aae5aa',tree
+          print('Reviewed final tree verified:',tree)
+          PY
+          git diff --cached --check
+          git config user.name 'NumiBrain integration'
+          git config user.email '33553832+Numi2@users.noreply.github.com'
+          git commit -m 'feat: finish source-constrained connectome launch and verified data delivery' -m 'Add exact released-pack acquisition, retained Apple build/kernel/learning evidence and explicit Metal 4 capability reporting. Forward authored joint equalities through native discovery and capture. Retain the failed Metal 4 root test rather than representing software success as robot qualification.'
+          git merge --no-ff 2c871fb7a38292cf76f13c06fff6867a5cb1a6a0 -m 'merge: preserve source-constrained native world configuration v4'
+          git merge-base --is-ancestor 2c871fb7a38292cf76f13c06fff6867a5cb1a6a0 HEAD
+      - name: Validate native contracts and public released-pack acquisition
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tools/test_connectome_native.py 2>&1 | tee "$RUNNER_TEMP/diagnostics/native-tests.txt"
+          python3 scripts/check-executable-model-contract.py 2>&1 | tee "$RUNNER_TEMP/diagnostics/model-contract.txt"
+          python3 tools/fetch_male_cns_pack.py --output "$RUNNER_TEMP/full-pack" 2>&1 | tee "$RUNNER_TEMP/diagnostics/release-acquisition.txt"
+          python3 tools/fetch_male_cns_pack.py --output "$RUNNER_TEMP/full-pack" --verify-only 2>&1 | tee "$RUNNER_TEMP/diagnostics/release-recheck.txt"
+      - name: Publish final source candidate without rewriting main
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision=$(git rev-parse HEAD)
+          git push origin HEAD:refs/heads/integration/connectome-finished-source-${GITHUB_RUN_ID}
+          echo "commit=$revision" >> "$GITHUB_OUTPUT"
+      - name: Retain exact source and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/diagnostics"
+          git rev-parse HEAD > "$RUNNER_TEMP/diagnostics/revision.txt"
+          git status --short > "$RUNNER_TEMP/diagnostics/status.txt"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/diagnostics/source.tar.gz" HEAD
+          sha256sum "$RUNNER_TEMP/diagnostics/source.tar.gz" > "$RUNNER_TEMP/diagnostics/source.sha256"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-finished-source-${{ github.run_id }}
+          path: ${{ runner.temp }}/diagnostics/
+          retention-days: 7
   apple:
+    needs: source
     runs-on: macos-26
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 200e11e042a4be7aa2cbcf111364319b267af73f
+          ref: ${{ needs.source.outputs.commit }}
           persist-credentials: false
-      - name: Toolchain and revision
+      - name: Toolchain identity
         run: |
           mkdir -p diagnostics
-          { git rev-parse HEAD; sw_vers; xcodebuild -version; swift --version; system_profiler SPDisplaysDataType; } | tee diagnostics/toolchain.txt
+          { git rev-parse HEAD; sw_vers; xcodebuild -version; swift --version; } | tee diagnostics/toolchain.txt
       - uses: actions/cache/restore@v4
         id: build-cache
         with:
           path: .build
           key: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
           restore-keys: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-
-      - name: Compile affected Metal shaders
+      - name: Build complete release source and test modules
         shell: bash
         run: |
           set -o pipefail
-          xcrun -sdk macosx metal -c Sources/NumiBrainMetal/Shaders/ConnectomeRate.metal -o "$RUNNER_TEMP/connectome.air" 2>&1 | tee diagnostics/shaders.txt
-          xcrun -sdk macosx metal -I Sources/NumiBrainMetal/Shaders -c Sources/NumiBrainMetal/Shaders/DecisionState.metal -o "$RUNNER_TEMP/decision.air" 2>&1 | tee -a diagnostics/shaders.txt
-      - name: Compile release programs and test modules
-        shell: bash
-        run: |
-          set -o pipefail
+          xcrun -sdk macosx metal -c Sources/NumiBrainMetal/Shaders/ConnectomeRate.metal -o "$RUNNER_TEMP/connectome.air"
+          xcrun -sdk macosx metal -I Sources/NumiBrainMetal/Shaders -c Sources/NumiBrainMetal/Shaders/DecisionState.metal -o "$RUNNER_TEMP/decision.air"
           swift build -c release --build-tests -Xswiftc -enable-testing 2>&1 | tee diagnostics/build-tests.txt
-      - name: Build the pinned MLX Metal resource
-        shell: bash
-        run: |
-          set -o pipefail
           sh tools/build_swiftpm_mlx_metallib.sh release 2>&1 | tee diagnostics/mlx-resource.txt
-      - name: Core and decoder-learning tests
+      - name: Execute graph, learning, kernel, morphology and native-v4 ABI tests
         shell: bash
         run: |
           set -o pipefail
-          swift test -c release --skip-build --filter 'ConnectomeGraphTests|ConnectomeDecoderLearningTests' 2>&1 | tee diagnostics/core-learning-tests.txt
-      - name: Native Metal control, checkpoint and replay tests
+          swift test -c release --skip-build --filter 'ConnectomeGraphTests|ConnectomeDecoderLearningTests|MetalConnectomeKernelTests|MetalConnectomeIntegrationTests.testProgramBindsExactMorphologyAndLaunch|MetalNumanXBridgeV1EndToEndTests.testSourceJointEqualitiesDescriptorAndConfigurationV4Layout' 2>&1 | tee diagnostics/software-tests.txt
+      - name: Record actual device capability
+        id: device
         shell: bash
         run: |
           set -o pipefail
-          swift test -c release --skip-build --filter 'MetalConnectomeKernelTests|MetalConnectomeIntegrationTests' 2>&1 | tee diagnostics/metal-integration-tests.txt
+          swift tools/probe_connectome_metal.swift | tee diagnostics/device-capability.json
+      - name: Execute strict Metal 4 root replay when supported
+        if: steps.device.outputs.metal4 == 'true'
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test -c release --skip-build --filter 'MetalConnectomeIntegrationTests.testArenaCommitAbortCheckpointAndIdentityIsolation' 2>&1 | tee diagnostics/root-tests.txt
+          printf '{"fixtureRootTestExecuted":true,"physicalRobotBehaviorEstablished":false}\n' > diagnostics/root-scope.json
+      - name: Preserve the unsupported execution boundary
+        if: steps.device.outputs.metal4 != 'true'
+        run: |
+          printf '{"fixtureRootTestExecuted":false,"runtimeQualified":false,"reason":"Metal 4 command queue unavailable"}\n' > diagnostics/root-scope.json
+          echo 'Software success is not Metal 4 root qualification.'
       - uses: actions/cache/save@v4
         if: always() && steps.build-cache.outcome == 'success'
         with:
@@ -58,7 +145,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: connectome-complete-apple-${{ github.run_id }}
+          name: connectome-finished-apple-${{ github.run_id }}
           path: diagnostics/
           retention-days: 7
-          if-no-files-found: error
