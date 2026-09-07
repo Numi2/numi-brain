@@ -575,8 +575,7 @@ public enum BrainPolicyEvidenceArtifact {
     return hash
   }
 
-  /// Byte serialization/verification only; this does not issue a qualification receipt.
-  public static func encodeCanonical<T: Encodable>(_ value: T) throws -> Data {
+  package static func encodeCanonical<T: Encodable>(_ value: T) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
     return try encoder.encode(value)

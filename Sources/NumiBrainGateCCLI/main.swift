@@ -43,6 +43,7 @@ private struct CaptureSummary: Codable {
   let qCoordinateCount: UInt32
   let dofCount: UInt32
   let muscleCount: UInt32
+  let matterWorld: MetalNumanXBridgeV1Runtime.WorldInfo?
   let roots: [CaptureRootSummary]
   let learnerConfigurationSHA256: String?
   let headPostureLearningArtifactSHA256: String?
@@ -204,6 +205,21 @@ private struct FewShotEvaluationSummary: Codable {
   let promotable: Bool
 }
 
+private func authoredMatterWorld(in options: [String: String]) throws
+  -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld? {
+  let keys = ["--matter-world", "--human-source-fp", "--matter-world-fp"]
+  guard keys.contains(where: { options[$0] != nil }) else {
+    _ = required("--material", in: options)
+    return nil
+  }
+  guard keys.allSatisfy({ options[$0] != nil }), options["--material"] == nil else {
+    usage("--matter-world requires --human-source-fp and --matter-world-fp, without --material")
+  }
+  return try .init(packagePath: required("--matter-world", in: options),
+    humanSourceFingerprint: fingerprint("--human-source-fp", in: options),
+    worldFingerprint: fingerprint("--matter-world-fp", in: options))
+}
+
 private func usage(_ message: String? = nil) -> Never {
   if let message {
     FileHandle.standardError.write(Data("numi-brain-gate-c: \(message)\n".utf8))
@@ -212,11 +228,16 @@ private func usage(_ message: String? = nil) -> Never {
     usage: numi-brain-gate-c <capture|capture-train> \\
       --library PATH --rigid PATH --muscle PATH --contacts PATH \\
       --visual-pack PATH --vision-profile PATH \\
-      --metalrobo-metallib PATH --matter-metallib PATH --material PATH \\
+      --metalrobo-metallib PATH --matter-metallib PATH \\
       --artifact-dir DIR --run-id ID --source-revision REV \\
       --dataset-id ID --dataset-revision REV --episode N --seed N --roots N \\
       --task-fp HEX --scene-fp HEX --object-fp HEX --embodiment-fp HEX \
       [--timestep-microseconds N]
+
+    World input: --material PATH selects the legacy fixture, or provide
+    --matter-world PATH --human-source-fp HEX --matter-world-fp HEX to load
+    an existing cooked Matter package through native configuration v3.
+    Authored package loading does not qualify anatomy or standing.
 
     capture-train additionally requires --learning-rate FLOAT and at least
     three roots. It emits one deterministic, immutable, non-promotable MLX
@@ -1113,9 +1134,10 @@ if arguments[1] == "evaluate-support" {
           visionProfilePath: required("--vision-profile", in: options),
           metalRoboMetallibPath: required("--metalrobo-metallib", in: options),
           matterMetallibPath: required("--matter-metallib", in: options),
-          matterMaterialPath: required("--material", in: options),
+          matterMaterialPath: options["--material"] ?? "",
           timestepMicroseconds: UInt64(timestepMicroseconds),
-          transactionSlotCount: 2
+          transactionSlotCount: 2,
+          authoredMatterWorld: try authoredMatterWorld(in: options)
         ),
         publication: publication,
         artifactDirectory: artifactDirectory,
@@ -1409,9 +1431,10 @@ do {
       visionProfilePath: required("--vision-profile", in: options),
       metalRoboMetallibPath: required("--metalrobo-metallib", in: options),
       matterMetallibPath: required("--matter-metallib", in: options),
-      matterMaterialPath: required("--material", in: options),
+      matterMaterialPath: options["--material"] ?? "",
       timestepMicroseconds: UInt64(timestepMicroseconds),
-      transactionSlotCount: 2
+      transactionSlotCount: 2,
+      authoredMatterWorld: try authoredMatterWorld(in: options)
     ),
     publication: publication,
     artifactDirectory: artifactDirectory,
@@ -1735,6 +1758,7 @@ do {
     qCoordinateCount: runner.nativeInfo.qCoordinateCount,
     dofCount: runner.nativeInfo.dofCount,
     muscleCount: runner.nativeInfo.muscleCount,
+    matterWorld: runner.nativeWorldInfo,
     roots: results.map {
       CaptureRootSummary(
         controlStep: $0.execution.controlStep,

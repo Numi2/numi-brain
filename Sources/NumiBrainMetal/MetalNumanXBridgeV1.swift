@@ -34,6 +34,13 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v2>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV3 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v3>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCopyWorldInfo = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
+  ) -> UInt8
   typealias HandleVoid = @convention(c) (UnsafeMutableRawPointer?) -> Void
   typealias RuntimeCopyInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_info_v1>?
@@ -118,6 +125,8 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let library: UnsafeMutableRawPointer
   let runtimeCreate: RuntimeCreate
   let runtimeCreateV2: RuntimeCreateV2
+  let runtimeCreateV3: RuntimeCreateV3?
+  let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
   let runtimeCopyInfo: RuntimeCopyInfo
@@ -173,6 +182,12 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       runtimeCreate = try Self.symbol("mrnx_bridge_v1_runtime_create", library: library)
       runtimeCreateV2 = try Self.symbol(
         "mrnx_bridge_v1_runtime_create_v2", library: library
+      )
+      runtimeCreateV3 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v3", library: library
+      )
+      runtimeCopyWorldInfo = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_world_info", library: library
       )
       runtimeRetain = try Self.symbol("mrnx_bridge_v1_runtime_retain", library: library)
       runtimeDrop = try Self.symbol("mrnx_bridge_v1_runtime_drop", library: library)
@@ -1154,6 +1169,34 @@ private let metalNumanXBridgeV1LatchCallback: MetalNumanXBridgeV1LatchCallback =
 @available(macOS 26.0, *)
 @_spi(NumanXInterop)
 public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
+  public struct AuthoredMatterWorld: Sendable {
+    public let packagePath: String
+    public let humanSourceFingerprint: UInt64
+    public let worldFingerprint: UInt64
+
+    public init(packagePath: String, humanSourceFingerprint: UInt64,
+                worldFingerprint: UInt64) throws {
+      guard !packagePath.isEmpty, !packagePath.utf8.contains(0),
+        humanSourceFingerprint != 0, worldFingerprint != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Authored Matter requires a package path and nonzero Human/world identities"
+        )
+      }
+      self.packagePath = packagePath
+      self.humanSourceFingerprint = humanSourceFingerprint
+      self.worldFingerprint = worldFingerprint
+    }
+  }
+
+  public struct WorldInfo: Codable, Sendable {
+    public let authoredPackage: Bool
+    public let objectCount: UInt32
+    public let femNodeCount: UInt32
+    public let femAttachmentCount: UInt32
+    public let worldFingerprint: UInt64
+    public let physicsFingerprint: UInt64
+  }
+
   public struct Configuration: Sendable {
     public let rigidPayloadPath: String
     public let musclePayloadPath: String
@@ -1163,6 +1206,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let metalRoboMetallibPath: String
     public let matterMetallibPath: String
     public let matterMaterialPath: String
+    public let authoredMatterWorld: AuthoredMatterWorld?
     public let timestepMicroseconds: UInt64
     public let maximumRetainedBytes: UInt64
     public let transactionSlotCount: UInt32
@@ -1180,7 +1224,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       visionProfilePath: String,
       metalRoboMetallibPath: String,
       matterMetallibPath: String,
-      matterMaterialPath: String,
+      matterMaterialPath: String = "",
       timestepMicroseconds: UInt64,
       maximumRetainedBytes: UInt64 = 1 << 30,
       transactionSlotCount: UInt32 = 2,
@@ -1188,7 +1232,8 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       cultureCheckpointPath: String? = nil,
       cultureProtocolPath: String? = nil,
       cultureWindowTicks: UInt32 = 100,
-      cultureCurrentPerNewton: Float = 1
+      cultureCurrentPerNewton: Float = 1,
+      authoredMatterWorld: AuthoredMatterWorld? = nil
     ) {
       self.rigidPayloadPath = rigidPayloadPath
       self.musclePayloadPath = musclePayloadPath
@@ -1198,6 +1243,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.metalRoboMetallibPath = metalRoboMetallibPath
       self.matterMetallibPath = matterMetallibPath
       self.matterMaterialPath = matterMaterialPath
+      self.authoredMatterWorld = authoredMatterWorld
       self.timestepMicroseconds = timestepMicroseconds
       self.maximumRetainedBytes = maximumRetainedBytes
       self.transactionSlotCount = transactionSlotCount
@@ -1293,7 +1339,18 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     configuration: Configuration
   ) throws {
     precondition(MemoryLayout<mrnx_physical_root_request_v1>.stride == 600)
+    guard configuration.authoredMatterWorld == nil
+      || configuration.matterMaterialPath.isEmpty else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Choose an authored Matter package or a legacy fixture material"
+      )
+    }
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
+    if configuration.authoredMatterWorld != nil && symbols.runtimeCreateV3 == nil {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Native runtime lacks authored Matter configuration v3; refusing fixture fallback"
+      )
+    }
     var rawInfo = mrnx_runtime_info_v1()
     rawInfo.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
     rawInfo.struct_size = UInt32(MemoryLayout<mrnx_runtime_info_v1>.stride)
@@ -1311,7 +1368,8 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
               visionProfile in configuration.metalRoboMetallibPath.withCString {
                 metalRobo in configuration.matterMetallibPath.withCString {
                   matter in configuration.matterMaterialPath.withCString { material in
-                    if configuration.culturePackPath != nil {
+                    if configuration.culturePackPath != nil
+                        || configuration.authoredMatterWorld != nil {
                       return withOptionalCString(configuration.culturePackPath) { culturePack in
                         withOptionalCString(configuration.cultureCheckpointPath) { checkpoint in
                           withOptionalCString(configuration.cultureProtocolPath) { protocolPath in
@@ -1333,8 +1391,22 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                             config.culture_pack_path = culturePack
                             config.culture_checkpoint_path = checkpoint
                             config.culture_protocol_path = protocolPath
-                            config.culture_window_ticks = configuration.cultureWindowTicks
-                            config.culture_current_per_newton = configuration.cultureCurrentPerNewton
+                            config.culture_window_ticks = culturePack == nil ? 0 : configuration.cultureWindowTicks
+                            config.culture_current_per_newton = culturePack == nil ? 0 : configuration.cultureCurrentPerNewton
+                            if let world = configuration.authoredMatterWorld,
+                              let create = symbols.runtimeCreateV3 {
+                              config.matter_material_path = nil
+                              return world.packagePath.withCString { path in
+                                var authored = mrnx_runtime_config_v3()
+                                authored.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V3)
+                                authored.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v3>.stride)
+                                authored.runtime = config
+                                authored.matter_world_package_path = path
+                                authored.expected_model_source_fingerprint = world.humanSourceFingerprint
+                                authored.expected_matter_world_fingerprint = world.worldFingerprint
+                                return create(&authored, &rawInfo)
+                              }
+                            }
                             return symbols.runtimeCreateV2(&config, &rawInfo)
                           }
                         }
@@ -1400,6 +1472,26 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   }
 
   deinit { symbols.runtimeDrop(runtime) }
+
+  /// Returns immutable package identity and capacity metadata without reading
+  /// physical state. Authored packaging is independent of calibration status.
+  public func currentWorldInfo() throws -> WorldInfo {
+    guard let copy = symbols.runtimeCopyWorldInfo else {
+      throw MetalNumanXBridgeV1Error.invalidABI("Native runtime lacks world metadata")
+    }
+    var raw = mrnx_runtime_world_info_v1()
+    raw.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
+    raw.struct_size = UInt32(MemoryLayout<mrnx_runtime_world_info_v1>.stride)
+    guard copy(runtime, &raw) != 0, raw.authored_package <= 1,
+      raw.world_fingerprint != 0, raw.physics_fingerprint != 0 else {
+      throw MetalNumanXBridgeV1Error.invalidABI("Invalid native world metadata")
+    }
+    return WorldInfo(authoredPackage: raw.authored_package == 1,
+      objectCount: raw.object_count, femNodeCount: raw.fem_node_count,
+      femAttachmentCount: raw.fem_attachment_count,
+      worldFingerprint: raw.world_fingerprint,
+      physicsFingerprint: raw.physics_fingerprint)
+  }
 
   /// Returns current scalar diagnostics without waiting for Metal. The
   /// continuation count increments only after the owner has armed a root that

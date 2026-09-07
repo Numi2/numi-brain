@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 import XCTest
 @testable import NumiBrainQualification
 
@@ -6,7 +11,7 @@ final class WatchdogLifecycleProtocolTests: XCTestCase {
   private let process = UUID(uuidString: "00000000-0000-4000-8000-000000000001")!
   private let enforcer = UUID(uuidString: "00000000-0000-4000-8000-000000000002")!
   private let supervisor = UUID(uuidString: "00000000-0000-4000-8000-000000000003")!
-  private let evidenceSHA256 = String(repeating: "d", count: 64)
+  private let artifactHash = String(repeating: "d", count: 64)
 
   private func arm(created: UInt64 = 100, age: UInt64 = 100) throws -> WatchdogSupervisorArm {
     try WatchdogSupervisorArm(supervisorInstance: supervisor, expectedProcessInstance: process,
@@ -18,7 +23,13 @@ final class WatchdogLifecycleProtocolTests: XCTestCase {
       publicGeneration: 1, transactionFingerprint: 10)
   }
   private func withDirectory(_ body: (URL) throws -> Void) throws {
-    let url = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
+    // Preserve the actual nonsymlink path required by the descriptor walker.
+    guard let resolved = realpath(FileManager.default.temporaryDirectory.path, nil) else {
+      throw CocoaError(.fileReadNoSuchFile)
+    }
+    defer { free(resolved) }
+    let url = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
+      .appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: url) }
     try body(url)
@@ -50,7 +61,7 @@ final class WatchdogLifecycleProtocolTests: XCTestCase {
     var second = try WatchdogLifecycleSupervisor(arm: a)
     XCTAssertEqual(second.observeReady(ready, nowNanoseconds: 150), .monitoring)
     let completion = try WatchdogOwnerCompletion(arm: a, lastSettledHeartbeat: heartbeat(),
-      completedMonotonicNanoseconds: 160, terminalEvidenceArtifactSHA256: evidenceSHA256)
+      completedMonotonicNanoseconds: 160, terminalEvidenceArtifactSHA256: artifactHash)
     XCTAssertEqual(second.observeCompletion(completion, currentHeartbeat: try heartbeat(),
       stopPresent: true, nowNanoseconds: 160), .stoppedIncidentPresent)
   }
@@ -61,7 +72,7 @@ final class WatchdogLifecycleProtocolTests: XCTestCase {
     var lifecycle = try WatchdogLifecycleSupervisor(arm: a)
     XCTAssertEqual(lifecycle.observeReady(ready, nowNanoseconds: 140), .monitoring)
     let completion = try WatchdogOwnerCompletion(arm: a, lastSettledHeartbeat: heartbeat(),
-      completedMonotonicNanoseconds: 160, terminalEvidenceArtifactSHA256: evidenceSHA256)
+      completedMonotonicNanoseconds: 160, terminalEvidenceArtifactSHA256: artifactHash)
     let changed = try WatchdogHeartbeat(processInstance: process, sequence: 2, monotonicNanoseconds: 155,
       publicGeneration: 2, transactionFingerprint: 20)
     XCTAssertEqual(lifecycle.observeCompletion(completion, currentHeartbeat: changed,
@@ -90,14 +101,14 @@ final class WatchdogLifecycleProtocolTests: XCTestCase {
         readyURL: readyURL, completionURL: completionURL, nowNanoseconds: 120)
       try lifecycle.activate(nowNanoseconds: 130)
       XCTAssertNotNil(try WatchdogFileProtocol.readOwnerReadyIfPresent(readyURL))
-      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: evidenceSHA256, nowNanoseconds: 140))
+      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: artifactHash, nowNanoseconds: 140))
       let permit = try owner.beginRoot(nowNanoseconds: 140)
-      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: evidenceSHA256, nowNanoseconds: 145))
+      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: artifactHash, nowNanoseconds: 145))
       try owner.recordSettledRoot(permit, publicGeneration: 1, transactionFingerprint: 10,
-        settledMonotonicNanoseconds: 150, terminalEvidenceArtifactSHA256: evidenceSHA256)
-      let completion = try lifecycle.complete(terminalEvidenceArtifactSHA256: evidenceSHA256, nowNanoseconds: 160)
+        settledMonotonicNanoseconds: 150, terminalEvidenceArtifactSHA256: artifactHash)
+      let completion = try lifecycle.complete(terminalEvidenceArtifactSHA256: artifactHash, nowNanoseconds: 160)
       XCTAssertEqual(try WatchdogFileProtocol.readOwnerCompletionIfPresent(completionURL), completion)
-      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: evidenceSHA256, nowNanoseconds: 170))
+      XCTAssertThrowsError(try lifecycle.complete(terminalEvidenceArtifactSHA256: artifactHash, nowNanoseconds: 170))
     }
   }
 

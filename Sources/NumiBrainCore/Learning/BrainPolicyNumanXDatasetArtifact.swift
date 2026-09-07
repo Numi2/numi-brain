@@ -1084,8 +1084,7 @@ public enum BrainPolicyNumanXCaptureVerifier {
     return VerifiedLearningBatch(artifact: artifact, hashes: hashes)
   }
 
-  /// Byte serialization/verification only; this does not issue a qualification receipt.
-  public static func verifiedData(
+  package static func verifiedData(
     sha256: String,
     directory: URL
   ) throws -> Data {

@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 import XCTest
 @testable import NumiBrainCore
 
@@ -38,7 +43,12 @@ final class BrainPreparedGPURecoveryTests: XCTestCase {
       basePersistentMemory: Data(repeating: 0, count: 64), shadowJournal: bytes ?? journal())
   }
   private func directory() throws -> URL {
-    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+    // Foundation on macOS can preserve /var even after resolvingSymlinksInPath.
+    guard let resolved = realpath(FileManager.default.temporaryDirectory.path, nil) else {
+      throw CocoaError(.fileReadNoSuchFile)
+    }
+    defer { free(resolved) }
+    let root = URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
       .appendingPathComponent("numibrain-prepare-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     return root
@@ -143,7 +153,7 @@ final class BrainPreparedGPURecoveryTests: XCTestCase {
   func testSecondWriterAndSymlinkStoreAreRejected() throws {
     let path = try directory(); defer { try? FileManager.default.removeItem(at: path) }
     let store = try BrainPreparedGPUStore(directoryURL: path)
-    withExtendedLifetime(store) {
+    try withExtendedLifetime(store) {
       XCTAssertThrowsError(try BrainPreparedGPUStore(directoryURL: path))
     }
     let alias = path.appendingPathComponent("alias")
