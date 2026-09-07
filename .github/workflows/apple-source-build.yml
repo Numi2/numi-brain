@@ -1,0 +1,56 @@
+name: Apple source build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Package.swift'
+      - 'Sources/NumiBrainABI/**'
+      - 'Sources/NumiBrainCore/**'
+      - 'Sources/NumiBrainMetal/**'
+      - 'Sources/NumiBrainMLX/**'
+      - 'Sources/NumiBrainExperimentCLI/**'
+      - 'Tests/NumiBrainCoreTests/**'
+      - 'Tests/NumiBrainMetalTests/**'
+      - '.github/workflows/apple-source-build.yml'
+  pull_request:
+    paths:
+      - 'Package.swift'
+      - 'Sources/NumiBrainABI/**'
+      - 'Sources/NumiBrainCore/**'
+      - 'Sources/NumiBrainMetal/**'
+      - 'Sources/NumiBrainMLX/**'
+      - 'Sources/NumiBrainExperimentCLI/**'
+      - 'Tests/NumiBrainCoreTests/**'
+      - 'Tests/NumiBrainMetalTests/**'
+      - '.github/workflows/apple-source-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apple-source-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-build:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain identity
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Resolve exact dependencies
+        run: swift package resolve
+      - name: Release-build experiment and watchdog-facing native stack
+        run: swift build -c release --product numi-brain-experiment
+      - name: Type-check focused Core verifier tests
+        run: swift test --filter BrainAllGatesVerifierTests
+      - name: Boundary statement
+        run: |
+          echo 'This workflow type-checks and links source on an Apple host.'
+          echo 'It does not supply MetalRobo native assets, run physical NumanX campaigns, or qualify hardware safety.'
