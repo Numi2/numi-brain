@@ -22,6 +22,7 @@
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V2 2u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V3 3u
 #define MRNX_RUNTIME_CONFIG_ABI_V2 2u
+#define MRNX_RUNTIME_CONFIG_ABI_V3 3u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -244,6 +245,37 @@ typedef struct mrnx_runtime_config_v2 {
   float culture_current_per_newton;
 } mrnx_runtime_config_v2;
 
+// Authored-world construction uses the existing cooked Matter package format.
+// The nested v2 configuration retains its own v2 header; matter_material_path
+// must be null. There is no fallback to the legacy attached-tet fixture.
+// Both expected identities are mandatory trusted-process compatibility keys,
+// not cryptographic provenance. Human identity covers NHRIGID/NHMYO/NHCNT;
+// Matter identity covers the exact validated cooked world, including capacity.
+// Initial attachment frames, timestep and gravity must agree with Human.
+// This adds no joint-equality, adaptive-topology or active-muscle replacement
+// authority; unsupported world modes fail before runtime allocation.
+typedef struct mrnx_runtime_config_v3 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    mrnx_runtime_config_v2 runtime;
+    const char* matter_world_package_path;
+    uint64_t expected_model_source_fingerprint;
+    uint64_t expected_matter_world_fingerprint;
+} mrnx_runtime_config_v3;
+
+// Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
+// as fixtures; successfully loading an authored package is not calibration.
+typedef struct mrnx_runtime_world_info_v1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t authored_package;
+    uint32_t object_count;
+    uint32_t fem_node_count;
+    uint32_t fem_attachment_count;
+    uint64_t world_fingerprint;
+    uint64_t physics_fingerprint;
+} mrnx_runtime_world_info_v1;
+
 typedef struct mrnx_runtime_info_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -442,6 +474,10 @@ _Static_assert(offsetof(mrnx_candidate_timing_v1, timing_fingerprint) == 32u,
 _Static_assert(sizeof(mrnx_wire_lease_v1) == 184u, "mrnx wire ABI");
 _Static_assert(sizeof(mrnx_proposal_view_v1) == 280u, "mrnx proposal ABI");
 _Static_assert(sizeof(mrnx_applied_view_v1) == 240u, "mrnx applied ABI");
+_Static_assert(sizeof(mrnx_runtime_config_v3) == 168u, "mrnx config v3 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v3, matter_world_package_path) == 144u,
+               "mrnx config v3 world offset");
+_Static_assert(sizeof(mrnx_runtime_world_info_v1) == 40u, "mrnx world info ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v1) == 104u, "mrnx config ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v2) == 136u, "mrnx config v2 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v2, culture_pack_path) == 104u,

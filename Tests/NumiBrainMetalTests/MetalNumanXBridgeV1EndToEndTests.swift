@@ -8,6 +8,17 @@ import NumiBrainMLX
 
 @available(macOS 26.0, *)
 final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
+  func testAuthoredMatterDescriptorRejectsMissingIdentity() throws {
+    typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
+    XCTAssertThrowsError(try World(packagePath: "", humanSourceFingerprint: 1, worldFingerprint: 2))
+    XCTAssertThrowsError(try World(packagePath: "world\0other", humanSourceFingerprint: 1, worldFingerprint: 2))
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 0, worldFingerprint: 2))
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 0))
+    let world = try World(packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 2)
+    XCTAssertEqual(world.humanSourceFingerprint, 1)
+    XCTAssertEqual(world.worldFingerprint, 2)
+  }
+
   func testGateBAcceptedDevelopmentEnablesAutonomousPhysicalGaze() throws {
     let paths = try bridgePaths()
     guard let device = MTLCreateSystemDefaultDevice(),
@@ -1124,6 +1135,23 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   }
 
   func testRealFullBodyBrainProposalApplyAndJointPublication() throws {
+    try runFullBodyJointPublication(authoredWorld: nil)
+  }
+
+  func testAuthoredMatterBrainProposalApplyAndJointPublication() throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let path = environment["NUMANX_MATTER_WORLD_PACKAGE"],
+      let human = environment["NUMANX_HUMAN_SOURCE_FP"].flatMap({ UInt64($0, radix: 16) }),
+      let world = environment["NUMANX_MATTER_WORLD_FP"].flatMap({ UInt64($0, radix: 16) }) else {
+      throw XCTSkip("authored Matter package and identities are not configured")
+    }
+    try runFullBodyJointPublication(authoredWorld: .init(packagePath: path,
+      humanSourceFingerprint: human, worldFingerprint: world))
+  }
+
+  private func runFullBodyJointPublication(
+    authoredWorld: MetalNumanXBridgeV1Runtime.AuthoredMatterWorld?
+  ) throws {
     let gateBTimestepMicroseconds: UInt64 = 100
     let initialCommittedTimestampMicroseconds: UInt64 = 1_000
     func gateBTimestamp(_ boundary: UInt64) -> BrainTimestamp {
@@ -1187,10 +1215,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         visionProfilePath: paths.visionProfile,
         metalRoboMetallibPath: paths.metalRoboMetallib,
         matterMetallibPath: paths.matterMetallib,
-        matterMaterialPath: paths.material,
+        matterMaterialPath: authoredWorld == nil ? paths.material : "",
         timestepMicroseconds: gateBTimestepMicroseconds,
         transactionSlotCount: 2,
-        culturePackPath: culturePack
+        culturePackPath: culturePack,
+        authoredMatterWorld: authoredWorld
       )
     )
     XCTAssertEqual(native.info.bodyCount, 157)
@@ -1198,6 +1227,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(native.info.dofCount, 128)
     XCTAssertEqual(native.info.muscleCount, 416)
     XCTAssertEqual(native.info.residentContinuationCount, 0)
+    if let authoredWorld {
+      let world = try native.currentWorldInfo()
+      XCTAssertTrue(world.authoredPackage)
+      XCTAssertEqual(world.worldFingerprint, authoredWorld.worldFingerprint)
+      XCTAssertEqual(native.info.modelSourceFingerprint, authoredWorld.humanSourceFingerprint)
+      XCTAssertEqual(world.objectCount, 3)
+      XCTAssertEqual(world.femAttachmentCount, 12)
+    }
     XCTAssertNil(try native.aggregateSnapshotIfAvailable())
 
     let transaction = try brain.beginControl(

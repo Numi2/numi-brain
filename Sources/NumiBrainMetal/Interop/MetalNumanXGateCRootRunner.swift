@@ -112,6 +112,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   public let artifactDirectory: URL
   public let episodeIdentifier: UInt64
   public let nativeInfo: MetalNumanXBridgeV1Runtime.Info
+  public let nativeWorldInfo: MetalNumanXBridgeV1Runtime.WorldInfo?
   public let parameterVersionFingerprint: UInt64
   public let declaredMaximumInferenceLatencyMicroseconds: UInt64?
 
@@ -203,6 +204,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     self.brain = brain
     self.native = native
     self.nativeInfo = native.info
+    self.nativeWorldInfo = bridgeConfiguration.authoredMatterWorld != nil
+      ? try native.currentWorldInfo() : try? native.currentWorldInfo()
     self.parameterVersionFingerprint = brain.parameterVersionFingerprint
     self.declaredMaximumInferenceLatencyMicroseconds =
       declaredMaximumInferenceLatencyMicroseconds
