@@ -1,0 +1,52 @@
+name: Compile pinned full male CNS dataset
+on:
+  push:
+    branches: [main, integration/connectome-import-20260907]
+    paths:
+      - 'tools/import_male_cns.py'
+      - 'tools/test_connectome_import.py'
+      - 'tools/connectome-requirements.txt'
+      - 'Contracts/MaleCNS_v1.sources.json'
+      - '.github/workflows/connectome-data.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  full-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/numibrain-male-cns-v1
+          key: male-cns-v1-locked-${{ hashFiles('Contracts/MaleCNS_v1.sources.json') }}
+          restore-keys: male-cns-v1-source-20260907
+      - name: Compile native contracts and importer regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p diagnostics
+          python -m pip install -r tools/connectome-requirements.txt
+          python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+          python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
+      - name: Fetch exact inputs and compile complete retained neuron graph
+        shell: bash
+        run: |
+          set -o pipefail
+          python tools/import_male_cns.py fetch --cache "$HOME/.cache/numibrain-male-cns-v1" 2>&1 | tee diagnostics/acquisition.txt
+          /usr/bin/time -v python tools/import_male_cns.py compile --cache "$HOME/.cache/numibrain-male-cns-v1" --output diagnostics/male-cns-v1.numicns 2>&1 | tee diagnostics/compilation.txt
+          git rev-parse HEAD > diagnostics/revision.txt
+          sha256sum diagnostics/male-cns-v1.numicns > diagnostics/graph.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: male-cns-full-native-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
