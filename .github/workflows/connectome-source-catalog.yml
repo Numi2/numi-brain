@@ -1,0 +1,54 @@
+name: Inspect official male CNS catalogs
+on:
+  push:
+    branches: [integration/connectome-native-20260907]
+    paths: [.github/workflows/connectome-source-catalog.yml]
+permissions:
+  contents: read
+jobs:
+  catalogs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Fetch fixed release catalogs and inspect their real schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p catalog/wheels
+          python -m pip download --only-binary=:all: --no-deps pyarrow==19.0.1 -d catalog/wheels
+          python -m pip install --no-index --find-links=catalog/wheels pyarrow==19.0.1
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json, urllib.request, collections
+          import pyarrow.feather as feather
+          root=Path('catalog')
+          base='https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/'
+          names=['body-annotations-male-cns-v1.0-minconf-0.5.feather','body-neurotransmitters-male-cns-v1.0.feather']
+          report={}
+          for name in names:
+              with urllib.request.urlopen(base+name,timeout=60) as response, (root/name).open('wb') as output:
+                  digest=hashlib.sha256(); count=0
+                  for block in iter(lambda: response.read(1024*1024),b''):
+                      count+=len(block)
+                      if count>512*1024*1024: raise ValueError('catalog exceeds budget')
+                      output.write(block); digest.update(block)
+                  headers=dict(response.headers)
+              table=feather.read_table(root/name)
+              details={'url':base+name,'sha256':digest.hexdigest(),'bytes':count,'rows':table.num_rows,'schema':str(table.schema),'sample':table.slice(0,3).to_pylist(),'headers':headers}
+              for column in ['status','class','superclass','super_class','type','cell_type','nt_type','nt']:
+                  if column in table.column_names:
+                      details[column+'_counts']=collections.Counter(map(str,table[column].to_pylist())).most_common(40)
+              report[name]=details
+          text=json.dumps(report,indent=2,default=str)
+          (root/'catalog-report.json').write_text(text)
+          print(text)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: male-cns-v1-catalogs
+          path: catalog/
+          retention-days: 7
+          if-no-files-found: error
