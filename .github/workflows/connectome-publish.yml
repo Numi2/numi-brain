@@ -1,0 +1,83 @@
+name: Retain verified Male CNS data release
+on:
+  push:
+    branches: [integration/connectome-data-release-20260907]
+    paths: ['.github/workflows/connectome-publish.yml']
+permissions:
+  contents: read
+jobs:
+  publish-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify original compiled artifact and stage data assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/Numi2/numi-brain/actions/artifacts/10034492806/zip > "$RUNNER_TEMP/male-cns.zip"
+          echo '50747b1051f9d78234e827deb0911d25ee06bd6d44879d2dccd243424bc78fe7  '"$RUNNER_TEMP/male-cns.zip" | sha256sum --check
+          mkdir "$RUNNER_TEMP/male-cns-release"
+          python3 - <<'PY'
+          import hashlib,json,os,sys,tempfile,zipfile
+          from pathlib import Path
+          sys.path.insert(0,str(Path('tools').resolve()))
+          from import_male_cns import Native
+          target=Path(os.environ['RUNNER_TEMP'])/'male-cns-release'
+          hashes={
+            'male-cns-v1.numicns':(216220498,'db2a30c4d4989ff036733d72764b06c08988cd97016774e68d91421b6bf6a647'),
+            'male-cns-v1.numicns.ports.csv':(8145854,'bebd2a6e200b6cb013f452cfca9ddcea8a4f8f1d76740c65e3848106d2f1ab9c'),
+            'male-cns-v1.numicns.report.json':(2421,'e331c7796ae82140d323cc2803cf800562d2a94b834ecf6502e5ab80429ef99f')}
+          with zipfile.ZipFile(Path(os.environ['RUNNER_TEMP'])/'male-cns.zip') as z:
+            for name,(size,digest) in hashes.items():
+              item=z.getinfo(name)
+              assert item.file_size==size
+              data=z.read(item)
+              assert hashlib.sha256(data).hexdigest()==digest
+              (target/name).write_bytes(data)
+          with tempfile.TemporaryDirectory() as temporary:
+            Native(Path(temporary)).validate(target/'male-cns-v1.numicns')
+          report=json.loads((target/'male-cns-v1.numicns.report.json').read_text())
+          assert report['graphFingerprint']=='02961e5c21cadb02'
+          assert report['manifest']['counts']['neurons']==167216
+          assert report['manifest']['counts']['neuron_pair_edges']==25587572
+          (target/'DATA_ATTRIBUTION.md').write_bytes(Path('evidence/connectome-full-v1/DATA_ATTRIBUTION.md').read_bytes())
+          (target/'MaleCNS_v1.sources.json').write_bytes(Path('Contracts/MaleCNS_v1.sources.json').read_bytes())
+          lines=[]
+          for p in sorted(target.iterdir()):
+            with p.open('rb') as f: digest=hashlib.file_digest(f,'sha256').hexdigest()
+            lines.append(digest+'  '+p.name+'\n')
+          (target/'SHA256SUMS').write_text(''.join(lines))
+          PY
+      - name: Publish create-only derivative data release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=male-cns-v1.0-numicns-v1
+          if gh release view "$tag" --repo Numi2/numi-brain >/dev/null 2>&1; then
+            echo 'A release with this immutable version already exists; refusing to replace it.' >&2
+            exit 1
+          fi
+          gh release create "$tag" "$RUNNER_TEMP/male-cns-release/"* \
+            --repo Numi2/numi-brain \
+            --target 5cd5b5e9d406c624a1e5ae7e18fd3f2c15cefcba \
+            --title 'Male CNS v1.0 — NUMICNS1 derivative data pack' \
+            --notes-file evidence/connectome-full-v1/DATA_ATTRIBUTION.md \
+            --prerelease --latest=false
+          gh release view "$tag" --repo Numi2/numi-brain --json url,tagName,assets > "$RUNNER_TEMP/release.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: male-cns-release-publication-${{ github.run_id }}
+          path: ${{ runner.temp }}/release.json
+          retention-days: 7
+          if-no-files-found: warn
