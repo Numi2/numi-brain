@@ -133,7 +133,7 @@ final class QualificationTests: XCTestCase {
       try SafetyCampaignScenario(kind: $0, identifier: $0.rawValue)
     }
     let outcomes = try required.map {
-      try SafetyCampaignOutcome(scenario: $0, disposition: .protectiveStop,
+      try SafetyCampaignOutcome(scenario: $0, disposition: $0.expectedDisposition,
         publicRootChangedOnRejectedAttempt: false, rejectedShadowExposed: false,
         boundedLatencyMicroseconds: 100)
     }
@@ -141,5 +141,21 @@ final class QualificationTests: XCTestCase {
       outcomes: outcomes, maximumProtectiveLatencyMicroseconds: 1_000))
     XCTAssertThrowsError(try SafetyCampaignVerifier.verify(required: Array(required.dropLast()),
       outcomes: Array(outcomes.dropLast()), maximumProtectiveLatencyMicroseconds: 1_000))
+  }
+
+  func testSafetyCampaignRejectsUniformProtectiveStopResponses() throws {
+    let required = try SafetyCampaignScenario.Kind.allCases.map {
+      try SafetyCampaignScenario(kind: $0, identifier: $0.rawValue)
+    }
+    XCTAssertTrue(required.contains { $0.expectedDisposition != .protectiveStop })
+    // Retain the old invalid fixture as a negative test rather than weakening
+    // the production verifier to accept a response different from the contract.
+    let outcomes = try required.map {
+      try SafetyCampaignOutcome(scenario: $0, disposition: .protectiveStop,
+        publicRootChangedOnRejectedAttempt: false, rejectedShadowExposed: false,
+        boundedLatencyMicroseconds: 100)
+    }
+    XCTAssertThrowsError(try SafetyCampaignVerifier.verify(required: required,
+      outcomes: outcomes, maximumProtectiveLatencyMicroseconds: 1_000))
   }
 }
