@@ -46,8 +46,9 @@ kernel void nb_connectome_rate_step(
   }
   const float target = tanh(node.bias + node.recurrent_gain*recurrent + node.sensory_gain*sensory);
   // alpha in NUMICNS1 is defined at the explicit nominal physical interval.
-  const float alpha = node.alpha == 1.0f ? 1.0f : 1.0f - pow(1.0f-node.alpha, u.time_ratio);
-  next[i] = clamp(previous[i] + alpha*(target-previous[i]), -1.0f, 1.0f);
+  const float alpha = node.alpha == 1.0f ? 1.0f : -expm1(log1p(-node.alpha) * u.time_ratio);
+  const float candidate = previous[i] + alpha*(target-previous[i]);
+  next[i] = isfinite(candidate) ? clamp(candidate, -1.0f, 1.0f) : NAN;
 }
 
 kernel void nb_connectome_descending_readout(
@@ -64,5 +65,42 @@ kernel void nb_connectome_descending_readout(
     const NBCNSReadout r = readouts[k];
     value += r.weight * nodes[r.node].output_gain * state[r.node];
   }
-  output[channel] = clamp(value, -u.output_clip, u.output_clip);
+  output[channel] = isfinite(value) ? clamp(value, -u.output_clip, u.output_clip) : NAN;
+}
+
+struct NBCNSDecoderDispatch {
+  uint channels, actuators, command_kind, reserved;
+  float delta_seconds, maximum_drive_change_per_second, reserved1, reserved2;
+};
+static_assert(sizeof(NBCNSNode) == 48);
+static_assert(sizeof(NBCNSInput) == 32);
+static_assert(sizeof(NBCNSDispatch) == 48);
+static_assert(sizeof(NBCNSDecoderDispatch) == 32);
+
+kernel void nb_connectome_motor_decode(
+  device const float *features [[buffer(0)]],
+  device const float *weights [[buffer(1)]],
+  device const float *bias [[buffer(2)]],
+  device const float4 *previous [[buffer(3)]],
+  device float4 *control [[buffer(4)]],
+  constant NBCNSDecoderDispatch &u [[buffer(5)]],
+  uint actuator [[thread_position_in_grid]]) {
+  if (actuator >= u.actuators) return;
+  float logit = bias[actuator];
+  bool valid = isfinite(logit);
+  for (uint c = 0; c < u.channels; ++c) {
+    valid = valid && isfinite(features[c]);
+    logit += weights[actuator*u.channels+c]*features[c];
+  }
+  const bool muscle = u.command_kind == 1u;
+  const float neutral = muscle ? 0.0f : 0.5f;
+  valid = valid && isfinite(logit);
+  if (!valid) { control[actuator] = float4(neutral, 0.0f, 0.0f, 0.0f); return; }
+  const float signed_drive = tanh(logit);
+  const float requested = muscle ? max(signed_drive, 0.0f) : 0.5f*(signed_drive+1.0f);
+  const float4 old = previous[actuator];
+  const float base = old.y == 1.0f && isfinite(old.x) ? clamp(old.x,0.0f,1.0f) : neutral;
+  const float change = u.maximum_drive_change_per_second*u.delta_seconds;
+  control[actuator] = float4(clamp(requested, max(0.0f,base-change), min(1.0f,base+change)),
+    1.0f, logit, 0.0f);
 }

@@ -21,6 +21,8 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let maximumSchedulerEvents: Int
   public let maximumSchedulerInvocations: Int
   public let maximumEncodedSubsteps: Int
+  /// Opt-in connectome controller; graph and learned decoder are immutable.
+  public let connectomeProgram: ConnectomeProgram?
 
   public init(
     initialTissueState: TissueGrid,
@@ -35,7 +37,8 @@ public struct MetalNumiBrainConfiguration: Sendable {
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maximumSchedulerEvents: Int = 64,
     maximumSchedulerInvocations: Int = 4_096,
-    maximumEncodedSubsteps: Int = 4_096
+    maximumEncodedSubsteps: Int = 4_096,
+    connectomeProgram: ConnectomeProgram? = nil
   ) {
     self.initialTissueState = initialTissueState
     self.tissueParameters = tissueParameters
@@ -50,6 +53,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.maximumSchedulerEvents = maximumSchedulerEvents
     self.maximumSchedulerInvocations = maximumSchedulerInvocations
     self.maximumEncodedSubsteps = maximumEncodedSubsteps
+    self.connectomeProgram = connectomeProgram
   }
 }
 
@@ -68,6 +72,11 @@ extension MetalNumiBrainRuntime {
     let species = compiledSpeciesTemplate.species
     let regionalProgram = try species.regionalProgram()
     let version = publication.version
+    try configuration.connectomeProgram?.validate(
+      template: compiledSpeciesTemplate, parameterVersionFingerprint: version.fingerprint)
+    guard configuration.connectomeProgram == nil || foundationPolicyArchitecture == nil else {
+      throw ConnectomeError.invalid("a cortical policy receipt cannot authorize a different connectome controller")
+    }
     guard
       compiledSpeciesTemplate.sensoryProfile.speciesTemplateFingerprint
         == species.fingerprint,
@@ -131,7 +140,8 @@ extension MetalNumiBrainRuntime {
         regionalProgram: regionalProgram,
         parameterVersion: version,
         sharedParameterArtifact: publication.sharedArtifact,
-        numanXUncertaintyGate: numanXUncertaintyGate
+        numanXUncertaintyGate: numanXUncertaintyGate,
+        connectomeProgram: configuration.connectomeProgram
       )
     } else {
       try MetalEmbodiedBrainRuntime(
@@ -140,7 +150,8 @@ extension MetalNumiBrainRuntime {
         regionalProgram: regionalProgram,
         parameterVersion: version,
         sharedParameterArtifact: publication.sharedArtifact,
-        foundationPolicyArchitecture: foundationPolicyArchitecture
+        foundationPolicyArchitecture: foundationPolicyArchitecture,
+        connectomeProgram: configuration.connectomeProgram
       )
     }
     let fastTissue = try MetalTissueRuntime(

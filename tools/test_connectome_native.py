@@ -62,6 +62,8 @@ class NativePackTests(unittest.TestCase):
         cls.lib.nb_connectome_validate.restype = C.c_uint32
         cls.lib.nb_connectome_binding_fingerprint.argtypes = [C.c_uint64]*4 + [C.c_uint32]*6 + [C.POINTER(Input), C.c_uint32, C.POINTER(Readout), C.c_uint32]
         cls.lib.nb_connectome_binding_fingerprint.restype = C.c_uint64
+        cls.lib.nb_connectome_decoder_fingerprint.argtypes = [C.c_uint64]*2 + [C.c_uint32]*3 + [C.c_float, C.POINTER(C.c_float), C.POINTER(C.c_float)]
+        cls.lib.nb_connectome_decoder_fingerprint.restype = C.c_uint64
     @classmethod
     def tearDownClass(cls): cls.tmp.cleanup()
     def check(self, data, budget=1<<20):
@@ -138,5 +140,21 @@ class NativePackTests(unittest.TestCase):
         self.assertEqual(self.binding(scalars=0),0)
         self.assertEqual(self.binding(channels=257),0)
         self.assertEqual(self.binding(inputs=[]),0)
+
+    def decoder(self, binding=1, species=2, kind=1, slew=2, weights=(1,-1), bias=(0,0)):
+        return self.lib.nb_connectome_decoder_fingerprint(binding,species,1,2,kind,slew,
+            (C.c_float*len(weights))(*weights),(C.c_float*len(bias))(*bias))
+    def test_decoder_identity(self):
+        self.assertNotEqual(self.decoder(),0)
+        self.assertEqual(self.decoder(),self.decoder())
+        for settings in ({'binding':0},{'species':0},{'kind':0},{'kind':8},{'slew':0}):
+            self.assertEqual(self.decoder(**settings),0)
+        for settings in ({'binding':2},{'species':3},{'kind':2},{'slew':3},{'bias':(.1,0)}):
+            self.assertNotEqual(self.decoder(**settings), self.decoder())
+    def test_decoder_numerical_bounds(self):
+        for value in (float('nan'),float('inf'),-float('inf'),65):
+            self.assertEqual(self.decoder(weights=(value,0)),0)
+            self.assertEqual(self.decoder(bias=(value,0)),0)
+        self.assertEqual(self.decoder(slew=float('nan')),0)
 
 if __name__ == '__main__': unittest.main()

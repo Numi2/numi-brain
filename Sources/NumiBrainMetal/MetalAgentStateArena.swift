@@ -74,6 +74,11 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case sensoryValidity = 46
   /// Articulated parent/child coordinate posterior, one record per joint.
   case jointBelief = 47
+  /// Optional connectome sections, present only in a connectome-bound layout.
+  case connectomeState = 48
+  case connectomeReadout = 49
+  /// Per-actuator drive, validity, raw logit, reserved (float4).
+  case connectomeControl = 50
 }
 
 @frozen
@@ -167,6 +172,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let archivePageRequestStride = 32
   public static let archivePageRequestHeaderByteCount = 32
 
+  public let connectomeProgramFingerprint: UInt64?
   public let speciesTemplateFingerprint: UInt64
   public let regionalProgramFingerprint: UInt64
   public let sections: [MetalArenaSectionLayout<MetalAgentHotSection>]
@@ -179,7 +185,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     maximumRelationSlots: Int = 1_024,
     maximumSpatialTransforms: Int = 32,
     maximumEventTokens: Int = Self.defaultEventTokenCapacity,
-    maximumDelayMessages: Int = 4_096
+    maximumDelayMessages: Int = 4_096,
+    connectomeProgram: ConnectomeProgram? = nil
   ) throws {
     guard species.fingerprint > 0, regionalProgram.fingerprint > 0,
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
@@ -486,7 +493,25 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: Int(species.body.jointCount),
       stride: Self.jointBeliefStride
     )
+    if let program = connectomeProgram {
+      guard program.binding.speciesFingerprint == species.fingerprint,
+        program.decoder.actuatorCount == species.motor.actuatorCount else {
+        throw ConnectomeError.invalid("arena connectome/body identity mismatch")
+      }
+      try builder.append(.connectomeState, count: program.graph.nodeCount, stride: 4)
+      try builder.append(.connectomeReadout, count: Int(program.binding.channelCount), stride: 4)
+      try builder.append(.connectomeControl, count: Int(species.motor.actuatorCount), stride: 16)
+      guard builder.totalByteCount <= Int(UInt32.max) else {
+        throw ConnectomeError.invalid("connectome motor offset exceeds the decision ABI")
+      }
+    }
+    connectomeProgramFingerprint = connectomeProgram?.fingerprint
     var hash: UInt64 = 14_695_981_039_346_656_037
+    // Preserve legacy non-connectome layout identities exactly.
+    if let program = connectomeProgram {
+      Self.mix(0x4e42434e534c0001, into: &hash)
+      Self.mix(program.fingerprint, into: &hash)
+    }
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
     Self.mix(Self.bodyBeliefLayoutVersion, into: &hash)
@@ -885,9 +910,11 @@ public final class MetalAgentStateArena: @unchecked Sendable {
     device: any MTLDevice,
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectomeProgram: ConnectomeProgram? = nil
   ) throws {
-    let layout = try MetalAgentStateLayout(species: species, regionalProgram: regionalProgram)
+    let layout = try MetalAgentStateLayout(species: species, regionalProgram: regionalProgram,
+      connectomeProgram: connectomeProgram)
     let memoryLayout = try MetalAgentMemoryLayout(species: species)
     guard
       let firstHot = device.makeBuffer(

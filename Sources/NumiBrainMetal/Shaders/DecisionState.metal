@@ -135,7 +135,7 @@ struct NBDecisionUniforms {
   uint actuator_command_kind;
   uint active_sensing_command_scale_bits;
   uint anatomical_muscle_count;
-  uint reserved_anatomy;
+  uint connectome_control_offset;
 };
 
 struct NBDriveRecord {
@@ -3676,7 +3676,7 @@ kernel void advance_cpg_state(
     NBCPGStateRecord state = states[oscillator];
     const bool vital = descriptor.output_kind
       == ulong(NB_CPG_OUTPUT_AUTONOMIC_CHANNEL);
-    const bool active = vital || locomotor_active;
+    const bool active = vital || (locomotor_active && uniforms.connectome_control_offset == 0u);
     const ulong prior_timestamp = state.timestamp_microseconds;
     const float elapsed_seconds = prior_timestamp > 0ul
         && uniforms.target_timestamp_microseconds > prior_timestamp
@@ -4138,8 +4138,19 @@ kernel void generate_motor_spinal_autonomic_state(
     const float ordinary_descending = rest_selected
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
-    float descending = ordinary_descending;
-    if (communication_selected) {
+    const bool connectome_active = uniforms.connectome_control_offset != 0u;
+    const float4 connectome_control = connectome_active
+      ? reinterpret_cast<device const float4 *>(hot_state + uniforms.connectome_control_offset)[gid]
+      : float4(0.0f);
+    const bool connectome_valid = !connectome_active
+      || (connectome_control.y == 1.0f && isfinite(connectome_control.x));
+    // The opt-in decoder replaces voluntary somatic drive, not emergency
+    // inhibition or the physical command contract. No fallback to a different
+    // policy when its candidate is invalid.
+    float descending = connectome_active
+      ? (connectome_valid ? clamp(connectome_control.x, 0.0f, 1.0f) : motor_neutral)
+      : ordinary_descending;
+    if (communication_selected && !connectome_active) {
       if (communication_actuator) {
         const float communication_logit = candidate.parameters[
           communication_descriptor.local_channel_index % parameter_count
@@ -4161,7 +4172,7 @@ kernel void generate_motor_spinal_autonomic_state(
       }
     }
     const float inhibition = max(
-      (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
+      !connectome_valid || (header->flags & NB_CONTROL_FLAG_HYPERDIRECT_STOP) != 0u
         ? 1.0f : max(safety, embodied_risk),
       max(deliberate_inhibition, homeostatic_inhibition)
     );
@@ -4171,7 +4182,7 @@ kernel void generate_motor_spinal_autonomic_state(
     // controller above owns that task; admitting pre-existing fast state here
     // would recruit unrelated muscles before their anatomy-specific error
     // relation has been identified.
-    const bool fast_correction_active = !rest_selected
+    const bool fast_correction_active = !rest_selected && !connectome_active
       && !anatomical_body_task && inhibition < 1.0f;
     fast_state.flags = (fast_state.flags | NB_CONTROL_FLAG_VALID)
       & ~(1u << 1u);
@@ -4264,7 +4275,7 @@ kernel void generate_motor_spinal_autonomic_state(
     // controller. Generic cerebellar experts are not allowed to inject a
     // parallel whole-body residual until an anatomy-specific expert contract
     // exists; doing so recruits unrelated muscles on the first root.
-    const float slow_cerebellar_residual = rest_selected || anatomical_body_task
+    const float slow_cerebellar_residual = rest_selected || anatomical_body_task || connectome_active
       ? 0.0f
       : clamp(
           learned_cerebellar_residual * clamp(
@@ -4305,10 +4316,11 @@ kernel void generate_motor_spinal_autonomic_state(
     // Locomotor oscillators are a separate policy. They must not be mixed into
     // an explicit anatomical posture command unless a future goal contract
     // explicitly binds that CPG to the selected body task.
-    cpg_output = anatomical_body_task
+    cpg_output = anatomical_body_task || connectome_active
       ? 0.0f : clamp(cpg_output, -1.0f, 1.0f);
     NBSpinalStateRecord spinal_state;
-    spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;
+    spinal_state.reflex_output = connectome_active && inhibition >= 1.0f
+      ? 0.0f : (safety > 0.5f ? -0.25f : 0.0f);
     spinal_state.cpg_output = cpg_output;
     spinal_state.motor_neuron_state = command.excitation
       + command.cerebellar_residual + spinal_state.cpg_output;

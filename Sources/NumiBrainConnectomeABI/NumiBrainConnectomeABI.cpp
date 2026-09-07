@@ -154,3 +154,32 @@ extern "C" uint64_t nb_connectome_binding_fingerprint(uint64_t graph,
   for (uint32_t i=0;i<channels;++i) if (!covered[i]) return 0;
   return h.value();
 }
+
+extern "C" uint64_t nb_connectome_fnv1a_update(uint64_t seed,
+    const void *bytes, size_t count) {
+  if (!bytes && count) return 0;
+  Hash h; h.h = seed; h.bytes(bytes, count); return h.h;
+}
+
+extern "C" uint64_t nb_connectome_decoder_fingerprint(uint64_t binding,
+    uint64_t species, uint32_t channels, uint32_t actuators, uint32_t kind,
+    float slew, const float *weights, const float *bias) {
+  if constexpr (std::endian::native != std::endian::little) return 0;
+  if (!binding || !species || !channels || channels > 256 || !actuators ||
+      actuators > 4096 || kind < 1 || kind > 7 || !std::isfinite(slew) ||
+      slew <= 0 || slew > 10000 || !weights || !bias) return 0;
+  Hash h; h.scalar(uint64_t(0x4e42434445430001ull));
+  h.scalar(binding); h.scalar(species); h.scalar(channels); h.scalar(actuators);
+  h.scalar(kind); h.scalar(slew);
+  for (uint32_t a=0; a<actuators; ++a) {
+    double mass=0;
+    for (uint32_t c=0; c<channels; ++c) {
+      const float w=weights[size_t(a)*channels+c];
+      if (!bounded(w)) return 0;
+      mass+=std::abs(double(w)); h.scalar(w);
+    }
+    if (mass > 64 || !bounded(bias[a])) return 0;
+    h.scalar(bias[a]);
+  }
+  return h.value();
+}

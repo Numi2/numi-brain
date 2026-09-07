@@ -204,6 +204,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let developmentalRuntime: MetalDevelopmentalRuntime
   public let acceptedConsequenceRuntime: MetalAcceptedConsequenceRuntime
   public let memoryRuntime: MetalMemoryRuntime
+  public let connectomeRuntime: MetalConnectomeRuntime?
 
   private let device: any MTLDevice
   private let species: SpeciesTemplate
@@ -267,7 +268,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics? = nil,
     foundationPolicyArchitecture: BrainFoundationPolicyArchitecture? = nil,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectomeProgram: ConnectomeProgram? = nil
   ) throws {
     try self.init(
       device: device,
@@ -282,7 +284,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       numanXUncertaintyGate: try foundationPolicyArchitecture.map {
         try MetalNumanXUncertaintyGateConfiguration(architecture: $0)
       },
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectomeProgram: connectomeProgram
     )
   }
 
@@ -301,7 +304,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics? = nil,
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectomeProgram: ConnectomeProgram? = nil
   ) throws {
     try self.init(
       device: device,
@@ -314,7 +318,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       memoryRetrievalDynamics: requestedMemoryRetrievalDynamics,
       episodicSegmentation: requestedEpisodicSegmentation,
       numanXUncertaintyGate: Optional(numanXUncertaintyGate),
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectomeProgram: connectomeProgram
     )
   }
 
@@ -332,8 +337,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics?,
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration?,
-    initialGeneration: UInt64
+    initialGeneration: UInt64,
+    connectomeProgram: ConnectomeProgram?
   ) throws {
+    try connectomeProgram?.validate(template: compiledSpeciesTemplate,
+      parameterVersionFingerprint: parameterVersion.fingerprint)
     let species = compiledSpeciesTemplate.species
     let sensoryProfile = compiledSpeciesTemplate.sensoryProfile
     let jointTopologyCatalog = compiledSpeciesTemplate.jointTopologyCatalog
@@ -356,8 +364,17 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device,
       species: species,
       regionalProgram: regionalProgram,
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectomeProgram: connectomeProgram
     )
+    let connectomeRuntime: MetalConnectomeRuntime?
+    if let connectomeProgram {
+      let sharedGraph = try MetalConnectomeGraphCache.shared.graph(
+        program: connectomeProgram, device: device)
+      connectomeRuntime = try MetalConnectomeRuntime(sharedGraph: sharedGraph,
+        program: connectomeProgram, template: compiledSpeciesTemplate,
+        arena: agentStateRuntime.arena)
+    } else { connectomeRuntime = nil }
     let sharedParameterBank = try MetalSharedParameterBank(
       device: device,
       parameterVersion: parameterVersion,
@@ -476,6 +493,9 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for allocation in memoryRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
+    for allocation in connectomeRuntime?.residencyAllocations ?? [] {
+      residencySet.addAllocation(allocation)
+    }
     residencySet.commit()
     residencySet.requestResidency()
     self.deviceName = device.name
@@ -495,6 +515,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.developmentalRuntime = developmentalRuntime
     self.acceptedConsequenceRuntime = acceptedConsequenceRuntime
     self.memoryRuntime = memoryRuntime
+    self.connectomeRuntime = connectomeRuntime
     self.device = device
     self.species = species
     self.acceptedPhysicsGateRuntime = acceptedPhysicsGateRuntime
@@ -789,6 +810,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      try connectomeRuntime?.encode(encoder: encoder, root: transaction.jointToken,
+        transaction: transaction.agentStateToken, sensory: sensory)
       let decision = try decisionRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,
@@ -1079,6 +1102,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      try connectomeRuntime?.encode(encoder: encoder, root: transaction.jointToken,
+        transaction: transaction.agentStateToken, sensory: sensory)
       let decisionOutput = try decisionRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,

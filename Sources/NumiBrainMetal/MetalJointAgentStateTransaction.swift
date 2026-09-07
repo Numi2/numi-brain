@@ -24,7 +24,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   private var preparedCommit: MetalAgentStateRuntime.PreparedCommit?
   private var preparedGPUStateFinish: MetalAgentStateRuntime.PreparedGPUStateFinish?
   private var acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
-  private var connectomeCandidate: MetalConnectomeRuntime.Candidate?
 
   public init(jointToken: BrainJointTransactionToken, runtime: MetalAgentStateRuntime,
               cachedDecisionFingerprint: UInt64) throws {
@@ -52,34 +51,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     lock.lock(); defer { lock.unlock() }
     try require(.open)
     return try runtime.persistentMemoryView(transaction: agentStateToken)
-  }
-
-  /// Explicit experimental connectome participant. The caller provides the
-  /// existing owner encoder and retains its residency allocations. A physical
-  /// retry reuses the original neural decision rather than resampling O(t).
-  /// Returned channels are decoder features, NOT physical actuator commands.
-  public func encodeConnectome(_ connectome: MetalConnectomeRuntime,
-    encoder: any MTL4ComputeCommandEncoder,
-    sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalConnectomeRuntime.DescendingView {
-    lock.lock(); defer { lock.unlock() }; try require(.open)
-    if let candidate = connectomeCandidate {
-      guard candidate.owner === connectome else {
-        throw ConnectomeError.invalid("a root cannot replace its connectome participant on retry")
-      }
-      return candidate.view
-    }
-    let hot = try runtime.hotStateView(transaction: agentStateToken)
-    let observations = runtime.arena.layout.section(.sensoryObservations)
-    let validity = runtime.arena.layout.section(.sensoryValidity)
-    let sensorBuffer = try runtime.arena.borrowShadowHotBuffer(transaction: agentStateToken)
-    guard sensorBuffer.device.registryID == connectome.sharedGraph.device.registryID,
-      sensory.observationGPUAddress == hot.outputGPUAddress + UInt64(observations.byteOffset),
-      sensory.validityGPUAddress == hot.outputGPUAddress + UInt64(validity.byteOffset) else {
-      throw ConnectomeError.invalid("sensory frame does not belong to this root's shadow arena and device")
-    }
-    let candidate = try connectome.encodeCandidate(encoder: encoder, root: jointToken, sensory: sensory)
-    connectomeCandidate = candidate
-    return candidate.view
   }
 
   func bindAcceptedFastMotorState(_ lease: MetalTissueRuntime.AcceptedFastMotorStateLease) throws {
@@ -151,11 +122,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     maximumBytes: Int = 536_870_912,
     completion: @escaping @Sendable (Result<BrainPreparedGPUImage, Error>) -> Void) throws {
     lock.lock(); defer { lock.unlock() }
-    // The current recovery image contains only cognitive arena state. Never
-    // certify a capture that silently omits this experimental neural participant.
-    guard connectomeCandidate == nil else {
-      throw ConnectomeError.invalid("prepared recovery does not yet serialize connectome participant state")
-    }
     guard currentStatus == .gpuStateFinished || currentStatus == .commitPrepared,
       let physics = acceptedPhysicsFingerprint else {
       throw TissueError.transaction("prepared capture requires completed, unpublished native state")
@@ -238,7 +204,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       receipt.acceptedPhysicsTokenFingerprint == acceptedPhysicsFingerprint else {
       throw TissueError.transaction("joint receipt cannot publish the complete agent-state generation")
     }
-    try connectomeCandidate?.validateCommit(receipt)
     preparedCommit = try runtime.prepareCommit(transaction: agentStateToken)
     currentStatus = .commitPrepared
   }
@@ -248,7 +213,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       preconditionFailure("joint cognitive commit was not prepared or a recovery transfer is pending")
     }
     runtime.publishPreparedCommit(preparedCommit)
-    connectomeCandidate?.publish(); connectomeCandidate = nil
     self.preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .committed
   }
   public func abort() throws {
@@ -258,7 +222,6 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       throw TissueError.transaction("joint transaction cannot abort while \(currentStatus)")
     }
     try runtime.abort(transaction: agentStateToken)
-    connectomeCandidate?.abort(); connectomeCandidate = nil
     acceptedPhysicsFingerprint = nil; preparedGPUStateFinish = nil
     preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .aborted
   }

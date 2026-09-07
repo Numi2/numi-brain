@@ -90,7 +90,8 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     device: any MTLDevice,
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectomeProgram: ConnectomeProgram? = nil
   ) throws {
     guard MemoryLayout<AgentArenaUniforms>.stride == 72,
       MemoryLayout<CheckpointCopyUniforms>.stride == 24
@@ -103,7 +104,8 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       device: device,
       species: species,
       regionalProgram: regionalProgram,
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectomeProgram: connectomeProgram
     )
     guard let commandQueue = device.makeMTL4CommandQueue(),
       let commandAllocator = device.makeCommandAllocator(),

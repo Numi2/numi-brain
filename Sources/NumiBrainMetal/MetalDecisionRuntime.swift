@@ -80,7 +80,7 @@ private struct DecisionUniforms {
   var actuatorCommandKind: UInt32 = 0
   var activeSensingCommandScaleBits: UInt32 = 0
   var anatomicalMuscleCount: UInt32 = 0
-  var reservedAnatomy: UInt32 = 0
+  var connectomeControlOffset: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -1060,7 +1060,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
       activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern,
       anatomicalMuscleCount: species.body.muscleCount,
-      reservedAnatomy: 0
+      connectomeControlOffset: arena.layout.connectomeProgramFingerprint == nil ? 0
+        : UInt32(arena.layout.section(.connectomeControl).byteOffset)
     )
   }
 

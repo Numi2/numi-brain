@@ -1,5 +1,10 @@
 import Foundation
 import NumiBrainConnectomeABI
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public enum ConnectomeError: Error, CustomStringConvertible {
   case invalid(String)
@@ -21,9 +26,10 @@ public struct ConnectomeGraph: Sendable {
   public let manifestJSON: String
 
   public init(data: Data, maximumBytes: Int = 1_073_741_824) throws {
-    guard maximumBytes >= 256, data.count <= maximumBytes else {
+    guard maximumBytes >= 256, data.count >= 256, data.count <= maximumBytes else {
       throw ConnectomeError.invalid("graph exceeds its byte budget")
     }
+    let data = data.withUnsafeBytes { Data(bytes: $0.baseAddress!, count: $0.count) }
     var decoded = NBConnectomeGraphView()
     let status = data.withUnsafeBytes {
       nb_connectome_validate($0.baseAddress, $0.count, UInt64(maximumBytes), &decoded)
@@ -42,12 +48,26 @@ public struct ConnectomeGraph: Sendable {
   }
 
   public init(contentsOf url: URL, maximumBytes: Int = 1_073_741_824) throws {
-    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
-    guard let size, size >= 256, size <= maximumBytes else {
-      throw ConnectomeError.invalid("file size exceeds its byte budget")
+    guard url.isFileURL, maximumBytes >= 256 else {
+      throw ConnectomeError.invalid("graph input must be a bounded local file")
     }
-    // A mapped file could be modified after validation. Retain an owned snapshot.
-    try self.init(data: Data(contentsOf: url), maximumBytes: maximumBytes)
+    let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard fd >= 0 else { throw ConnectomeError.invalid("graph file is missing or unsafe") }
+    let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    defer { try? handle.close() }
+    var info = stat()
+    guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+      info.st_size >= 256, info.st_size <= maximumBytes else {
+      throw ConnectomeError.invalid("graph input is not a bounded regular file")
+    }
+    var data = Data(); data.reserveCapacity(Int(info.st_size))
+    while let part = try handle.read(upToCount: min(1_048_576, maximumBytes-data.count+1)), !part.isEmpty {
+      guard part.count <= maximumBytes-data.count else {
+        throw ConnectomeError.invalid("graph grew beyond its byte budget")
+      }
+      data.append(part)
+    }
+    try self.init(data: data, maximumBytes: maximumBytes)
   }
 
   public func node(at index: Int) throws -> NBConnectomeNode {

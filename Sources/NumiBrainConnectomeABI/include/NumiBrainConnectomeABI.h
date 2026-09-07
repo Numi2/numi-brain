@@ -53,6 +53,12 @@ uint64_t nb_connectome_binding_fingerprint(uint64_t graph, uint64_t species,
   uint32_t nominal_step_us, uint32_t integration_step_us,
   const NBConnectomeInput *inputs, uint32_t input_count,
   const NBConnectomeReadout *readouts, uint32_t readout_count);
+/* Host compiler/learner utility. Does not step production neural state. */
+uint64_t nb_connectome_fnv1a_update(uint64_t seed, const void *bytes, size_t count);
+uint64_t nb_connectome_decoder_fingerprint(uint64_t binding_fingerprint,
+  uint64_t compiled_species_fingerprint, uint32_t channels, uint32_t actuators,
+  uint32_t command_kind, float maximum_drive_change_per_second,
+  const float *weights, const float *bias);
 #ifdef __cplusplus
 }
 #endif
