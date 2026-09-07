@@ -16,6 +16,19 @@ def die(message):
     print(message, file=sys.stderr)
     raise SystemExit(1)
 
+def metal_uint_expression(name, source):
+    match = re.search(rf"constant uint {re.escape(name)}\s*=\s*([^;]+);", source)
+    if not match:
+        die(f"Metal shader is missing {name}")
+    expression = re.sub(r"\s+", "", match.group(1))
+    literal = re.fullmatch(r"(\d+)u", expression)
+    if literal:
+        return int(literal.group(1))
+    shift = re.fullmatch(r"(\d+)u<<(\d+)", expression)
+    if shift:
+        return int(shift.group(1)) << int(shift.group(2))
+    die(f"Metal shader {name} uses an unsupported constant expression: {match.group(1)}")
+
 def main():
     with tempfile.TemporaryDirectory() as td:
         generated_swift = Path(td) / "Contract.swift"
@@ -29,7 +42,7 @@ def main():
             die("generated Metal executable-model contract is stale")
 
     data = json.loads(CONTRACT.read_text())
-    t, p = data["committedTransition"], data["policyHead"]
+    t = data["committedTransition"]
     arena = (ROOT / "Sources/NumiBrainMetal/MetalAgentStateArena.swift").read_text()
     if not re.search(r"committedTransitionStride\s*=\s*1_?104\b", arena):
         die("MetalAgentStateArena committed-transition stride drifted from contract")
@@ -40,7 +53,7 @@ def main():
         "NB_COMMITTED_TRANSITION_ACCEPTED_STOP": t["flags"]["acceptedStop"],
     }
     for name, value in expected.items():
-        if not re.search(rf"constant uint {name}\s*=\s*{value}u", shader):
+        if metal_uint_expression(name, shader) != value:
             die(f"Metal shader {name} drifted from contract")
     arrays = {
         "prior_state": 24, "posterior_state": 24, "observation": 24,
