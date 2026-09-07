@@ -1,0 +1,65 @@
+name: Native connectome portable checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Sources/**/Connectome*'
+      - 'Sources/**/Connectome/**'
+      - 'Sources/NumiBrainConnectomeABI/**'
+      - 'Sources/NumiBrainConnectomeCLI/**'
+      - 'Sources/NumiBrainMetal/MetalConnectome*'
+      - 'Tests/**/Connectome*'
+      - 'Tests/**/MetalConnectome*'
+      - 'tools/*connectome*'
+      - '.github/workflows/connectome-portable.yml'
+  pull_request:
+    paths:
+      - 'Sources/**/Connectome*'
+      - 'Sources/**/Connectome/**'
+      - 'Sources/NumiBrainConnectomeABI/**'
+      - 'Sources/NumiBrainConnectomeCLI/**'
+      - 'Sources/NumiBrainMetal/MetalConnectome*'
+      - 'Tests/**/Connectome*'
+      - 'Tests/**/MetalConnectome*'
+      - 'tools/*connectome*'
+      - '.github/workflows/connectome-portable.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connectome-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile and test the native graph contract
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/revision.txt
+          clang++ --version > diagnostics/compiler.txt
+          python3 tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+      - name: Retain exact public source for reproducibility
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          git archive --format=tar.gz --output=diagnostics/source.tar.gz HEAD
+          sha256sum diagnostics/source.tar.gz > diagnostics/source.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-native-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
