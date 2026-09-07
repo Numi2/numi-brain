@@ -1,15 +1,34 @@
 name: Portable qualification checks
 
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
       - 'Sources/NumiBrainQualification/**'
+      - 'Sources/NumiBrainValidation/**'
       - 'Sources/NumiBrainGateECLI/**'
       - 'Sources/NumiBrainGateFCLI/**'
       - 'Sources/NumiBrainWatchdogCLI/**'
       - 'Sources/NumiBrainQualificationCLI/**'
       - 'Tests/NumiBrainQualificationTests/**'
+      - 'Tests/NumiBrainValidationTests/**'
       - 'scripts/validate-gates-ef-portable.sh'
+      - 'scripts/validate-credible-route-portable.sh'
+      - 'scripts/test-watchdog-supervision.py'
+      - '.github/workflows/portable-qualification.yml'
+  pull_request:
+    paths:
+      - 'Sources/NumiBrainQualification/**'
+      - 'Sources/NumiBrainValidation/**'
+      - 'Sources/NumiBrainGateECLI/**'
+      - 'Sources/NumiBrainGateFCLI/**'
+      - 'Sources/NumiBrainWatchdogCLI/**'
+      - 'Sources/NumiBrainQualificationCLI/**'
+      - 'Tests/NumiBrainQualificationTests/**'
+      - 'Tests/NumiBrainValidationTests/**'
+      - 'scripts/validate-gates-ef-portable.sh'
+      - 'scripts/validate-credible-route-portable.sh'
+      - 'scripts/test-watchdog-supervision.py'
       - '.github/workflows/portable-qualification.yml'
   workflow_dispatch:
 
@@ -26,3 +45,5 @@ jobs:
         run: swift --version
       - name: Compile and test Gate E/F reference layer
         run: bash scripts/validate-gates-ef-portable.sh
+      - name: Check physical-objective boundaries and watchdog process protocol
+        run: bash scripts/validate-credible-route-portable.sh

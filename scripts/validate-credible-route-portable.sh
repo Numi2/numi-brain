@@ -9,7 +9,8 @@ mkdir -p "$work/Sources" "$work/Tests/NumiBrainQualificationTests" "$work/Tests/
 for module in NumiBrainQualification NumiBrainValidation NumiBrainWatchdogCLI NumiBrainGateECLI NumiBrainQualificationCLI; do
   cp -R "$repo/Sources/$module" "$work/Sources/"
 done
-for name in QualificationFileIOTests QualificationDeclarationTests SafetyBoundaryTests PerformanceAttemptLedgerTests; do
+for name in QualificationFileIOTests QualificationDeclarationTests SafetyBoundaryTests PerformanceAttemptLedgerTests \
+  WatchdogStopAcknowledgementTests WatchdogRootInterlockTests WatchdogOwnerFileSessionTests; do
   cp "$repo/Tests/NumiBrainQualificationTests/$name.swift" "$work/Tests/NumiBrainQualificationTests/"
 done
 for name in ReachHoldObjectiveTests PhysicalSensorFieldTests; do
@@ -41,4 +42,5 @@ set +e
 status="$?"
 set -e
 [[ "$status" == 1 && -s "$work/stop.json" ]] || { echo "missing heartbeat did not request safe state" >&2; exit 1; }
+python3 "$repo/scripts/test-watchdog-supervision.py" "$bin/numi-brain-watchdog"
 echo "Portable boundary/reference checks only; no native, MLX or physical qualification."
