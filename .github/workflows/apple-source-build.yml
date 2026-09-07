@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'Package.swift'
+      - 'Contracts/**'
       - 'Sources/NumiBrainABI/**'
       - 'Sources/NumiBrainCore/**'
       - 'Sources/NumiBrainMetal/**'
@@ -12,10 +13,13 @@ on:
       - 'Sources/NumiBrainExperimentCLI/**'
       - 'Tests/NumiBrainCoreTests/**'
       - 'Tests/NumiBrainMetalTests/**'
+      - 'scripts/generate-executable-model-contract.py'
+      - 'scripts/check-executable-model-contract.py'
       - '.github/workflows/apple-source-build.yml'
   pull_request:
     paths:
       - 'Package.swift'
+      - 'Contracts/**'
       - 'Sources/NumiBrainABI/**'
       - 'Sources/NumiBrainCore/**'
       - 'Sources/NumiBrainMetal/**'
@@ -23,6 +27,8 @@ on:
       - 'Sources/NumiBrainExperimentCLI/**'
       - 'Tests/NumiBrainCoreTests/**'
       - 'Tests/NumiBrainMetalTests/**'
+      - 'scripts/generate-executable-model-contract.py'
+      - 'scripts/check-executable-model-contract.py'
       - '.github/workflows/apple-source-build.yml'
   workflow_dispatch:
 
@@ -44,12 +50,16 @@ jobs:
           sw_vers
           xcodebuild -version
           swift --version
+      - name: Verify generated executable model contract
+        run: python3 scripts/check-executable-model-contract.py
       - name: Resolve exact dependencies
         run: swift package resolve
       - name: Release-build experiment and watchdog-facing native stack
         run: swift build -c release --product numi-brain-experiment
       - name: Type-check focused Core verifier tests
-        run: swift test --filter BrainAllGatesVerifierTests
+        run: |
+          swift test --filter BrainAllGatesVerifierTests
+          swift test --filter BrainExternalSafetyEnforcerEvidenceTests
       - name: Boundary statement
         run: |
           echo 'This workflow type-checks and links source on an Apple host.'
