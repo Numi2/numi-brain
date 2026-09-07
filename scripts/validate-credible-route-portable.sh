@@ -10,7 +10,7 @@ for module in NumiBrainQualification NumiBrainValidation NumiBrainWatchdogCLI Nu
   cp -R "$repo/Sources/$module" "$work/Sources/"
 done
 for name in QualificationFileIOTests QualificationDeclarationTests SafetyBoundaryTests PerformanceAttemptLedgerTests \
-  WatchdogStopAcknowledgementTests WatchdogRootInterlockTests WatchdogOwnerFileSessionTests; do
+  WatchdogStopAcknowledgementTests WatchdogRootInterlockTests WatchdogOwnerFileSessionTests WatchdogCommittedIdentityTests; do
   cp "$repo/Tests/NumiBrainQualificationTests/$name.swift" "$work/Tests/NumiBrainQualificationTests/"
 done
 for name in ReachHoldObjectiveTests PhysicalSensorFieldTests; do

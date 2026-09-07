@@ -137,7 +137,13 @@ public struct WatchdogMonitor: Sendable {
           let check = try WatchdogDecision(previous: lastHeartbeat, current: heartbeat,
             nowNanoseconds: nowNanoseconds, maximumAgeNanoseconds: maximumAgeNanoseconds)
           if check.mustRequestSafeState { result = check }
-          else {
+          else if let previous = lastHeartbeat,
+            heartbeat.publicGeneration == previous.publicGeneration,
+            heartbeat.transactionFingerprint != previous.transactionFingerprint {
+            // A fresh transport sequence does not authorize a different public
+            // root. Restored rejections retain the committed fingerprint.
+            result = failure(.regressed, "committed_identity_changed_without_publication")
+          } else {
             if lastProgressTime == nil || lastHeartbeat.map({ heartbeat.publicGeneration > $0.publicGeneration }) == true {
               lastProgressTime = nowNanoseconds
             }

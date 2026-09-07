@@ -4,6 +4,8 @@ Status: portable implementation checked; native integration authored, not Apple-
 The implementation through `2734cae4ba1f2cccf0f6b149dc210fe34867faf5` builds on
 `e3ff9f44244d38d8ee525bb2799575f540685b44`. Existing recovery work, native
 protection, physical ownership and qualification thresholds are unchanged.
+The later monitor hardening and safety-campaign fixture correction are recorded
+in the subsequent commits; neither weakens a scenario's declared response.
 This is an implementation increment, not completion of Gate F or all gates.
 
 ## What is connected
@@ -14,7 +16,10 @@ deadline. The expected process, enforcer and stop effect are configured rather
 than inferred from whatever file happens to arrive. Missing, late, malformed,
 foreign or wrong-effect reports fail closed. A restarted supervisor refuses to
 assign a fresh deadline to an existing version-2 incident: that format does not
-retain a trustworthy monotonic issue time.
+retain a trustworthy monotonic issue time. A fresh heartbeat sequence cannot
+change the committed fingerprint without advancing the public generation; that
+identity violation is also a sticky stop, while truthful restored rejections
+retain their unchanged committed identity.
 
 `WatchdogRootInterlock` admits one root with a controller-specific, single-use
 permit. A latched stop closes new admission immediately. An already admitted
@@ -107,8 +112,10 @@ supervisor faults; this command does not itself actuate that response.
 
 Swift 6.2.1 on x86_64 Linux:
 
-- **47 focused XCTest cases passed, zero failures**: 20 acknowledgement,
-  14 admission/settlement and 13 owner file-session cases.
+- **50 focused XCTest cases passed, zero failures**: 20 acknowledgement,
+  14 admission/settlement, 13 owner file-session and three committed-identity
+  monitor cases. The changed-fingerprint case was first reproduced as a failing
+  regression against the previous monitor, then passed after its repair.
 - **Eight actual CLI process checks passed**: healthy check, missing heartbeat,
   missing acknowledgement deadline, matching report without resume authority,
   foreign enforcer, malformed report, wrong stop effect and old-incident deadline
@@ -118,8 +125,8 @@ Swift 6.2.1 on x86_64 Linux:
   Syntax parsing is not Apple type checking, linking or native execution.
 
 These were isolated source checks, not a full repository build. The local
-package contained the new watchdog sources, exact existing file-I/O and watchdog
-protocol files, and the owning heartbeat/verifier/error declarations extracted
+package contained the new watchdog sources, the exact existing file-I/O module and updated watchdog
+protocol file, and the owning heartbeat/verifier/error declarations extracted
 verbatim from their existing files. No substitute physical runner supplied the
 reported results. The script below uses the complete repository's original
 modules instead; its full combined run was not executed in this partial local
