@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Metal
 import NumiBrainCore
@@ -17,6 +18,7 @@ private struct ProbeInput: Codable {
 private struct CaptureInput: Codable {
   let artifactDirectory: String; let protocolSHA256: String; let publicationSHA256: String
   let runIdentifier: String; let nativePaths: [String: String]
+  let watchdog: WatchdogOwnerFileConfiguration?
 }
 private struct EvaluationInput: Codable { let artifactDirectory: String; let protocolSHA256: String; let runSHA256: String }
 private struct CalibrationInput: Codable {
@@ -66,6 +68,7 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
   }
   var roots: [MetalNumanXGateCRootRunner.RootResult] = []
   do {
+    let watchdog = try input.watchdog.map { try WatchdogOwnerFileSession(configuration: $0) }
     let paths = input.nativePaths
     let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
       bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
@@ -86,10 +89,28 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
     let rootCount = try protocolValue.captureRootCount
     roots.reserveCapacity(Int(rootCount))
     for step in UInt32(1)...rootCount {
-      let root = try runner.runRoot(controlStep: step, coordinates: coordinates, externalGoalProvider: { committed, target in
+      let goalProvider: (BrainTimestamp, BrainTimestamp) throws -> ActiveGoal = { committed, target in
         try protocolValue.goal(controlStep: step, committed: committed, target: target)
-      })
-      roots.append(root)
+      }
+      if let watchdog {
+        let supervised = try runner.runSupervisedRoot(watchdog: watchdog, controlStep: step,
+          coordinates: coordinates, externalGoalProvider: goalProvider)
+        // A post-commit reporting fault must not erase the completed root from
+        // the failure record or attempt to roll back published native state.
+        roots.append(supervised.root)
+        if let failure = supervised.reportingFailure {
+          throw BrainRuntimeError.transaction("watchdog reporting failed after retained terminal root: " + failure)
+        }
+        guard !watchdog.admissionClosed else {
+          throw BrainRuntimeError.transaction("watchdog stopped capture after terminal root settlement")
+        }
+      } else {
+        roots.append(try runner.runRoot(controlStep: step, coordinates: coordinates, externalGoalProvider: goalProvider))
+      }
+    }
+    if let watchdog {
+      try watchdog.poll(nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
+      guard !watchdog.admissionClosed else { throw BrainRuntimeError.transaction("watchdog stopped capture before final artifact publication") }
     }
     return try runner.writeCaptureRunArtifact(runIdentifier: input.runIdentifier, sourceRevision: protocolValue.sourceRevision,
       roots: roots, learningBatch: runner.captureLearningBatch())

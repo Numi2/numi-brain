@@ -32,7 +32,7 @@ let package = Package(
     .target(name: "NumiBrainABI", publicHeadersPath: "include"),
     .target(name: "NumiBrainCore", dependencies: ["NumiBrainABI", "NumiBrainValidation", "NumiBrainQualification"]),
     .target(name: "NumiBrainMetalBridgeABI", dependencies: ["NumiBrainABI"], publicHeadersPath: "include"),
-    .target(name: "NumiBrainMetal", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainMetalBridgeABI"], resources: [.process("Shaders")]),
+    .target(name: "NumiBrainMetal", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainQualification", "NumiBrainMetalBridgeABI"], resources: [.process("Shaders")]),
     .target(name: "NumiBrainMLX", dependencies: ["NumiBrainCore", "NumiBrainMetal", .product(name: "MLX", package: "mlx-swift")]),
     .executableTarget(name: "NumiBrainSchedulerCLI", dependencies: ["NumiBrainABI", "NumiBrainCore"]),
     .executableTarget(name: "NumiBrainDispatchCLI", dependencies: ["NumiBrainABI", "NumiBrainCore", "NumiBrainMetal"]),
