@@ -44,6 +44,12 @@ def fixture():
 class View(C.Structure):
     _fields_ = [(x, C.c_uint64) for x in ('fingerprint', 'source', 'ids', 'nodes', 'offsets', 'sources', 'weights', 'labels', 'label_bytes', 'manifest', 'manifest_bytes')] + [(x, C.c_uint32) for x in ('n', 'e', 'resolution', 'reserved')]
 
+class Input(C.Structure):
+    _fields_ = [(x, C.c_uint32) for x in ('node', 'scalar', 'receptor', 'reserved')] + [(x, C.c_float) for x in ('weight', 'scale', 'bias', 'clip')]
+
+class Readout(C.Structure):
+    _fields_ = [('node', C.c_uint32), ('channel', C.c_uint32), ('weight', C.c_float), ('reserved', C.c_uint32)]
+
 class NativePackTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -54,6 +60,8 @@ class NativePackTests(unittest.TestCase):
         cls.lib = C.CDLL(str(path))
         cls.lib.nb_connectome_validate.argtypes = [C.c_void_p, C.c_size_t, C.c_uint64, C.POINTER(View)]
         cls.lib.nb_connectome_validate.restype = C.c_uint32
+        cls.lib.nb_connectome_binding_fingerprint.argtypes = [C.c_uint64]*4 + [C.c_uint32]*6 + [C.POINTER(Input), C.c_uint32, C.POINTER(Readout), C.c_uint32]
+        cls.lib.nb_connectome_binding_fingerprint.restype = C.c_uint64
     @classmethod
     def tearDownClass(cls): cls.tmp.cleanup()
     def check(self, data, budget=1<<20):
@@ -92,5 +100,43 @@ class NativePackTests(unittest.TestCase):
     def test_bad_label_range(self):
         data=fixture(); _,v=self.check(data); struct.pack_into('<I',data,v.labels+4,0xffffffff)
         self.assertEqual(self.check(data)[0],6)
+
+    def binding(self, identities=(1,2,3,4), scalars=2, receptors=1, channels=1,
+                nominal=20000, integration=1000, inputs=None, outputs=None):
+        ins = [Input(0,1,0,0,1,1,0,8)] if inputs is None else inputs
+        outs = [Readout(2,0,1,0)] if outputs is None else outputs
+        return self.lib.nb_connectome_binding_fingerprint(*identities,3,scalars,receptors,
+            channels,nominal,integration,(Input*len(ins))(*ins),len(ins),
+            (Readout*len(outs))(*outs),len(outs))
+    def test_binding_deterministic(self):
+        self.assertNotEqual(self.binding(),0)
+        self.assertEqual(self.binding(),self.binding())
+    def test_binding_requires_every_identity(self):
+        for i in range(4):
+            ids=[1,2,3,4]; ids[i]=0
+            self.assertEqual(self.binding(identities=ids),0)
+    def test_binding_identity_and_time_change_fingerprint(self):
+        self.assertNotEqual(self.binding(),self.binding(integration=500))
+        for i in range(4):
+            ids=[1,2,3,4]; ids[i]+=1
+            self.assertNotEqual(self.binding(),self.binding(identities=ids))
+    def test_binding_invalid_values(self):
+        for field,value in [('weight',float('nan')),('scale',float('inf')),('clip',0),('reserved',1)]:
+            item=Input(0,1,0,0,1,1,0,8); setattr(item,field,value)
+            self.assertEqual(self.binding(inputs=[item]),0)
+    def test_binding_readout_coverage(self):
+        self.assertEqual(self.binding(channels=2),0)
+        self.assertEqual(self.binding(outputs=[]),0)
+        self.assertNotEqual(self.binding(channels=2,outputs=[Readout(2,0,1,0),Readout(2,1,1,0)]),0)
+    def test_binding_index_bounds(self):
+        for field,value in [('node',3),('scalar',2),('receptor',1)]:
+            item=Input(0,1,0,0,1,1,0,8); setattr(item,field,value)
+            self.assertEqual(self.binding(inputs=[item]),0)
+    def test_binding_invalid_time_and_shape(self):
+        self.assertEqual(self.binding(integration=20001),0)
+        self.assertEqual(self.binding(nominal=0),0)
+        self.assertEqual(self.binding(scalars=0),0)
+        self.assertEqual(self.binding(channels=257),0)
+        self.assertEqual(self.binding(inputs=[]),0)
 
 if __name__ == '__main__': unittest.main()
