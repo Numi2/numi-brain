@@ -15,10 +15,16 @@ private struct SeedInput: Codable { let artifactDirectory: String; let timestepM
 private struct ProbeInput: Codable {
   let artifactDirectory: String; let parentPublicationSHA256: String; let coordinate: Int; let offset: Float
 }
+private struct WatchdogLifecycleInput: Codable {
+  let armPath: String
+  let readyPath: String
+  let completionPath: String
+}
 private struct CaptureInput: Codable {
   let artifactDirectory: String; let protocolSHA256: String; let publicationSHA256: String
   let runIdentifier: String; let nativePaths: [String: String]
   let watchdog: WatchdogOwnerFileConfiguration?
+  let watchdogLifecycle: WatchdogLifecycleInput?
 }
 private struct EvaluationInput: Codable { let artifactDirectory: String; let protocolSHA256: String; let runSHA256: String }
 private struct CalibrationInput: Codable {
@@ -49,7 +55,7 @@ private func emit<T: Encodable>(_ value: T) throws {
 }
 private func directory(_ path: String) throws -> URL {
   let url = URL(fileURLWithPath: path, isDirectory: true)
-  _ = try QualificationFileDirectory(url: url) // existing, nonsymlinked destination
+  _ = try QualificationFileDirectory(url: url)
   return url
 }
 private func publication(_ sha: String, _ directory: URL) throws -> BrainMotorStudyPublication {
@@ -63,12 +69,27 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
   guard weights.version.fingerprint == protocolValue.parameterVersionFingerprint,
     !input.runIdentifier.isEmpty, input.runIdentifier.utf8.count <= 256,
     Set(input.nativePaths.keys) == Set(["library", "rigid", "muscle", "contacts", "visualPack", "visionProfile", "metalRoboMetallib", "matterMetallib", "material"]),
-    input.nativePaths.values.allSatisfy({ !$0.isEmpty }), let device = MTLCreateSystemDefaultDevice() else {
-    throw BrainRuntimeError.transaction("experiment configuration, model identity or Metal device is invalid")
+    input.nativePaths.values.allSatisfy({ !$0.isEmpty }),
+    (input.watchdog == nil) == (input.watchdogLifecycle == nil),
+    let device = MTLCreateSystemDefaultDevice() else {
+    throw BrainRuntimeError.transaction("experiment configuration, model identity, watchdog lifecycle or Metal device is invalid")
   }
   var roots: [MetalNumanXGateCRootRunner.RootResult] = []
   do {
     let watchdog = try input.watchdog.map { try WatchdogOwnerFileSession(configuration: $0) }
+    let lifecycle: WatchdogOwnerLifecycle? = try {
+      guard let watchdog, let life = input.watchdogLifecycle else { return nil }
+      let paths = [life.armPath, life.readyPath, life.completionPath]
+      guard paths.allSatisfy({ $0.hasPrefix("/") }) else {
+        throw BrainRuntimeError.transaction("watchdog lifecycle paths must be absolute")
+      }
+      let value = try WatchdogOwnerLifecycle(owner: watchdog,
+        armURL: URL(fileURLWithPath: life.armPath), readyURL: URL(fileURLWithPath: life.readyPath),
+        completionURL: URL(fileURLWithPath: life.completionPath),
+        nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
+      try value.activate(nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
+      return value
+    }()
     let paths = input.nativePaths
     let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
       bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
@@ -95,8 +116,6 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
       if let watchdog {
         let supervised = try runner.runSupervisedRoot(watchdog: watchdog, controlStep: step,
           coordinates: coordinates, externalGoalProvider: goalProvider)
-        // A post-commit reporting fault must not erase the completed root from
-        // the failure record or attempt to roll back published native state.
         roots.append(supervised.root)
         if let failure = supervised.reportingFailure {
           throw BrainRuntimeError.transaction("watchdog reporting failed after retained terminal root: " + failure)
@@ -110,13 +129,19 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
     }
     if let watchdog {
       try watchdog.poll(nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
-      guard !watchdog.admissionClosed else { throw BrainRuntimeError.transaction("watchdog stopped capture before final artifact publication") }
+      guard !watchdog.admissionClosed else {
+        throw BrainRuntimeError.transaction("watchdog stopped capture before final artifact publication")
+      }
     }
-    return try runner.writeCaptureRunArtifact(runIdentifier: input.runIdentifier, sourceRevision: protocolValue.sourceRevision,
-      roots: roots, learningBatch: runner.captureLearningBatch())
+    let runHash = try runner.writeCaptureRunArtifact(runIdentifier: input.runIdentifier,
+      sourceRevision: protocolValue.sourceRevision, roots: roots,
+      learningBatch: runner.captureLearningBatch())
+    if let lifecycle {
+      _ = try lifecycle.complete(terminalEvidenceArtifactSHA256: runHash,
+        nowNanoseconds: DispatchTime.now().uptimeNanoseconds)
+    }
+    return runHash
   } catch {
-    // A command failure cannot fabricate a successful root transcript. Retain
-    // completed terminal identities and the fault separately before returning.
     let failure = FailureRecord(configurationSHA256: configSHA, protocolSHA256: input.protocolSHA256,
       completedExecutionSHA256: roots.map(\.executionArtifactSHA256), error: String(describing: error))
     let hash = try BrainReachHoldExperiment.retain(failure, directory: directory)
