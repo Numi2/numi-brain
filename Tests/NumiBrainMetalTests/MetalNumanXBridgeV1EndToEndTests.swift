@@ -5,6 +5,7 @@ import XCTest
 @testable import NumiBrainCore
 @_spi(NumanXInterop) @testable import NumiBrainMetal
 import NumiBrainMLX
+import NumiBrainMetalBridgeABI
 
 @available(macOS 26.0, *)
 final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
@@ -17,6 +18,24 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let world = try World(packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 2)
     XCTAssertEqual(world.humanSourceFingerprint, 1)
     XCTAssertEqual(world.worldFingerprint, 2)
+  }
+
+  func testSourceJointEqualitiesDescriptorAndConfigurationV4Layout() throws {
+    typealias Equalities = MetalNumanXBridgeV1Runtime.SourceJointEqualities
+    XCTAssertThrowsError(try Equalities(payloadPath: "", fingerprint: 1))
+    XCTAssertThrowsError(try Equalities(payloadPath: "source\0other", fingerprint: 1))
+    XCTAssertThrowsError(try Equalities(payloadPath: "source.nheq", fingerprint: 0))
+    let equalities = try Equalities(payloadPath: "source.nheq", fingerprint: 0x4e48455132)
+    let world = try MetalNumanXBridgeV1Runtime.AuthoredMatterWorld(
+      packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 2,
+      sourceJointEqualities: equalities)
+    XCTAssertEqual(world.sourceJointEqualities?.payloadPath, "source.nheq")
+    XCTAssertEqual(world.sourceJointEqualities?.fingerprint, 0x4e48455132)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v3>.stride, 168)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.stride, 192)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.offset(of: \.runtime), 8)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.offset(of: \.joint_equality_payload_path), 176)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.offset(of: \.expected_joint_equality_fingerprint), 184)
   }
 
   func testGateBAcceptedDevelopmentEnablesAutonomousPhysicalGaze() throws {
@@ -1145,8 +1164,16 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       let world = environment["NUMANX_MATTER_WORLD_FP"].flatMap({ UInt64($0, radix: 16) }) else {
       throw XCTSkip("authored Matter package and identities are not configured")
     }
+    var equalities: MetalNumanXBridgeV1Runtime.SourceJointEqualities?
+    if environment["NUMANX_JOINT_EQUALITIES"] != nil || environment["NUMANX_JOINT_EQUALITY_FP"] != nil {
+      let equalityPath = try XCTUnwrap(environment["NUMANX_JOINT_EQUALITIES"])
+      let equalityFingerprint = try XCTUnwrap(environment["NUMANX_JOINT_EQUALITY_FP"]
+        .flatMap { UInt64($0, radix: 16) })
+      equalities = try .init(payloadPath: equalityPath, fingerprint: equalityFingerprint)
+    }
     try runFullBodyJointPublication(authoredWorld: .init(packagePath: path,
-      humanSourceFingerprint: human, worldFingerprint: world))
+      humanSourceFingerprint: human, worldFingerprint: world,
+      sourceJointEqualities: equalities))
   }
 
   private func runFullBodyJointPublication(
@@ -1231,7 +1258,21 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       let world = try native.currentWorldInfo()
       XCTAssertTrue(world.authoredPackage)
       XCTAssertEqual(world.worldFingerprint, authoredWorld.worldFingerprint)
-      XCTAssertEqual(native.info.modelSourceFingerprint, authoredWorld.humanSourceFingerprint)
+      if let equalities = authoredWorld.sourceJointEqualities {
+        let fnvOffset: UInt64 = 0xcbf29ce484222325
+        let fnvPrime: UInt64 = 0x100000001b3
+        let domain = "NHEQ2".utf8.reduce(fnvOffset) { ($0 ^ UInt64($1)) &* fnvPrime }
+        var expectedSource = ((authoredWorld.humanSourceFingerprint ^ domain) &* fnvPrime
+          ^ equalities.fingerprint) &* fnvPrime
+        if expectedSource == 0 { expectedSource = fnvOffset }
+        XCTAssertEqual(native.info.modelSourceFingerprint, expectedSource,
+          "The source equality program must participate in the runtime model identity")
+        if let expected = ProcessInfo.processInfo.environment["NUMANX_CONSTRAINED_HUMAN_SOURCE_FP"] {
+          XCTAssertEqual(native.info.modelSourceFingerprint, try XCTUnwrap(UInt64(expected, radix: 16)))
+        }
+      } else {
+        XCTAssertEqual(native.info.modelSourceFingerprint, authoredWorld.humanSourceFingerprint)
+      }
       XCTAssertEqual(world.objectCount, 3)
       XCTAssertEqual(world.femAttachmentCount, 12)
     }
@@ -1564,7 +1605,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       rejected.cultureActionGeneration,
       cultureBeforeReject?.culture.generation
     )
-    let rejectedAcceptedToken = acceptedGateBytes(
+    let rejectedAcceptedToken = try acceptedGateBytes(
       rejected.physical.acceptedPhysicsGate
     )
     let rejectedSensorPayload = try sensorPayloadBytes(
@@ -1658,7 +1699,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       )
     }
     XCTAssertEqual(
-      acceptedGateBytes(retried.physical.acceptedPhysicsGate),
+      try acceptedGateBytes(retried.physical.acceptedPhysicsGate),
       rejectedAcceptedToken
     )
     XCTAssertEqual(
@@ -2527,10 +2568,10 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       )
     }
     let activeSensingWords = try qualificationUInt32s(
-      from: Array(UnsafeRawBufferPointer(
-        start: motor.buffers.activeSensingBuffer.contents(),
-        count: activeSensingByteCount
-      ))
+      from: qualificationReadback(
+        motor.buffers.activeSensingBuffer,
+        byteOffset: 0, byteCount: activeSensingByteCount, device: device
+      )
     )
     guard activeSensingWords.count == 4 else {
       throw TissueError.transaction(
@@ -2827,15 +2868,16 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     return try MetalSharedEventPoint(event: event, value: value)
   }
 
-  // Test-only replay evidence. Production authority never reads these shared
-  // payloads on the host; it consumes the accepted token and sensors on GPU.
+  // Test-only replay evidence after the producing root has completed. Native
+  // accepted gates may be private; retain GPU ownership and copy only this range
+  // through the same bounded diagnostic path used for private sensor evidence.
   private func acceptedGateBytes(
     _ gate: MetalAcceptedPhysicsGateLease
-  ) -> [UInt8] {
-    Array(UnsafeRawBufferPointer(
-      start: gate.buffer.contents().advanced(by: gate.byteOffset),
-      count: MetalAcceptedPhysicsGateLease.byteCount
-    ))
+  ) throws -> [UInt8] {
+    try qualificationReadback(
+      gate.buffer, byteOffset: gate.byteOffset,
+      byteCount: MetalAcceptedPhysicsGateLease.byteCount, device: gate.buffer.device
+    )
   }
 
   // Test-only evidence for private native sensor bytes. Production consumers
@@ -2845,8 +2887,26 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     _ range: MetalNumanXHumanIOCandidateRangeLease,
     device: any MTLDevice
   ) throws -> [UInt8] {
+    try qualificationReadback(
+      range.buffer, byteOffset: range.byteOffset, byteCount: range.byteCount,
+      device: device
+    )
+  }
+
+  private func qualificationReadback(
+    _ buffer: any MTLBuffer,
+    byteOffset: Int = 0,
+    byteCount: Int? = nil,
+    device: any MTLDevice
+  ) throws -> [UInt8] {
+    let count = byteCount ?? buffer.length
+    let (end, overflow) = byteOffset.addingReportingOverflow(count)
+    guard byteOffset >= 0, count > 0, !overflow, end <= buffer.length,
+      buffer.device.registryID == device.registryID else {
+      throw TissueError.transaction("qualification readback range or device is invalid")
+    }
     guard let staging = device.makeBuffer(
-      length: range.byteCount,
+      length: count,
       options: [.storageModeShared, .hazardTrackingModeTracked]
     ), let queue = device.makeCommandQueue(),
       let commandBuffer = queue.makeCommandBuffer(),
@@ -2855,8 +2915,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       throw TissueError.metal("failed to allocate qualification readback")
     }
     blit.copy(
-      from: range.buffer, sourceOffset: range.byteOffset,
-      to: staging, destinationOffset: 0, size: range.byteCount
+      from: buffer, sourceOffset: byteOffset,
+      to: staging, destinationOffset: 0, size: count
     )
     blit.endEncoding()
     commandBuffer.commit()
@@ -2867,23 +2927,6 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     return Array(UnsafeRawBufferPointer(
       start: staging.contents(), count: staging.length
     ))
-  }
-
-  private func qualificationReadback(
-    _ buffer: any MTLBuffer,
-    device: any MTLDevice
-  ) throws -> [UInt8] {
-    let object = Unmanaged.passUnretained(buffer as AnyObject).toOpaque()
-    let range = try MetalNumanXHumanIOCandidateRangeLease(
-      buffer: buffer,
-      metalBufferObject: object,
-      gpuAddress: buffer.gpuAddress,
-      byteOffset: 0,
-      byteCount: buffer.length,
-      elementType: MetalNumanXHumanIOCandidateRangeLease.float32ElementType,
-      elementByteCount: UInt32(MemoryLayout<Float>.stride)
-    )
-    return try qualificationReadback(range, device: device)
   }
 
   private func qualificationUInt32s(from bytes: [UInt8]) throws -> [UInt32] {

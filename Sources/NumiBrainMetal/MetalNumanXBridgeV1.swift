@@ -38,6 +38,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v3>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV4 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v4>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
@@ -126,6 +130,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreate: RuntimeCreate
   let runtimeCreateV2: RuntimeCreateV2
   let runtimeCreateV3: RuntimeCreateV3?
+  let runtimeCreateV4: RuntimeCreateV4?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
@@ -185,6 +190,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCreateV3 = try? Self.symbol(
         "mrnx_bridge_v1_runtime_create_v3", library: library
+      )
+      runtimeCreateV4 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v4", library: library
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
@@ -1169,13 +1177,32 @@ private let metalNumanXBridgeV1LatchCallback: MetalNumanXBridgeV1LatchCallback =
 @available(macOS 26.0, *)
 @_spi(NumanXInterop)
 public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
+  /// Immutable NHEQ2 source program. Native admission validates the exact bytes
+  /// and source joint laws; Swift only transports this compatibility identity.
+  public struct SourceJointEqualities: Sendable {
+    public let payloadPath: String
+    public let fingerprint: UInt64
+
+    public init(payloadPath: String, fingerprint: UInt64) throws {
+      guard !payloadPath.isEmpty, !payloadPath.utf8.contains(0), fingerprint != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Source joint equalities require an NHEQ2 payload path and nonzero fingerprint"
+        )
+      }
+      self.payloadPath = payloadPath
+      self.fingerprint = fingerprint
+    }
+  }
+
   public struct AuthoredMatterWorld: Sendable {
     public let packagePath: String
     public let humanSourceFingerprint: UInt64
     public let worldFingerprint: UInt64
+    public let sourceJointEqualities: SourceJointEqualities?
 
     public init(packagePath: String, humanSourceFingerprint: UInt64,
-                worldFingerprint: UInt64) throws {
+                worldFingerprint: UInt64,
+                sourceJointEqualities: SourceJointEqualities? = nil) throws {
       guard !packagePath.isEmpty, !packagePath.utf8.contains(0),
         humanSourceFingerprint != 0, worldFingerprint != 0 else {
         throw MetalNumanXBridgeV1Error.invalidABI(
@@ -1185,6 +1212,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.packagePath = packagePath
       self.humanSourceFingerprint = humanSourceFingerprint
       self.worldFingerprint = worldFingerprint
+      self.sourceJointEqualities = sourceJointEqualities
     }
   }
 
@@ -1346,10 +1374,18 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       )
     }
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
-    if configuration.authoredMatterWorld != nil && symbols.runtimeCreateV3 == nil {
-      throw MetalNumanXBridgeV1Error.invalidABI(
-        "Native runtime lacks authored Matter configuration v3; refusing fixture fallback"
-      )
+    if let world = configuration.authoredMatterWorld {
+      if world.sourceJointEqualities != nil {
+        guard symbols.runtimeCreateV4 != nil else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "Native runtime lacks source joint equality configuration v4; refusing unconstrained fallback"
+          )
+        }
+      } else if symbols.runtimeCreateV3 == nil {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Native runtime lacks authored Matter configuration v3; refusing fixture fallback"
+        )
+      }
     }
     var rawInfo = mrnx_runtime_info_v1()
     rawInfo.abi_version = UInt32(MRNX_BRIDGE_ABI_V1)
@@ -1393,8 +1429,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                             config.culture_protocol_path = protocolPath
                             config.culture_window_ticks = culturePack == nil ? 0 : configuration.cultureWindowTicks
                             config.culture_current_per_newton = culturePack == nil ? 0 : configuration.cultureCurrentPerNewton
-                            if let world = configuration.authoredMatterWorld,
-                              let create = symbols.runtimeCreateV3 {
+                            if let world = configuration.authoredMatterWorld {
                               config.matter_material_path = nil
                               return world.packagePath.withCString { path in
                                 var authored = mrnx_runtime_config_v3()
@@ -1404,7 +1439,18 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                                 authored.matter_world_package_path = path
                                 authored.expected_model_source_fingerprint = world.humanSourceFingerprint
                                 authored.expected_matter_world_fingerprint = world.worldFingerprint
-                                return create(&authored, &rawInfo)
+                                if let equalities = world.sourceJointEqualities {
+                                  return equalities.payloadPath.withCString { equalityPath in
+                                    var constrained = mrnx_runtime_config_v4()
+                                    constrained.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V4)
+                                    constrained.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v4>.stride)
+                                    constrained.runtime = authored
+                                    constrained.joint_equality_payload_path = equalityPath
+                                    constrained.expected_joint_equality_fingerprint = equalities.fingerprint
+                                    return symbols.runtimeCreateV4?(&constrained, &rawInfo)
+                                  }
+                                }
+                                return symbols.runtimeCreateV3?(&authored, &rawInfo)
                               }
                             }
                             return symbols.runtimeCreateV2(&config, &rawInfo)

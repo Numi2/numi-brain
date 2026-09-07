@@ -23,6 +23,7 @@
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V3 3u
 #define MRNX_RUNTIME_CONFIG_ABI_V2 2u
 #define MRNX_RUNTIME_CONFIG_ABI_V3 3u
+#define MRNX_RUNTIME_CONFIG_ABI_V4 4u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -263,6 +264,21 @@ typedef struct mrnx_runtime_config_v3 {
     uint64_t expected_matter_world_fingerprint;
 } mrnx_runtime_config_v3;
 
+// Source-bound equality construction requires an authored Matter world and an
+// NHEQ2 payload. The nested v3 configuration retains its own v3/v2 headers and
+// base NHRIGID/NHMYO/NHCNT identity for world admission. The resulting runtime
+// model-source identity additionally includes the equality program. The expected
+// equality fingerprint is nonzero FNV-1a64 over exact immutable NHEQ2 bytes;
+// it is a trusted-process compatibility key, not cryptographic provenance.
+// A v4 request never falls back to an unconstrained v3 world.
+typedef struct mrnx_runtime_config_v4 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    mrnx_runtime_config_v3 runtime;
+    const char* joint_equality_payload_path;
+    uint64_t expected_joint_equality_fingerprint;
+} mrnx_runtime_config_v4;
+
 // Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
 // as fixtures; successfully loading an authored package is not calibration.
 typedef struct mrnx_runtime_world_info_v1 {
@@ -477,6 +493,13 @@ _Static_assert(sizeof(mrnx_applied_view_v1) == 240u, "mrnx applied ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v3) == 168u, "mrnx config v3 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v3, matter_world_package_path) == 144u,
                "mrnx config v3 world offset");
+_Static_assert(sizeof(mrnx_runtime_config_v4) == 192u, "mrnx config v4 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v4, runtime) == 8u,
+               "mrnx config v4 nested runtime offset");
+_Static_assert(offsetof(mrnx_runtime_config_v4, joint_equality_payload_path) == 176u,
+               "mrnx config v4 equality path offset");
+_Static_assert(offsetof(mrnx_runtime_config_v4, expected_joint_equality_fingerprint) == 184u,
+               "mrnx config v4 equality fingerprint offset");
 _Static_assert(sizeof(mrnx_runtime_world_info_v1) == 40u, "mrnx world info ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v1) == 104u, "mrnx config ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v2) == 136u, "mrnx config v2 ABI");

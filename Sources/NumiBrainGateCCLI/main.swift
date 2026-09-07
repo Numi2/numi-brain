@@ -208,16 +208,26 @@ private struct FewShotEvaluationSummary: Codable {
 private func authoredMatterWorld(in options: [String: String]) throws
   -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld? {
   let keys = ["--matter-world", "--human-source-fp", "--matter-world-fp"]
-  guard keys.contains(where: { options[$0] != nil }) else {
+  let equalityKeys = ["--joint-equalities", "--joint-equality-fp"]
+  guard (keys + equalityKeys).contains(where: { options[$0] != nil }) else {
     _ = required("--material", in: options)
     return nil
   }
   guard keys.allSatisfy({ options[$0] != nil }), options["--material"] == nil else {
-    usage("--matter-world requires --human-source-fp and --matter-world-fp, without --material")
+    usage("Authored Matter and joint equalities require --matter-world, --human-source-fp and --matter-world-fp, without --material")
+  }
+  var equalities: MetalNumanXBridgeV1Runtime.SourceJointEqualities?
+  if equalityKeys.contains(where: { options[$0] != nil }) {
+    guard equalityKeys.allSatisfy({ options[$0] != nil }) else {
+      usage("--joint-equalities requires --joint-equality-fp")
+    }
+    equalities = try .init(payloadPath: required("--joint-equalities", in: options),
+      fingerprint: fingerprint("--joint-equality-fp", in: options))
   }
   return try .init(packagePath: required("--matter-world", in: options),
     humanSourceFingerprint: fingerprint("--human-source-fp", in: options),
-    worldFingerprint: fingerprint("--matter-world-fp", in: options))
+    worldFingerprint: fingerprint("--matter-world-fp", in: options),
+    sourceJointEqualities: equalities)
 }
 
 private func usage(_ message: String? = nil) -> Never {
@@ -237,7 +247,11 @@ private func usage(_ message: String? = nil) -> Never {
     World input: --material PATH selects the legacy fixture, or provide
     --matter-world PATH --human-source-fp HEX --matter-world-fp HEX to load
     an existing cooked Matter package through native configuration v3.
-    Authored package loading does not qualify anatomy or standing.
+    Add --joint-equalities PATH --joint-equality-fp HEX for source-bound NHEQ2
+    through native configuration v4. The equality key is FNV-1a64 of its bytes;
+    --human-source-fp remains the base NHRIGID/NHMYO/NHCNT world-admission key.
+    Unsupported native v4 fails without an unconstrained fallback.
+    Package or source-constraint loading does not qualify anatomy or standing.
 
     capture-train additionally requires --learning-rate FLOAT and at least
     three roots. It emits one deterministic, immutable, non-promotable MLX
