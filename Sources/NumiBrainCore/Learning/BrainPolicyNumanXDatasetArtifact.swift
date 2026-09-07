@@ -1084,7 +1084,7 @@ public enum BrainPolicyNumanXCaptureVerifier {
     return VerifiedLearningBatch(artifact: artifact, hashes: hashes)
   }
 
-  static func verifiedData(
+  package static func verifiedData(
     sha256: String,
     directory: URL
   ) throws -> Data {
