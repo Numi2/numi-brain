@@ -17,6 +17,21 @@ struct NBCNSDispatch {
   float time_ratio, output_clip, reserved3, reserved4;
 };
 
+
+// Metal does not expose log1p/expm1. Fifth-order expansions avoid cancellation
+// for small positive alpha and small negative exponent; outside that interval
+// ordinary log/exp are well conditioned for the bounded model timestep.
+inline float nb_cns_time_alpha(float alpha, float ratio) {
+  if (alpha == 1.0f) return 1.0f;
+  const float log_decay = alpha < 0.01f
+    ? -alpha * (1.0f + alpha * (0.5f + alpha * (1.0f/3.0f + alpha * (0.25f + alpha/5.0f))))
+    : log(1.0f-alpha);
+  const float exponent = log_decay * ratio;
+  return abs(exponent) < 0.01f
+    ? -exponent * (1.0f + exponent * (0.5f + exponent * (1.0f/6.0f + exponent * (1.0f/24.0f + exponent/120.0f))))
+    : 1.0f-exp(exponent);
+}
+
 kernel void nb_connectome_rate_step(
   device const NBCNSNode *nodes [[buffer(0)]],
   device const uint *offsets [[buffer(1)]],
@@ -46,7 +61,7 @@ kernel void nb_connectome_rate_step(
   }
   const float target = tanh(node.bias + node.recurrent_gain*recurrent + node.sensory_gain*sensory);
   // alpha in NUMICNS1 is defined at the explicit nominal physical interval.
-  const float alpha = node.alpha == 1.0f ? 1.0f : -expm1(log1p(-node.alpha) * u.time_ratio);
+  const float alpha = nb_cns_time_alpha(node.alpha, u.time_ratio);
   const float candidate = previous[i] + alpha*(target-previous[i]);
   next[i] = isfinite(candidate) ? clamp(candidate, -1.0f, 1.0f) : NAN;
 }

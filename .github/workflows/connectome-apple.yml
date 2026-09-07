@@ -1,0 +1,61 @@
+name: Apple connectome build and integration checks
+on:
+  push:
+    branches: [main, integration/connectome-import-20260907]
+    paths:
+      - 'Sources/**'
+      - 'Tests/**'
+      - 'Package.swift'
+      - '.github/workflows/connectome-apple.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: connectome-apple-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  apple:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Toolchain identity
+        run: |
+          mkdir -p diagnostics
+          { git rev-parse HEAD; sw_vers; xcodebuild -version; swift --version; system_profiler SPDisplaysDataType; } | tee diagnostics/toolchain.txt
+      - name: Compile Metal shaders before the full source build
+        shell: bash
+        run: |
+          set -o pipefail
+          xcrun -sdk macosx metal -c Sources/NumiBrainMetal/Shaders/ConnectomeRate.metal -o "$RUNNER_TEMP/connectome.air" 2>&1 | tee diagnostics/shaders.txt
+          xcrun -sdk macosx metal -I Sources/NumiBrainMetal/Shaders -c Sources/NumiBrainMetal/Shaders/DecisionState.metal -o "$RUNNER_TEMP/decision.air" 2>&1 | tee -a diagnostics/shaders.txt
+      - uses: actions/cache/restore@v4
+        id: build-cache
+        with:
+          path: .build
+          key: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
+          restore-keys: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-
+      - name: Release build
+        shell: bash
+        run: |
+          set -o pipefail
+          swift build -c release --product numi-brain-experiment 2>&1 | tee diagnostics/build.txt
+      - name: Focused connectome tests
+        shell: bash
+        run: |
+          set -o pipefail
+          swift test -c release --filter 'ConnectomeGraphTests|MetalConnectomeKernelTests|MetalConnectomeIntegrationTests|ConnectomeDecoderLearningTests' 2>&1 | tee diagnostics/tests.txt
+      - uses: actions/cache/save@v4
+        if: always() && steps.build-cache.outcome == 'success'
+        with:
+          path: .build
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-apple-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
