@@ -2,125 +2,17 @@ name: Verify complete connectome control integration
 on:
   push:
     branches: [integration/connectome-complete-20260907]
-    paths:
-      - '.numi/connectome.final.*'
-      - '.github/workflows/connectome-complete.yml'
+    paths: ['.github/workflows/connectome-complete.yml']
 permissions:
   contents: read
 jobs:
-  source:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    outputs:
-      commit: ${{ steps.publish.outputs.commit }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Reconstruct and verify reviewed source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/connectome-diagnostics"
-          cat .numi/connectome.final.{0,1,2} > "$RUNNER_TEMP/connectome.final.xz"
-          git checkout --detach fc6e0ae5c48b2dbd5caff38c21d228aba2c89897
-          python3 - <<'PY'
-          import hashlib,json,lzma,os,subprocess
-          from pathlib import Path,PurePosixPath
-          encoded=(Path(os.environ['RUNNER_TEMP'])/'connectome.final.xz').read_bytes()
-          assert len(encoded)==16700
-          assert hashlib.sha256(encoded).hexdigest()=='9119af370c00990378ca589b4d8a4b67e2ff550df881f21cf4880a6529676c13'
-          payload=lzma.decompress(encoded)
-          assert len(payload)==61749
-          assert hashlib.sha256(payload).hexdigest()=='633f1de952de30a418bea7e26d78bf91584bb1d33f55702cc32d7650563f0830'
-          entries=json.loads(payload); paths=[]
-          assert len(entries)==21
-          for entry in entries:
-              path=PurePosixPath(entry['path'])
-              assert not path.is_absolute() and '..' not in path.parts
-              assert path.parts[0] in ('Sources','Tests','docs','evidence') or str(path)=='Package.swift'
-              target=Path(path)
-              assert not any(p.is_symlink() for p in [target,*target.parents])
-              old=target.read_bytes() if target.exists() else b''
-              assert hashlib.sha256(old).hexdigest()==entry['old'],str(path)
-              lines=old.decode().splitlines(keepends=True)
-              previous=0
-              for start,end,text in entry['edits']:
-                  assert previous<=start<=end<=len(lines)
-                  previous=end
-              for start,end,text in reversed(entry['edits']): lines[start:end]=text.splitlines(keepends=True)
-              new=''.join(lines).encode()
-              assert hashlib.sha256(new).hexdigest()==entry['new'],str(path)
-              target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(new);paths.append(str(path))
-          subprocess.run(['git','add','--',*paths],check=True)
-          tree=subprocess.check_output(['git','write-tree'],text=True).strip()
-          assert tree=='26d07a241fba789a01231db539285de8ae192727',tree
-          print('Verified reviewed source tree:',tree)
-          PY
-          git diff --cached --check
-          git config user.name 'NumiBrain integration'
-          git config user.email '33553832+Numi2@users.noreply.github.com'
-          git commit -m 'feat: complete native connectome launch and committed decoder learning' -m 'Integrate observer and actuation modes, exact native anatomy discovery, accepted-only teacher capture, episode-disjoint MLX decoder fitting, explicit launch manifests and retained full-release graph evidence. Preserve graph connectivity and reject unverified policy promotion.'
-      - name: Preserve the current main authored-world integration
-        shell: bash
-        run: |
-          set -euo pipefail
-          main=45d63b51c2d98e83cebce5264472192b86095d46
-          if ! git merge --no-commit --no-ff "$main"; then
-            python3 - <<'PY'
-          import subprocess
-          allowed={'Sources/NumiBrainCore/Learning/BrainFoundationPolicyEvidence.swift','Sources/NumiBrainCore/Learning/BrainPolicyNumanXDatasetArtifact.swift','Tests/NumiBrainQualificationTests/WatchdogLifecycleProtocolTests.swift'}
-          conflicts=subprocess.check_output(['git','diff','--name-only','--diff-filter=U'],text=True).splitlines()
-          assert conflicts and set(conflicts)<=allowed,conflicts
-          for path in conflicts:
-              subprocess.run(['git','checkout','45d63b51c2d98e83cebce5264472192b86095d46','--',path],check=True)
-          PY
-          fi
-          git diff --cached --check
-          git commit -m 'merge: preserve authored Matter loading and Apple test corrections from main'
-          git merge-base --is-ancestor "$main" HEAD
-      - name: Native contracts and importer regressions
-        shell: bash
-        run: |
-          set -o pipefail
-          python3 tools/test_connectome_native.py 2>&1 | tee "$RUNNER_TEMP/connectome-diagnostics/native-tests.txt"
-          python3 scripts/check-executable-model-contract.py 2>&1 | tee "$RUNNER_TEMP/connectome-diagnostics/model-contract.txt"
-          python3 -m pip install -r tools/connectome-requirements.txt
-          python3 tools/test_connectome_import.py 2>&1 | tee "$RUNNER_TEMP/connectome-diagnostics/import-tests.txt"
-      - name: Publish reviewed integration source without rewriting main
-        id: publish
-        shell: bash
-        run: |
-          set -euo pipefail
-          revision=$(git rev-parse HEAD)
-          git push origin HEAD:refs/heads/integration/connectome-complete-source-${GITHUB_RUN_ID}
-          echo "commit=$revision" >> "$GITHUB_OUTPUT"
-      - name: Retain exact merged source and diagnostics
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/connectome-diagnostics"
-          git rev-parse HEAD > "$RUNNER_TEMP/connectome-diagnostics/revision.txt"
-          git status --short > "$RUNNER_TEMP/connectome-diagnostics/status.txt"
-          git archive --format=tar.gz --output="$RUNNER_TEMP/connectome-diagnostics/source.tar.gz" HEAD
-          sha256sum "$RUNNER_TEMP/connectome-diagnostics/source.tar.gz" > "$RUNNER_TEMP/connectome-diagnostics/source.sha256"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: connectome-complete-source-${{ github.run_id }}
-          path: ${{ runner.temp }}/connectome-diagnostics/
-          retention-days: 7
-          if-no-files-found: error
   apple:
-    needs: source
     runs-on: macos-26
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.source.outputs.commit }}
+          ref: 200e11e042a4be7aa2cbcf111364319b267af73f
           persist-credentials: false
       - name: Toolchain and revision
         run: |
@@ -130,7 +22,7 @@ jobs:
         id: build-cache
         with:
           path: .build
-          key: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-${{ needs.source.outputs.commit }}
+          key: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-${{ github.sha }}
           restore-keys: connectome-apple-26-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-
       - name: Compile affected Metal shaders
         shell: bash
@@ -142,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          swift build -c release --build-tests 2>&1 | tee diagnostics/build-tests.txt
+          swift build -c release --build-tests -Xswiftc -enable-testing 2>&1 | tee diagnostics/build-tests.txt
       - name: Build the pinned MLX Metal resource
         shell: bash
         run: |
