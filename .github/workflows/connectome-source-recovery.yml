@@ -1,0 +1,29 @@
+name: Recover exact connectome source
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/connectome-source-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Export tracked source without executing staged code
+        run: |
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/revision.txt
+          git archive --format=tar.gz HEAD > diagnostics/source.tar.gz
+          sha256sum diagnostics/source.tar.gz > diagnostics/source.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: connectome-source-recovery-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 30
+          if-no-files-found: error
