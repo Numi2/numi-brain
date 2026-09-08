@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "repository": "Numi2/numi-brain",
+  "tag": "data-male-cns-v1.0-numicns1-r1",
+  "dataset": "male-cns:v1.0",
+  "format": "NUMICNS1",
+  "license": "CC-BY-4.0",
+  "sourceURL": "https://male-cns.janelia.org/download/",
+  "sourceCompilerSHA256": "f5c50a120c872f5e7348f1d64430e3c5e3e460e9c4fc19487f6b6066a670b77f",
+  "graphFingerprint": "5e1e89f366e0157a",
+  "nodes": 166700,
+  "directedNeuronPairs": 25582938,
+  "neuralModel": "unsigned destination-L1 log1p-count normalized bounded rate surrogate; not measured electrophysiology",
+  "policyQualified": false,
+  "assets": [
+    {
+      "name": "male-cns-v1.0-neuron-unsigned.numicns",
+      "bytes": 216144031,
+      "sha256": "58314f44a02afe0726e5ba699a533d203b85b2fd6125bc0542b5db72cf993a1c"
+    },
+    {
+      "name": "male-cns-v1.0-neuron-unsigned.numicns.sha256.json",
+      "bytes": 2090,
+      "sha256": "a263a1cd37642562f7b58b58c4402ad839905557e5ddfbbbf2c57a5f6852e610"
+    },
+    {
+      "name": "source-manifest.json",
+      "bytes": 1512,
+      "sha256": "fa4b5100ccd80a1e5811a05b4e6529c9b301b56a2319ca523d080633728cb894"
+    },
+    {
+      "name": "ATTRIBUTION.txt",
+      "bytes": 423,
+      "sha256": "865b455ffae010fe40f942cf867be3d719cf97512d1f4ce0cf1f1fad128996e3"
+    }
+  ]
+}

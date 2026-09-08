@@ -1,0 +1,66 @@
+name: Reproduce and publish pinned connectome data
+on:
+  push:
+    branches: [main]
+    paths: ['Datasets/male-cns-v1.0/**', '.github/workflows/connectome-data-release.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: connectome-data-release-r1
+  cancel-in-progress: false
+jobs:
+  dataset:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Reproduce exact graph from official pinned source tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p packs diagnostics
+          python3 - <<'PY'
+          import hashlib,json,pathlib
+          lock=json.loads(pathlib.Path('Datasets/male-cns-v1.0/release.json').read_text())
+          assert hashlib.sha256(pathlib.Path('tools/numi_connectome.py').read_bytes()).hexdigest()==lock['sourceCompilerSHA256']
+          PY
+          python3 -m venv /tmp/connectome-release
+          /tmp/connectome-release/bin/python -m pip install numpy==2.5.3 pyarrow==25.0.1
+          /tmp/connectome-release/bin/python tools/numi_connectome.py bootstrap --source-dir /tmp/male-cns-v1.0 --output packs/male-cns-v1.0-neuron-unsigned.numicns --resolution neuron --minimum-synapses 1 --sign-mode unsigned
+          cp /tmp/male-cns-v1.0/source-manifest.json packs/source-manifest.json
+          cp Datasets/male-cns-v1.0/ATTRIBUTION.txt packs/ATTRIBUTION.txt
+          python3 tools/fetch_connectome_release.py --output-dir packs --verify-only | tee diagnostics/reproduction.json
+          git rev-parse HEAD > diagnostics/source-revision.txt
+          python3 --version > diagnostics/toolchain.txt
+          clang++ --version >> diagnostics/toolchain.txt
+          /tmp/connectome-release/bin/python -m pip freeze >> diagnostics/toolchain.txt
+          cp Datasets/male-cns-v1.0/release.json packs/release.json
+          cp diagnostics/toolchain.txt packs/compiler-environment.txt
+          sha256sum packs/* > diagnostics/SHA256SUMS
+      - name: Publish data assets without replacing an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: Numi2/numi-brain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=data-male-cns-v1.0-numicns1-r1
+          if gh release view "$TAG" --json tagName > diagnostics/existing-release.json 2>/dev/null; then
+            python3 tools/fetch_connectome_release.py --output-dir verified-existing | tee diagnostics/existing-verified.json
+            echo 'Existing pinned data verified; no assets overwritten.'
+          else
+            gh release create "$TAG" packs/* --target "$GITHUB_SHA" --title 'Male-CNS v1.0 derived NUMICNS1 data (r1)' --notes-file Datasets/male-cns-v1.0/README.md --prerelease --latest=false
+          fi
+          gh release view "$TAG" --json tagName,url,assets > diagnostics/release.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-data-release-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 90
+          if-no-files-found: error
