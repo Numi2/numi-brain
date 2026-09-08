@@ -2,9 +2,9 @@ name: Native connectome portable checks
 on:
   push:
     branches: [main]
-    paths: ['Sources/**/Connectome*', 'Sources/**/Connectome/**', 'Sources/NumiBrainConnectomeABI/**', 'Sources/NumiBrainConnectomeCLI/**', 'Sources/NumiBrainMetal/MetalConnectome*', 'Tests/**/Connectome*', 'Tests/**/MetalConnectome*', 'tools/*connectome*', '.github/workflows/connectome-portable.yml']
+    paths: ['Sources/**/Connectome*', 'Sources/**/Connectome/**', 'Sources/NumiBrainConnectomeABI/**', 'Sources/NumiBrainNumiLabBridgeABI/**', 'Sources/NumiBrainConnectomeCLI/**', 'Sources/NumiBrainMetal/MetalConnectome*', 'Tests/**/Connectome*', 'Tests/**/MetalConnectome*', 'Tests/NumiBrainNumiLabBridgeFixtures/**', 'tools/*connectome*', '.github/workflows/connectome-portable.yml']
   pull_request:
-    paths: ['Sources/**/Connectome*', 'Sources/**/Connectome/**', 'Sources/NumiBrainConnectomeABI/**', 'Sources/NumiBrainConnectomeCLI/**', 'Sources/NumiBrainMetal/MetalConnectome*', 'Tests/**/Connectome*', 'Tests/**/MetalConnectome*', 'tools/*connectome*', '.github/workflows/connectome-portable.yml']
+    paths: ['Sources/**/Connectome*', 'Sources/**/Connectome/**', 'Sources/NumiBrainConnectomeABI/**', 'Sources/NumiBrainNumiLabBridgeABI/**', 'Sources/NumiBrainConnectomeCLI/**', 'Sources/NumiBrainMetal/MetalConnectome*', 'Tests/**/Connectome*', 'Tests/**/MetalConnectome*', 'Tests/NumiBrainNumiLabBridgeFixtures/**', 'tools/*connectome*', '.github/workflows/connectome-portable.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,6 +28,7 @@ jobs:
           clang++ --version > diagnostics/compiler.txt
           python3 tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
           python3 tools/test_connectome_audit.py 2>&1 | tee diagnostics/connectivity-tests.txt
+          python3 tools/test_connectome_numilab_bridge.py 2>&1 | tee diagnostics/bridge-fault-tests.txt
       - name: Retain exact public source for reproducibility
         if: always()
         shell: bash
