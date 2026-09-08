@@ -1,0 +1,52 @@
+diff --git a/Sources/NumiBrainMLX/MLXConnectomeDecoderCalibration.swift b/Sources/NumiBrainMLX/MLXConnectomeDecoderCalibration.swift
+--- a/Sources/NumiBrainMLX/MLXConnectomeDecoderCalibration.swift
++++ b/Sources/NumiBrainMLX/MLXConnectomeDecoderCalibration.swift
+@@ -129,8 +129,22 @@
+     let old = settings.coordinates.map { parent[$0] }
+     let gradient = clip(MLXArray(gradients), min: -settings.gradientLimit, max: settings.gradientLimit)
+     let step = clip(MLXArray(settings.learningRate)*gradient, min: -settings.trustRadius, max: settings.trustRadius)
+-    let changed = clip(MLXArray(old)-step, min: -settings.magnitudeLimit, max: settings.magnitudeLimit).asArray(Float.self)
+-    guard changed.allSatisfy(\.isFinite), zip(old, changed).contains(where: { $0 != $1 }) else {
++    var changed = clip(MLXArray(old)-step, min: -settings.magnitudeLimit, max: settings.magnitudeLimit).asArray(Float.self)
++    guard changed.count == old.count, changed.allSatisfy(\.isFinite) else {
++      throw ConnectomeError.invalid("MLX decoder output is nonfinite or dimensionally inconsistent")
++    }
++    // FP32 subtraction may round just outside the exact L-infinity radius.
++    // Round inward at the off-rollout publication boundary, never in a live mind.
++    for i in changed.indices {
++      let lower = max(-Double(settings.magnitudeLimit), Double(old[i])-Double(settings.trustRadius))
++      let upper = min(Double(settings.magnitudeLimit), Double(old[i])+Double(settings.trustRadius))
++      if Double(changed[i]) > upper { changed[i] = changed[i].nextDown }
++      if Double(changed[i]) < lower { changed[i] = changed[i].nextUp }
++      guard Double(changed[i]) >= lower, Double(changed[i]) <= upper else {
++        throw ConnectomeError.invalid("decoder update exceeds its representable trust interval")
++      }
++    }
++    guard zip(old, changed).contains(where: { $0 != $1 }) else {
+       throw ConnectomeError.invalid("decoder proposal is non-finite or makes no representable change")
+     }
+     var result = parent
+diff --git a/Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift b/Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift
+--- a/Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift
++++ b/Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift
+@@ -70,4 +70,20 @@
+       negativeEvaluationSHA256: String(repeating: "b", count: 64),
+       positiveEvaluationSHA256: String(repeating: "c", count: 64), directory: path))
+   }
++  func testTrustIntervalIsHonoredAfterFP32Rounding() throws {
++    let s = try settings([0]), old: [Float] = [0.6]
++    let result = try MLXConnectomeDecoderCalibration.proposedParameters(parent: old,
++      negative: [old[0]-s.probeRadius], positive: [old[0]+s.probeRadius],
++      negativeLoss: 1, positiveLoss: 0, settings: s)
++    XCTAssertGreaterThan(result[0], old[0])
++    XCTAssertLessThanOrEqual(Double(result[0])-Double(old[0]), Double(s.trustRadius))
++  }
++  func testUnrepresentableLearningStepIsRejected() throws {
++    let s = try ConnectomeDecoderStudySettings(coordinates: [0], directionSeed: 1,
++      probeRadius: 0.125, learningRate: 0.1, gradientLimit: 10, trustRadius: 1e-10,
++      magnitudeLimit: 4, minimumResolvableLossDifference: 0.000001)
++    XCTAssertThrowsError(try MLXConnectomeDecoderCalibration.proposedParameters(parent: [0.75],
++      negative: [0.625], positive: [0.875], negativeLoss: 1, positiveLoss: 0, settings: s))
++  }
++
+ }

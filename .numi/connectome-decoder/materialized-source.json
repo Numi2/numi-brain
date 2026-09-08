@@ -1,0 +1,28 @@
+{
+  "files": {
+    "README.md": "433fe846ee03b90143fc2164aaa77b5d5e0ee04a87153ab873ffda94329b992a",
+    "Sources/NumiBrainCore/Connectome/ConnectomeCaptureIdentity.swift": "84ba84276e76f4ec23c3f06b26b6f72aedd58b02b287c2d047683f613b8cfcd6",
+    "Sources/NumiBrainCore/Connectome/ConnectomeDecoderStudy.swift": "a8c87cea9fa6e75a00d65981b2971d104821d6ea7d27a401f164269ace990219",
+    "Sources/NumiBrainCore/Experiments/BrainReachHoldExperiment.swift": "c14c945c2e14cbcf086d758e5f6a2c8ceee0b2a666f46bd6fd7d9065bbc8ccdb",
+    "Sources/NumiBrainCore/Learning/BrainFoundationPolicyEvidence.swift": "841c7188c48681063a86d52c4cfb3e0953e04c43644b2f96cbfb4a245afa7b50",
+    "Sources/NumiBrainCore/Learning/BrainPolicyNumanXDatasetArtifact.swift": "59426a4d644331e595e363d071b143439ea69f2961d066fc660fb7a937147b4b",
+    "Sources/NumiBrainCore/Learning/BrainPolicyNumanXSupportStabilityReplay.swift": "faa43a562936f150b027258e13888dfe10461a07221d844bafc008df70ea0436",
+    "Sources/NumiBrainExperimentCLI/main.swift": "8a02d2428feeb3b855cd5bbff3cf1643ac954657ed92031b65fce5f35f1b6926",
+    "Sources/NumiBrainMLX/MLXConnectomeDecoderCalibration.swift": "0029a09ce596411d0415fd895cc4a557b4ac930167b61db1c994965e6d201453",
+    "Sources/NumiBrainMLX/MLXPhysicalMotorCalibration.swift": "51468acc5aeabc21bc7f129cb846d8ccfb4665b3bce484b8a453af60d31432b6",
+    "Sources/NumiBrainMetal/Interop/MetalNumanXGateCRootRunner.swift": "aab57667aec105ae219b29981b8b91da3d62710efe78bfb9c2f68e25fd85f482",
+    "Sources/NumiBrainMetal/MetalEmbodiedBrainRuntime.swift": "90c9068a9c52aca8d5766ea732f89ec92ca0ab27ebbd25a039e8556fe1b04070",
+    "Sources/NumiBrainMetal/MetalNumiBrainRuntime.swift": "95e4fdaf3231a880a692b3cfe4823e8ec625c84a3935b592c5f3217f90ea5a0b",
+    "Tests/NumiBrainCoreTests/ConnectomeDecoderStudyTests.swift": "ea34f7ec3e17712fc1af539cea5010db10cd649ac788ea8fde0c8a4fd62ab969",
+    "Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift": "1bc70f466bdcb4f10655263f1d5c6e7d460f85ea425b75aceaa013688c32f07e",
+    "Tests/NumiBrainMetalTests/MetalConnectomeRootTests.swift": "ef322a4865f268fa06ff4181a0209b3d865dd03820e0af724e7833e00a0cb63a",
+    "docs/CONNECTOME_DECODER_LEARNING.md": "5801b4612791c1dc61eb590ceebf7fe47b150f68df5a43e964072fcf38eecc71",
+    "docs/CONNECTOME_NATIVE.md": "c95e743e8947e82fbc3b21f5710d4595fc5ef2b01785d2e78d036913cca5a676",
+    "evidence/connectome-decoder-v1/README.md": "ac64c08d8f1c0deb132de3d37757cfdddd66c8ae38b7b2e3ebf62a16bb3e94a4",
+    "evidence/connectome-native-v1/README.md": "a6bb9805ea37f8eb565cb5f32a8eccc7d18794256329afa3191e4f2f0af4ea94",
+    "tools/numi_connectome.py": "f5c50a120c872f5e7348f1d64430e3c5e3e460e9c4fc19487f6b6066a670b77f",
+    "tools/test_connectome_import.py": "83ffa79dfc0a6886a10402adea43b1c5eee970176c7532fe446a951926be9de2"
+  },
+  "promotable": false,
+  "version": 1
+}
