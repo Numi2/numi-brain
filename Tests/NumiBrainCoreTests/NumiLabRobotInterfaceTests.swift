@@ -12,9 +12,10 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
       "coordinates": [["identifier": 0, "kind": 1,
         "parentLocalAxis": ["x": 0, "y": 0, "z": 1],
         "minimumPosition": -1, "maximumPosition": 2, "restPosition": 0.5]]]
-    let actuator: [String: Any] = ["id": "command", "kind": rotor ? 5 : 0,
+    var actuator: [String: Any] = ["id": "command", "kind": rotor ? 5 : 0,
       "target": rotor ? "base" : "hinge", "scale": 0.25,
       "responseTimeSeconds": 0.02, "component": 0, "parameters": [0,0,0,0], "terms": []]
+    if !rotor { actuator["qIndex"] = 0; actuator["vIndex"] = 0 }
     return ["version": 1, "nativeRepositoryRevision": revision,
       "robotID": "synthetic_contract", "sourceRepository": "", "sourceRevision": "", "license": "",
       "bodyNames": rotor ? ["base"] : ["base", "link"],
@@ -35,6 +36,8 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
     XCTAssertEqual(channels[0].neutralCommand, 0.5)
     XCTAssertEqual(channels[0].emergencyCommand, 0.25)
     XCTAssertEqual(imported.actuators[0].responseTimeSeconds, 0.02)
+    XCTAssertEqual(imported.actuators[0].qIndex, 0)
+    XCTAssertEqual(imported.actuators[0].vIndex, 0)
     XCTAssertThrowsError(try imported.positionChannels(neutralCommands: [:], emergencyCommands: ["command": 0]))
     XCTAssertThrowsError(try imported.positionChannels(neutralCommands: ["command": 0], emergencyCommands: ["command": 3]))
     XCTAssertTrue(imported.license.isEmpty)
@@ -51,6 +54,8 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
   func testJointlessRotorCannotBeCastAsAFlightJointOrMotorCurrent() throws {
     let imported = try load(wire(rotor: true))
     XCTAssertEqual(imported.actuators[0].kind, .rotorMixer)
+    XCTAssertNil(imported.actuators[0].qIndex)
+    XCTAssertNil(imported.actuators[0].vIndex)
     XCTAssertTrue(try imported.jointTopologyCatalog(numanXModelFingerprint: 1).joints.isEmpty)
     XCTAssertThrowsError(try imported.positionChannels(neutralCommands: ["command": 0], emergencyCommands: ["command": 0]))
   }
@@ -70,6 +75,10 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
       value = wire(); var a = (value["actuators"] as! [[String: Any]])[0]; a[key] = bad; value["actuators"] = [a]
       XCTAssertThrowsError(try load(value))
     }
+    value = wire(); var noQ = (value["actuators"] as! [[String: Any]])[0]; noQ.removeValue(forKey: "qIndex"); value["actuators"] = [noQ]
+    XCTAssertThrowsError(try load(value))
+    value = wire(rotor: true); var fakeQ = (value["actuators"] as! [[String: Any]])[0]; fakeQ["qIndex"] = 1; fakeQ["vIndex"] = 1; value["actuators"] = [fakeQ]
+    XCTAssertThrowsError(try load(value))
   }
   func testActualNativeAssetsImportWithTheirDistinctTopologyAndActuation() throws {
     guard let directory = ProcessInfo.processInfo.environment["NUMIBRAIN_NUMILAB_INTERFACES"] else {
@@ -88,8 +97,12 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
       XCTAssertEqual(catalog.joints.count, joints)
       if id == "px4_x500" {
         XCTAssertTrue(imported.actuators.allSatisfy { $0.kind == .rotorMixer })
+        XCTAssertTrue(imported.actuators.allSatisfy { $0.qIndex == nil && $0.vIndex == nil })
         XCTAssertEqual(imported.actuators.map(\.component), [0,1,2,3])
       } else {
+        XCTAssertTrue(imported.actuators.allSatisfy { $0.qIndex != nil && $0.vIndex != nil })
+        XCTAssertEqual(Set(imported.actuators.compactMap(\.qIndex)).count, actuators)
+        XCTAssertEqual(Set(imported.actuators.compactMap(\.vIndex)).count, actuators)
         let rest = Dictionary(uniqueKeysWithValues: imported.actuators.map { a in
           (a.id, imported.joints[imported.jointNames.firstIndex(of: a.target)!].coordinates[Int(a.component)].restPosition)
         })
