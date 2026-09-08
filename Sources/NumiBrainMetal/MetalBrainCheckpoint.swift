@@ -6,7 +6,7 @@ import NumiBrainCore
 /// the corresponding fast-tissue state for complete nervous-system recovery.
 @frozen
 public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 4
+  public static let formatVersion: UInt32 = 5
 
   public let formatVersion: UInt32
   public let committedGeneration: UInt64
@@ -24,6 +24,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
   public let physicalCheckpointFingerprint: UInt64
   public let hotState: Data
   public let persistentMemory: Data
+  public let muscleLocomotorFingerprint: UInt64?
   public let connectomeState: ConnectomeCheckpoint?
   public let checkpointFingerprint: UInt64
 
@@ -43,7 +44,8 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     physicalCheckpointFingerprint: UInt64,
     hotState: Data,
     persistentMemory: Data,
-    connectomeState: ConnectomeCheckpoint? = nil
+    connectomeState: ConnectomeCheckpoint? = nil,
+    muscleLocomotorFingerprint: UInt64? = nil
   ) throws {
     guard speciesTemplateFingerprint > 0,
       compiledSpeciesTemplateFingerprint > 0, regionalProgramFingerprint > 0,
@@ -71,8 +73,9 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
     self.hotState = hotState
     self.persistentMemory = persistentMemory
     self.connectomeState = connectomeState
+    self.muscleLocomotorFingerprint = muscleLocomotorFingerprint
     self.checkpointFingerprint = Self.contentFingerprint(
-      version: Self.formatVersion, connectomeState: connectomeState,
+      version: Self.formatVersion, connectomeState: connectomeState, muscleLocomotorFingerprint: muscleLocomotorFingerprint,
       committedGeneration: committedGeneration,
       committedTimestamp: committedTimestamp,
       environmentIdentifier: environmentIdentifier,
@@ -102,9 +105,11 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
         throw TissueError.transaction("cognitive and connectome checkpoint generations diverge")
       }
     }
-    guard formatVersion == Self.formatVersion || (formatVersion == 3 && connectomeState == nil),
+    guard (muscleLocomotorFingerprint == nil || (muscleLocomotorFingerprint! > 0 && connectomeState == nil)),
+      formatVersion == Self.formatVersion || (formatVersion == 4 && muscleLocomotorFingerprint == nil)
+        || (formatVersion == 3 && connectomeState == nil && muscleLocomotorFingerprint == nil),
       checkpointFingerprint == Self.contentFingerprint(
-        version: formatVersion, connectomeState: connectomeState,
+        version: formatVersion, connectomeState: connectomeState, muscleLocomotorFingerprint: muscleLocomotorFingerprint,
         committedGeneration: committedGeneration,
         committedTimestamp: committedTimestamp,
         environmentIdentifier: environmentIdentifier,
@@ -148,7 +153,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
   }
 
   private static func contentFingerprint(
-    version: UInt32, connectomeState: ConnectomeCheckpoint?,
+    version: UInt32, connectomeState: ConnectomeCheckpoint?, muscleLocomotorFingerprint: UInt64?,
     committedGeneration: UInt64,
     committedTimestamp: BrainTimestamp,
     environmentIdentifier: UInt32,
@@ -184,6 +189,7 @@ public struct MetalBrainCheckpoint: Codable, Equatable, Sendable {
       mix(connectomeState == nil ? UInt64(0) : UInt64(1), into: &hash)
       if let neural = connectomeState { mix(Data(neural.sha256.utf8), into: &hash) }
     }
+    if version >= 5 { mix(muscleLocomotorFingerprint ?? 0, into: &hash) }
     return hash
   }
 

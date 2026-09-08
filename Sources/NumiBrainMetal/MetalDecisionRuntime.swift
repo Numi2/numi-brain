@@ -695,7 +695,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal?,
     activeSensingCommandScale: Float,
-    connectomeMotor: MetalConnectomeMotorView? = nil
+    connectomeMotor: MetalDescendingMotorView? = nil
   ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
     let sortedRawSensorViews = rawSensorViews.sorted {
@@ -737,7 +737,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       timestamp: timestamp,
       activeSensingCommandScale: activeSensingCommandScale
     )
-    uniforms.connectomeMotorEnabled = connectomeMotor == nil ? 0 : 1
+    uniforms.connectomeMotorEnabled = connectomeMotor?.kind.rawValue ?? 0
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
       uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)

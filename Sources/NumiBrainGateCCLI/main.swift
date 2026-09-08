@@ -240,6 +240,21 @@ private func authoredMatterWorld(in options: [String: String]) throws
     sourceJointEqualities: equalities, costalTissueOwnership: tissue)
 }
 
+private func nativeConfiguration(in options: [String: String], timestep: UInt32) throws
+  -> MetalNumanXBridgeV1Runtime.Configuration {
+  try .init(rigidPayloadPath: required("--rigid", in: options),
+    musclePayloadPath: required("--muscle", in: options),
+    supportContactPayloadPath: required("--contacts", in: options),
+    visualPackPath: required("--visual-pack", in: options),
+    visionProfilePath: required("--vision-profile", in: options),
+    metalRoboMetallibPath: required("--metalrobo-metallib", in: options),
+    matterMetallibPath: required("--matter-metallib", in: options),
+    matterMaterialPath: options["--material"] ?? "",
+    timestepMicroseconds: UInt64(timestep),
+    maximumRetainedBytes: options["--costal-binding"] == nil ? 1 << 30 : 2 << 30,
+    transactionSlotCount: 2, authoredMatterWorld: authoredMatterWorld(in: options))
+}
+
 private func usage(_ message: String? = nil) -> Never {
   if let message {
     FileHandle.standardError.write(Data("numi-brain-gate-c: \(message)\n".utf8))
@@ -316,6 +331,14 @@ private func usage(_ message: String? = nil) -> Never {
     evaluate-head-posture and verify-head-posture retain and recompute a
     matched parent/candidate head-relative lift response on body 23. Training
     and evaluation scenes must be disjoint and each run requires 100 roots.
+
+    describe-body accepts the same native asset/world arguments and prints
+    the admitted model, sensory profile and muscle payload identities.
+
+    capture also accepts --muscle-locomotor-program PATH for a source-bound
+    research spindle/periodic controller. It retains muscle-locomotor-research.json
+    and exact motor/root artifacts, disables synthetic bootstrap observations,
+    and cannot inherit Gate C qualification or train an unrelated policy.
 
     The capture output is retained authoritative root data, but is always
     marked non-promotable. Gate C promotion requires separately frozen,
@@ -645,6 +668,31 @@ private func longHorizonEvaluationSummary(
 
 let arguments = CommandLine.arguments
 guard arguments.count > 2 else { usage() }
+if arguments[1] == "describe-body" {
+  let options = parseOptions(arguments.dropFirst(2))
+  do {
+    guard let device = MTLCreateSystemDefaultDevice() else { throw TissueError.metal("no Metal device") }
+    let timestep = optionalDecimal("--timestep-microseconds", in: options, default: qualifiedGateCTimestepMicroseconds)
+    let native = try MetalNumanXBridgeV1Runtime(libraryPath: required("--library", in: options),
+      device: device, configuration: nativeConfiguration(in: options, timestep: timestep))
+    let compiled = try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: timestep, anatomy: native.fullBodyAnatomy())
+    let payload = try Data(contentsOf: URL(fileURLWithPath: required("--muscle", in: options)))
+    let description: [String: Any] = [
+      "format": "numanx-locomotor-body-v1", "device": device.name,
+      "model_source_fingerprint": native.info.modelSourceFingerprint,
+      "sensory_profile_fingerprint": compiled.sensoryProfile.fingerprint,
+      "muscle_payload_sha256": BrainPolicyEvidenceArtifact.sha256(payload),
+      "actuator_count": compiled.species.motor.actuatorCount,
+      "timestep_microseconds": timestep,
+      "boundary": "native source admission; controller calibration and locomotion unqualified"
+    ]
+    FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: description, options: [.prettyPrinted, .sortedKeys]))
+    FileHandle.standardOutput.write(Data("\n".utf8)); exit(0)
+  } catch {
+    FileHandle.standardError.write(Data("numi-brain-gate-c: \(error)\n".utf8)); exit(1)
+  }
+}
+
 if arguments[1] == "verify-long-horizon" {
   let options = parseOptions(arguments.dropFirst(2))
   do {
@@ -1346,6 +1394,7 @@ do {
   let episode = decimal("--episode", in: options, as: UInt64.self)
   let seed = decimal("--seed", in: options, as: UInt64.self)
   let rootCount = decimal("--roots", in: options, as: UInt32.self)
+  guard rootCount > 0 else { usage("--roots must be positive") }
   let artifactDirectory = URL(
     fileURLWithPath: required("--artifact-dir", in: options),
     isDirectory: true
@@ -1361,6 +1410,19 @@ do {
   let compiled = try NumanXFullBodyTransportTemplate.compile(
     latencyMicroseconds: timestepMicroseconds
   )
+  let muscleLocomotor: MuscleLocomotorProgram?
+  if let file = options["--muscle-locomotor-program"] {
+    guard !shouldTrain, options["--parent-candidate-sha"] == nil, options["--candidate-sha"] == nil,
+      options["--long-horizon-protocol-sha"] == nil, options["--goal"] == nil,
+      options["--uncertainty-gate"] == nil else {
+      usage("locomotor research capture cannot train, inherit qualification or combine goals")
+    }
+    let url = URL(fileURLWithPath: file)
+    guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 4_194_304 else {
+      usage("locomotor program exceeds the 4 MiB input budget")
+    }
+    muscleLocomotor = try JSONDecoder().decode(MuscleLocomotorProgram.self, from: Data(contentsOf: url))
+  } else { muscleLocomotor = nil }
   let parentCandidateHash = options["--parent-candidate-sha"]
   let longHorizonProtocolHash = options["--long-horizon-protocol-sha"]
   let longHorizonProtocol = try longHorizonProtocolHash.map {
@@ -1435,7 +1497,7 @@ do {
     in: options,
     default: UInt32(1)
   )
-  guard uncertaintyMode != nil
+  guard muscleLocomotor != nil || uncertaintyMode != nil
       || options["--sensor-intervention"] != "invalidate-all"
   else {
     usage("sensor intervention requires --uncertainty-gate production-v1")
@@ -1450,19 +1512,7 @@ do {
       }
   let runner = try MetalNumanXGateCRootRunner(
     libraryPath: required("--library", in: options),
-    bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(
-      rigidPayloadPath: required("--rigid", in: options),
-      musclePayloadPath: required("--muscle", in: options),
-      supportContactPayloadPath: required("--contacts", in: options),
-      visualPackPath: required("--visual-pack", in: options),
-      visionProfilePath: required("--vision-profile", in: options),
-      metalRoboMetallibPath: required("--metalrobo-metallib", in: options),
-      matterMetallibPath: required("--matter-metallib", in: options),
-      matterMaterialPath: options["--material"] ?? "",
-      timestepMicroseconds: UInt64(timestepMicroseconds),
-      transactionSlotCount: 2,
-      authoredMatterWorld: try authoredMatterWorld(in: options)
-    ),
+    bridgeConfiguration: nativeConfiguration(in: options, timestep: timestepMicroseconds),
     publication: publication,
     artifactDirectory: artifactDirectory,
     episodeIdentifier: episode,
@@ -1470,6 +1520,7 @@ do {
     declaredMaximumInferenceLatencyMicroseconds:
       declaredMaximumInferenceLatencyMicroseconds,
     enableProductionUncertaintyGate: uncertaintyMode != nil,
+    muscleLocomotor: muscleLocomotor,
     device: device
   )
   let datasetIdentifier = required("--dataset-id", in: options)
@@ -1580,7 +1631,7 @@ do {
         hardSafetyIntervention: scheduledHardSafety,
         longHorizonContext: longHorizonContext
       )
-      guard uncertaintyMode != nil
+      guard muscleLocomotor != nil || uncertaintyMode != nil
         || (shouldTrain && requestedDelayedSupportHorizon != nil)
         || result.execution.outcome == .accepted
       else {
@@ -1595,6 +1646,31 @@ do {
   }
   let runIdentifier = required("--run-id", in: options)
   let sourceRevision = required("--source-revision", in: options)
+  if let muscleLocomotor {
+    let summary: [String: Any] = [
+      "format": "numi-muscle-locomotor-research-v1", "promotable": false,
+      "boundary": "active muscle controller transport; standing and walking outcomes unqualified",
+      "run_identifier": runIdentifier, "source_revision": sourceRevision,
+      "device": device.name, "program_fingerprint": String(muscleLocomotor.fingerprint, radix: 16),
+      "model_source_fingerprint": String(runner.nativeInfo.modelSourceFingerprint, radix: 16),
+      "timestep_microseconds": timestepMicroseconds,
+      "physical_completion_timeout_seconds": runner.physicalCompletionTimeoutSeconds,
+      "accepted_roots": results.filter { $0.execution.outcome == .accepted }.count,
+      "rejected_roots": results.filter { $0.execution.outcome != .accepted }.count,
+      "roots": results.enumerated().map { index, result in [
+        "control_step": index + 1, "outcome": result.execution.outcome.rawValue,
+        "execution_sha256": result.executionArtifactSHA256,
+        "motor_action_sha256": result.motorActionArtifactSHA256,
+        "proposal_code": result.proposalCode, "applied_code": result.appliedCode,
+        "physical_stage": result.nativePhysicalDiagnosticStage,
+        "physics_generation": result.aggregate?.physicsGeneration ?? 0
+      ] as [String: Any] }
+    ]
+    let data = try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: artifactDirectory.appendingPathComponent("muscle-locomotor-research.json"), options: .atomic)
+    FileHandle.standardOutput.write(data); FileHandle.standardOutput.write(Data("\n".utf8))
+    exit(results.allSatisfy { $0.execution.outcome == .accepted } ? 0 : 2)
+  }
   let capturedLearningBatch = try runner.captureLearningBatch()
   let runArtifactSHA256 = try runner.writeCaptureRunArtifact(
     runIdentifier: runIdentifier,

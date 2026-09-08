@@ -40,7 +40,9 @@ public struct MetalConnectomeControllerSeed: Sendable {
 
 /// Only the owning controller constructs a view. The decision runtime checks
 /// its exact generation/body/version, then uses it BEFORE existing protection.
-struct MetalConnectomeMotorView {
+struct MetalDescendingMotorView {
+  enum Kind: UInt32 { case connectome = 1, muscleLocomotor = 2 }
+  var kind: Kind = .connectome
   let transactionFingerprint: UInt64
   let shadowGeneration: UInt64
   let speciesFingerprint: UInt64
@@ -107,7 +109,7 @@ final class MetalConnectomeController: @unchecked Sendable {
 
   func encode(transaction: MetalJointAgentStateTransaction,
     encoder: any MTL4ComputeCommandEncoder,
-    sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalConnectomeMotorView {
+    sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalDescendingMotorView {
     let descending = try transaction.encodeConnectome(mind, encoder: encoder, sensory: sensory)
     guard descending.bindingFingerprint == program.binding.fingerprint,
       descending.transactionFingerprint == transaction.jointToken.fingerprint else {
@@ -119,7 +121,7 @@ final class MetalConnectomeController: @unchecked Sendable {
     encoder.dispatchThreads(threadsPerGrid: MTLSize(width: Int(program.actuatorCount), height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1))
     encoder.barrier(afterEncoderStages: .dispatch, beforeEncoderStages: .dispatch, visibilityOptions: .device)
-    return MetalConnectomeMotorView(transactionFingerprint: transaction.jointToken.fingerprint,
+    return MetalDescendingMotorView(transactionFingerprint: transaction.jointToken.fingerprint,
       shadowGeneration: transaction.jointToken.shadowGeneration,
       speciesFingerprint: program.binding.speciesFingerprint,
       parameterVersionFingerprint: program.binding.parameterVersionFingerprint,

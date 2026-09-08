@@ -279,10 +279,12 @@ public enum NumanXFullBodyTransportTemplate {
       jointTopologyCatalog: jointTopology,
       muscleAttachmentCatalog: muscleAttachmentCatalog
     )
-    let protectiveMotorProfile = try ProtectiveMotorProfile
-      .runtimeFoundationFixture(
-        muscleIdentifiers: Array(0..<actuatorCount)
-      )
+    // Native anatomy must not inherit the six-channel fixture's tonic drive
+    // or invented withdrawal/brace routing. Only authored species reflexes
+    // may create those responses; the final emergency inhibition remains.
+    let protectiveMotorProfile = try anatomy == nil
+      ? ProtectiveMotorProfile.runtimeFoundationFixture(muscleIdentifiers: Array(0..<actuatorCount))
+      : ProtectiveMotorProfile.compiled(species: species)
     let somaticSynergyCatalog = try muscleAttachmentCatalog.map {
       try anatomicalSynergyCatalog(attachments: $0)
     } ?? SomaticSynergyCatalog.runtimeFoundationFixture(

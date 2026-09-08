@@ -2818,6 +2818,15 @@ kernel void select_option_and_control_mode(
   }
   uint flags = NB_CONTROL_FLAG_VALID;
   uint mode = NB_CONTROL_MODE_PROCEDURAL;
+  // An explicitly bound muscle controller supplies its own descending
+  // program. Absence of an admissible generic option is not evidence of
+  // physical danger for that program; physical safety still stops it here
+  // and the final private protective adapter remains authoritative.
+  const bool muscle_locomotor_program = uniforms.connectome_motor_enabled == 2u;
+  if (muscle_locomotor_program && !isfinite(selected_score)) {
+    selected = 0u;
+    selected_score = 0.0f;
+  }
   if (safety > 0.8f || !isfinite(selected_score)) {
     selected = 0u;
     selected_score = 0.0f;
@@ -3960,8 +3969,11 @@ kernel void generate_motor_spinal_autonomic_state(
         // unknown command-effect relation. Its own pre-probe model residual
         // cannot be evidence against performing the experiment; accepted
         // pain, damage, and joint risk still inhibit it below.
-        + (bounded_identification_actuator ? 0.0f : external_disturbance)
-          * max(motor_parameters[12], 0.0f)
+        // This authored spindle program has no learned command-effect model.
+        // A residual from the generic controller is not calibrated disturbance
+        // evidence for it. Body pain/damage, joint risk and protection remain.
+        + (bounded_identification_actuator || uniforms.connectome_motor_enabled == 2u
+            ? 0.0f : external_disturbance) * max(motor_parameters[12], 0.0f)
         + joint_limit_risk * max(motor_parameters[14], 0.25f)
         + joint_uncertainty * max(motor_parameters[15], 0.1f),
       0.0f,
@@ -4140,11 +4152,12 @@ kernel void generate_motor_spinal_autonomic_state(
       ? connectome_motor_logits[gid] : legacy_motor_logit;
     // All ordinary inhibition, CPG, reflex and physical command conversion
     // below this point remains shared with the native controller.
-    const float ordinary_descending = rest_selected
+    const bool muscle_locomotor = uniforms.connectome_motor_enabled == 2u;
+    const float ordinary_descending = rest_selected && !muscle_locomotor
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);
     float descending = ordinary_descending;
-    if (communication_selected) {
+    if (communication_selected && !muscle_locomotor) {
       if (communication_actuator) {
         const float communication_logit = candidate.parameters[
           communication_descriptor.local_channel_index % parameter_count
@@ -4176,7 +4189,7 @@ kernel void generate_motor_spinal_autonomic_state(
     // controller above owns that task; admitting pre-existing fast state here
     // would recruit unrelated muscles before their anatomy-specific error
     // relation has been identified.
-    const bool fast_correction_active = !rest_selected
+    const bool fast_correction_active = !muscle_locomotor && !rest_selected
       && !anatomical_body_task && inhibition < 1.0f;
     fast_state.flags = (fast_state.flags | NB_CONTROL_FLAG_VALID)
       & ~(1u << 1u);
@@ -4269,7 +4282,7 @@ kernel void generate_motor_spinal_autonomic_state(
     // controller. Generic cerebellar experts are not allowed to inject a
     // parallel whole-body residual until an anatomy-specific expert contract
     // exists; doing so recruits unrelated muscles on the first root.
-    const float slow_cerebellar_residual = rest_selected || anatomical_body_task
+    const float slow_cerebellar_residual = muscle_locomotor || rest_selected || anatomical_body_task
       ? 0.0f
       : clamp(
           learned_cerebellar_residual * clamp(
@@ -4310,7 +4323,7 @@ kernel void generate_motor_spinal_autonomic_state(
     // Locomotor oscillators are a separate policy. They must not be mixed into
     // an explicit anatomical posture command unless a future goal contract
     // explicitly binds that CPG to the selected body task.
-    cpg_output = anatomical_body_task
+    cpg_output = muscle_locomotor || anatomical_body_task
       ? 0.0f : clamp(cpg_output, -1.0f, 1.0f);
     NBSpinalStateRecord spinal_state;
     spinal_state.reflex_output = safety > 0.5f ? -0.25f : 0.0f;

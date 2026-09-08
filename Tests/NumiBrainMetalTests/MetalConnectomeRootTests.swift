@@ -124,7 +124,8 @@ final class MetalConnectomeRootTests: XCTestCase {
   func testDistinctActuatorBodiesShareOnlyTheGraph() throws {
     guard let device = MTLCreateSystemDefaultDevice() else { throw XCTSkip("Metal required") }
     let shared = try MetalConnectomeGraph(graph: ConnectomeGraph(data: ConnectomeTestFixture.data()), device: device)
-    let a = try makeFixture(shared: shared, actuatorCount: 4)
+    // The shared foundation fixture requires at least six channels.
+    let a = try makeFixture(shared: shared, actuatorCount: 8)
     let b = try makeFixture(shared: shared, actuatorCount: 6)
     XCTAssertNotEqual(a.body.fingerprint, b.body.fingerprint)
     let ca = try advance(a, step: 1), cb = try advance(b, step: 1)

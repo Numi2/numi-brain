@@ -151,7 +151,8 @@ public struct MetalNumiBrainCheckpoint: Codable, Equatable, Sendable {
       hotState: cognitiveState.hotState,
       persistentMemory: cognitiveState.persistentMemory,
       connectomeState: try cognitiveState.connectomeState?.rebinding(
-        parameterVersionFingerprint: successor.fingerprint)
+        parameterVersionFingerprint: successor.fingerprint),
+      muscleLocomotorFingerprint: cognitiveState.muscleLocomotorFingerprint
     )
     let migratedFast = try MetalTissueCheckpoint(
       width: fastTissueState.width,

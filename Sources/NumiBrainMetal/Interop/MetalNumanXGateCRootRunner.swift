@@ -115,6 +115,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   public let nativeWorldInfo: MetalNumanXBridgeV1Runtime.WorldInfo?
   public let parameterVersionFingerprint: UInt64
   public let declaredMaximumInferenceLatencyMicroseconds: UInt64?
+  public let physicalCompletionTimeoutSeconds: TimeInterval
+  public let muscleLocomotorProgramFingerprint: UInt64?
   public let connectomeCaptureIdentity: ConnectomeCaptureIdentity?
 
   private let device: any MTLDevice
@@ -140,6 +142,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     declaredMaximumInferenceLatencyMicroseconds: UInt64? = nil,
     enableProductionUncertaintyGate: Bool = false,
     connectome: MetalConnectomeConfiguration? = nil,
+    muscleLocomotor: MuscleLocomotorProgram? = nil,
     device: any MTLDevice
   ) throws {
     guard episodeIdentifier > 0, randomSeed > 0,
@@ -158,6 +161,9 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         "Gate C runner requires Metal 4 and nonzero run identity"
       )
     }
+    // Offline costal evidence uses the same bounded physical completion
+    // budget as the v5 integration test. This is not a latency qualification.
+    physicalCompletionTimeoutSeconds = bridgeConfiguration.authoredMatterWorld?.costalTissueOwnership == nil ? 30 : 60
     let native = try MetalNumanXBridgeV1Runtime(
       libraryPath: libraryPath,
       device: device,
@@ -175,6 +181,16 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       latencyMicroseconds: timestepMicroseconds,
       anatomy: anatomy
     )
+    guard muscleLocomotor == nil || (connectome == nil && !enableProductionUncertaintyGate) else {
+      throw TissueError.transaction("locomotor research runner cannot inherit policy qualification")
+    }
+    try muscleLocomotor?.validate(template: compiled)
+    muscleLocomotorProgramFingerprint = muscleLocomotor?.fingerprint
+    if let muscleLocomotor {
+      try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
+      let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+      try encoder.encode(muscleLocomotor).write(to: artifactDirectory.appendingPathComponent("muscle-locomotor-program.json"), options: .atomic)
+    }
     let connectomeProgram: ConnectomeControllerProgram?
     if let connectome {
       // This runner remains explicitly simulation/research-only for the new
@@ -203,7 +219,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         ),
         schedulerEnvironmentIdentifier: 0,
         maximumEncodedSubsteps: 1,
-        connectome: connectome
+        connectome: connectome,
+        muscleLocomotor: muscleLocomotor
       ),
       publication: publication,
       numanXUncertaintyGate: enableProductionUncertaintyGate
@@ -238,6 +255,9 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     roots: [RootResult],
     learningBatch: MetalNumanXCapturedLearningBatch
   ) throws -> String {
+    guard muscleLocomotorProgramFingerprint == nil else {
+      throw TissueError.transaction("locomotor research roots require their own behavior evaluation; legacy Gate C promotion is unavailable")
+    }
     guard let first = roots.first else {
       throw TissueError.transaction("Gate C capture run has no roots")
     }
@@ -419,7 +439,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         try Self.bootstrapSensorPacket(
           device: device,
           compiled: compiledSpeciesTemplate,
-          transaction: transaction.token
+          transaction: transaction.token,
+          observationsAvailable: muscleLocomotorProgramFingerprint == nil
         )
       }
       let sensors = try intervenedSensors(
@@ -509,7 +530,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       try native.beginPhysicalRoot(transaction: transaction.token, motor: motor) {
         physicalLatch.complete($0)
       }
-      let root = try physicalLatch.wait()
+      let root = try physicalLatch.wait(timeout: physicalCompletionTimeoutSeconds)
       physical = root
       guard
         decisionFeedback.gpuDurationSeconds.isFinite,
@@ -800,7 +821,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   private static func bootstrapSensorPacket(
     device: any MTLDevice,
     compiled: CompiledSpeciesTemplate,
-    transaction: BrainJointTransactionToken
+    transaction: BrainJointTransactionToken,
+    observationsAvailable: Bool = true
   ) throws -> NumanXSensorPacketLease {
     let sensors = try compiled.species.senses.filter(\.enabled).map { topology in
       let scalarCount = Int(topology.receptorCount)
@@ -819,7 +841,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         count: scalarCount
       )
       validity.contents().assumingMemoryBound(to: UInt32.self).initialize(
-        repeating: 1,
+        repeating: observationsAvailable ? 1 : 0,
         count: Int(topology.receptorCount)
       )
       return try MetalRawSensorBufferLease(

@@ -8,6 +8,7 @@ import NumiBrainCore
 /// per-agent capacities.
 @frozen
 public struct MetalNumiBrainConfiguration: Sendable {
+  public let muscleLocomotor: MuscleLocomotorProgram?
   public let connectome: MetalConnectomeConfiguration?
   public let initialTissueState: TissueGrid
   public let tissueParameters: TissueParameters
@@ -37,9 +38,11 @@ public struct MetalNumiBrainConfiguration: Sendable {
     maximumSchedulerEvents: Int = 64,
     maximumSchedulerInvocations: Int = 4_096,
     maximumEncodedSubsteps: Int = 4_096,
-    connectome: MetalConnectomeConfiguration? = nil
+    connectome: MetalConnectomeConfiguration? = nil,
+    muscleLocomotor: MuscleLocomotorProgram? = nil
   ) {
     self.connectome = connectome
+    self.muscleLocomotor = muscleLocomotor
     self.initialTissueState = initialTissueState
     self.tissueParameters = tissueParameters
     self.tissueStimulus = tissueStimulus
@@ -127,6 +130,9 @@ extension MetalNumiBrainRuntime {
         "NumanX uncertainty gate has two competing executable authorities"
       )
     }
+    guard configuration.muscleLocomotor == nil || (configuration.connectome == nil && foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
+      throw TissueError.transaction("research locomotor control cannot inherit policy qualification or compete with another controller")
+    }
     guard configuration.connectome == nil || (foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
       throw ConnectomeError.invalid("a modified connectome controller cannot inherit an existing policy qualification")
     }
@@ -153,7 +159,8 @@ extension MetalNumiBrainRuntime {
         parameterVersion: version,
         sharedParameterArtifact: publication.sharedArtifact,
         foundationPolicyArchitecture: foundationPolicyArchitecture,
-        connectome: connectomeSeed
+        connectome: connectomeSeed,
+        muscleLocomotor: configuration.muscleLocomotor
       )
     }
     let fastTissue = try MetalTissueRuntime(

@@ -9,6 +9,88 @@ import NumiBrainMetalBridgeABI
 
 @available(macOS 26.0, *)
 final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
+  /// Physical controller transport qualification. NHMYO oracle lengths bind the
+  /// authored low-gain candidate; these are not independently calibrated gains.
+  func testActiveMuscleLocomotorAcceptedRoots() throws {
+    let paths = try bridgePaths()
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let native = try makeNativeRuntime(paths: paths, device: device, timestepMicroseconds: 100)
+    let compiled = try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: 100,
+      anatomy: native.fullBodyAnatomy())
+    let publication = try BrainParameterPublication.developmentalSeedV1(species: compiled.species,
+      tissueParameters: .corticalSheetV0)
+    let payload = try Data(contentsOf: URL(fileURLWithPath: paths.muscle))
+    func word(_ offset: Int) -> UInt32 { payload.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) } }
+    XCTAssertEqual(word(16), 416)
+    let muscleOffset = 76 + Int(word(20)) * 16 + Int(word(24)) * 64 + Int(word(28)) * 16
+    let channels = (UInt32(0)..<416).map { id in
+      MuscleLocomotorChannel(muscleIdentifier: id,
+        referenceLengthMeters: Float(bitPattern: word(muscleOffset + Int(id) * 164 + 16 + 35 * 4)),
+        tonicExcitation: 0.03, lengthGain: 0.4, velocityGainSeconds: 0.02,
+        // An explicit one-channel periodic transport probe; no gait claim.
+        gaitSine: id == 0 ? 0.02 : 0)
+    }
+    let program = MuscleLocomotorProgram(modelSourceFingerprint: native.info.modelSourceFingerprint,
+      sensoryProfileFingerprint: compiled.sensoryProfile.fingerprint,
+      calibrationArtifactSHA256: BrainPolicyEvidenceArtifact.sha256(payload),
+      periodMicroseconds: 1_000_000, channels: channels)
+    try program.validate(template: compiled)
+    if let output = ProcessInfo.processInfo.environment["NUMANX_LOCOMOTOR_EVIDENCE_DIR"] {
+      let directory = URL(fileURLWithPath: output, isDirectory: true)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+      try encoder.encode(program).write(to: directory.appendingPathComponent("native-periodic-probe.json"), options: .atomic)
+    }
+    let active = try runAcceptedScenario(paths: paths, contactPath: paths.contacts,
+      compiled: compiled, publication: publication, device: device, rootCount: 4,
+      timestepMicroseconds: 100, muscleLocomotor: program)
+    let replay = try runAcceptedScenario(paths: paths, contactPath: paths.contacts,
+      compiled: compiled, publication: publication, device: device, rootCount: 4,
+      timestepMicroseconds: 100, muscleLocomotor: program)
+    let unavailable = try runAcceptedScenario(paths: paths, contactPath: paths.contacts,
+      compiled: compiled, publication: publication, device: device, rootCount: 4,
+      timestepMicroseconds: 100, muscleLocomotor: program, sensorIntervention: .ablated(.proprioception))
+    XCTAssertEqual(active.motorExcitationsByGeneration.first!, [Float](repeating: 0, count: 416),
+      "bootstrap is unavailable; no synthetic first-root excitation")
+    let peak = active.motorExcitationsByGeneration.dropFirst().flatMap { $0 }.max() ?? 0
+    XCTAssertGreaterThan(peak, 0)
+    XCTAssertEqual(active.motorExcitationsByGeneration, replay.motorExcitationsByGeneration)
+    XCTAssertEqual(active.sensorFingerprints, replay.sensorFingerprints)
+    XCTAssertTrue(unavailable.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
+    XCTAssertNotEqual(active.sensorFingerprints, unavailable.sensorFingerprints)
+    // Require native state and force response, not just the echoed excitation
+    // channel. NHMYO2 activation previously froze once fibre length was set.
+    func feature(_ scenario: AcceptedScenario, _ index: Int) throws -> [[Float]] {
+      try scenario.sensorValuesByGeneration.map { frame in
+        let values = try XCTUnwrap(frame[.proprioception])
+        return stride(from: index, to: values.count, by: 10).map { values[$0] }
+      }
+    }
+    // The admitted compliant architecture reports the applied signed tendon
+    // force in feature 6 and positive tension in feature 7, both in newtons.
+    for (forces, tensions) in zip(try feature(active, 6), try feature(active, 7)) {
+      for (force, tension) in zip(forces, tensions) {
+        XCTAssertEqual(tension, max(-force, 0), accuracy: 1e-5)
+      }
+    }
+    let activation = try feature(active, 1)
+    XCTAssertTrue(activation.dropFirst().allSatisfy { ($0.max() ?? 0) > 0 },
+      "activation must advance and persist in initialized fibres")
+    XCTAssertTrue(try feature(unavailable, 1).flatMap { $0 }.allSatisfy { $0 == 0 })
+    XCTAssertNotEqual(try feature(active, 6), try feature(unavailable, 6),
+      "applied musculotendon force must respond, not only command metadata")
+    for (label, scenario) in [("active", active), ("unavailable", unavailable)] {
+      for (index, frame) in scenario.sensorValuesByGeneration.enumerated() {
+        let proprio = try XCTUnwrap(frame[.proprioception])
+        let peaks = [0, 1, 6, 7].map { feature in
+          stride(from: feature, to: proprio.count, by: 10).map { abs(proprio[$0]) }.max() ?? 0
+        }
+        print("locomotor_physical mode=\(label) root=\(index+1) excitation_activation_appliedforceN_tensionN=\(peaks)")
+      }
+    }
+    print("muscle_locomotor_native=observed device=\(device.name) roots=4 timestep_us=100 peak_excitation=\(peak) replay=byte_exact unavailable=zero boundary=controller_transport_not_standing_or_walking")
+  }
+
   func testAuthoredMatterDescriptorRejectsMissingIdentity() throws {
     typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
     XCTAssertThrowsError(try World(packagePath: "", humanSourceFingerprint: 1, worldFingerprint: 2))
@@ -2027,6 +2109,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     rootCount: UInt64,
     timestepMicroseconds: UInt32 = 1_000,
     externalGoal: ((UInt64) throws -> ActiveGoal)? = nil,
+    muscleLocomotor: MuscleLocomotorProgram? = nil,
     sensorIntervention: ClosedLoopSensorIntervention? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
     developmentalIntentFingerprintXor: UInt64 = 0,
@@ -2050,7 +2133,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           episodeIdentifier: 1
         ),
         schedulerEnvironmentIdentifier: 0,
-        maximumEncodedSubsteps: 1
+        maximumEncodedSubsteps: 1,
+        muscleLocomotor: muscleLocomotor
       ),
       publication: publication,
       device: device
@@ -2104,7 +2188,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         try bootstrapSensorPacket(
           device: device,
           compiled: compiled,
-          transaction: transaction.token
+          transaction: transaction.token,
+          observationsAvailable: muscleLocomotor == nil
         )
       }
       do {
@@ -2722,6 +2807,22 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       bitPattern: internalActionWords[inhibitionActionBase + 8]
     )
     if ProcessInfo.processInfo.environment["NUMANX_GATE_B_EVIDENCE"] == "1" {
+      let layout = brain.cognitive.agentStateRuntime.arena.layout
+      func peakRisk(_ kind: MetalAgentHotSection, _ features: [Int]) -> String {
+        let section = layout.section(kind)
+        var peak: Float = 0; var location = "none"
+        for row in 0..<section.elementCount {
+          for feature in features {
+            let offset = section.byteOffset + row * section.elementStride + feature * 4
+            if offset + 4 <= decisionBytes.count {
+              let value = decisionBytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: offset, as: Float.self) }
+              if abs(value) > peak { peak = abs(value); location = "row=\(row):feature=\(feature)" }
+            }
+          }
+        }
+        return "\(location):value=\(peak)"
+      }
+      print("GateB risk-diagnostics body=\(peakRisk(.bodyBelief, [24,25,30])) joint=\(peakRisk(.jointBelief, [24,25,26,27,28,29,31])) drives=\(peakRisk(.drives, [0]))")
       print(
         "GateB motor-command excitationMax=\(commandExcitations.max() ?? .nan) "
           + "riskMin=\(riskInhibitions.min() ?? .nan) "
@@ -3021,7 +3122,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   private func bootstrapSensorPacket(
     device: any MTLDevice,
     compiled: CompiledSpeciesTemplate,
-    transaction: BrainJointTransactionToken
+    transaction: BrainJointTransactionToken,
+    observationsAvailable: Bool = true
   ) throws -> NumanXSensorPacketLease {
     let sensors = try compiled.species.senses.filter(\.enabled).map { topology in
       let scalarCount = Int(topology.receptorCount)
@@ -3040,7 +3142,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         count: scalarCount
       )
       validity.contents().assumingMemoryBound(to: UInt32.self).initialize(
-        repeating: 1,
+        repeating: observationsAvailable ? 1 : 0,
         count: Int(topology.receptorCount)
       )
       return try MetalRawSensorBufferLease(
