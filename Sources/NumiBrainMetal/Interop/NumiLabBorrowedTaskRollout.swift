@@ -39,13 +39,41 @@ public struct NumiLabRolloutAdvanceReceipt: Equatable, Sendable {
 
 /// Borrowed execution owner for an already-created NumiLab MRTaskRolloutHandle.
 /// The handle remains owned by NumiLab/the embedding application. This object
-/// dlopens only the pinned public C ABI and never creates, resets, destroys, or
-/// substitutes simulator state.
+/// dlopens only the checksum-bound pinned public C ABI and never creates,
+/// resets, destroys, or substitutes simulator state.
 @available(macOS 26.0, *)
 public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
-  private let bridge: OpaquePointer
+  public static let requiredNativeRevision = "68f5aa441a8437426de193a5c9beeac5a78113b6"
 
-  public init(libraryPath: String, borrowedRolloutHandle: UnsafeMutableRawPointer) throws {
+  private let bridge: OpaquePointer
+  public let nativeRevision: String
+  public let librarySHA256: String
+
+  public init(
+    libraryPath: String,
+    expectedLibrarySHA256: String,
+    expectedNativeRevision: String,
+    borrowedRolloutHandle: UnsafeMutableRawPointer,
+    maximumLibraryBytes: Int = 1_073_741_824
+  ) throws {
+    guard expectedNativeRevision == Self.requiredNativeRevision,
+      BrainPolicyEvidenceArtifact.isSHA256(expectedLibrarySHA256),
+      maximumLibraryBytes > 0 else {
+      throw TissueError.transaction("NumiLab borrowed rollout ABI evidence is invalid")
+    }
+    let url = URL(fileURLWithPath: libraryPath)
+    let attributes = try FileManager.default.attributesOfItem(atPath: libraryPath)
+    guard let size = attributes[.size] as? NSNumber,
+      size.int64Value > 0,
+      size.int64Value <= Int64(maximumLibraryBytes) else {
+      throw TissueError.transaction("NumiLab dylib exceeds the admitted binary budget")
+    }
+    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+    guard data.count == size.intValue,
+      BrainPolicyEvidenceArtifact.sha256(data) == expectedLibrarySHA256 else {
+      throw TissueError.transaction("NumiLab dylib content identity does not match deployment evidence")
+    }
+
     var error = [CChar](repeating: 0, count: 1024)
     let opened = libraryPath.withCString { path in
       error.withUnsafeMutableBufferPointer { buffer in
@@ -64,6 +92,8 @@ public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
       throw TissueError.transaction(detail)
     }
     bridge = opened
+    nativeRevision = expectedNativeRevision
+    librarySHA256 = expectedLibrarySHA256
   }
 
   deinit {
