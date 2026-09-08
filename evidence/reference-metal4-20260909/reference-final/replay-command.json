@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/native-replay",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/build/lib/libmetalrobo.dylib",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/build/shaders/MetalRobo.metallib"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

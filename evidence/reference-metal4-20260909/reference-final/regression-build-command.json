@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "cmake",
+    "--build",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/build",
+    "--target",
+    "metalrobo_task_owner_replay_probe",
+    "-j",
+    "4"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

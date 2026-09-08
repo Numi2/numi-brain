@@ -1,0 +1,2 @@
+2026-09-08 23:58:24.302 native-replay[61103:6290182] Metal GPU Validation Enabled
+native owner replay failed: task-rollout publication failed [metal_device_unsupported]: device cannot execute the MetalWorld kernel geometry

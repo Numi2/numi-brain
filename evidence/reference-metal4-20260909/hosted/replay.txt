@@ -1,0 +1,1 @@
+native owner replay failed: task-rollout publication failed [metal_pipeline_failure]: failed to create device-resident contact pipeline: Compilation failed

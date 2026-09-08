@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "cmake",
+    "-S",
+    "/Users/n/numibrain-metal4-owner-20260908/native-owner",
+    "-B",
+    "/Users/n/numibrain-metal4-owner-20260908/native-owner/build",
+    "-DCMAKE_BUILD_TYPE=Release"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

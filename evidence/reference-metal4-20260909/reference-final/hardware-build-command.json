@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "clang++",
+    "-std=c++20",
+    "-fobjc-arc",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Werror",
+    "/Users/n/numibrain-metal4-owner-20260908/brain/tools/numilab_hardware_probe.mm",
+    "-framework",
+    "Foundation",
+    "-framework",
+    "Metal",
+    "-o",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/hardware-probe"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

@@ -1,0 +1,24 @@
+{
+  "g1": {
+    "only_differing_resident_buffer": 196,
+    "name": "kTaskActionHistory",
+    "logical_bytes": 464,
+    "first_mismatch_byte": 352,
+    "different_bytes_each_step": 49,
+    "cause": "External action path bound the unallocated policy latent buffer.",
+    "fix": "Bind kTaskActions when config.policyProgram.valid() is false."
+  },
+  "x500": {
+    "different_persistent_buffers": 0,
+    "program_size": 224,
+    "different_program_bytes": [
+      204
+    ],
+    "abi_padding_range": [
+      204,
+      208
+    ],
+    "cause": "Multicopter fingerprint included C++ object padding.",
+    "fix": "Hash every authored member individually; keep the complete persistent-state digest."
+  }
+}

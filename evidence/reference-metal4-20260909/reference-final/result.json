@@ -1,0 +1,177 @@
+{
+  "failed_pipelines": [],
+  "hardware": {
+    "apple_families": [
+      "Apple1",
+      "Apple2",
+      "Apple3",
+      "Apple4",
+      "Apple5",
+      "Apple6",
+      "Apple7",
+      "Apple8",
+      "Apple9"
+    ],
+    "argument_buffers_tier": 1,
+    "current_allocated_bytes": 81920,
+    "device_name": "Apple M4 Pro",
+    "headless": false,
+    "low_power": false,
+    "mac2": true,
+    "max_buffer_bytes": 14302248960,
+    "max_threadgroup_memory_bytes": 32768,
+    "max_threads_per_threadgroup": [
+      1024,
+      1024,
+      1024
+    ],
+    "metal3": true,
+    "metal4": true,
+    "model_identifier": "Mac16,11",
+    "os": "Version 26.6 (Build 25G72)",
+    "physical_memory_bytes": 25769803776,
+    "recommended_working_set_bytes": 19069665280,
+    "registry_id": 4294968833,
+    "removable": false,
+    "unified_memory": true
+  },
+  "pipeline_count": 109,
+  "qualified": true,
+  "replay": [
+    {
+      "accepted_steps_per_run": 4,
+      "brain_root_executed": false,
+      "changed_command_changes_digest": true,
+      "device": "Apple M4 Pro",
+      "digest_replay_exact": true,
+      "final_digest": "9455801065702397451",
+      "learned_task_qualified": false,
+      "q_replay_exact": true,
+      "q_scalars": 9,
+      "robot": "franka",
+      "run_fingerprint": "3835347579972642332",
+      "runs": 3
+    },
+    {
+      "accepted_steps_per_run": 4,
+      "brain_root_executed": false,
+      "changed_command_changes_digest": true,
+      "device": "Apple M4 Pro",
+      "digest_replay_exact": true,
+      "final_digest": "9117733328127201677",
+      "learned_task_qualified": false,
+      "q_replay_exact": true,
+      "q_scalars": 36,
+      "robot": "g1",
+      "run_fingerprint": "9895611003240291986",
+      "runs": 3
+    },
+    {
+      "accepted_steps_per_run": 4,
+      "brain_root_executed": false,
+      "changed_command_changes_digest": true,
+      "device": "Apple M4 Pro",
+      "digest_replay_exact": true,
+      "final_digest": "3023362563413323378",
+      "learned_task_qualified": false,
+      "q_replay_exact": true,
+      "q_scalars": 7,
+      "robot": "x500",
+      "run_fingerprint": "12160906667125132380",
+      "runs": 3
+    }
+  ],
+  "scope": "109 production pipelines; exact four-step original/replay/changed-action workload; Franka/G1/X500; native GPU owner. No neural, learning, task-success or robot-hardware qualification.",
+  "steps": [
+    {
+      "exit_code": 0,
+      "log_sha256": "46c87c2b8fd5d25040390e531128cd533d199bde1b50a51790375ab5984c99bb",
+      "name": "os",
+      "seconds": 0.005154584000000004
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "18730ed2ae28a2c9cf0c2d5db549033a4f07089331391a7133b7b32187454fa9",
+      "name": "xcode",
+      "seconds": 0.165875042
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "aecd40d3430fd91a518ec2afab027ed67a91825e1e8d5bb69e40452243ece10e",
+      "name": "metal",
+      "seconds": 0.010883625000000008
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "9b43434d276203740883de08da29b9589f8763cc898dfb90aff8af429cbbad65",
+      "name": "cmake",
+      "seconds": 0.004061708999999997
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "hardware-build",
+      "seconds": 0.224123792
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "e9c680f0ddaf198e9f0302eb43d9f11f188cfd03580e7a145327053cba08957d",
+      "name": "hardware",
+      "seconds": 0.49535674999999996
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "455665f7a9f01ed1ceab31176086f32c3bac944abfa987f6608fc8d7ee874cb9",
+      "name": "configure",
+      "seconds": 0.7369062499999999
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "d2e8b8ffe1aa9e7ae8d24655f538cf559d0bece654270f82e3bc4d7c87187938",
+      "name": "native-build",
+      "seconds": 25.241638334
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "pipeline-build",
+      "seconds": 0.2262564590000018
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "fcc330e0b242c4ac1b652ecf871e3e7f7068d92d5bfe42295033f504617b30ae",
+      "name": "pipelines",
+      "seconds": 0.3580866250000021
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "bridge-build",
+      "seconds": 0.031448125000000715
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "name": "replay-build",
+      "seconds": 0.32259670799999896
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "7d5f4ab441f08807981e754fca6cbe9d16ee09a48660942f72a73b3aa443979f",
+      "name": "replay",
+      "seconds": 0.9517217080000009
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "c334ea4215779c6dfd12302b3969ab41611a4e1cd078feafe242adf7bb737dfc",
+      "name": "regression-build",
+      "seconds": 0.8781613750000012
+    },
+    {
+      "exit_code": 0,
+      "log_sha256": "1611464c53678253b1bd020a96fbc9a2beaa21572364f23079449457403a8e31",
+      "name": "owner-regression",
+      "seconds": 0.8781007079999981
+    }
+  ]
+}

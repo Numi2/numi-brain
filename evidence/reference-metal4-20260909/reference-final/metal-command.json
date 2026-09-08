@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "xcrun",
+    "metal",
+    "--version"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

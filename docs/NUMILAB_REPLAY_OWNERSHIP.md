@@ -97,3 +97,8 @@ workflow dispatch. No reference runner was registered when this change was
 made; current qualification is executed directly over SSH on the M4 Pro Mac
 mini using the same command. The workflow is not evidence of an installed or
 running GitHub runner. Hosted `macos-latest` is no longer a qualification path.
+
+The [2026-09-09 M4 Pro receipt](../evidence/reference-metal4-20260909/README.md)
+records all 109 pipelines passing and exact Franka/G1/X500 native replay after
+the owner action-history and multicopter-identity fixes. Failed hosted and
+intermediate hardware attempts remain retained.

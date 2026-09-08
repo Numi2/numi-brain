@@ -1,0 +1,52 @@
+[
+  {
+    "attempt": "baseline",
+    "exit_code": 1,
+    "outcome": "109 pipelines passed; Franka passed; G1 resident replay failed; X500 not reached."
+  },
+  {
+    "attempt": "diagnostic",
+    "exit_code": 1,
+    "outcome": "Read-only diagnostic captures reproduced G1; not a qualification run."
+  },
+  {
+    "attempt": "baseline-validation",
+    "exit_code": 1,
+    "outcome": "Full shader instrumentation rejected MetalWorld kernel geometry before stepping."
+  },
+  {
+    "attempt": "baseline-action-validation",
+    "exit_code": 1,
+    "outcome": "Selective action-validation attempt also rejected kernel geometry; no validation pass claimed."
+  },
+  {
+    "attempt": "fix-check",
+    "exit_code": 1,
+    "outcome": "Action binding fix: Franka and G1 pass; X500 resident replay fails."
+  },
+  {
+    "attempt": "diagnostic-x500",
+    "exit_code": 1,
+    "outcome": "All X500 persistent GPU bytes match; resident identity mismatch remains."
+  },
+  {
+    "attempt": "diagnostic-padding",
+    "exit_code": 1,
+    "outcome": "X500 authored bytes match; only host padding byte 204 differs."
+  },
+  {
+    "attempt": "fixed/build.txt",
+    "exit_code": 2,
+    "outcome": "Transfer placed new files under an unintended Users directory, so the new CMake target was missing; corrected copy and retained failed log."
+  },
+  {
+    "attempt": "fixed",
+    "exit_code": 0,
+    "outcome": "Exact three-robot replay, owner regression, and existing task_program_check pass; existing task_program_check enum warning retained."
+  },
+  {
+    "attempt": "reference-final",
+    "exit_code": 0,
+    "outcome": "Fresh build on clean committed sources: all 109 pipelines, exact replay, native regression pass."
+  }
+]

@@ -1,0 +1,5 @@
+[  0%] Built target metalrobo_visual_kernel_hashes
+[  0%] Built target metalrobo_shaders
+[  0%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalWorld.mm.o
+[  3%] Linking CXX shared library lib/libmetalrobo.dylib
+[100%] Built target metalrobo

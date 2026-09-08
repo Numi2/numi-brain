@@ -1,0 +1,7 @@
+PROGRAM_IDENTITY padding_independent=yes authored_members=7
+NATIVE_OWNER_REPLAY robot=franka environments=1 accepted_steps_per_run=4 runs=3 contacts=11 resident_replay=exact physical_replay=exact
+NATIVE_OWNER_REPLAY robot=g1 environments=1 accepted_steps_per_run=4 runs=3 contacts=0 resident_replay=exact physical_replay=exact
+NATIVE_OWNER_REPLAY robot=x500 environments=1 accepted_steps_per_run=4 runs=3 contacts=0 resident_replay=exact physical_replay=exact
+NATIVE_OWNER_REPLAY robot=franka environments=2 accepted_steps_per_run=4 runs=3 contacts=11 resident_replay=exact physical_replay=exact
+NATIVE_OWNER_REPLAY robot=g1 environments=2 accepted_steps_per_run=4 runs=3 contacts=0 resident_replay=exact physical_replay=exact
+NATIVE_OWNER_REPLAY robot=x500 environments=2 accepted_steps_per_run=4 runs=3 contacts=0 resident_replay=exact physical_replay=exact

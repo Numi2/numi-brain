@@ -1,0 +1,33 @@
+[  0%] Built target metalrobo_visual_kernel_hashes
+[  3%] Built target metalrobo_shaders
+[  6%] Building CXX object CMakeFiles/metalrobo.dir/src/core/RunProgram.cpp.o
+[  6%] Building CXX object CMakeFiles/metalrobo.dir/src/core/FrankaWorld.cpp.o
+[  6%] Building CXX object CMakeFiles/metalrobo.dir/src/core/VisualPlatform.cpp.o
+[  6%] Building CXX object CMakeFiles/metalrobo.dir/src/core/LocomotionWorld.cpp.o
+[  9%] Building CXX object CMakeFiles/metalrobo.dir/src/core/TaskProgram.cpp.o
+[  9%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalWorld.mm.o
+[ 12%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalHybridRenderer.mm.o
+[ 12%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalRunInspector.mm.o
+[ 12%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalMeasuredSurfaceMechanics.mm.o
+[ 15%] Building CXX object CMakeFiles/metalrobo.dir/src/c_api.cpp.o
+[ 15%] Linking CXX shared library lib/libmetalrobo.dylib
+[100%] Built target metalrobo
+[  0%] Built target metalrobo_visual_kernel_hashes
+[  2%] Built target metalrobo_shaders
+[ 97%] Built target metalrobo
+[100%] Building CXX object CMakeFiles/metalrobo_task_owner_replay_probe.dir/apps/task_owner_replay_probe.cpp.o
+[100%] Linking CXX executable bin/metalrobo_task_owner_replay_probe
+[100%] Built target metalrobo_task_owner_replay_probe
+[  0%] Built target metalrobo_visual_kernel_hashes
+[  2%] Built target metalrobo_shaders
+[ 97%] Built target metalrobo
+[100%] Building CXX object CMakeFiles/metalrobo_task_program_check.dir/apps/task_program_check.cpp.o
+/Users/n/numibrain-metal4-owner-20260908/native-owner/apps/task_program_check.cpp:143:13: warning: enumeration value 'g1LegsLocomotion' not handled in switch [-Wswitch]
+  143 |     switch (taskKind) {
+      |             ^~~~~~~~
+/Users/n/numibrain-metal4-owner-20260908/native-owner/apps/task_program_check.cpp:143:13: note: add missing switch cases
+  143 |     switch (taskKind) {
+      |             ^
+1 warning generated.
+[100%] Linking CXX executable bin/metalrobo_task_program_check
+[100%] Built target metalrobo_task_program_check

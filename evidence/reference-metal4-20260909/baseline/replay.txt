@@ -1,0 +1,2 @@
+NUMILAB_NATIVE_REPLAY {"robot":"franka","device":"Apple M4 Pro","accepted_steps_per_run":4,"runs":3,"run_fingerprint":"3835347579972642332","final_digest":"6437031960898595880","q_scalars":9,"digest_replay_exact":true,"q_replay_exact":true,"changed_command_changes_digest":true,"brain_root_executed":false,"learned_task_qualified":false}
+native owner replay failed: resident digest replay differs for g1

@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "clang",
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Werror",
+    "-c",
+    "/Users/n/numibrain-metal4-owner-20260908/brain/Sources/NumiBrainNumiLabBridgeABI/NumiBrainNumiLabBridgeABI.c",
+    "-I",
+    "/Users/n/numibrain-metal4-owner-20260908/brain/Sources/NumiBrainNumiLabBridgeABI/include",
+    "-o",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/bridge.o"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

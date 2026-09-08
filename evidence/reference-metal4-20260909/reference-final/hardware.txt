@@ -1,0 +1,35 @@
+{
+  "apple_families" : [
+    "Apple1",
+    "Apple2",
+    "Apple3",
+    "Apple4",
+    "Apple5",
+    "Apple6",
+    "Apple7",
+    "Apple8",
+    "Apple9"
+  ],
+  "argument_buffers_tier" : 1,
+  "current_allocated_bytes" : 81920,
+  "device_name" : "Apple M4 Pro",
+  "headless" : false,
+  "low_power" : false,
+  "mac2" : true,
+  "max_buffer_bytes" : 14302248960,
+  "max_threadgroup_memory_bytes" : 32768,
+  "max_threads_per_threadgroup" : [
+    1024,
+    1024,
+    1024
+  ],
+  "metal3" : true,
+  "metal4" : true,
+  "model_identifier" : "Mac16,11",
+  "os" : "Version 26.6 (Build 25G72)",
+  "physical_memory_bytes" : 25769803776,
+  "recommended_working_set_bytes" : 19069665280,
+  "registry_id" : 4294968833,
+  "removable" : false,
+  "unified_memory" : true
+}

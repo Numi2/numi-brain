@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "ps",
+    "-axo",
+    "pid,etime,%cpu,command"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

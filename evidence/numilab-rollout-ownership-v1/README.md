@@ -1,5 +1,11 @@
 # NumiLab rollout ownership: verified source and execution boundary
 
+Historical receipt: 2026-09-08. The failed hosted result below is preserved.
+The later [M4 Pro reference qualification](../reference-metal4-20260909/README.md)
+passes all 109 pipelines and exact Franka/G1/X500 replay after two native-owner
+fixes. Its narrower physical-replay result does not close the Brain integration
+and learning gaps listed here.
+
 Date: 2026-09-08.
 Runtime implementation: `cb2475e3ae29e5e619662a66a9abd4396aac5d26`.
 Native owner: `4a369ca846fde93016f3708f3fd9386c992b52a4`.

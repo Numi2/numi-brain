@@ -1,0 +1,8 @@
+{
+  "argv": [
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/baseline/pipeline-probe",
+    "/Users/n/numibrain-metal4-owner-20260908/native-owner/build/shaders/MetalRobo.metallib",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/baseline/required-kernels.txt"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

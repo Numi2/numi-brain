@@ -1,0 +1,21 @@
+{
+  "argv": [
+    "clang++",
+    "-std=c++20",
+    "-Wall",
+    "-Wextra",
+    "-Wpedantic",
+    "-Werror",
+    "/Users/n/numibrain-metal4-owner-20260908/brain/tools/numilab_owner_replay_check.cpp",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/bridge.o",
+    "-I",
+    "/Users/n/numibrain-metal4-owner-20260908/brain/Sources/NumiBrainNumiLabBridgeABI/include",
+    "-I",
+    "/Users/n/numibrain-metal4-owner-20260908/native-owner/include",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/build/lib/libmetalrobo.dylib",
+    "-Wl,-rpath,/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/build/lib",
+    "-o",
+    "/Users/n/numibrain-metal4-owner-20260908/evidence/reference-final/native-replay"
+  ],
+  "cwd": "/Users/n/numibrain-metal4-owner-20260908/brain"
+}

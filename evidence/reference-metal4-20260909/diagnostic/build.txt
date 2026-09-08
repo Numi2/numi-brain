@@ -1,0 +1,12 @@
+[  0%] Built target metalrobo_visual_kernel_hashes
+[  0%] Built target metalrobo_shaders
+[  0%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/MetalWorld.mm.o
+/Users/n/numibrain-metal4-owner-20260908/native-owner/src/metal/MetalWorld.mm:319:16: warning: unused variable 'capture' [-Wunused-variable]
+  319 |     const auto capture = diagnosticCall++;
+      |                ^~~~~~~
+/Users/n/numibrain-metal4-owner-20260908/native-owner/src/metal/MetalWorld.mm:320:15: warning: unused variable 'captureRoot' [-Wunused-variable]
+  320 |     NSString* captureRoot = NSProcessInfo.processInfo.environment[@"NUMILAB_CAPTURE_ROOT"];
+      |               ^~~~~~~~~~~
+2 warnings generated.
+[  3%] Linking CXX shared library lib/libmetalrobo.dylib
+[100%] Built target metalrobo

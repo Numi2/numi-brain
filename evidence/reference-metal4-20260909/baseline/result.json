@@ -1,0 +1,91 @@
+{
+  "pipeline_exit": 0,
+  "replay_exit": 1,
+  "steps": [
+    {
+      "name": "os",
+      "exit_code": 0,
+      "wall_seconds": 0.005277584000000002,
+      "log_sha256": "46c87c2b8fd5d25040390e531128cd533d199bde1b50a51790375ab5984c99bb"
+    },
+    {
+      "name": "xcode",
+      "exit_code": 0,
+      "wall_seconds": 0.12160737499999999,
+      "log_sha256": "18730ed2ae28a2c9cf0c2d5db549033a4f07089331391a7133b7b32187454fa9"
+    },
+    {
+      "name": "metal",
+      "exit_code": 0,
+      "wall_seconds": 0.010659915999999992,
+      "log_sha256": "aecd40d3430fd91a518ec2afab027ed67a91825e1e8d5bb69e40452243ece10e"
+    },
+    {
+      "name": "cmake-version",
+      "exit_code": 0,
+      "wall_seconds": 0.004110500000000017,
+      "log_sha256": "9b43434d276203740883de08da29b9589f8763cc898dfb90aff8af429cbbad65"
+    },
+    {
+      "name": "workloads",
+      "exit_code": 0,
+      "wall_seconds": 0.006022707999999988,
+      "log_sha256": "8c7499451ec68c46314227b1489769fe815cf96295ea92893ab005677dd283cc"
+    },
+    {
+      "name": "hardware-probe-build",
+      "exit_code": 0,
+      "wall_seconds": 0.294576583,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "hardware",
+      "exit_code": 0,
+      "wall_seconds": 0.722111208,
+      "log_sha256": "e9c680f0ddaf198e9f0302eb43d9f11f188cfd03580e7a145327053cba08957d"
+    },
+    {
+      "name": "configure",
+      "exit_code": 0,
+      "wall_seconds": 1.9935631670000002,
+      "log_sha256": "1e9f878c7b7ee85b60279cc83116c68c64ad6babf7316945b5a5d63c1bf546c1"
+    },
+    {
+      "name": "native-build",
+      "exit_code": 0,
+      "wall_seconds": 25.582786666999997,
+      "log_sha256": "88ade0309e87bec8fe6a78a08224cabc667ffe51549a8c28c1440f34450fa150"
+    },
+    {
+      "name": "pipeline-probe-build",
+      "exit_code": 0,
+      "wall_seconds": 0.22698095799999862,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "pipelines",
+      "exit_code": 0,
+      "wall_seconds": 0.3863308750000023,
+      "log_sha256": "fcc330e0b242c4ac1b652ecf871e3e7f7068d92d5bfe42295033f504617b30ae"
+    },
+    {
+      "name": "bridge-build",
+      "exit_code": 0,
+      "wall_seconds": 0.027590374999999057,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "replay-build",
+      "exit_code": 0,
+      "wall_seconds": 0.3254281669999983,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "replay",
+      "exit_code": 1,
+      "wall_seconds": 0.9030657089999998,
+      "log_sha256": "c93111f060f54f6a959a3ada70da5a93c93efd0e175abf39abfcd8784c47c583"
+    }
+  ],
+  "scope": "109 production pipeline constructions plus exact four-step original/replay/changed-action workload on Franka, G1 and X500. No neural controller or learned-task qualification."
+}
