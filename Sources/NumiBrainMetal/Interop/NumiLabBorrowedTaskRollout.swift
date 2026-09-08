@@ -43,6 +43,7 @@ public struct NumiLabRolloutAdvanceReceipt: Equatable, Sendable {
 /// resets, destroys, or substitutes simulator state.
 @available(macOS 26.0, *)
 public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
+  // Updated only after the owner ABI branch compiles and publishes its exact SHA.
   public static let requiredNativeRevision = "68f5aa441a8437426de193a5c9beeac5a78113b6"
 
   private let bridge: OpaquePointer
@@ -120,6 +121,84 @@ public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
       completedEnvironmentSteps: raw.completed_environment_steps,
       submissionCount: raw.submission_count
     )
+  }
+
+  /// Copies the exact action table retained by this live CompiledTaskProgram.
+  /// No cold exporter or actuator-order inference participates in execution.
+  public func compiledActionBindings() throws -> [NumiLabCompiledTaskActionBinding] {
+    let count = nb_numilab_borrowed_rollout_action_binding_count(bridge)
+    guard count > 0, count <= 4096 else {
+      throw TissueError.transaction("NumiLab live compiled action binding count is invalid")
+    }
+    var raw = [NBNumiLabActionBindingV1](repeating: NBNumiLabActionBindingV1(), count: count)
+    let status = raw.withUnsafeMutableBufferPointer { buffer in
+      nb_numilab_borrowed_rollout_copy_action_bindings(
+        bridge, buffer.baseAddress, buffer.count)
+    }
+    guard status == 0 else {
+      throw TissueError.transaction(lastError())
+    }
+    return try raw.enumerated().map { index, binding in
+      guard binding.action_index == UInt32(index),
+        let kind = NumiLabRobotInterface.ActuatorKind(rawValue: binding.actuator_kind),
+        binding.normalized_scale.isFinite, binding.normalized_scale > 0,
+        binding.lower_target.isFinite, binding.upper_target.isFinite,
+        binding.lower_target <= binding.upper_target,
+        binding.response_time_seconds.isFinite, binding.response_time_seconds >= 0,
+        binding.drive_stiffness.isFinite, binding.drive_stiffness >= 0,
+        binding.drive_damping.isFinite, binding.drive_damping >= 0 else {
+        throw TissueError.transaction("NumiLab live compiled action binding is malformed")
+      }
+      return NumiLabCompiledTaskActionBinding(
+        actionIndex: binding.action_index,
+        qIndex: binding.q_index == UInt32.max ? nil : binding.q_index,
+        vIndex: binding.v_index == UInt32.max ? nil : binding.v_index,
+        actuatorKind: kind,
+        resolvedComponent: binding.resolved_component,
+        componentLane: binding.component_lane,
+        normalizedScale: binding.normalized_scale,
+        lowerTarget: binding.lower_target,
+        upperTarget: binding.upper_target,
+        responseTimeSeconds: binding.response_time_seconds,
+        driveStiffness: binding.drive_stiffness,
+        driveDamping: binding.drive_damping,
+        interactionMotion: binding.interaction_motion != 0
+      )
+    }
+  }
+
+  public func compiledActionReceipt(
+    robot: NumiLabRobotInterface,
+    contract: NumiLabTaskActionContract
+  ) throws -> NumiLabCompiledTaskActionReceipt {
+    let live = try snapshot()
+    let bindings = try compiledActionBindings()
+    guard UInt32(bindings.count) == live.identity.actionCount else {
+      throw TissueError.transaction("NumiLab live action table width drifted from rollout identity")
+    }
+    let receipt = try NumiLabCompiledTaskActionReceipt(
+      runFingerprint: live.identity.runFingerprint,
+      worldFingerprint: live.identity.worldFingerprint,
+      taskFingerprint: live.identity.taskFingerprint,
+      actionFingerprint: live.identity.actionFingerprint,
+      robotFingerprint: live.identity.robotFingerprint,
+      bindings: bindings
+    )
+    try receipt.validate(against: contract)
+    _ = try NumiLabPositionActionEncoder(robot: robot, contract: contract, compiledTask: receipt)
+    return receipt
+  }
+
+  /// Canonical physical-owner digest of every persistent resident continuation
+  /// buffer plus resident metadata. It is valid only after an accepted step.
+  public func residentStateFingerprint() throws -> UInt64 {
+    let fingerprint = nb_numilab_borrowed_rollout_resident_state_fingerprint(bridge)
+    guard fingerprint != 0 else {
+      throw TissueError.transaction(
+        "NumiLab physical owner has no accepted idle resident-state fingerprint"
+      )
+    }
+    return fingerprint
   }
 
   public func advance(
