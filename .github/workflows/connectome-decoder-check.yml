@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Numi2/numi-lab
-          ref: 68f5aa441a8437426de193a5c9beeac5a78113b6
+          ref: 5db0c5aa169bfe1270ef7448e01dd7fbcd99d123
           path: .build/numilab-source
           persist-credentials: false
           sparse-checkout: |
