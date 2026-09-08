@@ -69,6 +69,28 @@ final class NumiLabTaskActionContractTests: XCTestCase {
     XCTAssertThrowsError(try encoder.encodeAbsolutePositions([-0.25]))
   }
 
+  func testCompiledTaskBuildsPositionMotorContractNotMuscleOutput() throws {
+    let robot = try robot(), contract = try contract(robot)
+    let encoder = try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt())
+    let motor = try encoder.motorTopology(neutralCommands: ["hip": 0.5],
+      emergencyCommands: ["hip": 0.25], synergyCount: 1, motorNucleusCount: 1,
+      autonomicActionDimension: 1, activeSensingActionDimension: 0)
+    XCTAssertEqual(motor.actuatorCommandKind, .position)
+    XCTAssertEqual(motor.actuatorCount, 1)
+    XCTAssertEqual(motor.actuatorChannels[0].outputMinimum, 0)
+    XCTAssertEqual(motor.actuatorChannels[0].outputMaximum, 1)
+    XCTAssertEqual(motor.actuatorChannels[0].neutralCommand, 0.5)
+    XCTAssertEqual(motor.actuatorChannels[0].emergencyCommand, 0.25)
+    let structural = try NumiLabPositionActionEncoder(robot: robot, contract: contract)
+    XCTAssertThrowsError(try structural.motorTopology(neutralCommands: ["hip": 0.5],
+      emergencyCommands: ["hip": 0.25], synergyCount: 1, motorNucleusCount: 1,
+      autonomicActionDimension: 1, activeSensingActionDimension: 0))
+    XCTAssertThrowsError(try encoder.motorTopology(neutralCommands: ["hip": 0.5],
+      emergencyCommands: [:], synergyCount: 1, motorNucleusCount: 1,
+      autonomicActionDimension: 1, activeSensingActionDimension: 0))
+  }
+
   func testCompiledTaskReceiptRejectsForeignCoordinateAuthorityAndIdentity() throws {
     let robot = try robot(), contract = try contract(robot)
     XCTAssertThrowsError(try NumiLabPositionActionEncoder(robot: robot, contract: contract,
