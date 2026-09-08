@@ -11,7 +11,7 @@ python3 tools/export_numilab_robot.py \
   --output-dir /existing/parent/robot-interfaces
 ```
 
-The default native revision is `5db0c5aa169bfe1270ef7448e01dd7fbcd99d123`.
+The default native revision is `4a369ca846fde93016f3708f3fd9386c992b52a4`.
 The revision must match the native checkout exactly, and modified/untracked
 files under `include` or `src/core` are rejected. `--revision` explicitly
 selects another reviewed commit. The output directory must not already exist.
@@ -71,9 +71,10 @@ let topology = try imported.jointTopologyCatalog(
 
 The model fingerprint **must come from the physical owner**. The export hash,
 robot name and body counts are not substitutes for that authoritative model
-identity. This operation compiles structural metadata; the real adapter still
-must compare the physical owner's model to the retained native asset when it
-instantiates the world. The CLI exposes the same cold operation:
+identity. This operation compiles structural metadata; the live adapter still
+compares the physical owner's compiled task/run identities with the imported
+robot contract when it instantiates the execution boundary. The CLI exposes the
+same cold structural operation:
 
 ```sh
 swift run numi-brain-connectome import-numilab-topology \
@@ -86,19 +87,48 @@ bounds. Every actuator must have explicitly supplied neutral and emergency
 commands. No emergency behavior is inferred. Rotor, effort, velocity, tendon
 and other non-position interfaces are rejected by that method, not cast into
 incompatible units. Preserve the native actuator scale, filter response,
-component and terms when constructing the eventual physical adapter.
+component and terms when constructing the physical adapter.
 
-Absolute-position channels are **not** the normalized action array consumed by
-NumiLab's current PolicyProgram. Their conversion and command application must
-remain in the owning physical interface. Likewise this metadata exporter does
-not supply mounted sensor transduction, device validity buffers, cross-runtime
-command ordering, a joint commit callback, or robot training. Those execution
-interfaces must be completed before an imported body is a running connectome
-robot. Empty asset-license strings are retained as missing provenance, never
-filled with an assumed license.
+## Live physical-owner bridge
 
-The maintained checked-out Apple CI builds these real native exports, compiles
-the complete NumiBrain package, and feeds the three exports to
-`NumiLabRobotInterfaceTests`. Ordinary tests also cover missing identities,
-wrong trees/targets, explicit emergency values and rejection of rotor-to-joint
-casts. A passing import remains distinct from Metal 4 brain/body execution.
+The pinned NumiLab owner ABI now exposes the exact action-binding table retained
+by the live `CompiledTaskProgram` and a canonical resident-state fingerprint.
+NumiBrain therefore does not infer task action order from the cold JSON export.
+Immediately before execution it rechecks the live run, world, task, action and
+robot fingerprints, validates q/v ownership and actuator semantics, converts an
+admitted absolute-position candidate to NumiLab's normalized task coordinates,
+and advances the caller-owned `MRTaskRolloutHandle` exactly once.
+
+After an accepted step, NumiBrain asks NumiLab itself for the resident-state
+fingerprint and rechecks the rollout boundary before constructing an
+`AcceptedPhysicsStateToken`. The hardened owner revision hashes the validated
+**logical byte range** of every persistent continuation buffer plus resident
+metadata. Metal allocation capacity/slack is explicitly excluded from physical
+state identity. The owner refuses the digest for invalid, pending, stale or
+in-flight resident state.
+
+`NumiLabReplayCheckpoint` records normalized accepted actions, policy revisions,
+rollout counters and the owner's physical-state fingerprint at each boundary.
+Restore requires a fresh rollout with the identical immutable origin, replays
+each accepted step, and requires owner fingerprint equality after every step.
+Partial q/v reconstruction is not accepted as an exact restore.
+
+The current compatibility action transport reads an authenticated lease-owned
+`MTLBuffer` only when that allocation is CPU-visible (`shared` or `managed`). A
+private-only motor buffer fails closed; there is no implicit unsynchronized
+staging copy. A future NumiLab device-action ABI can replace this compatibility
+transport without changing task ownership or joint-root semantics.
+
+The live bridge deliberately stops before committing Brain. Existing joint-root
+transaction code remains the sole authority for accept/commit/abort ordering.
+The bridge also does not create mounted sensor models, infer emergency behavior,
+train a robot, qualify a task policy, or establish hardware safety. Those are
+separate embodiment and validation layers, not metadata-import responsibilities.
+
+The maintained checked-out Apple CI builds the real native robot exports,
+compiles the complete NumiBrain package, and feeds the exports to
+`NumiLabRobotInterfaceTests`. Ordinary tests cover missing identities, wrong
+trees/targets, explicit emergency values, action-contract validation and
+rejection of rotor-to-joint casts. NumiLab's own macOS owner-ABI workflow builds
+the full hardened native library at the pinned revision; the cold import job
+only compiles the native asset/kinematic sources it actually consumes.
