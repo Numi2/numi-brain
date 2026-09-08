@@ -133,7 +133,10 @@ extern "C" uint64_t nb_connectome_binding_fingerprint(uint64_t graph,
       !channels || channels>256 || !nominal || !integration || integration>nominal ||
       !ni || ni>65536 || !no || no>65536 || !inputs || !outputs) return 0;
   Hash h;
-  h.scalar(uint64_t(0x4e42434e53000001ull));
+  // Numerical-operator revision 2 binds cancellation-safe physical-time gain.
+  // Graph bytes keep NUMICNS1 identity, but old numerical checkpoints/programs
+  // must not silently resume under the changed FP32 implementation.
+  h.scalar(uint64_t(0x4e42434e53000002ull));
   for (auto v:{graph,species,sensory,version}) h.scalar(v);
   for (auto v:{nodes,scalars,receptors,channels,nominal,integration,ni,no}) h.scalar(v);
   for (uint32_t i=0;i<ni;++i) {

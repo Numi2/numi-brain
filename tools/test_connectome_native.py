@@ -111,6 +111,17 @@ class NativePackTests(unittest.TestCase):
     def test_binding_deterministic(self):
         self.assertNotEqual(self.binding(),0)
         self.assertEqual(self.binding(),self.binding())
+    def test_binding_includes_physical_gain_revision(self):
+        def reference(domain):
+            return fnv(struct.pack('<5Q8I', domain, 1, 2, 3, 4,
+                3, 2, 1, 1, 20000, 1000, 1, 1)
+                + bytes(Input(0, 1, 0, 0, 1, 1, 0, 8))
+                + bytes(Readout(2, 0, 1, 0)))
+        legacy = reference(0x4e42434e53000001)
+        current = reference(0x4e42434e53000002)
+        self.assertEqual(self.binding(), current)
+        self.assertNotEqual(current, legacy)
+        self.assertNotEqual(self.decoder(topology=current), self.decoder(topology=legacy))
     def test_binding_requires_every_identity(self):
         for i in range(4):
             ids=[1,2,3,4]; ids[i]=0
