@@ -120,6 +120,26 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.offset(of: \.expected_joint_equality_fingerprint), 184)
   }
 
+  func testSourceJointLimitsRequireSourceOwnerAndV6Layout() throws {
+    typealias Limits = MetalNumanXBridgeV1Runtime.SourceJointLimits
+    typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
+    XCTAssertThrowsError(try Limits(payloadPath: "", fingerprint: 1))
+    XCTAssertThrowsError(try Limits(payloadPath: "source\0other", fingerprint: 1))
+    XCTAssertThrowsError(try Limits(payloadPath: "source.nhlim", fingerprint: 0))
+    let limits = try Limits(payloadPath: "source.nhlim", fingerprint: 5)
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 1,
+      worldFingerprint: 2, sourceJointLimits: limits))
+    let world = try World(packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 2,
+      sourceJointEqualities: .init(payloadPath: "source.nheq", fingerprint: 4), sourceJointLimits: limits)
+    XCTAssertEqual(world.sourceJointLimits?.fingerprint, 5)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.stride, 240)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.joint_limit_payload_path), 200)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.expected_joint_limit_fingerprint), 208)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.costal_cartilage_payload_path), 216)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.costal_binding_payload_path), 224)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.expected_costal_binding_fingerprint), 232)
+  }
+
   func testCostalOwnershipRequiresConstrainedWorldAndV5Layout() throws {
     typealias Tissue = MetalNumanXBridgeV1Runtime.CostalTissueOwnership
     typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
@@ -1260,6 +1280,10 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   }
 
   func testAuthoredMatterBrainProposalApplyAndJointPublication() throws {
+    try runFullBodyJointPublication(authoredWorld: configuredAuthoredWorld())
+  }
+
+  private func configuredAuthoredWorld() throws -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld {
     let environment = ProcessInfo.processInfo.environment
     guard let path = environment["NUMANX_MATTER_WORLD_PACKAGE"],
       let human = environment["NUMANX_HUMAN_SOURCE_FP"].flatMap({ UInt64($0, radix: 16) }),
@@ -1273,6 +1297,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         .flatMap { UInt64($0, radix: 16) })
       equalities = try .init(payloadPath: equalityPath, fingerprint: equalityFingerprint)
     }
+    var limits: MetalNumanXBridgeV1Runtime.SourceJointLimits?
+    if environment["NUMANX_JOINT_LIMITS"] != nil || environment["NUMANX_JOINT_LIMIT_FP"] != nil {
+      limits = try .init(payloadPath: XCTUnwrap(environment["NUMANX_JOINT_LIMITS"]),
+        fingerprint: XCTUnwrap(environment["NUMANX_JOINT_LIMIT_FP"].flatMap { UInt64($0, radix: 16) }))
+    }
     var tissue: MetalNumanXBridgeV1Runtime.CostalTissueOwnership?
     let tissueKeys = ["NUMANX_COSTAL_CARTILAGE", "NUMANX_COSTAL_BINDING", "NUMANX_COSTAL_BINDING_FP"]
     if tissueKeys.contains(where: { environment[$0] != nil }) {
@@ -1280,9 +1309,44 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         bindingPayloadPath: XCTUnwrap(environment[tissueKeys[1]]),
         bindingFingerprint: XCTUnwrap(environment[tissueKeys[2]].flatMap { UInt64($0, radix: 16) }))
     }
-    try runFullBodyJointPublication(authoredWorld: .init(packagePath: path,
+    return try .init(packagePath: path,
       humanSourceFingerprint: human, worldFingerprint: world,
-      sourceJointEqualities: equalities, costalTissueOwnership: tissue))
+      sourceJointEqualities: equalities, sourceJointLimits: limits, costalTissueOwnership: tissue)
+  }
+
+  func testSourceJointLimitNativeAdmissionRejectsPayloadDrift() throws {
+    let world = try configuredAuthoredWorld()
+    guard let limits = world.sourceJointLimits, world.costalTissueOwnership == nil else {
+      throw XCTSkip("NHLIM1 small authored admission fixture is not configured")
+    }
+    let paths = try bridgePaths()
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let original = try Data(contentsOf: URL(fileURLWithPath: limits.payloadPath))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let mutations: [(String, Int?, UInt8)] = [
+      ("fingerprint", nil, 0), ("source", 48, 1), ("policy", 32, 1),
+      ("flags", 36, 1), ("reserved", 40, 1), ("coordinate", 80, 1),
+      ("row-reserved", 92, 1), ("source-weight", 111, 128)
+    ]
+    for (name, offset, mask) in mutations {
+      var payload = original
+      if let offset { payload[offset] ^= mask }
+      let url = directory.appendingPathComponent(name + ".nhlim")
+      try payload.write(to: url)
+      let fingerprint = payload.reduce(UInt64(0xcbf29ce484222325)) { ($0 ^ UInt64($1)) &* 0x100000001b3 }
+      let rejected = try MetalNumanXBridgeV1Runtime.AuthoredMatterWorld(
+        packagePath: world.packagePath, humanSourceFingerprint: world.humanSourceFingerprint,
+        worldFingerprint: world.worldFingerprint, sourceJointEqualities: world.sourceJointEqualities,
+        sourceJointLimits: .init(payloadPath: url.path, fingerprint: offset == nil ? fingerprint ^ 1 : fingerprint))
+      XCTAssertThrowsError(try MetalNumanXBridgeV1Runtime(libraryPath: paths.library, device: device,
+        configuration: .init(rigidPayloadPath: paths.rigid, musclePayloadPath: paths.muscle,
+          supportContactPayloadPath: paths.contacts, visualPackPath: paths.visualPack,
+          visionProfilePath: paths.visionProfile, metalRoboMetallibPath: paths.metalRoboMetallib,
+          matterMetallibPath: paths.matterMetallib, matterMaterialPath: "", timestepMicroseconds: 100,
+          maximumRetainedBytes: 1 << 30, transactionSlotCount: 2, authoredMatterWorld: rejected)), name)
+    }
   }
 
   private func runFullBodyJointPublication(
@@ -1364,6 +1428,25 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(native.info.dofCount, 128)
     XCTAssertEqual(native.info.muscleCount, 416)
     XCTAssertEqual(native.info.residentContinuationCount, 0)
+    if let limits = authoredWorld?.sourceJointLimits {
+      let anatomy = try native.fullBodyAnatomy()
+      let coordinates = anatomy.jointTopologyCatalog.joints.flatMap(\.coordinates)
+      let payload = try Data(contentsOf: URL(fileURLWithPath: limits.payloadPath))
+      func word(_ offset: Int) -> UInt32 {
+        payload.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)) }
+      }
+      let count = Int(word(20))
+      XCTAssertEqual(coordinates.filter(\.sourceCompliantLimit).count, count)
+      for index in 0..<count {
+        let offset = 80 + 80 * index
+        let coordinate = try XCTUnwrap(coordinates.first { $0.kinesthesiaReceptorIndex == word(offset + 4) })
+        XCTAssertTrue(coordinate.sourceCompliantLimit)
+        XCTAssertEqual(coordinate.minimumPosition.bitPattern, word(offset + 16))
+        XCTAssertEqual(coordinate.maximumPosition.bitPattern, word(offset + 20))
+      }
+      XCTAssertTrue(coordinates.contains { $0.sourceCompliantLimit && $0.restPosition < $0.minimumPosition },
+        "Source reset offsets must survive anatomy transport without clamping")
+    }
     if let authoredWorld {
       let world = try native.currentWorldInfo()
       XCTAssertTrue(world.authoredPackage)
@@ -1375,6 +1458,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         var expectedSource = ((authoredWorld.humanSourceFingerprint ^ domain) &* fnvPrime
           ^ equalities.fingerprint) &* fnvPrime
         if expectedSource == 0 { expectedSource = fnvOffset }
+        if let limits = authoredWorld.sourceJointLimits {
+          let limitDomain = "NHLIM1".utf8.reduce(fnvOffset) { ($0 ^ UInt64($1)) &* fnvPrime }
+          expectedSource = ((expectedSource ^ limitDomain) &* fnvPrime ^ limits.fingerprint) &* fnvPrime
+          if expectedSource == 0 { expectedSource = fnvOffset }
+        }
         if let tissue = authoredWorld.costalTissueOwnership {
           for byte in "NHTMASS1".utf8 { expectedSource = (expectedSource ^ UInt64(byte)) &* fnvPrime }
           for value in [tissue.bindingFingerprint, authoredWorld.worldFingerprint] {

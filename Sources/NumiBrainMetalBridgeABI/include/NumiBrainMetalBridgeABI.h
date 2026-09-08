@@ -25,6 +25,7 @@
 #define MRNX_RUNTIME_CONFIG_ABI_V3 3u
 #define MRNX_RUNTIME_CONFIG_ABI_V4 4u
 #define MRNX_RUNTIME_CONFIG_ABI_V5 5u
+#define MRNX_RUNTIME_CONFIG_ABI_V6 6u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -290,6 +291,24 @@ typedef struct mrnx_runtime_config_v5 {
     uint64_t expected_costal_binding_fingerprint;
 } mrnx_runtime_config_v5;
 
+// NHLIM1 scalar source limits on the same NHEQ2 authored-world solver.
+// Limits are mandatory. Costal mass ownership is optional as one complete
+// group; its three fields must all be absent or all be present. Construction
+// admits the base world, then folds NHEQ2, NHLIM1 and optional NHTMASS1 into
+// Human identity. No state projection or separate limit solver is installed.
+typedef struct mrnx_runtime_config_v6 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    mrnx_runtime_config_v4 runtime;
+    const char* joint_limit_payload_path;
+    uint64_t expected_joint_limit_fingerprint;
+    const char* costal_cartilage_payload_path;
+    const char* costal_binding_payload_path;
+    uint64_t expected_costal_binding_fingerprint;
+} mrnx_runtime_config_v6;
+
+
+
 // Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
 // as fixtures; successfully loading an authored package is not calibration.
 typedef struct mrnx_runtime_world_info_v1 {
@@ -386,6 +405,7 @@ enum mrnx_joint_coordinate_kind_v1 {
 
 enum mrnx_joint_coordinate_flags_v1 {
   MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1 = 1u << 0u,
+  MRNX_JOINT_COORDINATE_SOURCE_COMPLIANT_LIMIT_V1 = 1u << 1u,
 };
 
 typedef struct mrnx_aggregate_snapshot_v1 {
@@ -506,6 +526,9 @@ _Static_assert(offsetof(mrnx_runtime_config_v3, matter_world_package_path) == 14
                "mrnx config v3 world offset");
 _Static_assert(sizeof(mrnx_runtime_config_v4) == 192u, "mrnx config v4 ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v5) == 224u, "mrnx config v5 ABI");
+_Static_assert(sizeof(mrnx_runtime_config_v6) == 240u, "mrnx config v6 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v6, joint_limit_payload_path) == 200u, "mrnx config v6 limits offset");
+_Static_assert(offsetof(mrnx_runtime_config_v6, costal_cartilage_payload_path) == 216u, "mrnx config v6 cartilage offset");
 _Static_assert(offsetof(mrnx_runtime_config_v5, costal_cartilage_payload_path) == 200u,
                "mrnx config v5 cartilage offset");
 _Static_assert(offsetof(mrnx_runtime_config_v5, expected_costal_binding_fingerprint) == 216u,

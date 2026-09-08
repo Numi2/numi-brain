@@ -46,6 +46,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v5>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV6 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v6>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
@@ -136,6 +140,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreateV3: RuntimeCreateV3?
   let runtimeCreateV4: RuntimeCreateV4?
   let runtimeCreateV5: RuntimeCreateV5?
+  let runtimeCreateV6: RuntimeCreateV6?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
@@ -201,6 +206,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCreateV5 = try? Self.symbol(
         "mrnx_bridge_v1_runtime_create_v5", library: library
+      )
+      runtimeCreateV6 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v6", library: library
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
@@ -1202,6 +1210,23 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
   }
 
+  /// Immutable NHLIM1 transport. NumanX owns admission, source compliance,
+  /// unilateral force and the coupled Newton tangent; Brain has no pose authority.
+  public struct SourceJointLimits: Sendable {
+    public let payloadPath: String
+    public let fingerprint: UInt64
+
+    public init(payloadPath: String, fingerprint: UInt64) throws {
+      guard !payloadPath.isEmpty, !payloadPath.utf8.contains(0), fingerprint != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Source joint limits require an NHLIM1 payload path and nonzero fingerprint"
+        )
+      }
+      self.payloadPath = payloadPath
+      self.fingerprint = fingerprint
+    }
+  }
+
   /// Transport-only descriptor. Native construction validates source bytes,
   /// cooked nodal mass, COM rebase and all attachment frames before allocation.
   public struct CostalTissueOwnership: Sendable {
@@ -1229,16 +1254,23 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let humanSourceFingerprint: UInt64
     public let worldFingerprint: UInt64
     public let sourceJointEqualities: SourceJointEqualities?
+    public let sourceJointLimits: SourceJointLimits?
     public let costalTissueOwnership: CostalTissueOwnership?
 
     public init(packagePath: String, humanSourceFingerprint: UInt64,
                 worldFingerprint: UInt64,
                 sourceJointEqualities: SourceJointEqualities? = nil,
+                sourceJointLimits: SourceJointLimits? = nil,
                 costalTissueOwnership: CostalTissueOwnership? = nil) throws {
       guard !packagePath.isEmpty, !packagePath.utf8.contains(0),
         humanSourceFingerprint != 0, worldFingerprint != 0 else {
         throw MetalNumanXBridgeV1Error.invalidABI(
           "Authored Matter requires a package path and nonzero Human/world identities"
+        )
+      }
+      guard sourceJointLimits == nil || sourceJointEqualities != nil else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Source joint limits require the NHEQ2 authored-world solver"
         )
       }
       guard costalTissueOwnership == nil || sourceJointEqualities != nil else {
@@ -1250,6 +1282,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.humanSourceFingerprint = humanSourceFingerprint
       self.worldFingerprint = worldFingerprint
       self.sourceJointEqualities = sourceJointEqualities
+      self.sourceJointLimits = sourceJointLimits
       self.costalTissueOwnership = costalTissueOwnership
     }
   }
@@ -1413,7 +1446,13 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
     if let world = configuration.authoredMatterWorld {
-      if world.costalTissueOwnership != nil {
+      if world.sourceJointLimits != nil {
+        guard symbols.runtimeCreateV6 != nil else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "Native runtime lacks source joint limit configuration v6"
+          )
+        }
+      } else if world.costalTissueOwnership != nil {
         guard symbols.runtimeCreateV5 != nil else {
           throw MetalNumanXBridgeV1Error.invalidABI(
             "Native runtime lacks tissue mass ownership configuration v5; refusing additive-mass fallback"
@@ -1491,6 +1530,24 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                                     constrained.runtime = authored
                                     constrained.joint_equality_payload_path = equalityPath
                                     constrained.expected_joint_equality_fingerprint = equalities.fingerprint
+                                    if let limits = world.sourceJointLimits {
+                                      return limits.payloadPath.withCString { limitPath in
+                                        withOptionalCString(world.costalTissueOwnership?.cartilagePayloadPath) { cartilage in
+                                          withOptionalCString(world.costalTissueOwnership?.bindingPayloadPath) { binding in
+                                            var limited = mrnx_runtime_config_v6()
+                                            limited.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V6)
+                                            limited.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v6>.stride)
+                                            limited.runtime = constrained
+                                            limited.joint_limit_payload_path = limitPath
+                                            limited.expected_joint_limit_fingerprint = limits.fingerprint
+                                            limited.costal_cartilage_payload_path = cartilage
+                                            limited.costal_binding_payload_path = binding
+                                            limited.expected_costal_binding_fingerprint = world.costalTissueOwnership?.bindingFingerprint ?? 0
+                                            return symbols.runtimeCreateV6?(&limited, &rawInfo)
+                                          }
+                                        }
+                                      }
+                                    }
                                     if let tissue = world.costalTissueOwnership {
                                       return tissue.cartilagePayloadPath.withCString { cartilage in
                                         tissue.bindingPayloadPath.withCString { binding in
@@ -1690,7 +1747,10 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
           coordinate.v_index == coordinateIndex,
           coordinate.coordinate_identifier < raw.coordinate_count,
           coordinate.flags
-            & ~UInt32(MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1.rawValue) == 0,
+            & ~(UInt32(MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1.rawValue)
+              | UInt32(MRNX_JOINT_COORDINATE_SOURCE_COMPLIANT_LIMIT_V1.rawValue)) == 0,
+          coordinate.flags & UInt32(MRNX_JOINT_COORDINATE_SOURCE_COMPLIANT_LIMIT_V1.rawValue) == 0
+            || coordinate.flags & UInt32(MRNX_JOINT_COORDINATE_POSITION_LIMIT_V1.rawValue) != 0,
           coordinate.reserved0 == 0,
           coordinate.reserved1 == 0,
           let identifier = UInt16(exactly: coordinate.coordinate_identifier)
@@ -1719,7 +1779,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
           ),
           minimumPosition: coordinate.minimum_position,
           maximumPosition: coordinate.maximum_position,
-          restPosition: coordinate.rest_position
+          restPosition: coordinate.rest_position,
+          sourceCompliantLimit: coordinate.flags
+            & UInt32(MRNX_JOINT_COORDINATE_SOURCE_COMPLIANT_LIMIT_V1.rawValue) != 0
         ))
       }
       joints.append(try NumanXJointTopology(

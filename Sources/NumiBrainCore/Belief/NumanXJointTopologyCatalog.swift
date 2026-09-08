@@ -20,6 +20,9 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
   public let minimumPosition: Float
   public let maximumPosition: Float
   public let restPosition: Float
+  /// Source-compliant stops admit the exact reset even outside the range.
+  /// This describes anatomy; it grants no authority to modify physical state.
+  public let sourceCompliantLimit: Bool
 
   public init(
     identifier: UInt16,
@@ -28,7 +31,8 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     parentLocalAxis: NumanXBodyLocalPoint,
     minimumPosition: Float,
     maximumPosition: Float,
-    restPosition: Float
+    restPosition: Float,
+    sourceCompliantLimit: Bool = false
   ) throws {
     let axisNormSquared =
       parentLocalAxis.x * parentLocalAxis.x
@@ -37,7 +41,7 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     guard axisNormSquared.isFinite, axisNormSquared > 1e-12,
       minimumPosition.isFinite, maximumPosition.isFinite, restPosition.isFinite,
       minimumPosition < maximumPosition,
-      (minimumPosition...maximumPosition).contains(restPosition)
+      (sourceCompliantLimit || (minimumPosition...maximumPosition).contains(restPosition))
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX joint coordinate axis or limits are invalid"
@@ -50,6 +54,7 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     self.minimumPosition = minimumPosition
     self.maximumPosition = maximumPosition
     self.restPosition = restPosition
+    self.sourceCompliantLimit = sourceCompliantLimit
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -60,6 +65,19 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
     case minimumPosition
     case maximumPosition
     case restPosition
+    case sourceCompliantLimit
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(identifier, forKey: .identifier)
+    try values.encode(kind, forKey: .kind)
+    try values.encodeIfPresent(kinesthesiaReceptorIndex, forKey: .kinesthesiaReceptorIndex)
+    try values.encode(parentLocalAxis, forKey: .parentLocalAxis)
+    try values.encode(minimumPosition, forKey: .minimumPosition)
+    try values.encode(maximumPosition, forKey: .maximumPosition)
+    try values.encode(restPosition, forKey: .restPosition)
+    if sourceCompliantLimit { try values.encode(true, forKey: .sourceCompliantLimit) }
   }
 
   public init(from decoder: any Decoder) throws {
@@ -75,7 +93,8 @@ public struct NumanXJointCoordinateTopology: Codable, Equatable, Hashable, Senda
       ),
       minimumPosition: values.decode(Float.self, forKey: .minimumPosition),
       maximumPosition: values.decode(Float.self, forKey: .maximumPosition),
-      restPosition: values.decode(Float.self, forKey: .restPosition)
+      restPosition: values.decode(Float.self, forKey: .restPosition),
+      sourceCompliantLimit: values.decodeIfPresent(Bool.self, forKey: .sourceCompliantLimit) ?? false
     )
   }
 }
@@ -124,7 +143,8 @@ public struct NumanXJointTopology: Codable, Equatable, Hashable, Sendable {
         parentLocalAxis: $0.parentLocalAxis,
         minimumPosition: $0.minimumPosition,
         maximumPosition: $0.maximumPosition,
-        restPosition: $0.restPosition
+        restPosition: $0.restPosition,
+        sourceCompliantLimit: $0.sourceCompliantLimit
       )
     }
     guard parentBodyIdentifier != childBodyIdentifier,
@@ -389,6 +409,10 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
         mix(coordinate.minimumPosition.bitPattern, into: &hash)
         mix(coordinate.maximumPosition.bitPattern, into: &hash)
         mix(coordinate.restPosition.bitPattern, into: &hash)
+        if coordinate.sourceCompliantLimit {
+          // Preserve legacy fingerprints; the explicit source-law domain is new.
+          mix(UInt32(0x4e484c31), into: &hash)
+        }
       }
     }
     return hash

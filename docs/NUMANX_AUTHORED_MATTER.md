@@ -106,6 +106,37 @@ The descriptor and C layout also have a CPU-only test. This source integration
 is separate from executing and qualifying the constrained native physics;
 no sustained behavior or anatomical claim follows from loading NHEQ2.
 
+## Source joint limits through configuration v6
+
+`AuthoredMatterWorld.sourceJointLimits` carries an NHLIM1 path and nonzero
+FNV-1a64 fingerprint. It requires `sourceJointEqualities` and selects native
+configuration v6 (240 bytes). The limit path/fingerprint are at offsets
+200/208; optional costal cartilage, binding and fingerprint are at 216/224/232.
+The complete costal group may accompany NHLIM1. Missing v6 support fails
+before construction; it cannot silently discard limits or tissue ownership.
+
+Gate C accepts `--joint-limits PATH --joint-limit-fp HEX` alongside the
+authored-world and equality arguments. The configured end-to-end test uses
+`NUMANX_JOINT_LIMITS` and `NUMANX_JOINT_LIMIT_FP`. It checks the source identity,
+all admitted ranges in native anatomy, preserved source reset offsets and the
+existing accepted/rejected joint-root transaction. A separate test mutates
+fingerprint, source/policy, indices, padding and source inverse weight and
+requires native rejection.
+
+Native identity first admits the base world, then folds NHEQ2 and NHLIM1,
+then optional NHTMASS1. The NHLIM1 fold is the same XOR/multiply sequence
+shown above with `"NHLIM1"` and the limit payload fingerprint. Neural
+observation/action authority, accepted-only learning and the root deadline
+remain unchanged.
+
+Native anatomy marks source-compliant ranges explicitly. The joint topology
+retains `sourceCompliantLimit=true` and the exact source reset position, even
+when it lies outside the compliant interval. Legacy topology still requires
+an in-range rest position and retains its encoding/fingerprint. Brain does
+not clamp or otherwise write physical coordinates. Source compliance and
+short accepted transactions do not establish hard-bound containment,
+calibration, loaded anatomical convergence or sustained standing/walking.
+
 ## Qualification boundary
 
 The macmini qualification uses three small pelvis-attached FEM samples, twelve
