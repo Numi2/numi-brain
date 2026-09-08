@@ -1,0 +1,49 @@
+name: Audit male-CNS source annotations
+on:
+  push:
+    branches: [connectome-data-build-20260907]
+    paths: ['.github/workflows/connectome-release-audit.yml']
+permissions:
+  contents: read
+jobs:
+  annotation-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Retain exact annotations and schema statistics
+        run: |
+          python3 -m venv /tmp/cns-audit
+          /tmp/cns-audit/bin/python -m pip install pyarrow
+          /tmp/cns-audit/bin/python - <<'PY'
+          import pathlib,urllib.request,hashlib,json,collections
+          import pyarrow.feather as feather
+          root=pathlib.Path('audit');root.mkdir()
+          base='https://storage.googleapis.com/flyem-male-cns/v1.0/connectome-data/flat-connectome/'
+          names=['body-annotations-male-cns-v1.0-minconf-0.5.feather','body-neurotransmitters-male-cns-v1.0.feather']
+          report={}
+          for name in names:
+              path=root/name
+              with urllib.request.urlopen(base+name,timeout=120) as response:
+                  path.write_bytes(response.read(100_000_000))
+              table=feather.read_table(path)
+              item={'rows':table.num_rows,'schema':str(table.schema),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'categorical':{}}
+              for column in table.column_names:
+                  if any(key in column.lower() for key in ('status','class','nt','neurotransmit','side')):
+                      values=table[column].to_pylist()
+                      counts=collections.Counter(str(v) for v in values)
+                      if len(counts)<1000:
+                          item['categorical'][column]=dict(counts.most_common(100))
+              item['sample']=table.slice(0,5).to_pylist()
+              report[name]=item
+          (root/'audit.json').write_text(json.dumps(report,indent=2,default=str))
+          print(json.dumps(report,indent=2,default=str))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: male-cns-annotation-audit
+          path: audit/
+          retention-days: 90
+          compression-level: 1
