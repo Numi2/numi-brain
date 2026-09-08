@@ -16,7 +16,7 @@ an authored package from the legacy fixture and is included in capture summaries
 The identities are trusted-process compatibility keys, not cryptographic source
 provenance. A loaded package is not automatically an anatomical or calibrated
 model. Configuration v3 does not load joint equalities. General articulated contact proxies, adaptive topology,
-source mass partitioning and continuum replacement of muscle force remain
+general anatomical mass partitioning and continuum replacement of muscle force remain
 separate integration gates. Packages with nonzero active-fibre tension are
 rejected until a replacement map can remove the corresponding MyoSim force
 share. MyoSim retains its existing force authority.
@@ -128,3 +128,35 @@ and forced-timeout rejection. Test-only private-buffer snapshots now use
 checked GPU readbacks. The exact source/binary/input receipt is retained in
 Human's `Docs/media/numanx-source-equalities-20260908/`; the bounded 0.8 ms
 horizon and sustained-behavior limitations above still apply.
+
+## Anatomical costal mass ownership through configuration v5
+
+`CostalTissueOwnership` supplies immutable NHCART1 and NHTBIND1 paths plus the
+binding's FNV-1a64. It requires an authored Matter package and source joint
+equalities. The Gate C CLI accepts the same descriptor through
+`--costal-cartilage`, `--costal-binding`, and `--costal-binding-fp`.
+
+The descriptor selects `mrnx_bridge_v1_runtime_create_v5`. The 224-byte layout
+contains v4 at offset 8, cartilage path at 200, binding path at 208 and binding
+fingerprint at 216. Missing v5 is a typed construction failure; it cannot
+silently select additive tissue mass through an older constructor. Swift only
+transports this descriptor. Native construction owns source-byte validation,
+actual cooked nodal mass subtraction, rigid inertia and COM rebase, muscle and
+support point rebasing, source equality composition and package admission.
+
+The base world-admission Human key is unchanged. The returned constrained
+model identity additionally hashes `NHTMASS1`, the binding FNV64 and world
+FNV64, each integer encoded little-endian. Tissue state uses the existing
+physical-root preparation, joint publication and rollback protocol.
+
+The authored-world integration test accepts `NUMANX_COSTAL_CARTILAGE`,
+`NUMANX_COSTAL_BINDING` and `NUMANX_COSTAL_BINDING_FP` together with its world
+and NHEQ2 environment. This fixture uses a 10-microsecond physical interval,
+a 2 GiB retained-byte limit and a 60-second physical-completion wait. The wait
+is a test hardware deadline, not a solver tolerance or a performance claim.
+The non-costal fixture retains its original parameters.
+
+The anatomical source remains fourteen regions with 13,516 nodes, 46,278
+tetrahedra and 2,871 torso attachments. All rib/sternal endpoints resolve to
+torso 20. These contracts do not establish independent rib articulation,
+experimental tissue calibration, sustained control or real-time operation.

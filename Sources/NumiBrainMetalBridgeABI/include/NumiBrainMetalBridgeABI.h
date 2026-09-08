@@ -24,6 +24,7 @@
 #define MRNX_RUNTIME_CONFIG_ABI_V2 2u
 #define MRNX_RUNTIME_CONFIG_ABI_V3 3u
 #define MRNX_RUNTIME_CONFIG_ABI_V4 4u
+#define MRNX_RUNTIME_CONFIG_ABI_V5 5u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -279,6 +280,16 @@ typedef struct mrnx_runtime_config_v4 {
     uint64_t expected_joint_equality_fingerprint;
 } mrnx_runtime_config_v4;
 
+// Native mass-conserving costal admission; no legacy fallback is allowed.
+typedef struct mrnx_runtime_config_v5 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    mrnx_runtime_config_v4 runtime;
+    const char* costal_cartilage_payload_path;
+    const char* costal_binding_payload_path;
+    uint64_t expected_costal_binding_fingerprint;
+} mrnx_runtime_config_v5;
+
 // Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
 // as fixtures; successfully loading an authored package is not calibration.
 typedef struct mrnx_runtime_world_info_v1 {
@@ -494,6 +505,11 @@ _Static_assert(sizeof(mrnx_runtime_config_v3) == 168u, "mrnx config v3 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v3, matter_world_package_path) == 144u,
                "mrnx config v3 world offset");
 _Static_assert(sizeof(mrnx_runtime_config_v4) == 192u, "mrnx config v4 ABI");
+_Static_assert(sizeof(mrnx_runtime_config_v5) == 224u, "mrnx config v5 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v5, costal_cartilage_payload_path) == 200u,
+               "mrnx config v5 cartilage offset");
+_Static_assert(offsetof(mrnx_runtime_config_v5, expected_costal_binding_fingerprint) == 216u,
+               "mrnx config v5 binding fingerprint offset");
 _Static_assert(offsetof(mrnx_runtime_config_v4, runtime) == 8u,
                "mrnx config v4 nested runtime offset");
 _Static_assert(offsetof(mrnx_runtime_config_v4, joint_equality_payload_path) == 176u,

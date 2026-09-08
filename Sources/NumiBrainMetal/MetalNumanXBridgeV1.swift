@@ -42,6 +42,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v4>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV5 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v5>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
@@ -131,6 +135,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreateV2: RuntimeCreateV2
   let runtimeCreateV3: RuntimeCreateV3?
   let runtimeCreateV4: RuntimeCreateV4?
+  let runtimeCreateV5: RuntimeCreateV5?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
@@ -193,6 +198,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCreateV4 = try? Self.symbol(
         "mrnx_bridge_v1_runtime_create_v4", library: library
+      )
+      runtimeCreateV5 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v5", library: library
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
@@ -1194,25 +1202,55 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
   }
 
+  /// Transport-only descriptor. Native construction validates source bytes,
+  /// cooked nodal mass, COM rebase and all attachment frames before allocation.
+  public struct CostalTissueOwnership: Sendable {
+    public let cartilagePayloadPath: String
+    public let bindingPayloadPath: String
+    public let bindingFingerprint: UInt64
+
+    public init(cartilagePayloadPath: String, bindingPayloadPath: String,
+                bindingFingerprint: UInt64) throws {
+      guard !cartilagePayloadPath.isEmpty, !bindingPayloadPath.isEmpty,
+        !cartilagePayloadPath.utf8.contains(0), !bindingPayloadPath.utf8.contains(0),
+        bindingFingerprint != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Costal ownership requires NHCART1/NHTBIND1 paths and a nonzero binding fingerprint"
+        )
+      }
+      self.cartilagePayloadPath = cartilagePayloadPath
+      self.bindingPayloadPath = bindingPayloadPath
+      self.bindingFingerprint = bindingFingerprint
+    }
+  }
+
   public struct AuthoredMatterWorld: Sendable {
     public let packagePath: String
     public let humanSourceFingerprint: UInt64
     public let worldFingerprint: UInt64
     public let sourceJointEqualities: SourceJointEqualities?
+    public let costalTissueOwnership: CostalTissueOwnership?
 
     public init(packagePath: String, humanSourceFingerprint: UInt64,
                 worldFingerprint: UInt64,
-                sourceJointEqualities: SourceJointEqualities? = nil) throws {
+                sourceJointEqualities: SourceJointEqualities? = nil,
+                costalTissueOwnership: CostalTissueOwnership? = nil) throws {
       guard !packagePath.isEmpty, !packagePath.utf8.contains(0),
         humanSourceFingerprint != 0, worldFingerprint != 0 else {
         throw MetalNumanXBridgeV1Error.invalidABI(
           "Authored Matter requires a package path and nonzero Human/world identities"
         )
       }
+      guard costalTissueOwnership == nil || sourceJointEqualities != nil else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Costal tissue ownership requires source joint equalities and a rebased Matter package"
+        )
+      }
       self.packagePath = packagePath
       self.humanSourceFingerprint = humanSourceFingerprint
       self.worldFingerprint = worldFingerprint
       self.sourceJointEqualities = sourceJointEqualities
+      self.costalTissueOwnership = costalTissueOwnership
     }
   }
 
@@ -1375,7 +1413,13 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
     if let world = configuration.authoredMatterWorld {
-      if world.sourceJointEqualities != nil {
+      if world.costalTissueOwnership != nil {
+        guard symbols.runtimeCreateV5 != nil else {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "Native runtime lacks tissue mass ownership configuration v5; refusing additive-mass fallback"
+          )
+        }
+      } else if world.sourceJointEqualities != nil {
         guard symbols.runtimeCreateV4 != nil else {
           throw MetalNumanXBridgeV1Error.invalidABI(
             "Native runtime lacks source joint equality configuration v4; refusing unconstrained fallback"
@@ -1447,6 +1491,20 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                                     constrained.runtime = authored
                                     constrained.joint_equality_payload_path = equalityPath
                                     constrained.expected_joint_equality_fingerprint = equalities.fingerprint
+                                    if let tissue = world.costalTissueOwnership {
+                                      return tissue.cartilagePayloadPath.withCString { cartilage in
+                                        tissue.bindingPayloadPath.withCString { binding in
+                                          var owned = mrnx_runtime_config_v5()
+                                          owned.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V5)
+                                          owned.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v5>.stride)
+                                          owned.runtime = constrained
+                                          owned.costal_cartilage_payload_path = cartilage
+                                          owned.costal_binding_payload_path = binding
+                                          owned.expected_costal_binding_fingerprint = tissue.bindingFingerprint
+                                          return symbols.runtimeCreateV5?(&owned, &rawInfo)
+                                        }
+                                      }
+                                    }
                                     return symbols.runtimeCreateV4?(&constrained, &rawInfo)
                                   }
                                 }

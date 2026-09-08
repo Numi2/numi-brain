@@ -38,6 +38,26 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v4>.offset(of: \.expected_joint_equality_fingerprint), 184)
   }
 
+  func testCostalOwnershipRequiresConstrainedWorldAndV5Layout() throws {
+    typealias Tissue = MetalNumanXBridgeV1Runtime.CostalTissueOwnership
+    typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
+    XCTAssertThrowsError(try Tissue(cartilagePayloadPath: "", bindingPayloadPath: "binding", bindingFingerprint: 1))
+    XCTAssertThrowsError(try Tissue(cartilagePayloadPath: "cartilage", bindingPayloadPath: "binding\0other", bindingFingerprint: 1))
+    XCTAssertThrowsError(try Tissue(cartilagePayloadPath: "cartilage", bindingPayloadPath: "binding", bindingFingerprint: 0))
+    let tissue = try Tissue(cartilagePayloadPath: "cartilage", bindingPayloadPath: "binding", bindingFingerprint: 3)
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 1,
+      worldFingerprint: 2, costalTissueOwnership: tissue))
+    let world = try World(packagePath: "world", humanSourceFingerprint: 1,
+      worldFingerprint: 2, sourceJointEqualities: .init(payloadPath: "equalities", fingerprint: 4),
+      costalTissueOwnership: tissue)
+    XCTAssertEqual(world.costalTissueOwnership?.bindingFingerprint, 3)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v5>.stride, 224)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v5>.offset(of: \.runtime), 8)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v5>.offset(of: \.costal_cartilage_payload_path), 200)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v5>.offset(of: \.costal_binding_payload_path), 208)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v5>.offset(of: \.expected_costal_binding_fingerprint), 216)
+  }
+
   func testGateBAcceptedDevelopmentEnablesAutonomousPhysicalGaze() throws {
     let paths = try bridgePaths()
     guard let device = MTLCreateSystemDefaultDevice(),
@@ -1171,15 +1191,22 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         .flatMap { UInt64($0, radix: 16) })
       equalities = try .init(payloadPath: equalityPath, fingerprint: equalityFingerprint)
     }
+    var tissue: MetalNumanXBridgeV1Runtime.CostalTissueOwnership?
+    let tissueKeys = ["NUMANX_COSTAL_CARTILAGE", "NUMANX_COSTAL_BINDING", "NUMANX_COSTAL_BINDING_FP"]
+    if tissueKeys.contains(where: { environment[$0] != nil }) {
+      tissue = try .init(cartilagePayloadPath: XCTUnwrap(environment[tissueKeys[0]]),
+        bindingPayloadPath: XCTUnwrap(environment[tissueKeys[1]]),
+        bindingFingerprint: XCTUnwrap(environment[tissueKeys[2]].flatMap { UInt64($0, radix: 16) }))
+    }
     try runFullBodyJointPublication(authoredWorld: .init(packagePath: path,
       humanSourceFingerprint: human, worldFingerprint: world,
-      sourceJointEqualities: equalities))
+      sourceJointEqualities: equalities, costalTissueOwnership: tissue))
   }
 
   private func runFullBodyJointPublication(
     authoredWorld: MetalNumanXBridgeV1Runtime.AuthoredMatterWorld?
   ) throws {
-    let gateBTimestepMicroseconds: UInt64 = 100
+    let gateBTimestepMicroseconds: UInt64 = authoredWorld?.costalTissueOwnership == nil ? 100 : 10
     let initialCommittedTimestampMicroseconds: UInt64 = 1_000
     func gateBTimestamp(_ boundary: UInt64) -> BrainTimestamp {
       BrainTimestamp(
@@ -1244,6 +1271,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         matterMetallibPath: paths.matterMetallib,
         matterMaterialPath: authoredWorld == nil ? paths.material : "",
         timestepMicroseconds: gateBTimestepMicroseconds,
+        maximumRetainedBytes: authoredWorld?.costalTissueOwnership == nil ? 1 << 30 : 2 << 30,
         transactionSlotCount: 2,
         culturePackPath: culturePack,
         authoredMatterWorld: authoredWorld
@@ -1265,6 +1293,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         var expectedSource = ((authoredWorld.humanSourceFingerprint ^ domain) &* fnvPrime
           ^ equalities.fingerprint) &* fnvPrime
         if expectedSource == 0 { expectedSource = fnvOffset }
+        if let tissue = authoredWorld.costalTissueOwnership {
+          for byte in "NHTMASS1".utf8 { expectedSource = (expectedSource ^ UInt64(byte)) &* fnvPrime }
+          for value in [tissue.bindingFingerprint, authoredWorld.worldFingerprint] {
+            for shift in stride(from: 0, to: 64, by: 8) {
+              expectedSource = (expectedSource ^ ((value >> shift) & 0xff)) &* fnvPrime
+            }
+          }
+        }
         XCTAssertEqual(native.info.modelSourceFingerprint, expectedSource,
           "The source equality program must participate in the runtime model identity")
         if let expected = ProcessInfo.processInfo.environment["NUMANX_CONSTRAINED_HUMAN_SOURCE_FP"] {
@@ -1273,8 +1309,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       } else {
         XCTAssertEqual(native.info.modelSourceFingerprint, authoredWorld.humanSourceFingerprint)
       }
-      XCTAssertEqual(world.objectCount, 3)
-      XCTAssertEqual(world.femAttachmentCount, 12)
+      XCTAssertEqual(world.objectCount, authoredWorld.costalTissueOwnership == nil ? 3 : 1)
+      XCTAssertEqual(world.femAttachmentCount, authoredWorld.costalTissueOwnership == nil ? 12 : 2871)
     }
     XCTAssertNil(try native.aggregateSnapshotIfAvailable())
 
@@ -2544,7 +2580,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     try native.beginPhysicalRoot(transaction: transaction.token, motor: motor) {
       rootLatch.complete($0)
     }
-    let physical = try rootLatch.wait()
+    // The anatomical costal fixture has 46,278 tetrahedra. This is only a
+    // hardware completion deadline; neither its 10 us timestep nor physical
+    // solver admission tolerances change.
+    let physical = try rootLatch.wait(timeout:
+      ProcessInfo.processInfo.environment["NUMANX_COSTAL_BINDING"] == nil ? 10 : 60)
 
     // Diagnostic settlement only: the physical queue already consumed the
     // GPU motor gate without a host wait. This advances Brain's host phase

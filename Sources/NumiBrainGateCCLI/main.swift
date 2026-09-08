@@ -209,7 +209,8 @@ private func authoredMatterWorld(in options: [String: String]) throws
   -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld? {
   let keys = ["--matter-world", "--human-source-fp", "--matter-world-fp"]
   let equalityKeys = ["--joint-equalities", "--joint-equality-fp"]
-  guard (keys + equalityKeys).contains(where: { options[$0] != nil }) else {
+  let tissueKeys = ["--costal-cartilage", "--costal-binding", "--costal-binding-fp"]
+  guard (keys + equalityKeys + tissueKeys).contains(where: { options[$0] != nil }) else {
     _ = required("--material", in: options)
     return nil
   }
@@ -224,10 +225,19 @@ private func authoredMatterWorld(in options: [String: String]) throws
     equalities = try .init(payloadPath: required("--joint-equalities", in: options),
       fingerprint: fingerprint("--joint-equality-fp", in: options))
   }
+  var tissue: MetalNumanXBridgeV1Runtime.CostalTissueOwnership?
+  if tissueKeys.contains(where: { options[$0] != nil }) {
+    guard tissueKeys.allSatisfy({ options[$0] != nil }), equalities != nil else {
+      usage("Costal ownership requires --costal-cartilage, --costal-binding, --costal-binding-fp and source joint equalities")
+    }
+    tissue = try .init(cartilagePayloadPath: required("--costal-cartilage", in: options),
+      bindingPayloadPath: required("--costal-binding", in: options),
+      bindingFingerprint: fingerprint("--costal-binding-fp", in: options))
+  }
   return try .init(packagePath: required("--matter-world", in: options),
     humanSourceFingerprint: fingerprint("--human-source-fp", in: options),
     worldFingerprint: fingerprint("--matter-world-fp", in: options),
-    sourceJointEqualities: equalities)
+    sourceJointEqualities: equalities, costalTissueOwnership: tissue)
 }
 
 private func usage(_ message: String? = nil) -> Never {
@@ -251,6 +261,9 @@ private func usage(_ message: String? = nil) -> Never {
     through native configuration v4. The equality key is FNV-1a64 of its bytes;
     --human-source-fp remains the base NHRIGID/NHMYO/NHCNT world-admission key.
     Unsupported native v4 fails without an unconstrained fallback.
+    Add --costal-cartilage PATH --costal-binding PATH --costal-binding-fp HEX
+    for mass-conserving costal v5 admission. This requires the rebased package
+    and source equalities; the binding key is FNV-1a64 of NHTBIND1 bytes.
     Package or source-constraint loading does not qualify anatomy or standing.
 
     capture-train additionally requires --learning-rate FLOAT and at least
