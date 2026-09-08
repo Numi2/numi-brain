@@ -15,7 +15,7 @@ final class NumiLabTaskActionContractTests: XCTestCase {
         "minimumPosition": -1, "maximumPosition": 1.5, "restPosition": 0.5]]]
     let actuator: [String: Any] = ["id": "hip", "kind": 0, "target": "hinge",
       "scale": 0.5, "responseTimeSeconds": 0, "component": 0,
-      "parameters": [0,0,0,0], "terms": []]
+      "qIndex": 7, "vIndex": 6, "parameters": [0,0,0,0], "terms": []]
     let object: [String: Any] = ["version": 1, "nativeRepositoryRevision": revision,
       "robotID": "synthetic", "sourceRepository": "", "sourceRevision": "", "license": "",
       "bodyNames": ["base", "link"], "jointNames": ["hinge"], "joints": [joint],
@@ -47,7 +47,7 @@ final class NumiLabTaskActionContractTests: XCTestCase {
   func testJointLimitsDoNotSilentlyExpandNormalizedTaskAuthority() throws {
     let robot = try robot()
     let encoder = try NumiLabPositionActionEncoder(robot: robot, contract: contract(robot))
-    // 1.0 rad is inside the mechanism limit but beyond the task's +1 residual
+    // 1.25 rad is inside the mechanism limit but beyond the task's +1 residual
     // because this actuator's native scale is 0.5 around a 0.5-rad rest pose.
     XCTAssertThrowsError(try encoder.encodeAbsolutePositions([1.25]))
     XCTAssertThrowsError(try encoder.decodeNormalizedPositions([1.1]))
