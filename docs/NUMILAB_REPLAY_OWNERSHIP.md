@@ -82,3 +82,18 @@ Remaining product work includes the actual connectome-to-mounted-sensors closed
 loop, full joint physical rollback/publication, paired durable persistence,
 body-specific learning and held-out robot outcomes. Keep these distinct from
 successful source and compatibility-interface checks.
+
+## Reference Apple qualification
+
+Run `tools/qualify_numilab_reference.py --native-owner /path/to/numi-lab
+--numilab-sha <exact-sha> --output /new/external/receipt-directory` on a physical
+Apple Silicon host. It requires API-confirmed Metal 4 and an Apple GPU family,
+rejects Paravirtual devices, checks the exact checked-in 109-kernel inventory,
+and runs the unchanged bridge replay plus native-owner regressions. Both source
+checkouts must be clean. All commands, exits, capabilities and hashes are kept.
+
+The workflow now targets a self-hosted `numilab-metal4` ARM64 Mac via explicit
+workflow dispatch. No reference runner was registered when this change was
+made; current qualification is executed directly over SSH on the M4 Pro Mac
+mini using the same command. The workflow is not evidence of an installed or
+running GitHub runner. Hosted `macos-latest` is no longer a qualification path.

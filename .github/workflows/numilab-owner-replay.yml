@@ -1,75 +1,38 @@
-name: NumiLab real physical owner replay
+name: NumiLab reference Apple hardware qualification
 on:
-  push:
-    branches: [main]
-    paths: ['Sources/NumiBrainNumiLabBridgeABI/**', 'tools/numilab_owner_replay_check.cpp', 'tools/numilab_pipeline_probe.mm', '.github/workflows/numilab-owner-replay.yml']
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: numilab-owner-replay-${{ github.ref }}
-  cancel-in-progress: true
+  group: numilab-owner-replay-reference
+  cancel-in-progress: false
 jobs:
   native-physics:
-    runs-on: macos-latest
+    runs-on: [self-hosted, macOS, ARM64, numilab-metal4]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          path: brain
       - uses: actions/checkout@v4
         with:
           repository: Numi2/numi-lab
-          ref: 4a369ca846fde93016f3708f3fd9386c992b52a4
+          ref: 973676ebee749a77b950d72e30d7bcde9873e06c
           path: native-owner
           persist-credentials: false
-      - name: Record source and toolchain
+      - name: Qualify the exact native owner on physical Metal 4
         run: |
-          mkdir -p diagnostics
-          git rev-parse HEAD > diagnostics/brain-revision.txt
-          git -C native-owner rev-parse HEAD > diagnostics/native-revision.txt
-          sw_vers > diagnostics/host.txt
-          xcodebuild -version >> diagnostics/host.txt
-      - name: Build actual native physical owner
-        run: |
-          set -euo pipefail
-          cmake -S native-owner -B native-owner/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build native-owner/build --target metalrobo -j 4 2>&1 | tee diagnostics/native-build.txt
-      - name: Build and execute the real owner replay check
-        run: |
-          set -euo pipefail
-          library="$PWD/native-owner/build/lib/libmetalrobo.dylib"
-          metallib="$PWD/native-owner/build/shaders/MetalRobo.metallib"
-          test -f "$library"
-          test -f "$metallib"
-          shasum -a 256 "$library" "$metallib" > diagnostics/native-binaries.sha256
-          clang -std=c11 -Wall -Wextra -Wpedantic -Werror -c Sources/NumiBrainNumiLabBridgeABI/NumiBrainNumiLabBridgeABI.c -I Sources/NumiBrainNumiLabBridgeABI/include -o diagnostics/bridge.o 2>&1 | tee diagnostics/bridge-build.txt
-          clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror tools/numilab_owner_replay_check.cpp diagnostics/bridge.o -I Sources/NumiBrainNumiLabBridgeABI/include -I native-owner/include "$library" -Wl,-rpath,"$PWD/native-owner/build/lib" -o diagnostics/native-replay 2>&1 | tee diagnostics/replay-build.txt
-          diagnostics/native-replay "$library" "$metallib" 2>&1 | tee diagnostics/replay.txt
-          test "$(grep -c '^NUMILAB_NATIVE_REPLAY ' diagnostics/replay.txt)" = 3
-          git diff --exit-code
-          git -C native-owner diff --exit-code
-          printf '%s\n' 'Real pinned NumiLab physics and C bridge, four accepted steps in each original/replay/altered run. No neural controller, Brain joint publication, learned behavior or hardware admission.' > diagnostics/scope.txt
-      - name: Diagnose exact native kernels after an execution failure
-        if: failure()
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          source = Path('native-owner/src/metal/MetalWorld.mm').read_text()
-          begin = source.index('MetalWorldDiagnostics initializeContext(')
-          end = source.index('std::size_t growthCapacity(', begin)
-          names = sorted(set(re.findall(r'@"(mr_[a-z0-9_]+)"', source[begin:end])))
-          assert 0 < len(names) <= 256
-          Path('diagnostics/required-kernels.txt').write_text('\n'.join(names)+'\n')
-          PY
-          clang++ -std=c++20 -fobjc-arc -Wall -Wextra -Wpedantic -Werror tools/numilab_pipeline_probe.mm -framework Foundation -framework Metal -o diagnostics/pipeline-probe 2>&1 | tee diagnostics/probe-build.txt
-          diagnostics/pipeline-probe native-owner/build/shaders/MetalRobo.metallib diagnostics/required-kernels.txt 2>&1 | tee diagnostics/pipelines.txt
+          python3 brain/tools/qualify_numilab_reference.py \
+            --native-owner "$PWD/native-owner" \
+            --numilab-sha 973676ebee749a77b950d72e30d7bcde9873e06c \
+            --output "${RUNNER_TEMP}/numilab-reference-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: numilab-owner-replay-${{ github.sha }}
-          path: diagnostics/
+          name: numilab-reference-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/numilab-reference-${{ github.run_id }}-${{ github.run_attempt }}/*.json
+            ${{ runner.temp }}/numilab-reference-${{ github.run_id }}-${{ github.run_attempt }}/*.txt
           retention-days: 30
           if-no-files-found: error
