@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REVISION = '5db0c5aa169bfe1270ef7448e01dd7fbcd99d123'
+DEFAULT_REVISION = '4a369ca846fde93016f3708f3fd9386c992b52a4'
 SOURCES = ['RunProgram', 'EngineModel', 'PX4X500', 'G1', 'FrankaHand',
            'SurgicalPSM', 'Franka', 'FrankaEngine', 'ConstraintIR', 'Model',
            'GeometryCooker', 'LocomotionWorld', 'ArticulatedDynamics']
