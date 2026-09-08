@@ -10,7 +10,7 @@ enum MetalPreparedRecoveryTransfer {
   static func capture(runtime: MetalAgentStateRuntime, transaction: MetalAgentStateTransactionToken,
     root: BrainJointTransactionToken, decision: UInt64, acceptedPhysics: UInt64,
     device: any MTLDevice, commandBuffer: any MTL4CommandBuffer, options: MTL4CommitOptions,
-    maximumBytes: Int, completion: @escaping @Sendable (Result<BrainPreparedGPUImage, Error>) -> Void) throws {
+    maximumBytes: Int, connectomeState: ConnectomePreparedState? = nil, completion: @escaping @Sendable (Result<BrainPreparedGPUImage, Error>) -> Void) throws {
     _ = try runtime.arena.prepareCommit(transaction: transaction)
     guard root.baseBrainGeneration == transaction.baseGeneration,
       root.shadowGeneration == transaction.shadowGeneration else {
@@ -24,7 +24,8 @@ enum MetalPreparedRecoveryTransfer {
       buffer(runtime.arena, address: memory.memoryGPUAddress, bytes: memory.memoryByteCount, device: device),
       buffer(runtime.arena, address: memory.journalGPUAddress, bytes: memory.journalByteCount, device: device)
     ]
-    try checkBudget(sources.map(\.length), maximumBytes: maximumBytes)
+    try connectomeState?.validate(root: root)
+    try checkBudget(sources.map(\.length) + (connectomeState?.digestChunks.map(\.count) ?? []), maximumBytes: maximumBytes)
     let staging = try sources.map { source -> any MTLBuffer in
       guard let copy = device.makeBuffer(length: source.length, options: .storageModeShared) else {
         throw TissueError.metal("prepared capture allocation failed")
@@ -46,7 +47,8 @@ enum MetalPreparedRecoveryTransfer {
           return try BrainPreparedGPUImage(root: rootRecord, cachedDecisionFingerprint: decision,
             acceptedPhysicsTokenFingerprint: acceptedPhysics, hotLayoutFingerprint: hotLayout,
             memoryLayoutFingerprint: memoryLayout, baseHotState: data[0], shadowHotState: data[1],
-            basePersistentMemory: data[2], shadowJournal: data[3], maximumBytes: maximumBytes)
+            basePersistentMemory: data[2], shadowJournal: data[3], maximumBytes: maximumBytes,
+            connectomeState: connectomeState)
         }
       }
       completion(result)

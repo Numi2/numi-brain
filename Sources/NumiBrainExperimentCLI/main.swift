@@ -23,6 +23,8 @@ private struct WatchdogLifecycleInput: Codable {
 private struct CaptureInput: Codable {
   let artifactDirectory: String; let protocolSHA256: String; let publicationSHA256: String
   let runIdentifier: String; let nativePaths: [String: String]
+  let connectomeGraphPath: String?
+  let connectomeSpecificationPath: String?
   let watchdog: WatchdogOwnerFileConfiguration?
   let watchdogLifecycle: WatchdogLifecycleInput?
 }
@@ -62,7 +64,7 @@ private func publication(_ sha: String, _ directory: URL) throws -> BrainMotorSt
   let value = try BrainReachHoldExperiment.read(BrainMotorStudyPublication.self, hash: sha, directory: directory)
   try value.validate(); return value
 }
-private func capture(_ input: CaptureInput, configSHA: String, directory: URL) throws -> String {
+private func capture(_ input: CaptureInput, configSHA: String, directory: URL, connectomeResearch: Bool = false) throws -> String {
   let protocolValue = try BrainReachHoldExperiment.read(BrainReachHoldProtocol.self, hash: input.protocolSHA256, directory: directory)
   try protocolValue.validate()
   let weights = try publication(input.publicationSHA256, directory)
@@ -73,6 +75,20 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
     (input.watchdog == nil) == (input.watchdogLifecycle == nil),
     let device = MTLCreateSystemDefaultDevice() else {
     throw BrainRuntimeError.transaction("experiment configuration, model identity, watchdog lifecycle or Metal device is invalid")
+  }
+  let connectome: MetalConnectomeConfiguration?
+  if connectomeResearch {
+    guard let graphPath = input.connectomeGraphPath, let specPath = input.connectomeSpecificationPath else {
+      throw ConnectomeError.invalid("capture-connectome requires graph and specification paths")
+    }
+    connectome = try MetalConnectomeConfiguration(
+      graph: ConnectomeGraph(contentsOf: URL(fileURLWithPath: graphPath)),
+      specification: ConnectomeControllerSpec.read(from: URL(fileURLWithPath: specPath)))
+  } else {
+    guard input.connectomeGraphPath == nil, input.connectomeSpecificationPath == nil else {
+      throw ConnectomeError.invalid("use explicit capture-connectome research command for a changed controller")
+    }
+    connectome = nil
   }
   var roots: [MetalNumanXGateCRootRunner.RootResult] = []
   do {
@@ -99,7 +115,7 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
         matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2),
       publication: weights.unverifiedPublication, artifactDirectory: directory,
       episodeIdentifier: protocolValue.episodeIdentifier, randomSeed: protocolValue.randomSeed,
-      enableProductionUncertaintyGate: true, device: device)
+      enableProductionUncertaintyGate: !connectomeResearch, connectome: connectome, device: device)
     guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
       throw BrainRuntimeError.transaction("native model differs from frozen experiment")
     }
@@ -153,8 +169,8 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL) t
 let args = Array(CommandLine.arguments.dropFirst())
 do {
   guard args.count == 3, args[1] == "--config",
-    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "evaluate", "calibrate"].contains(args[0]) else {
-    print("numi-brain-experiment seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
+    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "capture-connectome", "evaluate", "calibrate"].contains(args[0]) else {
+    print("numi-brain-experiment seed|freeze-settings|freeze-protocol|probe|capture|capture-connectome|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
     exit(64)
   }
   let bytes = try QualificationFileDirectory.readFile(URL(fileURLWithPath: args[2]), maximumBytes: 1_048_576)
@@ -189,11 +205,13 @@ do {
       coordinate: input.coordinate, offset: input.offset)
     result = CommandResult(configurationSHA256: configHash,
       artifactSHA256: try BrainReachHoldExperiment.retain(probe, directory: store), kind: "unverified-gain-probe", parameterVersionFingerprint: probe.version.fingerprint)
-  case "capture":
+  case "capture", "capture-connectome":
     let input = try read(CaptureInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
     result = CommandResult(configurationSHA256: configHash,
-      artifactSHA256: try capture(input, configSHA: configHash, directory: store), kind: "retained-native-run")
+      artifactSHA256: try capture(input, configSHA: configHash, directory: store,
+        connectomeResearch: args[0] == "capture-connectome"),
+      kind: args[0] == "capture-connectome" ? "unqualified-connectome-native-run" : "retained-native-run")
   case "evaluate":
     let input = try read(EvaluationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)

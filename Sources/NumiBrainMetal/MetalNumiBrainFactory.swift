@@ -8,6 +8,7 @@ import NumiBrainCore
 /// per-agent capacities.
 @frozen
 public struct MetalNumiBrainConfiguration: Sendable {
+  public let connectome: MetalConnectomeConfiguration?
   public let initialTissueState: TissueGrid
   public let tissueParameters: TissueParameters
   public let tissueStimulus: TissueStimulus
@@ -35,8 +36,10 @@ public struct MetalNumiBrainConfiguration: Sendable {
     schedulerEnvironmentIdentifier: UInt32 = 0,
     maximumSchedulerEvents: Int = 64,
     maximumSchedulerInvocations: Int = 4_096,
-    maximumEncodedSubsteps: Int = 4_096
+    maximumEncodedSubsteps: Int = 4_096,
+    connectome: MetalConnectomeConfiguration? = nil
   ) {
+    self.connectome = connectome
     self.initialTissueState = initialTissueState
     self.tissueParameters = tissueParameters
     self.tissueStimulus = tissueStimulus
@@ -124,6 +127,15 @@ extension MetalNumiBrainRuntime {
         "NumanX uncertainty gate has two competing executable authorities"
       )
     }
+    guard configuration.connectome == nil || (foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
+      throw ConnectomeError.invalid("a modified connectome controller cannot inherit an existing policy qualification")
+    }
+    let connectomeSeed = try configuration.connectome.map {
+      try MetalConnectomeControllerSeed(configuration: $0, template: compiledSpeciesTemplate,
+        parameterVersionFingerprint: publication.version.fingerprint,
+        environmentIdentifier: configuration.schedulerEnvironmentIdentifier,
+        episodeIdentifier: UInt64(configuration.randomContext.episodeIdentifier))
+    }
     let cognitive = if let numanXUncertaintyGate {
       try MetalEmbodiedBrainRuntime(
         device: device,
@@ -140,7 +152,8 @@ extension MetalNumiBrainRuntime {
         regionalProgram: regionalProgram,
         parameterVersion: version,
         sharedParameterArtifact: publication.sharedArtifact,
-        foundationPolicyArchitecture: foundationPolicyArchitecture
+        foundationPolicyArchitecture: foundationPolicyArchitecture,
+        connectome: connectomeSeed
       )
     }
     let fastTissue = try MetalTissueRuntime(

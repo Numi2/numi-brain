@@ -205,6 +205,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let acceptedConsequenceRuntime: MetalAcceptedConsequenceRuntime
   public let memoryRuntime: MetalMemoryRuntime
 
+  private let connectomeController: MetalConnectomeController?
   private let device: any MTLDevice
   private let species: SpeciesTemplate
   private let acceptedPhysicsGateRuntime: MetalAcceptedPhysicsGateRuntime
@@ -267,7 +268,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics? = nil,
     foundationPolicyArchitecture: BrainFoundationPolicyArchitecture? = nil,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectome: MetalConnectomeControllerSeed? = nil
   ) throws {
     try self.init(
       device: device,
@@ -282,7 +284,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       numanXUncertaintyGate: try foundationPolicyArchitecture.map {
         try MetalNumanXUncertaintyGateConfiguration(architecture: $0)
       },
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectome: connectome
     )
   }
 
@@ -301,7 +304,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics? = nil,
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    connectome: MetalConnectomeControllerSeed? = nil
   ) throws {
     try self.init(
       device: device,
@@ -314,7 +318,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       memoryRetrievalDynamics: requestedMemoryRetrievalDynamics,
       episodicSegmentation: requestedEpisodicSegmentation,
       numanXUncertaintyGate: Optional(numanXUncertaintyGate),
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      connectome: connectome
     )
   }
 
@@ -332,7 +337,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     episodicSegmentation requestedEpisodicSegmentation:
       EpisodicSegmentationDynamics?,
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration?,
-    initialGeneration: UInt64
+    initialGeneration: UInt64,
+    connectome: MetalConnectomeControllerSeed?
   ) throws {
     let species = compiledSpeciesTemplate.species
     let sensoryProfile = compiledSpeciesTemplate.sensoryProfile
@@ -351,6 +357,17 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       let commandBuffer = device.makeCommandBuffer()
     else {
       throw TissueError.metal("embodied brain immutable bindings are inconsistent")
+    }
+    guard connectome == nil || (initialGeneration == 0 && numanXUncertaintyGate == nil) else {
+      throw ConnectomeError.invalid("connectome control requires fresh construction and its own qualification; legacy policy receipts cannot admit it")
+    }
+    if let seed = connectome {
+      guard seed.program.binding.parameterVersionFingerprint == parameterVersion.fingerprint else {
+        throw ConnectomeError.invalid("connectome seed names another parameter publication")
+      }
+    }
+    let connectomeController = try connectome.map {
+      try MetalConnectomeController(seed: $0, template: compiledSpeciesTemplate, device: device)
     }
     let agentStateRuntime = try MetalAgentStateRuntime(
       device: device,
@@ -436,6 +453,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         ("uncertaintyGate", numanXUncertaintyGate.fingerprint)
       )
     }
+    if let neural = connectomeController {
+      numanXImmutableFingerprints.append(("connectomeController", neural.program.programFingerprint))
+      numanXImmutableFingerprints.append(("connectomeBinding", neural.program.binding.fingerprint))
+    }
     let numanXHumanMatterRuntime = try MetalNumanXHumanMatterBrainRuntime(
       device: device,
       immutableFingerprints: numanXImmutableFingerprints
@@ -476,6 +497,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     for allocation in memoryRuntime.residencyAllocations {
       residencySet.addAllocation(allocation)
     }
+    for allocation in connectomeController?.residencyAllocations ?? [] { residencySet.addAllocation(allocation) }
     residencySet.commit()
     residencySet.requestResidency()
     self.deviceName = device.name
@@ -496,6 +518,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     self.acceptedConsequenceRuntime = acceptedConsequenceRuntime
     self.memoryRuntime = memoryRuntime
     self.device = device
+    self.connectomeController = connectomeController
     self.species = species
     self.acceptedPhysicsGateRuntime = acceptedPhysicsGateRuntime
     self.numanXHumanMatterRuntime = numanXHumanMatterRuntime
@@ -535,7 +558,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       memoryLayoutFingerprint: agentStateRuntime.arena.memoryLayout.fingerprint,
       physicalCheckpointFingerprint: physicalCheckpointFingerprint,
       hotState: payload.hotState,
-      persistentMemory: payload.persistentMemory
+      persistentMemory: payload.persistentMemory,
+      connectomeState: try connectomeController?.mind.snapshotCommitted()
     )
   }
 
@@ -556,6 +580,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         persistentMemory: checkpoint.persistentMemory
       )
     )
+    if let neural = checkpoint.connectomeState { try connectomeController!.mind.restoreCommitted(neural) }
   }
 
   public func validateCheckpointCompatibility(
@@ -575,6 +600,10 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     physicalCheckpointFingerprint: UInt64
   ) throws {
     try checkpoint.validate()
+    guard (checkpoint.connectomeState == nil) == (connectomeController == nil) else {
+      throw ConnectomeError.invalid("complete checkpoint must preserve the controller's neural participant")
+    }
+    if let neural = checkpoint.connectomeState { try connectomeController!.mind.validateCheckpoint(neural) }
     guard checkpoint.speciesTemplateFingerprint == speciesTemplateFingerprint,
       checkpoint.compiledSpeciesTemplateFingerprint
         == compiledSpeciesTemplateFingerprint,
@@ -789,12 +818,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      let neuralMotor = try connectomeController?.encode(transaction: transaction, encoder: encoder, sensory: sensory)
       let decision = try decisionRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,
         timestamp: transaction.jointToken.committedTimestamp,
         rawSensorViews: rawSensors.map(\.view),
-        externalGoal: externalGoal
+        externalGoal: externalGoal,
+        activeSensingCommandScale: 1,
+        connectomeMotor: neuralMotor
       )
       encoder.endEncoding()
       commandBuffer.endCommandBuffer()
@@ -1079,13 +1111,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
+      let neuralMotor = try connectomeController?.encode(transaction: transaction, encoder: encoder, sensory: sensory)
       let decisionOutput = try decisionRuntime.encode(
         encoder: encoder,
         transaction: transaction.agentStateToken,
         timestamp: transaction.jointToken.committedTimestamp,
         rawSensorViews: rawSensors.map(\.view),
         externalGoal: externalGoal,
-        activeSensingCommandScale: activeSensingCommandScale
+        activeSensingCommandScale: activeSensingCommandScale,
+        connectomeMotor: neuralMotor
       )
       let decision = try makeDecisionBufferView(
         transaction: transaction,

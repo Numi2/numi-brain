@@ -80,7 +80,7 @@ private struct DecisionUniforms {
   var actuatorCommandKind: UInt32 = 0
   var activeSensingCommandScaleBits: UInt32 = 0
   var anatomicalMuscleCount: UInt32 = 0
-  var reservedAnatomy: UInt32 = 0
+  var connectomeMotorEnabled: UInt32 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -367,7 +367,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain decision-state arguments"
-    descriptor.maxBufferBindCount = 25
+    descriptor.maxBufferBindCount = 26
     descriptor.initializeBindings = true
     let actuatorDescriptorCount = Int(species.motor.actuatorCount)
     let synergyDescriptorOffset = actuatorDescriptorCount
@@ -694,7 +694,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     timestamp: BrainTimestamp,
     rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal?,
-    activeSensingCommandScale: Float
+    activeSensingCommandScale: Float,
+    connectomeMotor: MetalConnectomeMotorView? = nil
   ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
     let sortedRawSensorViews = rawSensorViews.sorted {
@@ -721,10 +722,22 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         "active-sensing command scale must be finite and normalized"
       )
     }
+    if let motor = connectomeMotor {
+      guard motor.shadowGeneration == transaction.shadowGeneration,
+        motor.speciesFingerprint == species.fingerprint,
+        motor.parameterVersionFingerprint == parameterVersion.fingerprint,
+        motor.programFingerprint != 0, motor.transactionFingerprint != 0,
+        motor.actuatorCount == Int(species.motor.actuatorCount),
+        motor.logits.length == Int(species.motor.actuatorCount)*MemoryLayout<Float>.stride,
+        motor.logits.device.registryID == policyObservationFallbackBuffer.device.registryID else {
+        throw ConnectomeError.invalid("decoded neural command is foreign to the pending body generation")
+      }
+    }
     var uniforms = try makeUniforms(
       timestamp: timestamp,
       activeSensingCommandScale: activeSensingCommandScale
     )
+    uniforms.connectomeMotorEnabled = connectomeMotor == nil ? 0 : 1
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }
       uniformBuffer.contents().copyMemory(from: source, byteCount: bytes.count)
@@ -816,6 +829,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       )
     }
     argumentTable.setAddress(policyObservationMetadataBuffer.gpuAddress, index: 24)
+    argumentTable.setAddress(connectomeMotor?.logits.gpuAddress ?? policyObservationFallbackBuffer.gpuAddress, index: 25)
     dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
     barrier(encoder)
     dispatch(encoder, pipeline: goalPipeline, count: 1)
@@ -1060,7 +1074,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
       activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern,
       anatomicalMuscleCount: species.body.muscleCount,
-      reservedAnatomy: 0
+      connectomeMotorEnabled: 0
     )
   }
 

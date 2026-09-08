@@ -57,6 +57,16 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
         bindingFingerprint: owner.binding.fingerprint, timestamp: root.targetTimestamp,
         gpuAddress: owner.output.gpuAddress, channelCount: Int(owner.binding.channelCount))
     }
+    func snapshotPrepared() throws -> ConnectomePreparedState {
+      owner.lock.lock(); defer { owner.lock.unlock() }
+      guard owner.pendingRoot == root.fingerprint else { throw ConnectomeError.invalid("stale prepared neural root") }
+      return try ConnectomePreparedState(
+        base: owner.snapshotLocked(index: owner.committedIndex, generation: root.baseBrainGeneration,
+          timestamp: root.committedTimestamp.rawValue),
+        candidate: owner.snapshotLocked(index: stateIndex, generation: root.shadowGeneration,
+          timestamp: root.targetTimestamp.rawValue),
+        descending: Data(bytes: owner.output.contents(), count: owner.output.length), root: root)
+    }
     func validateCommit(_ receipt: BrainJointCommitToken) throws {
       guard receipt.transactionFingerprint == root.fingerprint,
         receipt.brainGeneration == root.shadowGeneration,
@@ -83,6 +93,8 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
 
   public let sharedGraph: MetalConnectomeGraph
   public let binding: ConnectomeBinding
+  public let topologyFingerprint: UInt64
+  public let programFingerprint: UInt64
   public let environmentIdentifier: UInt32
   public let episodeIdentifier: UInt64
   public let maximumSubsteps: Int
@@ -91,6 +103,9 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
   private var timestamp: BrainTimestamp
   private var committedIndex = 0
   private var pendingRoot: UInt64?
+  // A fresh zero-state model establishes its origin at its first owning root.
+  // Checkpoint restoration establishes the saved origin instead.
+  private var originEstablished = false
   private let states: [any MTLBuffer]
   private let output: any MTLBuffer
   private let inputOffsets: any MTLBuffer
@@ -106,8 +121,12 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
     template: CompiledSpeciesTemplate, environmentIdentifier: UInt32,
     episodeIdentifier: UInt64, initialGeneration: UInt64 = 0,
     initialTimestamp: BrainTimestamp = BrainTimestamp(microseconds: 0),
-    maximumSubsteps: Int = 256, maximumStateBytes: Int = 67_108_864) throws {
-    guard binding.graphFingerprint == sharedGraph.graph.fingerprint,
+    maximumSubsteps: Int = 256, maximumStateBytes: Int = 67_108_864,
+    topologyFingerprint: UInt64? = nil, programFingerprint: UInt64? = nil) throws {
+    guard initialGeneration == 0, initialTimestamp.rawValue == 0,
+      (topologyFingerprint == nil) == (programFingerprint == nil),
+      topologyFingerprint == nil || (topologyFingerprint! != 0 && programFingerprint! != 0),
+      binding.graphFingerprint == sharedGraph.graph.fingerprint,
       binding.speciesFingerprint == template.species.fingerprint,
       binding.sensoryProfileFingerprint == template.sensoryProfile.fingerprint,
       (1...4096).contains(maximumSubsteps), MemoryLayout<NBConnectomeDispatch>.stride == 48 else {
@@ -154,6 +173,8 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
     descriptor.maxBufferBindCount = 11; descriptor.initializeBindings = true
     arguments = try device.makeArgumentTable(descriptor: descriptor)
     self.sharedGraph = sharedGraph; self.binding = binding
+    self.topologyFingerprint = topologyFingerprint ?? binding.fingerprint
+    self.programFingerprint = programFingerprint ?? binding.fingerprint
     self.environmentIdentifier = environmentIdentifier; self.episodeIdentifier = episodeIdentifier
     self.maximumSubsteps = maximumSubsteps; generation = initialGeneration; timestamp = initialTimestamp
   }
@@ -164,23 +185,92 @@ public final class MetalConnectomeRuntime: @unchecked Sendable {
     [sharedGraph.buffer, output, inputOffsets, inputBindings, readoutOffsets, readouts, uniforms] + states
   }
 
+  /// Cold checkpoint boundary only. The owning cognitive runtime has drained
+  /// its queue before entry. No hot-loop state readback is introduced.
+  func snapshotCommitted() throws -> ConnectomeCheckpoint {
+    lock.lock(); defer { lock.unlock() }
+    guard pendingRoot == nil else { throw ConnectomeError.invalid("neural checkpoint requires a closed root") }
+    return try snapshotLocked(index: committedIndex, generation: generation, timestamp: timestamp.rawValue)
+  }
+
+  private func snapshotLocked(index: Int, generation: UInt64, timestamp: UInt64) throws -> ConnectomeCheckpoint {
+    try ConnectomeCheckpoint(graphFingerprint: sharedGraph.graph.fingerprint,
+      topologyFingerprint: topologyFingerprint, programFingerprint: programFingerprint,
+      parameterVersionFingerprint: binding.parameterVersionFingerprint,
+      environmentIdentifier: environmentIdentifier, episodeIdentifier: episodeIdentifier,
+      generation: generation, timestampMicroseconds: timestamp,
+      activity: Data(bytes: states[index].contents(), count: states[index].length))
+  }
+
+  func validateCheckpoint(_ checkpoint: ConnectomeCheckpoint) throws {
+    try checkpoint.validate()
+    guard checkpoint.graphFingerprint == sharedGraph.graph.fingerprint,
+      checkpoint.topologyFingerprint == topologyFingerprint,
+      checkpoint.programFingerprint == programFingerprint,
+      checkpoint.parameterVersionFingerprint == binding.parameterVersionFingerprint,
+      checkpoint.environmentIdentifier == environmentIdentifier,
+      checkpoint.episodeIdentifier == episodeIdentifier,
+      checkpoint.activity.count == states[0].length else {
+      throw ConnectomeError.invalid("neural checkpoint does not match this graph, body, decoder and parameter version")
+    }
+  }
+
+  /// Restores into an exclusively owned, unpublished controller. The handle
+  /// swaps it into service only after all cognitive, fast and neural restores.
+  func restoreCommitted(_ checkpoint: ConnectomeCheckpoint) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard pendingRoot == nil else { throw ConnectomeError.invalid("cannot restore an active neural root") }
+    try validateCheckpoint(checkpoint)
+    for state in states { checkpoint.activity.withUnsafeBytes {
+      state.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+    }}
+    output.contents().initializeMemory(as: UInt8.self, repeating: 0, count: output.length)
+    committedIndex = 0; generation = checkpoint.generation
+    timestamp = BrainTimestamp(microseconds: checkpoint.timestampMicroseconds)
+    originEstablished = true
+  }
+
+  func validatePrepared(_ image: ConnectomePreparedState, root: BrainJointTransactionToken) throws {
+    try image.validate(root: root); try validateCheckpoint(image.base); try validateCheckpoint(image.candidate)
+    guard image.descending.count == output.length else { throw ConnectomeError.invalid("prepared descending shape mismatch") }
+    lock.lock(); defer { lock.unlock() }
+    guard pendingRoot == nil else { throw ConnectomeError.invalid("prepared restore requires an idle neural participant") }
+  }
+
+  func restorePrepared(_ image: ConnectomePreparedState, root: BrainJointTransactionToken) throws -> Candidate {
+    try validatePrepared(image, root: root)
+    try restoreCommitted(image.base)
+    lock.lock(); defer { lock.unlock() }
+    image.candidate.activity.withUnsafeBytes {
+      states[1].contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+    }
+    image.descending.withUnsafeBytes {
+      output.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+    }
+    pendingRoot = root.fingerprint
+    return Candidate(owner: self, root: root, stateIndex: 1)
+  }
+
   func encodeCandidate(encoder: any MTL4ComputeCommandEncoder,
     root: BrainJointTransactionToken, sensory: MetalSensoryTransductionRuntime.Result) throws -> Candidate {
     lock.lock(); defer { lock.unlock() }
     guard pendingRoot == nil, root.environmentIdentifier == environmentIdentifier,
       root.episodeIdentifier == episodeIdentifier, root.baseBrainGeneration == generation,
-      root.committedTimestamp == timestamp, root.targetTimestamp > timestamp,
+      (originEstablished ? root.committedTimestamp == timestamp : generation == 0),
+      root.targetTimestamp > root.committedTimestamp,
       root.parameterVersionFingerprint == binding.parameterVersionFingerprint,
-      sensory.timestamp == timestamp, sensory.observationScalarCount == Int(binding.scalarCount),
+      sensory.timestamp == root.committedTimestamp, sensory.observationScalarCount == Int(binding.scalarCount),
       sensory.validityScalarCount == Int(binding.scalarCount),
       sensory.observationGPUAddress != 0, sensory.validityGPUAddress != 0,
       sensory.observationGPUAddress % 4 == 0, sensory.validityGPUAddress % 4 == 0 else {
       throw ConnectomeError.invalid("candidate requires this mind's exact root and accepted O(t) receptor frame")
     }
-    let duration = root.targetTimestamp.rawValue - timestamp.rawValue
+    let duration = root.targetTimestamp.rawValue - root.committedTimestamp.rawValue
     let step = UInt64(binding.integrationStepMicroseconds)
     let count = duration/step + (duration%step == 0 ? 0 : 1)
     guard count <= UInt64(maximumSubsteps) else { throw ConnectomeError.invalid("neural substep capacity exceeded") }
+    // All fallible validation precedes initial-origin establishment and encoding.
+    if !originEstablished { timestamp = root.committedTimestamp; originEstablished = true }
     let slots = states.indices.filter { $0 != committedIndex }
     let graph = sharedGraph.graph.view
     func address(_ offset: UInt64) -> UInt64 { sharedGraph.buffer.gpuAddress + offset }

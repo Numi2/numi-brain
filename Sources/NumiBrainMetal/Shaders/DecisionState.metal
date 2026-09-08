@@ -135,7 +135,7 @@ struct NBDecisionUniforms {
   uint actuator_command_kind;
   uint active_sensing_command_scale_bits;
   uint anatomical_muscle_count;
-  uint reserved_anatomy;
+  uint connectome_motor_enabled;
 };
 
 struct NBDriveRecord {
@@ -3795,6 +3795,7 @@ kernel void generate_motor_spinal_autonomic_state(
   device const float *somatic_synergy_decoder [[buffer(13)]],
   device const float *policy_observation_sketch [[buffer(14)]],
   device const float *belief_parameters [[buffer(15)]],
+  device const float *connectome_motor_logits [[buffer(25)]],
   uint gid [[thread_position_in_grid]])
 {
   device const float *recurrent = reinterpret_cast<device const float *>(
@@ -4128,13 +4129,17 @@ kernel void generate_motor_spinal_autonomic_state(
     const float identification_probe = unidentified_anatomical_effector
         && bounded_identification_actuator
       ? 0.02f : 0.0f;
-    const float motor_logit =
+    const float legacy_motor_logit =
       (anatomical_body_task ? 0.0f
         : candidate.parameters[gid % parameter_count]
           * uniforms.motor_gain * motor_parameters[0])
       + task_correction + identification_probe
       + (anatomical_body_task ? 0.0f
         : cortical_synergy * motor_parameters[6]);
+    const float motor_logit = uniforms.connectome_motor_enabled != 0u
+      ? connectome_motor_logits[gid] : legacy_motor_logit;
+    // All ordinary inhibition, CPG, reflex and physical command conversion
+    // below this point remains shared with the native controller.
     const float ordinary_descending = rest_selected
       ? motor_neutral
       : nb_motor_drive_from_logit(motor_logit, uniforms.actuator_command_kind);

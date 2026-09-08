@@ -154,3 +154,34 @@ extern "C" uint64_t nb_connectome_binding_fingerprint(uint64_t graph,
   for (uint32_t i=0;i<channels;++i) if (!covered[i]) return 0;
   return h.value();
 }
+
+extern "C" uint64_t nb_connectome_decoder_fingerprint(uint64_t graph,
+    uint64_t topology, uint64_t species, uint32_t kind, uint32_t channels,
+    uint32_t actuators, const float *weights, uint32_t nw,
+    const float *biases, uint32_t nb, float limit) {
+  if constexpr (std::endian::native != std::endian::little) return 0;
+  if (!graph || !topology || !species || kind < 1 || kind > 7 || !channels ||
+      channels > 256 || !actuators || actuators > 4096 ||
+      uint64_t(channels)*actuators != nw || nb != actuators ||
+      !weights || !biases || !(limit > 0) || !bounded(limit,16)) return 0;
+  Hash h;
+  h.scalar(uint64_t(0x4e42434e53444501ull));
+  for (auto v : {graph,topology,species}) h.scalar(v);
+  for (auto v : {kind,channels,actuators,nw,nb}) h.scalar(v);
+  h.scalar(limit);
+  for (uint32_t i=0;i<nw;++i) {
+    if (!bounded(weights[i])) return 0;
+    h.scalar(weights[i]);
+  }
+  for (uint32_t i=0;i<nb;++i) {
+    if (!bounded(biases[i],16)) return 0;
+    h.scalar(biases[i]);
+  }
+  return h.value();
+}
+
+extern "C" uint64_t nb_connectome_hash_update(uint64_t state, const void *bytes, size_t count) {
+  Hash hash; hash.h = state;
+  if (bytes) hash.bytes(bytes, count);
+  return hash.h;
+}

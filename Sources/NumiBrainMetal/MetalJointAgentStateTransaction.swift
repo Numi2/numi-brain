@@ -151,21 +151,20 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     maximumBytes: Int = 536_870_912,
     completion: @escaping @Sendable (Result<BrainPreparedGPUImage, Error>) -> Void) throws {
     lock.lock(); defer { lock.unlock() }
-    // The current recovery image contains only cognitive arena state. Never
-    // certify a capture that silently omits this experimental neural participant.
-    guard connectomeCandidate == nil else {
-      throw ConnectomeError.invalid("prepared recovery does not yet serialize connectome participant state")
-    }
     guard currentStatus == .gpuStateFinished || currentStatus == .commitPrepared,
       let physics = acceptedPhysicsFingerprint else {
       throw TissueError.transaction("prepared capture requires completed, unpublished native state")
     }
+    // finishGPUState proves preceding neural work completed; cold shared-state
+    // snapshots here include BOTH generations and the cached readout.
+    let neuralImage = try connectomeCandidate?.snapshotPrepared()
     let prior = currentStatus
     currentStatus = .recoveryCapturePending
     do {
       try MetalPreparedRecoveryTransfer.capture(runtime: runtime, transaction: agentStateToken,
         root: jointToken, decision: cachedDecisionFingerprint, acceptedPhysics: physics,
-        device: device, commandBuffer: commandBuffer, options: options, maximumBytes: maximumBytes) { [self] result in
+        device: device, commandBuffer: commandBuffer, options: options, maximumBytes: maximumBytes,
+        connectomeState: neuralImage) { [self] result in
           lock.lock()
           switch result {
           case .success: currentStatus = prior
@@ -184,6 +183,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   public static func restorePreparedRecovery(_ source: BrainPreparedGPUImage,
     runtime: MetalAgentStateRuntime, device: any MTLDevice,
     commandBuffer: any MTL4CommandBuffer, options: MTL4CommitOptions,
+    connectome: MetalConnectomeRuntime? = nil,
     completion: @escaping @Sendable (Result<MetalJointAgentStateTransaction, Error>) -> Void) throws {
     let image = try source.validated()
     guard runtime.arena.layout.fingerprint == image.hotLayoutFingerprint,
@@ -194,12 +194,22 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       throw TissueError.transaction("prepared recovery does not match compiled native layouts")
     }
     let root = try image.root.validatedToken()
+    guard (image.connectomeState == nil) == (connectome == nil),
+      connectome == nil || connectome!.sharedGraph.device.registryID == device.registryID else {
+      throw ConnectomeError.invalid("prepared recovery must supply the exact optional neural participant")
+    }
+    if let neural = image.connectomeState, let connectome {
+      try connectome.validatePrepared(neural, root: root)
+    }
     try runtime.restoreRecoveryImage(MetalAgentStateRecoveryImage(generation: root.baseBrainGeneration,
       hotState: image.baseHotState, persistentMemory: image.basePersistentMemory))
     let restored = try MetalJointAgentStateTransaction(jointToken: root, runtime: runtime,
       cachedDecisionFingerprint: image.cachedDecisionFingerprint)
     restored.currentStatus = .recoveryRestorePending
     do {
+      if let neural = image.connectomeState, let connectome {
+        restored.connectomeCandidate = try connectome.restorePrepared(neural, root: root)
+      }
       try MetalPreparedRecoveryTransfer.restoreShadow(image: image, runtime: runtime,
         transaction: restored.agentStateToken, device: device, commandBuffer: commandBuffer,
         options: options) { result in
@@ -213,6 +223,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
             restored.currentStatus = .gpuStateFinished
             answer = .success(restored)
           } catch {
+            restored.connectomeCandidate?.abort(); restored.connectomeCandidate = nil
             restored.currentStatus = .recoveryFailed
             answer = .failure(error)
           }

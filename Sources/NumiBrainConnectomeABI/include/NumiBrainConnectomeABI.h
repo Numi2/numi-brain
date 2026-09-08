@@ -45,6 +45,7 @@ typedef struct NBConnectomeDispatch {
 uint32_t nb_connectome_validate(const void *bytes, size_t byte_count,
   uint64_t maximum_bytes, NBConnectomeGraphView *view);
 const char *nb_connectome_status_message(uint32_t status);
+uint64_t nb_connectome_hash_update(uint64_t state, const void *bytes, size_t count);
 /* Cold-path projection validator/fingerprint. Zero means invalid.
  * All identity inputs are mandatory; equal shapes cannot rebind a body. */
 uint64_t nb_connectome_binding_fingerprint(uint64_t graph, uint64_t species,
@@ -53,6 +54,14 @@ uint64_t nb_connectome_binding_fingerprint(uint64_t graph, uint64_t species,
   uint32_t nominal_step_us, uint32_t integration_step_us,
   const NBConnectomeInput *inputs, uint32_t input_count,
   const NBConnectomeReadout *readouts, uint32_t readout_count);
+/* A body-specific linear decoder produces bounded neural logits. The existing
+ * species motor adapter and protection kernels remain authoritative downstream.
+ * The topology fingerprint excludes the rollout parameter version, allowing
+ * an explicit compatible parameter migration without changing learned history. */
+uint64_t nb_connectome_decoder_fingerprint(uint64_t graph, uint64_t topology,
+  uint64_t species, uint32_t command_kind, uint32_t channels, uint32_t actuators,
+  const float *weights, uint32_t weight_count,
+  const float *biases, uint32_t bias_count, float maximum_logit);
 #ifdef __cplusplus
 }
 #endif

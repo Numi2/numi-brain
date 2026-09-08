@@ -138,6 +138,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     randomSeed: UInt64,
     declaredMaximumInferenceLatencyMicroseconds: UInt64? = nil,
     enableProductionUncertaintyGate: Bool = false,
+    connectome: MetalConnectomeConfiguration? = nil,
     device: any MTLDevice
   ) throws {
     guard episodeIdentifier > 0, randomSeed > 0,
@@ -173,6 +174,16 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       latencyMicroseconds: timestepMicroseconds,
       anatomy: anatomy
     )
+    if let connectome {
+      // This runner remains explicitly simulation/research-only for the new
+      // controller. Production receipts cannot be inherited from another policy.
+      guard !enableProductionUncertaintyGate else {
+        throw ConnectomeError.invalid("connectome research capture cannot reuse production policy admission")
+      }
+      let specBytes = try JSONEncoder().encode(connectome.specification)
+      _ = try BrainPolicyEvidenceArtifact.write(specBytes, to: artifactDirectory)
+      _ = try BrainPolicyEvidenceArtifact.write(connectome.graph.bytes, to: artifactDirectory)
+    }
     let parameters = TissueParameters.corticalSheetV0
     let brain = try MetalNumiBrainRuntime.makeRuntime(
       configuration: MetalNumiBrainConfiguration(
@@ -190,7 +201,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
           episodeIdentifier: episodeIdentifier32
         ),
         schedulerEnvironmentIdentifier: 0,
-        maximumEncodedSubsteps: 1
+        maximumEncodedSubsteps: 1,
+        connectome: connectome
       ),
       publication: publication,
       numanXUncertaintyGate: enableProductionUncertaintyGate

@@ -139,4 +139,31 @@ class NativePackTests(unittest.TestCase):
         self.assertEqual(self.binding(channels=257),0)
         self.assertEqual(self.binding(inputs=[]),0)
 
+    def decoder(self, graph=1, topology=2, species=3, kind=1, channels=2,
+                actuators=2, weights=(1.,0.,0.,1.), biases=(0.,0.), limit=8.):
+        f = self.lib.nb_connectome_decoder_fingerprint
+        f.argtypes = [C.c_uint64]*3 + [C.c_uint32]*3 + [C.POINTER(C.c_float), C.c_uint32, C.POINTER(C.c_float), C.c_uint32, C.c_float]
+        f.restype = C.c_uint64
+        return f(graph, topology, species, kind, channels, actuators,
+            (C.c_float*len(weights))(*weights), len(weights),
+            (C.c_float*len(biases))(*biases), len(biases), limit)
+    def test_decoder_round_trip_and_exact_body(self):
+        self.assertNotEqual(self.decoder(), 0)
+        self.assertEqual(self.decoder(), self.decoder())
+        self.assertNotEqual(self.decoder(), self.decoder(species=4))
+        self.assertNotEqual(self.decoder(), self.decoder(weights=(1.,1.,0.,1.)))
+    def test_decoder_missing_identity(self):
+        for key in ('graph','topology','species'):
+            self.assertEqual(self.decoder(**{key:0}),0)
+    def test_decoder_shape_limits(self):
+        self.assertEqual(self.decoder(weights=(1.,)),0)
+        self.assertEqual(self.decoder(actuators=0),0)
+        self.assertEqual(self.decoder(channels=257),0)
+        self.assertEqual(self.decoder(kind=0),0)
+    def test_decoder_numeric_domain(self):
+        self.assertEqual(self.decoder(weights=(float('nan'),0.,0.,1.)),0)
+        self.assertEqual(self.decoder(biases=(float('inf'),0.)),0)
+        self.assertEqual(self.decoder(limit=0),0)
+        self.assertEqual(self.decoder(limit=17),0)
+
 if __name__ == '__main__': unittest.main()

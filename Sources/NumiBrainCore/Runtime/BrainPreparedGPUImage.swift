@@ -40,7 +40,7 @@ public struct BrainPreparedRoot: Codable, Equatable, Sendable {
 /// contains unapplied mutations. Recovery MUST NOT apply it before the joint commit decision.
 /// This image is limited to the complete agent-state arena; fast tissue/physics own their images.
 public struct BrainPreparedGPUImage: Codable, Equatable, Sendable {
-  public static let currentVersion: UInt32 = 1
+  public static let currentVersion: UInt32 = 2
   public let version: UInt32
   public let root: BrainPreparedRoot
   public let cachedDecisionFingerprint: UInt64
@@ -51,14 +51,16 @@ public struct BrainPreparedGPUImage: Codable, Equatable, Sendable {
   public let shadowHotState: Data
   public let basePersistentMemory: Data
   public let shadowJournal: Data
+  public let connectomeState: ConnectomePreparedState?
   public let sha256: String
 
   public init(root: BrainPreparedRoot, cachedDecisionFingerprint: UInt64,
               acceptedPhysicsTokenFingerprint: UInt64, hotLayoutFingerprint: UInt64,
               memoryLayoutFingerprint: UInt64, baseHotState: Data, shadowHotState: Data,
               basePersistentMemory: Data, shadowJournal: Data,
-              maximumBytes: Int = 536_870_912) throws {
-    version = Self.currentVersion; self.root = root
+              maximumBytes: Int = 536_870_912,
+              connectomeState: ConnectomePreparedState? = nil) throws {
+    version = Self.currentVersion; self.root = root; self.connectomeState = connectomeState
     self.cachedDecisionFingerprint = cachedDecisionFingerprint
     self.acceptedPhysicsTokenFingerprint = acceptedPhysicsTokenFingerprint
     self.hotLayoutFingerprint = hotLayoutFingerprint; self.memoryLayoutFingerprint = memoryLayoutFingerprint
@@ -67,27 +69,28 @@ public struct BrainPreparedGPUImage: Codable, Equatable, Sendable {
     sha256 = Self.digest(version: Self.currentVersion, root: root,
       decision: cachedDecisionFingerprint, physics: acceptedPhysicsTokenFingerprint,
       hotLayout: hotLayoutFingerprint, memoryLayout: memoryLayoutFingerprint,
-      chunks: [baseHotState, shadowHotState, basePersistentMemory, shadowJournal])
+      chunks: [baseHotState, shadowHotState, basePersistentMemory, shadowJournal] + (connectomeState?.digestChunks ?? []))
     _ = try validated(maximumBytes: maximumBytes)
   }
 
   public func validated(maximumBytes: Int = 536_870_912) throws -> Self {
     let token = try root.validatedToken()
-    guard version == Self.currentVersion, cachedDecisionFingerprint > 0,
+    try connectomeState?.validate(root: token)
+    guard (version == Self.currentVersion || (version == 1 && connectomeState == nil)), cachedDecisionFingerprint > 0,
       acceptedPhysicsTokenFingerprint > 0, hotLayoutFingerprint > 0, memoryLayoutFingerprint > 0,
       maximumBytes > 0, baseHotState.count == shadowHotState.count,
       !baseHotState.isEmpty, !basePersistentMemory.isEmpty, shadowJournal.count >= 48,
       [baseHotState, shadowHotState, basePersistentMemory, shadowJournal].allSatisfy({ $0.count % 4 == 0 })
     else { throw BrainRuntimeError.transaction("incomplete prepared GPU image") }
     var total = 0
-    for chunk in [baseHotState, shadowHotState, basePersistentMemory, shadowJournal] {
+    for chunk in [baseHotState, shadowHotState, basePersistentMemory, shadowJournal] + (connectomeState?.digestChunks ?? []) {
       guard chunk.count <= maximumBytes - total else { throw BrainRuntimeError.capacity("prepared image byte budget") }
       total += chunk.count
     }
     guard sha256 == Self.digest(version: version, root: root, decision: cachedDecisionFingerprint,
       physics: acceptedPhysicsTokenFingerprint, hotLayout: hotLayoutFingerprint,
       memoryLayout: memoryLayoutFingerprint,
-      chunks: [baseHotState, shadowHotState, basePersistentMemory, shadowJournal]) else {
+      chunks: [baseHotState, shadowHotState, basePersistentMemory, shadowJournal] + (connectomeState?.digestChunks ?? [])) else {
       throw BrainRuntimeError.transaction("prepared GPU image SHA-256 mismatch")
     }
     try validateJournal(base: token.baseBrainGeneration, shadow: token.shadowGeneration)
