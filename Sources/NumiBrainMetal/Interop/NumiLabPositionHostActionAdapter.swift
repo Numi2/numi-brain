@@ -2,6 +2,28 @@ import Foundation
 @preconcurrency import Metal
 import NumiBrainCore
 
+/// One exact action frame for the current compatibility transport. The public
+/// NumiLab rollout ABI packs [control step][environment][action]; a single
+/// NumiBrain motor candidate owns one environment and one control candidate,
+/// so this value cannot represent or be mistaken for a batched rollout.
+@available(macOS 26.0, *)
+@frozen
+public struct NumiLabPositionHostActionFrame: Equatable, Sendable {
+  public let controlStepCount: UInt32
+  public let environmentCount: UInt32
+  public let actionCount: UInt32
+  public let normalizedActions: [Float]
+  public let liveRollout: NumiLabLiveRolloutIdentity
+
+  fileprivate init(normalizedActions: [Float], liveRollout: NumiLabLiveRolloutIdentity) {
+    controlStepCount = 1
+    environmentCount = 1
+    actionCount = UInt32(normalizedActions.count)
+    self.normalizedActions = normalizedActions
+    self.liveRollout = liveRollout
+  }
+}
+
 /// Explicit compatibility transport for NumiLab's current host-action API.
 /// NumiBrain remains GPU-authoritative: this adapter only reads the exact
 /// lease-retained command allocation after transaction and live-rollout
@@ -13,20 +35,22 @@ import NumiBrainCore
 /// joint-root semantics.
 @available(macOS 26.0, *)
 public enum NumiLabPositionHostActionAdapter {
-  public static func normalizedActions(
+  public static func makeFrame(
     submission: NumiLabPositionMotorSubmission,
     lease: MetalTissueRuntime.NumanXMotorBufferLease,
     encoder: NumiLabPositionActionEncoder,
     transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken,
     liveRollout: NumiLabLiveRolloutIdentity
-  ) throws -> [Float] {
+  ) throws -> NumiLabPositionHostActionFrame {
     try submission.validate(
       transaction: transaction,
       substep: substep,
       liveRollout: liveRollout
     )
-    guard encoder.isPhysicalOwnerBound,
+    guard liveRollout.environmentCount == 1,
+      submission.environmentIdentifier == 0,
+      encoder.isPhysicalOwnerBound,
       encoder.compiledRunFingerprint == submission.compiledRunFingerprint,
       encoder.contract.worldFingerprint == submission.worldFingerprint,
       encoder.contract.taskFingerprint == submission.taskFingerprint,
@@ -38,7 +62,7 @@ public enum NumiLabPositionHostActionAdapter {
       lease.output.muscleCount == Int(submission.actionCount)
     else {
       throw TissueError.transaction(
-        "NumiLab host action transport does not own the admitted motor allocation"
+        "NumiLab host action transport does not own one exact single-environment motor allocation"
       )
     }
 
@@ -54,7 +78,14 @@ public enum NumiLabPositionHostActionAdapter {
       byteCount: Int(submission.sourceCommandByteCount),
       scalarCount: Int(submission.actionCount)
     )
-    return try encoder.encodeAbsolutePositions(commands)
+    let normalized = try encoder.encodeAbsolutePositions(commands)
+    guard normalized.count == Int(liveRollout.actionCount) else {
+      throw TissueError.transaction("NumiLab action frame width changed after admission")
+    }
+    return NumiLabPositionHostActionFrame(
+      normalizedActions: normalized,
+      liveRollout: liveRollout
+    )
   }
 
   /// Host readback is deliberately restricted to CPU-visible Metal storage.
