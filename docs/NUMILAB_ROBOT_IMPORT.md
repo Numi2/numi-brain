@@ -11,7 +11,7 @@ python3 tools/export_numilab_robot.py \
   --output-dir /existing/parent/robot-interfaces
 ```
 
-The default native revision is `68f5aa441a8437426de193a5c9beeac5a78113b6`.
+The default native revision is `5db0c5aa169bfe1270ef7448e01dd7fbcd99d123`.
 The revision must match the native checkout exactly, and modified/untracked
 files under `include` or `src/core` are rejected. `--revision` explicitly
 selects another reviewed commit. The output directory must not already exist.
