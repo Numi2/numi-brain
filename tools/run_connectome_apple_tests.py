@@ -20,7 +20,7 @@ MODULES = ['NumiBrainABI', 'NumiBrainConnectomeABI', 'NumiBrainValidation',
            'NumiBrainQualification', 'NumiBrainCore', 'NumiBrainMetalBridgeABI', 'NumiBrainMetal']
 TESTS = {
     'NumiBrainCoreTests': ['ConnectomeGraphTests.swift', 'ConnectomeControllerTests.swift', 'ConnectomeDecoderStudyTests.swift'],
-    'NumiBrainMetalTests': ['NumanXInteropTests.swift', 'MetalConnectomeKernelTests.swift', 'MetalConnectomeRootTests.swift'],
+    'NumiBrainMetalTests': ['NumanXInteropTests.swift', 'MetalConnectomeKernelTests.swift', 'MetalConnectomeRootTests.swift', 'ConnectomeDecoderForkTests.swift'],
 }
 MANIFEST = '''// swift-tools-version: 6.2
 import PackageDescription
@@ -87,7 +87,7 @@ def main():
                   for p in sorted(work.rglob('*')) if p.is_file()}
         print('EXACT_SOURCE_MANIFEST '+json.dumps(hashes,sort_keys=True),flush=True)
         (work/'Package.swift').write_text(manifest)
-        selection = 'Connectome' if options.require_metal4 else '(ConnectomeControllerTests|ConnectomeGraphTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests)'
+        selection = 'Connectome' if options.require_metal4 else '(ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeGraphTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests)'
         print('TEST_SCOPE '+('production Metal 4 roots required' if options.require_metal4 else 'source, kernel and learner only; production root execution NOT selected'), flush=True)
         if options.with_learning:
             subprocess.run(['swift','build','--package-path',str(work),'-c','release','-Xswiftc','-enable-testing','--build-tests'],check=True)

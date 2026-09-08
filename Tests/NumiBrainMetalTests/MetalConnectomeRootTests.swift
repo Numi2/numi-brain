@@ -134,6 +134,29 @@ final class MetalConnectomeRootTests: XCTestCase {
                    cb.cognitiveState.connectomeState?.graphFingerprint)
   }
 
+  func testDecoderForkRestoresIndependentCompleteMindWithoutChangingParent() throws {
+    let source = try makeFixture(), checkpoint = try advance(source, step: 1)
+    let encoded = try checkpoint.encoded()
+    let spec = try XCTUnwrap(source.configuration.connectome).specification
+    var coefficients = spec.decoderParameters
+    coefficients[0] += 0.125
+    let changed = try spec.replacingDecoderParameters(coefficients)
+    let child = try MetalNumiBrainHandle.createConnectomeDecoderFork(
+      from: encoded, configuration: source.configuration, publication: source.publication,
+      identifier: "root-fork", specification: changed, physicalCheckpointFingerprint: 99,
+      physicalData: Data("explicit synthetic physical fixture".utf8), device: source.device)
+    let observed = try child.brain.saveCheckpoint(controlStepIdentifier: 1, physicalCheckpointFingerprint: 99)
+    XCTAssertEqual(observed, child.fork.checkpoint)
+    XCTAssertEqual(observed.cognitiveState.hotState, checkpoint.cognitiveState.hotState)
+    XCTAssertEqual(observed.cognitiveState.persistentMemory, checkpoint.cognitiveState.persistentMemory)
+    XCTAssertEqual(observed.fastTissueState, checkpoint.fastTissueState)
+    XCTAssertEqual(observed.cognitiveState.connectomeState?.activity, checkpoint.cognitiveState.connectomeState?.activity)
+    XCTAssertNotEqual(observed.cognitiveState.connectomeState?.programFingerprint, checkpoint.cognitiveState.connectomeState?.programFingerprint)
+    _ = try advance(source, step: 2)
+    XCTAssertEqual(child.brain.committedGeneration, 1)
+    XCTAssertEqual(try child.brain.saveCheckpoint(controlStepIdentifier: 1, physicalCheckpointFingerprint: 99), observed)
+  }
+
   /// Optional full-source execution, not an animal-behavior or physics benchmark.
   /// The root still uses the explicit synthetic receipt documented above.
   func testFullReleasedGraphUsesTheNormalMetalController() throws {
