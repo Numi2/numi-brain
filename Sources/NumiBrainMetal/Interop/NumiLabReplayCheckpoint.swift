@@ -2,9 +2,9 @@ import Foundation
 import NumiBrainCore
 
 /// One deterministic physical step retained by an exact replay checkpoint.
-/// The action bytes are already normalized physical-owner coordinates; the
-/// post-step fingerprint must be computed by the owner from its complete
-/// accepted continuation state, not from inspection-only q/readback fields.
+/// Actions are already in normalized physical-owner coordinates and the
+/// fingerprint is the native owner's complete accepted continuation-state
+/// digest captured by the physical executor at this exact boundary.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
@@ -17,17 +17,15 @@ public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
 
   public init(
     executed: NumiLabExecutedPositionCandidate,
-    policyRevision: UInt64,
-    physicalStateFingerprint: UInt64
+    policyRevision: UInt64
   ) throws {
     let after = executed.advanceReceipt.after
+    let fingerprint = executed.acceptedPhysicsReceipt.physicalStateFingerprint
     guard executed.advanceReceipt.fullyAccepted,
       executed.actionFrame.controlStepCount == 1,
       executed.actionFrame.environmentCount == 1,
       executed.actionFrame.normalizedActions.allSatisfy(\.isFinite),
-      physicalStateFingerprint != 0,
-      physicalStateFingerprint == executed.acceptedPhysicsReceipt.physicalStateFingerprint
-    else {
+      fingerprint != 0 else {
       throw TissueError.transaction("NumiLab replay step is not one exact accepted physical step")
     }
     normalizedActions = executed.actionFrame.normalizedActions
@@ -35,19 +33,14 @@ public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
     postSubmissionCount = after.submissionCount
     postSubmittedControlSteps = after.submittedControlSteps
     postCompletedEnvironmentSteps = after.completedEnvironmentSteps
-    self.physicalStateFingerprint = physicalStateFingerprint
+    physicalStateFingerprint = fingerprint
   }
 }
 
-/// A deterministic, owner-verifiable checkpoint for the current public
-/// NumiLab rollout ABI. NumiLab does not yet expose its private resident arena
-/// as a serializable snapshot; therefore exact restore is performed by replay
-/// from a fresh rollout with the same immutable CompiledRun identity.
-///
-/// This is stronger than reconstructing q/v: replay re-executes reset/RNG,
-/// task state, actuator history, contact/manifold evolution, warm starts and
-/// every other private resident transition. The restore is accepted only when
-/// the physical owner recomputes the recorded complete-state fingerprint.
+/// Deterministic owner-verified checkpoint for the current NumiLab rollout
+/// ABI. Exact restore is replay from a fresh rollout with the same immutable
+/// CompiledRun identity, followed by native resident-state digest equality at
+/// every accepted boundary. Partial q/v reconstruction is never accepted.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabReplayCheckpoint: Equatable, Sendable {
@@ -59,8 +52,7 @@ public struct NumiLabReplayCheckpoint: Equatable, Sendable {
     guard origin.identity.environmentCount == 1,
       origin.submissionCount == 0,
       origin.submittedControlSteps == 0,
-      origin.completedEnvironmentSteps == 0
-    else {
+      origin.completedEnvironmentSteps == 0 else {
       throw TissueError.transaction(
         "NumiLab replay checkpoint must start at a fresh single-environment rollout"
       )
@@ -101,8 +93,7 @@ public struct NumiLabReplayCheckpoint: Equatable, Sendable {
     }
     let step = try NumiLabReplayCheckpointStep(
       executed: executed,
-      policyRevision: policyRevision,
-      physicalStateFingerprint: executed.acceptedPhysicsReceipt.physicalStateFingerprint
+      policyRevision: policyRevision
     )
     return NumiLabReplayCheckpoint(identity: identity, origin: origin, steps: steps + [step])
   }
@@ -111,14 +102,12 @@ public struct NumiLabReplayCheckpoint: Equatable, Sendable {
     steps.last?.physicalStateFingerprint
   }
 
-  /// Replays this checkpoint into a caller-created fresh rollout. The caller
-  /// owns creation because the public C ABI does not expose the original
-  /// manifest through a rollout handle. `physicalStateFingerprint` must hash
-  /// the complete accepted native continuation state after each step.
+  /// Replays into a caller-created fresh rollout. The caller owns creation
+  /// because the rollout handle intentionally does not expose or serialize its
+  /// manifest. Owner digest equality proves exact continuation after each step.
   @discardableResult
   public func restore(
-    into rollout: NumiLabBorrowedTaskRollout,
-    physicalStateFingerprint: (NumiLabLiveRolloutSnapshot) throws -> UInt64
+    into rollout: NumiLabBorrowedTaskRollout
   ) throws -> NumiLabLiveRolloutSnapshot {
     let fresh = try rollout.snapshot()
     guard fresh == origin else {
@@ -140,13 +129,15 @@ public struct NumiLabReplayCheckpoint: Equatable, Sendable {
         advance.after.completedEnvironmentSteps == step.postCompletedEnvironmentSteps else {
         throw TissueError.transaction("NumiLab replay restore diverged in rollout counters")
       }
-      let fingerprint = try physicalStateFingerprint(advance.after)
-      guard fingerprint != 0, fingerprint == step.physicalStateFingerprint else {
+      let fingerprint = try rollout.residentStateFingerprint()
+      let afterProof = try rollout.snapshot()
+      guard afterProof == advance.after,
+        fingerprint == step.physicalStateFingerprint else {
         throw TissueError.transaction(
           "NumiLab replay restore diverged from the recorded complete physical state"
         )
       }
-      current = advance.after
+      current = afterProof
     }
     return current
   }
