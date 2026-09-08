@@ -17,6 +17,25 @@ struct NBCNSDispatch {
   float time_ratio, output_clip, reserved3, reserved4;
 };
 
+// Algebraically 1-(1-alpha)^ratio. Direct subtraction rounds valid slow
+// dynamics to zero when either alpha or the physical time ratio is small.
+// Sixth-order Taylor branches avoid cancellation without requiring optional
+// math intrinsics; their omitted terms are below FP32 roundoff at 1/16.
+inline float nb_connectome_physical_alpha(float alpha, float ratio) {
+  if (ratio == 1.0f) return alpha;
+  if (alpha == 1.0f) return 1.0f;
+  const float decay = alpha < 0.0625f
+    ? alpha * (1.0f + alpha * (0.5f + alpha * (1.0f/3.0f
+      + alpha * (0.25f + alpha * (0.2f + alpha/6.0f)))))
+    : -log(1.0f-alpha);
+  const float x = decay * ratio;
+  const float result = x < 0.0625f
+    ? x * (1.0f + x * (-0.5f + x * (1.0f/6.0f
+      + x * (-1.0f/24.0f + x * (1.0f/120.0f-x/720.0f)))))
+    : 1.0f-exp(-x);
+  return clamp(result, 0.0f, 1.0f);
+}
+
 kernel void nb_connectome_rate_step(
   device const NBCNSNode *nodes [[buffer(0)]],
   device const uint *offsets [[buffer(1)]],
@@ -46,7 +65,7 @@ kernel void nb_connectome_rate_step(
   }
   const float target = tanh(node.bias + node.recurrent_gain*recurrent + node.sensory_gain*sensory);
   // alpha in NUMICNS1 is defined at the explicit nominal physical interval.
-  const float alpha = node.alpha == 1.0f ? 1.0f : 1.0f - pow(1.0f-node.alpha, u.time_ratio);
+  const float alpha = nb_connectome_physical_alpha(node.alpha, u.time_ratio);
   next[i] = clamp(previous[i] + alpha*(target-previous[i]), -1.0f, 1.0f);
 }
 
