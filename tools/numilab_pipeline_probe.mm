@@ -54,10 +54,10 @@ int main(int argc, char** argv) {
           record[@"static_threadgroup_memory"] = @(pipeline.staticThreadgroupMemoryLength);
         } else {
           ++failed;
-          record[@"error_domain"] = pipelineError.domain ?: @"missing_function";
+          record[@"error_domain"] = pipelineError.domain != nil ? pipelineError.domain : @"missing_function";
           record[@"error_code"] = @(pipelineError.code);
-          record[@"description"] = pipelineError.description ?: @"function missing from metallib";
-          record[@"user_info"] = pipelineError.userInfo.description ?: @"";
+          record[@"description"] = pipelineError.description != nil ? pipelineError.description : @"function missing from metallib";
+          record[@"user_info"] = pipelineError.userInfo.description != nil ? pipelineError.userInfo.description : @"";
         }
         if (!emit(@"NUMILAB_PIPELINE", record)) return 2;
       }
