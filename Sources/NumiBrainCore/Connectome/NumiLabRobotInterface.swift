@@ -19,6 +19,11 @@ public struct NumiLabRobotInterface: Sendable {
     public let scale: Float
     public let responseTimeSeconds: Float
     public let component: UInt32
+    /// Exact scalar coordinates owned by a joint/gripper actuator in the
+    /// native EngineModel. Non-joint actuator programs deliberately leave
+    /// these nil rather than manufacturing a generalized coordinate.
+    public let qIndex: UInt32?
+    public let vIndex: UInt32?
     public let parameters: [Float]
     public let terms: [Term]
   }
@@ -75,6 +80,8 @@ public struct NumiLabRobotInterface: Sendable {
     // authoritative NumanX model identity; the physical owner supplies that.
     _ = try NumanXJointTopologyCatalog(numanXModelFingerprint: 1,
       bodyCount: UInt32(w.bodyNames.count), joints: w.joints)
+    var claimedQ = Set<UInt32>()
+    var claimedV = Set<UInt32>()
     for a in w.actuators {
       guard !a.target.isEmpty, a.target.utf8.count <= 1024,
         a.scale.isFinite, a.scale != 0, a.responseTimeSeconds.isFinite, a.responseTimeSeconds >= 0,
@@ -85,17 +92,21 @@ public struct NumiLabRobotInterface: Sendable {
       switch a.kind {
       case .jointPosition, .jointVelocity, .jointEffort, .gripperPosition:
         guard let index = w.jointNames.firstIndex(of: a.target),
-          Int(a.component) < w.joints[index].coordinates.count else {
-          throw ConnectomeError.invalid("native actuator does not address an existing joint coordinate")
+          Int(a.component) < w.joints[index].coordinates.count,
+          let q = a.qIndex, let v = a.vIndex,
+          claimedQ.insert(q).inserted, claimedV.insert(v).inserted else {
+          throw ConnectomeError.invalid("native actuator does not address one unique existing joint coordinate")
         }
       case .rotorMixer, .bodyWrench, .measuredSurface:
-        guard w.bodyNames.contains(a.target),
+        guard a.qIndex == nil, a.vIndex == nil, w.bodyNames.contains(a.target),
           (a.kind != .rotorMixer || a.component < 4),
           (a.kind != .bodyWrench || a.component < 6) else {
-          throw ConnectomeError.invalid("native body actuator target is absent")
+          throw ConnectomeError.invalid("native body actuator target or coordinate ownership is invalid")
         }
       case .tendonPosition:
-        guard !a.terms.isEmpty else { throw ConnectomeError.invalid("native tendon has no authored terms") }
+        guard a.qIndex == nil, a.vIndex == nil, !a.terms.isEmpty else {
+          throw ConnectomeError.invalid("native tendon ownership is invalid")
+        }
       }
     }
     contentSHA256 = expectedSHA256; nativeRepositoryRevision = w.nativeRepositoryRevision
@@ -124,6 +135,7 @@ public struct NumiLabRobotInterface: Sendable {
     }
     return try actuators.enumerated().map { index, a in
       guard a.kind == .jointPosition || a.kind == .gripperPosition,
+        a.qIndex != nil, a.vIndex != nil,
         a.terms.isEmpty, let joint = jointNames.firstIndex(of: a.target),
         Int(a.component) < joints[joint].coordinates.count else {
         throw ConnectomeError.invalid("mixed, rotor, force or tendon channels require their own physical adapter, not a position cast")
