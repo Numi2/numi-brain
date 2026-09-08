@@ -44,7 +44,8 @@ public struct NumiLabRolloutAdvanceReceipt: Equatable, Sendable {
 @available(macOS 26.0, *)
 public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
   // Verified by the NumiLab macOS owner-ABI build before this revision was admitted.
-  public static let requiredNativeRevision = "5db0c5aa169bfe1270ef7448e01dd7fbcd99d123"
+  // Its resident digest hashes validated logical continuation bytes, never allocator slack.
+  public static let requiredNativeRevision = "4a369ca846fde93016f3708f3fd9386c992b52a4"
 
   private let bridge: OpaquePointer
   public let nativeRevision: String
@@ -190,7 +191,8 @@ public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
   }
 
   /// Canonical physical-owner digest of every persistent resident continuation
-  /// buffer plus resident metadata. It is valid only after an accepted step.
+  /// buffer's validated logical bytes plus resident metadata. It is valid only
+  /// at an accepted idle boundary and excludes allocator capacity slack.
   public func residentStateFingerprint() throws -> UInt64 {
     let fingerprint = nb_numilab_borrowed_rollout_resident_state_fingerprint(bridge)
     guard fingerprint != 0 else {
