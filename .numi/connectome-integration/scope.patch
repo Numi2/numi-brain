@@ -1,0 +1,116 @@
+diff --git a/tools/numi_connectome.py b/tools/numi_connectome.py
+index eaa8640..c09e69d 100644
+--- a/tools/numi_connectome.py
++++ b/tools/numi_connectome.py
+@@ -569,6 +569,8 @@ def _read_annotations(path: Path) -> dict[str, Any]:
+         if type_column is not None
+         else [None] * len(body_ids)
+     )
++    status_column = _resolve_column(names, ("status", "statusLabel", "status_label"))
++    statuses = _column_pylist(table, status_column) if status_column is not None else [None] * len(body_ids)
+     superclasses = (
+         _column_pylist(table, superclass_column)
+         if superclass_column is not None
+@@ -580,6 +582,7 @@ def _read_annotations(path: Path) -> dict[str, Any]:
+         "superclasses": [
+             "" if value is None else str(value).strip() for value in superclasses
+         ],
++        "statuses": ["" if value is None else str(value).strip() for value in statuses],
+         "columns": names,
+     }
+ 
+@@ -600,6 +603,7 @@ def _dominant_nt_coefficients(path: Path | None, body_ids: np.ndarray) -> np.nda
+         "acetylcholine": 1.0,
+         "ach": 1.0,
+         "gaba": -1.0,
++        "histamine": -1.0,
+         "glutamate": -1.0,
+         "glut": -1.0,
+         "dopamine": 0.25,
+@@ -613,6 +617,7 @@ def _dominant_nt_coefficients(path: Path | None, body_ids: np.ndarray) -> np.nda
+     categorical = _resolve_column(
+         names,
+         (
++            "consensus_nt",
+             "predicted_nt",
+             "predictedNt",
+             "neurotransmitter",
+@@ -780,9 +785,23 @@ def compile_official_graph(
+     source_hashes = {"annotations": _sha256(sources.annotations), "weights": _sha256(sources.weights)}
+     if sources.neurotransmitters is not None: source_hashes["neurotransmitters"] = _sha256(sources.neurotransmitters)
+     annotation = _read_annotations(sources.annotations)
+-    body_ids: np.ndarray = annotation["body_ids"]
+-    type_labels: list[str] = annotation["types"]
+-    superclasses: list[str] = annotation["superclasses"]
++    # The release annotation table also contains glia, orphan artifacts and
++    # unclassified segments. Those are NOT interchangeable with neurons in
++    # this rate model. Preserve every explicitly classified neuronal entry,
++    # including its isolated nodes, and report excluded annotation records.
++    annotation_count = len(annotation["body_ids"])
++    selected = np.asarray([
++        bool(superclass) and superclass.lower() not in {"unknown", "none", "glia"}
++        and not any(token in status.lower() for token in ("glia", "artifact", "unimportant"))
++        for superclass, status in zip(annotation["superclasses"], annotation["statuses"], strict=True)
++    ], dtype=bool)
++    selected_indices = np.flatnonzero(selected)
++    if selected_indices.size == 0:
++        raise ConnectomeError("no explicitly classified neuronal entries; refusing to simulate glia or unknown segments as neurons")
++    excluded_annotations = annotation_count - int(selected_indices.size)
++    body_ids: np.ndarray = annotation["body_ids"][selected_indices]
++    type_labels: list[str] = [annotation["types"][i] for i in selected_indices]
++    superclasses: list[str] = [annotation["superclasses"][i] for i in selected_indices]
+     body_nt = (
+         _dominant_nt_coefficients(sources.neurotransmitters, body_ids)
+         if sign_mode == "heuristic"
+@@ -991,7 +1010,7 @@ def compile_official_graph(
+             "weights": sources.weights.name,
+             "sha256": source_hashes,
+             "url": "https://male-cns.janelia.org/download/",
+-            "scope": "curated annotated neurons; unannotated segments are excluded and counted",
++            "scope": "explicitly classified neuronal entries; glia, artifacts, unimportant and unclassified annotation records excluded and counted",
+         },
+         "compilation": {
+             "resolution": "cell-type" if resolution_code else "neuron",
+@@ -1008,7 +1027,9 @@ def compile_official_graph(
+         "counts": {
+             "nodes": node_count,
+             "edges": int(source_nodes.size),
+-            "annotated_neurons": int(annotation["body_ids"].size),
++            "annotation_records": annotation_count,
++            "excluded_annotation_records": excluded_annotations,
++            "classified_neuronal_entries": int(selected_indices.size),
+             "source_weight_rows": source_edge_count,
+             "thresholded_source_rows": thresholded_edges,
+             "unmapped_endpoint_rows": excluded_endpoint_edges,
+diff --git a/tools/test_connectome_import.py b/tools/test_connectome_import.py
+index f15a2e6..43025ce 100644
+--- a/tools/test_connectome_import.py
++++ b/tools/test_connectome_import.py
+@@ -42,4 +42,27 @@ class ImportTests(unittest.TestCase):
+             f.write_feather(pa.table({'body_pre':[10], 'body_post':[20], 'weight':[float('nan')]}),d/'weights.feather')
+             with self.assertRaises(c.ConnectomeError):
+                 c.compile_official_graph(c.SourcePaths(d/'annotations.feather',None,d/'weights.feather'),sign_mode='unsigned')
++    def test_non_neuronal_annotation_entries_are_not_simulated(self):
++        try:
++            import pyarrow as pa
++            import pyarrow.feather as f
++        except ImportError:
++            self.skipTest('PyArrow required for source-table test')
++        with tempfile.TemporaryDirectory() as directory:
++            d=Path(directory)
++            f.write_feather(pa.table({'bodyId':[10,20,30,40,50],
++                'type':['S','D',None,'glia','typed-artifact'],
++                'superclass':['sensory','descending_neuron',None,'glia','intrinsic'],
++                'status':['Traced','Traced','Orphan','Glia','Orphan-artifact']}),d/'annotations.feather')
++            f.write_feather(pa.table({'body_pre':[10,30,40,50],
++                'body_post':[20,20,20,20], 'weight':[3,1,1,1]}),d/'weights.feather')
++            graph=c.compile_official_graph(c.SourcePaths(d/'annotations.feather',None,d/'weights.feather'),sign_mode='unsigned')
++            self.assertEqual(list(graph.node_ids),[10,20])
++            self.assertEqual(graph.edge_count,1)
++            import json
++            counts=json.loads(graph.manifest_json)['counts']
++            self.assertEqual(counts['annotation_records'],5)
++            self.assertEqual(counts['excluded_annotation_records'],3)
++            self.assertEqual(counts['classified_neuronal_entries'],2)
++            c.write_graph_pack(d/'g.numicns',graph);c.verify_native(d/'g.numicns')
+ if __name__=='__main__':unittest.main()

@@ -14,7 +14,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Apply exact compiler increment
+      - name: Apply exact compiler increment and audited neuronal scope
         run: |
           python3 - <<'PY'
           import base64, hashlib, lzma, pathlib, subprocess
@@ -22,8 +22,9 @@ jobs:
           data=base64.b64decode(''.join((root/f'{i:02}.b64').read_text().strip() for i in range(4)),validate=True)
           assert hashlib.sha256(data).hexdigest()=='4c5ca271facb70013bb559e4f55530c5ce635e3c8e11f2aa7dc00083e091becc'
           pathlib.Path('/tmp/connectome.patch').write_bytes(lzma.decompress(data))
-          subprocess.run(['git','apply','--check','/tmp/connectome.patch'],check=True)
-          subprocess.run(['git','apply','/tmp/connectome.patch'],check=True)
+          for patch in ['/tmp/connectome.patch',str(root/'scope.patch')]:
+              subprocess.run(['git','apply','--check',patch],check=True)
+              subprocess.run(['git','apply',patch],check=True)
           PY
       - name: Install source-table dependencies and verify compiler
         run: |
@@ -31,7 +32,7 @@ jobs:
           /tmp/connectome-python/bin/python -m pip install numpy pyarrow
           /tmp/connectome-python/bin/python tools/test_connectome_native.py
           /tmp/connectome-python/bin/python tools/test_connectome_import.py
-      - name: Download pinned release and retain all annotated neurons
+      - name: Download pinned release and retain classified neuronal entries
         shell: bash
         run: |
           set -euo pipefail
@@ -40,12 +41,12 @@ jobs:
           /usr/bin/time -v /tmp/connectome-python/bin/python tools/numi_connectome.py bootstrap --source-dir /tmp/male-cns-v1.0 --output packs/male-cns-v1.0-neuron-unsigned.numicns --resolution neuron --minimum-synapses 1 --sign-mode unsigned 2>&1 | tee diagnostics/compile.txt
           cp /tmp/male-cns-v1.0/source-manifest.json packs/source-manifest.json
           /tmp/connectome-python/bin/python tools/numi_connectome.py inspect packs/male-cns-v1.0-neuron-unsigned.numicns > packs/inspection.json
-          printf '%s\n' 'HHMI Janelia / Google / Cambridge / MRC male-CNS v1.0, CC-BY. Source: https://male-cns.janelia.org/download/. This artifact preserves the graph among annotated neurons; unsigned normalized weights and rate parameters are declared modeling assumptions, not measured electrophysiology. No robot behavior is qualified by this build.' > packs/ATTRIBUTION.txt
+          printf '%s\n' 'HHMI Janelia / Google / Cambridge / MRC male-CNS v1.0, CC-BY. Source: https://male-cns.janelia.org/download/. This artifact retains explicitly classified neuronal entries and their weighted connections; glia, artifacts and unclassified segments are excluded and counted. Unsigned normalized weights and rate parameters are declared assumptions, not measured electrophysiology. No robot behavior is qualified by this build.' > packs/ATTRIBUTION.txt
           sha256sum packs/*.numicns > packs/SHA256SUMS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: male-cns-v1.0-neuron-pack
+          name: male-cns-v1.0-classified-neuron-pack
           path: |
             packs/
             diagnostics/
