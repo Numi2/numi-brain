@@ -34,9 +34,11 @@ public struct NumiLabExecutedPositionCandidate: Sendable {
 /// Ordered compatibility execution of one position-command candidate.
 ///
 /// The complete physical-state proof is read directly from NumiLab's accepted
-/// resident arena after the exact advance. No application callback may supply
-/// or substitute state identity. This function still stops before Brain commit;
-/// the existing joint transaction remains the sole accept/commit/abort owner.
+/// resident arena after the exact advance. The admitted owner revision hashes
+/// validated logical continuation bytes and excludes allocator capacity slack.
+/// No application callback may supply or substitute state identity. This
+/// function still stops before Brain commit; the existing joint transaction
+/// remains the sole accept/commit/abort owner.
 @available(macOS 26.0, *)
 public enum NumiLabPositionPhysicalExecutor {
   public static func execute(
