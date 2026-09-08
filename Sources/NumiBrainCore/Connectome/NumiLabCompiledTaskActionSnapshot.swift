@@ -88,25 +88,32 @@ public struct NumiLabCompiledTaskActionSnapshot: Codable, Equatable, Sendable {
   }
 
   /// Promotes cold native compilation evidence to execution authority only
-  /// after the actual live rollout proves the same immutable physical-owner
-  /// identity. The live run fingerprint is never inferred by the exporter.
+  /// after primitive identity values supplied by the live physical owner match
+  /// this snapshot. The higher-level Metal bridge wraps this with its strongly
+  /// typed live rollout identity.
   public func executionReceipt(
-    liveRollout: NumiLabLiveRolloutIdentity,
+    runFingerprint: UInt64,
+    liveWorldFingerprint: UInt64,
+    liveTaskFingerprint: UInt64,
+    liveActionFingerprint: UInt64,
+    liveRobotFingerprint: UInt64,
+    liveActionCount: UInt32,
     robot: NumiLabRobotInterface,
     contract: NumiLabTaskActionContract
   ) throws -> NumiLabCompiledTaskActionReceipt {
     try validate(robot: robot, contract: contract)
-    guard liveRollout.actionCount == UInt32(bindings.count),
-      liveRollout.worldFingerprint == worldFingerprint,
-      liveRollout.taskFingerprint == taskFingerprint,
-      liveRollout.actionFingerprint == actionFingerprint,
-      liveRollout.robotFingerprint == robotFingerprint else {
+    guard runFingerprint != 0,
+      liveActionCount == UInt32(bindings.count),
+      liveWorldFingerprint == worldFingerprint,
+      liveTaskFingerprint == taskFingerprint,
+      liveActionFingerprint == actionFingerprint,
+      liveRobotFingerprint == robotFingerprint else {
       throw ConnectomeError.invalid(
         "live NumiLab rollout does not match the native-compiled action snapshot"
       )
     }
     return try NumiLabCompiledTaskActionReceipt(
-      runFingerprint: liveRollout.runFingerprint,
+      runFingerprint: runFingerprint,
       worldFingerprint: worldFingerprint,
       taskFingerprint: taskFingerprint,
       actionFingerprint: actionFingerprint,
