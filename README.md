@@ -293,3 +293,13 @@ experiments and proposes a bounded update to the connectome's actual actuator
 decoder. Graph connectivity stays fixed; graph/spec/body bytes and the executing
 brain program are bound to each capture. No production admission or learned
 robot skill is inferred from a proposal. See [the executable study workflow](docs/CONNECTOME_DECODER_LEARNING.md).
+
+### Native robot import and decoder experiment forks
+
+The [native robot importer](docs/NUMILAB_ROBOT_IMPORT.md) preserves actual Franka,
+G1 and X500 topology and actuator semantics. [Decoder-only forks](docs/CONNECTOME_DECODER_FORKS.md)
+preserve complete initial brain state and retain the paired physical-checkpoint
+identity. The [execution record](evidence/connectome-robot-import-v1/README.md)
+reports a full package build and 41 selected Apple tests. These are import and
+research capabilities; full Metal 4 brain/robot execution, physical checkpoint
+restoration and learned robot-task results remain separate requirements.
