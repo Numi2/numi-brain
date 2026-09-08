@@ -45,6 +45,15 @@ final class MuscleLocomotorProgramTests: XCTestCase {
         tonicExcitation: 0.03, lengthGain: 0.4, velocityGainSeconds: 0.02)
       XCTAssertThrowsError(try program(modified).validate(template: template))
     }
+    var saturated = channels
+    saturated[0] = .init(muscleIdentifier: 0, referenceLengthMeters: 0.25,
+      tonicExcitation: 1, lengthGain: 0, velocityGainSeconds: 0, maximumExcitation: 1)
+    XCTAssertNoThrow(try program(saturated).validate(template: template))
+    for maximum: Float in [1.0001, .infinity, .nan] {
+      saturated[0] = .init(muscleIdentifier: 0, referenceLengthMeters: 0.25,
+        tonicExcitation: 1, lengthGain: 0, velocityGainSeconds: 0, maximumExcitation: maximum)
+      XCTAssertThrowsError(try program(saturated).validate(template: template))
+    }
     var gait = channels
     gait[0] = .init(muscleIdentifier: 0, referenceLengthMeters: 0.25,
       tonicExcitation: 0.03, lengthGain: 0.4, velocityGainSeconds: 0.02, gaitSine: 0.02)

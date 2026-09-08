@@ -63,7 +63,7 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
         channel.velocityGainSeconds, channel.gaitSine, channel.gaitCosine, channel.maximumExcitation]
       guard channel.muscleIdentifier == UInt32(index), values.allSatisfy(\.isFinite),
         (0.0001...10).contains(channel.referenceLengthMeters),
-        (0...0.999).contains(channel.maximumExcitation),
+        (0...1).contains(channel.maximumExcitation),
         (0...channel.maximumExcitation).contains(channel.tonicExcitation),
         (0...10).contains(channel.lengthGain), (0...1).contains(channel.velocityGainSeconds),
         abs(channel.gaitSine) + abs(channel.gaitCosine) <= 0.25,

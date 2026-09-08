@@ -91,6 +91,73 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     print("muscle_locomotor_native=observed device=\(device.name) roots=4 timestep_us=100 peak_excitation=\(peak) replay=byte_exact unavailable=zero boundary=controller_transport_not_standing_or_walking")
   }
 
+  /// Equal-duration controller comparison at the native-admitted prepared pose.
+  /// The independent loaded-equilibrium and behavior gates remain separate.
+  func testPreparedRecruitmentAcceptedRoots() throws {
+    guard let programPath = ProcessInfo.processInfo.environment["NUMANX_PREPARED_RECRUITMENT"] else {
+      throw XCTSkip("prepared recruitment program is not configured")
+    }
+    let world = try configuredAuthoredWorld()
+    let initial = try XCTUnwrap(world.preparedInitialState)
+    let paths = try bridgePaths(), device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let native = try makeNativeRuntime(paths: paths, device: device, timestepMicroseconds: 100, authoredWorld: world)
+    let compiled = try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: 100, anatomy: native.fullBodyAnatomy())
+    let program = try JSONDecoder().decode(MuscleLocomotorProgram.self, from: Data(contentsOf: URL(fileURLWithPath: programPath)))
+    try program.validate(template: compiled)
+    XCTAssertEqual(program.calibrationArtifactSHA256,
+      BrainPolicyEvidenceArtifact.sha256(try Data(contentsOf: URL(fileURLWithPath: initial.payloadPath))))
+    XCTAssertEqual(program.channels.map(\.tonicExcitation).max(), 1)
+    XCTAssertTrue(program.channels.allSatisfy { $0.lengthGain == 0 && $0.velocityGainSeconds == 0 })
+    let publication = try BrainParameterPublication.developmentalSeedV1(species: compiled.species, tissueParameters: .corticalSheetV0)
+    func run(_ controller: MuscleLocomotorProgram?, unavailable: Bool = false) throws -> AcceptedScenario {
+      try runAcceptedScenario(paths: paths, contactPath: paths.contacts, compiled: compiled,
+        publication: publication, device: device, rootCount: 4, timestepMicroseconds: 100,
+        muscleLocomotor: controller, sensorIntervention: unavailable ? .ablated(.proprioception) : nil,
+        authoredWorld: world)
+    }
+    let active = try run(program), replay = try run(program)
+    let zero = try run(nil), unavailable = try run(program, unavailable: true)
+    XCTAssertEqual(active.motorExcitationsByGeneration, replay.motorExcitationsByGeneration)
+    XCTAssertEqual(active.sensorFingerprints, replay.sensorFingerprints)
+    XCTAssertTrue(active.motorExcitationsByGeneration[0].allSatisfy { $0 == 0 })
+    XCTAssertTrue(active.motorExcitationsByGeneration.dropFirst().allSatisfy { ($0.max() ?? 0) > 0 })
+    XCTAssertTrue(active.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0.isFinite && (0...1).contains($0) })
+    XCTAssertTrue(unavailable.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
+    XCTAssertTrue(zero.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
+    func muscleFeature(_ scenario: AcceptedScenario, _ feature: Int) throws -> [Float] {
+      stride(from: feature, to: 4160, by: 10).map { scenario.finalSensorValuesByModality[.proprioception]![$0] }
+    }
+    XCTAssertNotEqual(try muscleFeature(active, 1), try muscleFeature(zero, 1), "activation must respond")
+    XCTAssertNotEqual(try muscleFeature(active, 6), try muscleFeature(zero, 6), "applied force must respond")
+    for (label, scenario) in [("recruited", active), ("replay", replay), ("zero", zero), ("unavailable", unavailable)] {
+      for (index, frame) in scenario.sensorValuesByGeneration.enumerated() {
+        let root = try XCTUnwrap(frame[.vestibular]), k = try XCTUnwrap(frame[.kinesthesia])
+        let q = Array(root.prefix(7)) + (6..<128).map { k[7 * $0] }
+        let v = (0..<128).map { k[7 * $0 + 1] }
+        func packed(_ values: [Float]) -> String {
+          var bytes = Data()
+          for value in values { var word = value.bitPattern.littleEndian; withUnsafeBytes(of: &word) { bytes.append(contentsOf: $0) } }
+          return bytes.base64EncodedString()
+        }
+        let proprioception = try XCTUnwrap(frame[.proprioception])
+        let activation = stride(from: 1, to: proprioception.count, by: 10).map { proprioception[$0] }
+        let force = stride(from: 6, to: proprioception.count, by: 10).map { proprioception[$0] }
+        // Separate bounded records preserve state, command and force bytes atomically.
+        for (kind, values) in [("qv", q + v), ("motor", scenario.motorExcitationsByGeneration[index]),
+                               ("activation", activation), ("tendon_force", force)] {
+          let object: [String: Any] = ["schema": "numi.human.prepared-recruitment-trace.v1", "scenario": label,
+            "root": index + 1, "elapsed_microseconds": (index + 1) * 100, "kind": kind,
+            "fp32_le_base64": packed(values)]
+          let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+          let line = Data(("prepared_recruitment=" + String(decoding: data, as: UTF8.self) + "\n").utf8)
+          XCTAssertLessThan(line.count, 4096)
+          XCTAssertEqual(line.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }, line.count)
+        }
+      }
+    }
+    print("prepared_recruitment=observed roots_per_scenario=4 timestep_us=100 replay=bitwise unavailable=zero boundary=controller_transport_not_loaded_equilibrium_or_standing")
+  }
+
   func testAuthoredMatterDescriptorRejectsMissingIdentity() throws {
     typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
     XCTAssertThrowsError(try World(packagePath: "", humanSourceFingerprint: 1, worldFingerprint: 2))
@@ -2311,7 +2378,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     sensorIntervention: ClosedLoopSensorIntervention? = nil,
     developmentalCapabilityCodes: [UInt64] = [],
     developmentalIntentFingerprintXor: UInt64 = 0,
-    activeSensingCommandScale: Float = 1
+    activeSensingCommandScale: Float = 1,
+    authoredWorld: MetalNumanXBridgeV1Runtime.AuthoredMatterWorld? = nil
   ) throws -> AcceptedScenario {
     guard rootCount > 0 else {
       throw TissueError.transaction("Gate B scenario requires accepted roots")
@@ -2341,7 +2409,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       paths: paths,
       device: device,
       supportContactPath: contactPath,
-      timestepMicroseconds: timestepMicroseconds
+      timestepMicroseconds: timestepMicroseconds, authoredWorld: authoredWorld
     )
     var aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot?
     var sensorFingerprints: [UInt64] = []
@@ -3156,7 +3224,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     paths: BridgePaths,
     device: any MTLDevice,
     supportContactPath: String? = nil,
-    timestepMicroseconds: UInt32 = 1_000
+    timestepMicroseconds: UInt32 = 1_000,
+    authoredWorld: MetalNumanXBridgeV1Runtime.AuthoredMatterWorld? = nil
   ) throws -> MetalNumanXBridgeV1Runtime {
     try MetalNumanXBridgeV1Runtime(
       libraryPath: paths.library,
@@ -3169,9 +3238,10 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         visionProfilePath: paths.visionProfile,
         metalRoboMetallibPath: paths.metalRoboMetallib,
         matterMetallibPath: paths.matterMetallib,
-        matterMaterialPath: paths.material,
+        matterMaterialPath: authoredWorld == nil ? paths.material : "",
         timestepMicroseconds: UInt64(timestepMicroseconds),
-        transactionSlotCount: 2
+        maximumRetainedBytes: 1 << 30,
+        transactionSlotCount: 2, authoredMatterWorld: authoredWorld
       )
     )
   }

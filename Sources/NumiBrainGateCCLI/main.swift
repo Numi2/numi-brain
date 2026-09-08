@@ -700,7 +700,7 @@ if arguments[1] == "describe-body" {
       device: device, configuration: nativeConfiguration(in: options, timestep: timestep))
     let compiled = try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: timestep, anatomy: native.fullBodyAnatomy())
     let payload = try Data(contentsOf: URL(fileURLWithPath: required("--muscle", in: options)))
-    let description: [String: Any] = [
+    var description: [String: Any] = [
       "format": "numanx-locomotor-body-v1", "device": device.name,
       "model_source_fingerprint": native.info.modelSourceFingerprint,
       "sensory_profile_fingerprint": compiled.sensoryProfile.fingerprint,
@@ -709,6 +709,18 @@ if arguments[1] == "describe-body" {
       "timestep_microseconds": timestep,
       "boundary": "native source admission; controller calibration and locomotion unqualified"
     ]
+    if let world = try authoredMatterWorld(in: options), let initial = world.preparedInitialState {
+      // The native constructor above has admitted these exact bytes against
+      // the composed Human/world/clock identity. Authoring may bind to them.
+      let state = try Data(contentsOf: URL(fileURLWithPath: initial.payloadPath))
+      let fnv = state.reduce(UInt64(0xcbf29ce484222325)) { ($0 ^ UInt64($1)) &* 0x100000001b3 }
+      guard fnv == initial.fingerprint else { throw TissueError.transaction("prepared state changed after native admission") }
+      description["prepared_initial_state"] = [
+        "sha256": BrainPolicyEvidenceArtifact.sha256(state), "fingerprint": fnv,
+        "world_fingerprint": world.worldFingerprint,
+        "q_count": native.info.qCoordinateCount, "dof_count": native.info.dofCount
+      ]
+    }
     FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: description, options: [.prettyPrinted, .sortedKeys]))
     FileHandle.standardOutput.write(Data("\n".utf8)); exit(0)
   } catch {

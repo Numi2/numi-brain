@@ -27,5 +27,8 @@ kernel void nb_muscle_locomotor(
   const float excitation = clamp(c.tonic + feedback + gait, 0.0f, c.maximum_excitation);
   // The common decision kernel converts positive logits with tanh, then
   // applies ordinary inhibition and the private protective motor adapter.
-  logits[gid] = atanh(excitation);
+  // tanh(10) rounds to 1 in FP32, without the infinite atanh(1).
+  // This represents the inclusive physical excitation endpoint; downstream
+  // inhibition and protective routing still operate on the ordinary command.
+  logits[gid] = excitation == 1.0f ? 10.0f : atanh(excitation);
 }
