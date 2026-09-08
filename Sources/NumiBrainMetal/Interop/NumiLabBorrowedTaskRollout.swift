@@ -43,8 +43,7 @@ public struct NumiLabRolloutAdvanceReceipt: Equatable, Sendable {
 /// resets, destroys, or substitutes simulator state.
 @available(macOS 26.0, *)
 public final class NumiLabBorrowedTaskRollout: @unchecked Sendable {
-  // Updated only after the owner ABI branch compiles and publishes its exact SHA.
-  public static let requiredNativeRevision = "68f5aa441a8437426de193a5c9beeac5a78113b6"
+  public static let requiredNativeRevision = "5db0c5aa169bfe1270ef7448e01dd7fbcd99d123"
 
   private let bridge: OpaquePointer
   public let nativeRevision: String
