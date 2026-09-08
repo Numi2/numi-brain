@@ -65,4 +65,6 @@ uint64_t nb_connectome_decoder_fingerprint(uint64_t graph, uint64_t topology,
 #ifdef __cplusplus
 }
 #endif
+/* SwiftPM selects this same-named header as the module umbrella. */
+#include "NumiBrainConnectomeAudit.h"
 #endif
