@@ -4,7 +4,7 @@ import NumiBrainCore
 /// Physical-owner evidence for one accepted NumiLab candidate. NumiBrain does
 /// not manufacture `physicalStateFingerprint`: the owner must compute it from
 /// its complete accepted state (including all state necessary for continuation)
-/// after the native solver accepts the candidate.
+/// after the native solver accepts this exact candidate.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabAcceptedPhysicsReceipt: Equatable, Sendable {
@@ -19,15 +19,18 @@ public struct NumiLabAcceptedPhysicsReceipt: Equatable, Sendable {
   public let physicalStateFingerprint: UInt64
   public let physicsGeneration: UInt64
   public let environmentIdentifier: UInt32
+  public let preAdvanceSubmissionCount: UInt64
+  public let acceptedSubmissionCount: UInt64
 
   public init(
     submission: NumiLabPositionMotorSubmission,
     transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken,
-    liveRollout: NumiLabLiveRolloutIdentity,
+    advance: NumiLabRolloutAdvanceReceipt,
     physicalStateFingerprint: UInt64,
     physicsGeneration: UInt64
   ) throws {
+    let liveRollout = advance.after.identity
     try submission.validate(
       transaction: transaction,
       substep: substep,
@@ -36,12 +39,19 @@ public struct NumiLabAcceptedPhysicsReceipt: Equatable, Sendable {
     let (expectedGeneration, overflow) =
       transaction.basePhysicsGeneration.addingReportingOverflow(1)
     guard !overflow,
+      advance.fullyAccepted,
+      advance.before.identity == liveRollout,
+      advance.after.identity == liveRollout,
+      advance.after.submissionCount == advance.before.submissionCount + 1,
+      advance.after.submittedControlSteps == advance.before.submittedControlSteps + 1,
+      advance.after.completedEnvironmentSteps
+        == advance.before.completedEnvironmentSteps + 1,
       physicalStateFingerprint != 0,
       physicsGeneration == expectedGeneration,
       submission.environmentIdentifier == transaction.environmentIdentifier
     else {
       throw TissueError.transaction(
-        "NumiLab accepted-physics owner proof has invalid state identity or generation"
+        "NumiLab accepted-physics owner proof lacks one exact accepted physical advance"
       )
     }
     transactionFingerprint = transaction.fingerprint
@@ -55,12 +65,14 @@ public struct NumiLabAcceptedPhysicsReceipt: Equatable, Sendable {
     self.physicalStateFingerprint = physicalStateFingerprint
     self.physicsGeneration = physicsGeneration
     environmentIdentifier = transaction.environmentIdentifier
+    preAdvanceSubmissionCount = advance.before.submissionCount
+    acceptedSubmissionCount = advance.after.submissionCount
   }
 
   public func acceptedPhysicsStateToken(
     transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken,
-    liveRollout: NumiLabLiveRolloutIdentity
+    liveRollout: NumiLabLiveRolloutSnapshot
   ) throws -> AcceptedPhysicsStateToken {
     let (expectedGeneration, overflow) =
       transaction.basePhysicsGeneration.addingReportingOverflow(1)
@@ -70,13 +82,15 @@ public struct NumiLabAcceptedPhysicsReceipt: Equatable, Sendable {
       environmentIdentifier == transaction.environmentIdentifier,
       physicsGeneration == expectedGeneration,
       physicalStateFingerprint != 0,
-      compiledRunFingerprint == liveRollout.runFingerprint,
-      worldFingerprint == liveRollout.worldFingerprint,
-      taskFingerprint == liveRollout.taskFingerprint,
-      actionFingerprint == liveRollout.actionFingerprint,
-      robotFingerprint == liveRollout.robotFingerprint else {
+      acceptedSubmissionCount == preAdvanceSubmissionCount + 1,
+      liveRollout.submissionCount == acceptedSubmissionCount,
+      compiledRunFingerprint == liveRollout.identity.runFingerprint,
+      worldFingerprint == liveRollout.identity.worldFingerprint,
+      taskFingerprint == liveRollout.identity.taskFingerprint,
+      actionFingerprint == liveRollout.identity.actionFingerprint,
+      robotFingerprint == liveRollout.identity.robotFingerprint else {
       throw TissueError.transaction(
-        "NumiLab accepted-physics receipt no longer belongs to this live root"
+        "NumiLab accepted-physics receipt no longer belongs to this live accepted root"
       )
     }
     return try AcceptedPhysicsStateToken(
