@@ -1,6 +1,41 @@
 import Foundation
 import NumiBrainCore
 
+/// Identity read from the live NumiLab rollout immediately before command
+/// consumption. These fields mirror the immutable identity portion of
+/// `MRTaskRolloutLayoutC`; counters and memory statistics are intentionally not
+/// retained because they are not execution authority.
+@available(macOS 26.0, *)
+@frozen
+public struct NumiLabLiveRolloutIdentity: Equatable, Sendable {
+  public let environmentCount: UInt32
+  public let actionCount: UInt32
+  public let runFingerprint: UInt64
+  public let worldFingerprint: UInt64
+  public let taskFingerprint: UInt64
+  public let actionFingerprint: UInt64
+  public let robotFingerprint: UInt64
+
+  public init(environmentCount: UInt32, actionCount: UInt32,
+    runFingerprint: UInt64, worldFingerprint: UInt64,
+    taskFingerprint: UInt64, actionFingerprint: UInt64,
+    robotFingerprint: UInt64) throws {
+    guard environmentCount > 0, actionCount > 0,
+      runFingerprint != 0, worldFingerprint != 0,
+      taskFingerprint != 0, actionFingerprint != 0,
+      robotFingerprint != 0 else {
+      throw TissueError.transaction("live NumiLab rollout identity is incomplete")
+    }
+    self.environmentCount = environmentCount
+    self.actionCount = actionCount
+    self.runFingerprint = runFingerprint
+    self.worldFingerprint = worldFingerprint
+    self.taskFingerprint = taskFingerprint
+    self.actionFingerprint = actionFingerprint
+    self.robotFingerprint = robotFingerprint
+  }
+}
+
 /// Transaction-local handoff from one NumiBrain position-command candidate to
 /// one exact compiled NumiLab task action table. This descriptor does not copy
 /// or reinterpret the GPU payload. The physical owner remains responsible for
@@ -98,5 +133,29 @@ public struct NumiLabPositionMotorSubmission: Sendable {
         "NumiLab position submission no longer belongs to this root/substep"
       )
     }
+  }
+
+  /// Execution admission against the live physical owner. This check is
+  /// intentionally separate from the cold compiled-task receipt: a valid old
+  /// receipt must not authorize a different live task, robot, or rebuilt run.
+  public func validate(liveRollout: NumiLabLiveRolloutIdentity) throws {
+    guard liveRollout.environmentCount > environmentIdentifier,
+      liveRollout.actionCount == actionCount,
+      liveRollout.runFingerprint == compiledRunFingerprint,
+      liveRollout.worldFingerprint == worldFingerprint,
+      liveRollout.taskFingerprint == taskFingerprint,
+      liveRollout.actionFingerprint == actionFingerprint,
+      liveRollout.robotFingerprint == robotFingerprint else {
+      throw TissueError.transaction(
+        "live NumiLab rollout identity disagrees with the admitted motor submission"
+      )
+    }
+  }
+
+  public func validate(transaction: BrainJointTransactionToken,
+    substep: BrainJointSubstepToken,
+    liveRollout: NumiLabLiveRolloutIdentity) throws {
+    try validate(transaction: transaction, substep: substep)
+    try validate(liveRollout: liveRollout)
   }
 }
