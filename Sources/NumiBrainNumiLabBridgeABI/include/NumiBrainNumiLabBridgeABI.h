@@ -37,6 +37,25 @@ typedef struct NBNumiLabAdvanceResultV1 {
   double submission_milliseconds;
 } NBNumiLabAdvanceResultV1;
 
+typedef struct NBNumiLabActionBindingV1 {
+  uint32_t action_index;
+  uint32_t dof_index;
+  uint32_t q_index;
+  uint32_t v_index;
+  float normalized_scale;
+  float lower_target;
+  float upper_target;
+  float response_time_seconds;
+  float drive_stiffness;
+  float drive_damping;
+  uint32_t interaction_motion;
+  uint32_t reserved0;
+  uint32_t actuator_kind;
+  uint32_t resolved_component;
+  uint32_t component_lane;
+  uint32_t flags;
+} NBNumiLabActionBindingV1;
+
 // Opens only the symbol bridge. `rollout_handle` remains caller-owned and must
 // be a live MRTaskRolloutHandle created by the same loaded NumiLab library.
 NBNumiLabBorrowedRollout* nb_numilab_borrowed_rollout_open(
@@ -50,6 +69,21 @@ void nb_numilab_borrowed_rollout_destroy(NBNumiLabBorrowedRollout* bridge);
 int nb_numilab_borrowed_rollout_identity(
   NBNumiLabBorrowedRollout* bridge,
   NBNumiLabRolloutIdentityV1* output
+);
+
+size_t nb_numilab_borrowed_rollout_action_binding_count(
+  NBNumiLabBorrowedRollout* bridge
+);
+int nb_numilab_borrowed_rollout_copy_action_bindings(
+  NBNumiLabBorrowedRollout* bridge,
+  NBNumiLabActionBindingV1* output,
+  size_t output_count
+);
+
+// Returns the physical owner's complete persistent continuation-state digest,
+// or zero unless the rollout owns an initialized accepted idle resident state.
+uint64_t nb_numilab_borrowed_rollout_resident_state_fingerprint(
+  NBNumiLabBorrowedRollout* bridge
 );
 
 // Compatibility execution boundary: exactly one externally authored action
