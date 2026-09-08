@@ -1,0 +1,55 @@
+name: Prepare reviewed native-body source objects
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/connectome-body-source.yml', 'tools/body-source-publication.patch']
+permissions:
+  contents: read
+jobs:
+  objects:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Check plain diff and exact final source hashes; store blobs without publishing refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          python3 - <<'PY'
+          import hashlib,json,pathlib,subprocess
+          expected={
+            'Sources/NumiBrainCore/Species/SpeciesTemplate.swift':'1fa04c3b11ad56e20cece07d9ac925b9ac768f4dd03d70540b1b3dc5fcde980e',
+            'Sources/NumiBrainCore/Belief/NumanXJointTopologyCatalog.swift':'2de843415ebee185710039ae0525b8ca4e4d76ab19f4ae3b8ba50cd1a730043d',
+            'Sources/NumiBrainMetal/MetalAgentStateArena.swift':'6f7fae7868ae1637d80384f13cc6ff74729c615821307ce59fd91e68ceef57d4',
+            'Sources/NumiBrainMetal/MetalMemoryRuntime.swift':'54effd72c2503f895eed5b38a181deee7302eaa17bb69d308c12fae2796cd592',
+            'Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift':'669f3e0bc6f747cd5ba090d0db3a3cbe32e85a849c587b7f2fbe9b1ae0211615',
+            'Sources/NumiBrainMetal/MetalJointAgentStateTransaction.swift':'97b3af4439db912444af03e7709ca6e1d3fe4dc6234b6b107ffe0c6e86811d70'}
+          patch=pathlib.Path('tools/body-source-publication.patch').read_text().replace('\n diff --git ','\ndiff --git ')
+          subprocess.run(['git','apply','--check','--whitespace=error','-'],input=patch.encode(),check=True)
+          subprocess.run(['git','apply','--whitespace=error','-'],input=patch.encode(),check=True)
+          changed=set(subprocess.check_output(['git','diff','--name-only']).decode().splitlines())
+          assert changed==set(expected)
+          result=[]
+          for name,wanted in sorted(expected.items()):
+              data=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(data).hexdigest()==wanted
+              blob=hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+              response=subprocess.run(['gh','api','--method','POST','repos/Numi2/numi-brain/git/blobs','--input','-'],input=json.dumps({'content':data.decode(),'encoding':'utf-8'}).encode(),capture_output=True,check=True)
+              assert json.loads(response.stdout)['sha']==blob
+              result.append({'path':name,'sha':blob,'sha256':wanted})
+          pathlib.Path('diagnostics/objects.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-body-source-objects
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
