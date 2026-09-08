@@ -59,7 +59,7 @@ public enum NumiLabPositionHostActionAdapter {
       UInt32(encoder.lanes.count) == submission.actionCount,
       lease.output.muscleExcitationGPUAddress == submission.sourceCommandGPUAddress,
       lease.output.muscleExcitationByteCount == Int(submission.sourceCommandByteCount),
-      lease.output.muscleCount == Int(submission.actionCount)
+      lease.output.muscleCount == submission.actionCount
     else {
       throw TissueError.transaction(
         "NumiLab host action transport does not own one exact single-environment motor allocation"
