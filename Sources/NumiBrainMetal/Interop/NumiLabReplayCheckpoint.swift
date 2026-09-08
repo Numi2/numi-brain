@@ -1,10 +1,8 @@
 import Foundation
 import NumiBrainCore
 
-/// One deterministic physical step retained by an exact replay checkpoint.
-/// Actions are already in normalized physical-owner coordinates and the
-/// fingerprint is the native owner's complete accepted continuation-state
-/// digest captured by the physical executor at this exact boundary.
+/// One accepted native physical step, not a Brain root-commit or learning receipt.
+/// Policy revision is taken from execution, never supplied as replacement data.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
@@ -15,21 +13,21 @@ public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
   public let postCompletedEnvironmentSteps: UInt64
   public let physicalStateFingerprint: UInt64
 
-  public init(
-    executed: NumiLabExecutedPositionCandidate,
-    policyRevision: UInt64
-  ) throws {
+  public init(executed: NumiLabExecutedPositionCandidate,
+    policyRevision expectedPolicyRevision: UInt64? = nil) throws {
     let after = executed.advanceReceipt.after
     let fingerprint = executed.acceptedPhysicsReceipt.physicalStateFingerprint
+    let revision = try executed.advanceReceipt.policyRevisionForReplay(expected: expectedPolicyRevision)
     guard executed.advanceReceipt.fullyAccepted,
-      executed.actionFrame.controlStepCount == 1,
-      executed.actionFrame.environmentCount == 1,
-      executed.actionFrame.normalizedActions.allSatisfy(\.isFinite),
-      fingerprint != 0 else {
+      executed.actionFrame.liveRollout == after.identity,
+      executed.actionFrame.actionCount == after.identity.actionCount,
+      executed.actionFrame.normalizedActions.count == Int(after.identity.actionCount),
+      executed.actionFrame.controlStepCount == 1, executed.actionFrame.environmentCount == 1,
+      executed.actionFrame.normalizedActions.allSatisfy(\.isFinite), fingerprint != 0 else {
       throw TissueError.transaction("NumiLab replay step is not one exact accepted physical step")
     }
     normalizedActions = executed.actionFrame.normalizedActions
-    self.policyRevision = policyRevision
+    policyRevision = revision
     postSubmissionCount = after.submissionCount
     postSubmittedControlSteps = after.submittedControlSteps
     postCompletedEnvironmentSteps = after.completedEnvironmentSteps
@@ -37,10 +35,9 @@ public struct NumiLabReplayCheckpointStep: Equatable, Sendable {
   }
 }
 
-/// Deterministic owner-verified checkpoint for the current NumiLab rollout
-/// ABI. Exact restore is replay from a fresh rollout with the same immutable
-/// CompiledRun identity, followed by native resident-state digest equality at
-/// every accepted boundary. Partial q/v reconstruction is never accepted.
+/// Deterministic physical checkpoint by exact replay, not an O(1) resident snapshot.
+/// Each restored boundary must match the native continuation-state digest.
+/// This does not serialize the external RunManifest or prove Brain root acceptance.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabReplayCheckpoint: Equatable, Sendable {
@@ -49,110 +46,87 @@ public struct NumiLabReplayCheckpoint: Equatable, Sendable {
   public let steps: [NumiLabReplayCheckpointStep]
 
   public init(origin: NumiLabLiveRolloutSnapshot) throws {
-    guard origin.identity.environmentCount == 1,
-      origin.submissionCount == 0,
-      origin.submittedControlSteps == 0,
-      origin.completedEnvironmentSteps == 0 else {
-      throw TissueError.transaction(
-        "NumiLab replay checkpoint must start at a fresh single-environment rollout"
-      )
+    guard origin.identity.environmentCount == 1, origin.submissionCount == 0,
+      origin.submittedControlSteps == 0, origin.completedEnvironmentSteps == 0 else {
+      throw TissueError.transaction("NumiLab replay checkpoint must start at a fresh single-environment rollout")
     }
     identity = origin.identity
     self.origin = origin
     steps = []
   }
 
-  private init(
-    identity: NumiLabLiveRolloutIdentity,
-    origin: NumiLabLiveRolloutSnapshot,
-    steps: [NumiLabReplayCheckpointStep]
-  ) {
+  private init(identity: NumiLabLiveRolloutIdentity, origin: NumiLabLiveRolloutSnapshot,
+    steps: [NumiLabReplayCheckpointStep]) {
     self.identity = identity
     self.origin = origin
     self.steps = steps
   }
 
-  public func appending(
-    _ executed: NumiLabExecutedPositionCandidate,
-    policyRevision: UInt64
-  ) throws -> NumiLabReplayCheckpoint {
+  /// A supplied revision is an assertion only. Omit it to retain the executed value.
+  public func appending(_ executed: NumiLabExecutedPositionCandidate,
+    policyRevision expectedPolicyRevision: UInt64? = nil) throws -> NumiLabReplayCheckpoint {
     guard executed.advanceReceipt.before.identity == identity,
-      executed.advanceReceipt.after.identity == identity,
-      executed.advanceReceipt.fullyAccepted else {
+      executed.advanceReceipt.after.identity == identity, executed.advanceReceipt.fullyAccepted else {
       throw TissueError.transaction("NumiLab replay candidate belongs to another rollout")
     }
-    let expectedBefore = steps.last.map { previous in
-      (previous.postSubmissionCount, previous.postSubmittedControlSteps,
-       previous.postCompletedEnvironmentSteps)
+    let expected = steps.last.map {
+      ($0.postSubmissionCount, $0.postSubmittedControlSteps, $0.postCompletedEnvironmentSteps)
     } ?? (origin.submissionCount, origin.submittedControlSteps, origin.completedEnvironmentSteps)
     let before = executed.advanceReceipt.before
-    guard before.submissionCount == expectedBefore.0,
-      before.submittedControlSteps == expectedBefore.1,
-      before.completedEnvironmentSteps == expectedBefore.2 else {
+    guard before.submissionCount == expected.0, before.submittedControlSteps == expected.1,
+      before.completedEnvironmentSteps == expected.2 else {
       throw TissueError.transaction("NumiLab replay journal is not contiguous")
     }
-    let step = try NumiLabReplayCheckpointStep(
-      executed: executed,
-      policyRevision: policyRevision
-    )
+    let step = try NumiLabReplayCheckpointStep(executed: executed, policyRevision: expectedPolicyRevision)
     return NumiLabReplayCheckpoint(identity: identity, origin: origin, steps: steps + [step])
   }
 
-  public var finalPhysicalStateFingerprint: UInt64? {
-    steps.last?.physicalStateFingerprint
-  }
+  public var finalPhysicalStateFingerprint: UInt64? { steps.last?.physicalStateFingerprint }
 
-  /// Replays into a caller-created fresh rollout. The caller owns creation
-  /// because the rollout handle intentionally does not expose or serialize its
-  /// manifest. Owner digest equality proves exact continuation after each step.
+  /// The caller supplies a fresh rollout with the same retained manifest/seed.
+  /// A failed replay quarantines that partially advanced world; it must be
+  /// disposed rather than published, reused, or represented as rolled back.
   @discardableResult
-  public func restore(
-    into rollout: NumiLabBorrowedTaskRollout
-  ) throws -> NumiLabLiveRolloutSnapshot {
-    let fresh = try rollout.snapshot()
-    guard fresh == origin else {
-      throw TissueError.transaction(
-        "NumiLab replay restore requires the exact fresh rollout origin"
-      )
-    }
-    var current = fresh
-    for step in steps {
-      let frame = try NumiLabPositionHostActionFrame(
-        replayNormalizedActions: step.normalizedActions,
-        liveRollout: identity
-      )
-      let advance = try rollout.advance(frame: frame, policyRevision: step.policyRevision)
-      guard advance.before == current,
-        advance.fullyAccepted,
-        advance.after.submissionCount == step.postSubmissionCount,
-        advance.after.submittedControlSteps == step.postSubmittedControlSteps,
-        advance.after.completedEnvironmentSteps == step.postCompletedEnvironmentSteps else {
-        throw TissueError.transaction("NumiLab replay restore diverged in rollout counters")
+  public func restore(into rollout: NumiLabBorrowedTaskRollout) throws -> NumiLabLiveRolloutSnapshot {
+    return try rollout.withExclusiveAccess {
+      let fresh = try rollout.snapshot()
+      guard fresh == origin else {
+        throw TissueError.transaction("NumiLab replay restore requires the exact fresh rollout origin")
       }
-      let fingerprint = try rollout.residentStateFingerprint()
-      let afterProof = try rollout.snapshot()
-      guard afterProof == advance.after,
-        fingerprint == step.physicalStateFingerprint else {
-        throw TissueError.transaction(
-          "NumiLab replay restore diverged from the recorded complete physical state"
-        )
+      var current = fresh
+      do {
+        for step in steps {
+          let frame = try NumiLabPositionHostActionFrame(replayNormalizedActions: step.normalizedActions,
+            liveRollout: identity)
+          let advance = try rollout.advance(frame: frame, policyRevision: step.policyRevision)
+          guard advance.before == current, advance.fullyAccepted,
+            advance.policyRevision == step.policyRevision,
+            advance.after.submissionCount == step.postSubmissionCount,
+            advance.after.submittedControlSteps == step.postSubmittedControlSteps,
+            advance.after.completedEnvironmentSteps == step.postCompletedEnvironmentSteps else {
+            throw TissueError.transaction("NumiLab replay restore diverged in rollout counters")
+          }
+          let fingerprint = try rollout.residentStateFingerprint()
+          let afterProof = try rollout.snapshot()
+          guard afterProof == advance.after, fingerprint == step.physicalStateFingerprint else {
+            throw TissueError.transaction("NumiLab replay restore diverged from the recorded complete physical state")
+          }
+          current = afterProof
+        }
+        return current
+      } catch {
+        rollout.quarantine(after: error)
+        throw error
       }
-      current = afterProof
     }
-    return current
   }
 }
 
 @available(macOS 26.0, *)
 extension NumiLabPositionHostActionFrame {
-  fileprivate init(
-    replayNormalizedActions actions: [Float],
-    liveRollout: NumiLabLiveRolloutIdentity
-  ) throws {
-    guard liveRollout.environmentCount == 1,
-      actions.count == Int(liveRollout.actionCount),
-      !actions.isEmpty,
-      actions.allSatisfy(\.isFinite) else {
+  fileprivate init(replayNormalizedActions actions: [Float], liveRollout: NumiLabLiveRolloutIdentity) throws {
+    guard liveRollout.environmentCount == 1, actions.count == Int(liveRollout.actionCount),
+      !actions.isEmpty, actions.allSatisfy(\.isFinite) else {
       throw TissueError.transaction("NumiLab replay action frame is malformed")
     }
     controlStepCount = 1
