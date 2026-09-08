@@ -44,6 +44,22 @@ do {
       "bindingFingerprint": String(format: "%016llx", program.binding.fingerprint),
       "actuators": program.actuatorCount, "channels": program.binding.channelCount,
       "qualification": "unqualified; structural validation only"]
+  } else if command == "import-numilab-topology", args.count == 5 {
+    let url = URL(fileURLWithPath: args[1])
+    guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+      size > 0, size <= 16_777_216,
+      let model = UInt64(args[4], radix: 16), model != 0 else {
+      throw ConnectomeError.invalid("invalid robot import size or physical-owner model fingerprint")
+    }
+    let imported = try NumiLabRobotInterface(data: Data(contentsOf: url),
+      expectedSHA256: args[2], expectedNativeRevision: args[3])
+    let topology = try imported.jointTopologyCatalog(numanXModelFingerprint: model)
+    result = ["robotID": imported.robotID, "sourceSHA256": imported.contentSHA256,
+      "nativeRepositoryRevision": imported.nativeRepositoryRevision,
+      "bodyNames": imported.bodyNames, "jointNames": imported.jointNames,
+      "topology": try JSONSerialization.jsonObject(with: JSONEncoder().encode(topology)),
+      "actuators": try JSONSerialization.jsonObject(with: JSONEncoder().encode(imported.actuators)),
+      "scope": "structural import only; physical-owner fingerprint supplied by caller; no sensor or actuator runtime admission"]
   } else if command == "catalog", args.count == 3 {
     let graph = try ConnectomeGraph(contentsOf: URL(fileURLWithPath: args[1]))
     let target = URL(fileURLWithPath: args[2])
@@ -59,7 +75,7 @@ do {
     try data.write(to: target, options: [.atomic])
     result = ["nodes": graph.nodeCount, "catalog": target.path]
   } else {
-    throw ConnectomeError.invalid("usage: inspect GRAPH | catalog GRAPH OUTPUT.jsonl | validate-controller GRAPH SPEC.json BODY.json PARAMETER_HEX | audit-controller GRAPH SPEC.json BODY.json PARAMETER_HEX")
+    throw ConnectomeError.invalid("usage: import-numilab-topology ROBOT.json SHA256 NATIVE_REVISION OWNER_MODEL_HEX | inspect GRAPH | catalog GRAPH OUTPUT.jsonl | validate-controller GRAPH SPEC.json BODY.json PARAMETER_HEX | audit-controller GRAPH SPEC.json BODY.json PARAMETER_HEX")
   }
   let json = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
   FileHandle.standardOutput.write(json); FileHandle.standardOutput.write(Data([10]))

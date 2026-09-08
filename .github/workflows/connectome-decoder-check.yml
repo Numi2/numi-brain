@@ -2,7 +2,7 @@ name: Connectome checked-out source and learning
 on:
   push:
     branches: [main]
-    paths: ['Sources/**', 'Tests/**', 'Package.swift', 'tools/*connectome*', '.github/workflows/connectome-decoder-check.yml']
+    paths: ['Sources/**', 'Tests/**', 'Package.swift', 'tools/*connectome*', 'tools/*numilab*', '.github/workflows/connectome-decoder-check.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -39,6 +39,20 @@ jobs:
           /tmp/numi-connectome-check/bin/python tools/test_connectome_audit.py 2>&1 | tee diagnostics/connectivity-tests.txt
           /tmp/numi-connectome-check/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
           /tmp/numi-connectome-check/bin/python tools/test_connectome_release.py 2>&1 | tee diagnostics/data-tests.txt
+      - uses: actions/checkout@v4
+        with:
+          repository: Numi2/numi-lab
+          ref: 68f5aa441a8437426de193a5c9beeac5a78113b6
+          path: .build/numilab-source
+          persist-credentials: false
+          sparse-checkout: |
+            include
+            src/core
+      - name: Export actual native robot frames and actuator interfaces
+        run: |
+          set -euo pipefail
+          python3 tools/export_numilab_robot.py --numilab .build/numilab-source --output-dir .build/numilab-interfaces | tee diagnostics/robot-import.json
+          cp .build/numilab-interfaces/*.json diagnostics/
       - name: Build every package target and test target without source reconstruction
         run: |
           set -euo pipefail
@@ -46,10 +60,11 @@ jobs:
           sh tools/build_swiftpm_mlx_metallib.sh release 2>&1 | tee diagnostics/mlx-library.txt
       - name: Exercise graph, body, decoder and full-data shader tests
         env:
+          NUMIBRAIN_NUMILAB_INTERFACES: ${{ github.workspace }}/.build/numilab-interfaces
           NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
           set -euo pipefail
-          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          swift test -c release --skip-build --filter 'NumiLabRobotInterfaceTests|ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
           grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
           git diff --exit-code
           printf '%s\n' 'Full package build and selected source/shader/learner checks. Production Metal 4 roots and physical tasks are not qualified.' > diagnostics/scope.txt
