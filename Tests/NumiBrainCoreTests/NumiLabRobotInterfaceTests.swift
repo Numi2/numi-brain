@@ -84,7 +84,7 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
     guard let directory = ProcessInfo.processInfo.environment["NUMIBRAIN_NUMILAB_INTERFACES"] else {
       throw XCTSkip("native C++ asset export directory is not configured")
     }
-    let nativeRevision = "68f5aa441a8437426de193a5c9beeac5a78113b6"
+    let nativeRevision = "5db0c5aa169bfe1270ef7448e01dd7fbcd99d123"
     for (id, bodies, joints, actuators) in [("franka_panda",11,10,9), ("unitree_g1",30,29,29), ("px4_x500",1,0,4)] {
       let data = try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(id+".json"))
       let imported = try NumiLabRobotInterface(data: data,
@@ -93,7 +93,7 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
       XCTAssertEqual(imported.bodyNames.count, bodies)
       XCTAssertEqual(imported.joints.count, joints)
       XCTAssertEqual(imported.actuators.count, actuators)
-      let catalog = try imported.jointTopologyCatalog(numanXModelFingerprint: 1) // structural test identity only
+      let catalog = try imported.jointTopologyCatalog(numanXModelFingerprint: 1)
       XCTAssertEqual(catalog.joints.count, joints)
       if id == "px4_x500" {
         XCTAssertTrue(imported.actuators.allSatisfy { $0.kind == .rotorMixer })
@@ -106,7 +106,6 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
         let rest = Dictionary(uniqueKeysWithValues: imported.actuators.map { a in
           (a.id, imported.joints[imported.jointNames.firstIndex(of: a.target)!].coordinates[Int(a.component)].restPosition)
         })
-        // Test values only; this does not declare these rest commands safe for deployment.
         XCTAssertEqual(try imported.positionChannels(neutralCommands: rest, emergencyCommands: rest).count, actuators)
       }
     }
