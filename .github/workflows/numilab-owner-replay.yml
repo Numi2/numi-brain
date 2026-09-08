@@ -1,0 +1,59 @@
+name: NumiLab real physical owner replay
+on:
+  push:
+    branches: [main]
+    paths: ['Sources/NumiBrainNumiLabBridgeABI/**', 'tools/numilab_owner_replay_check.cpp', '.github/workflows/numilab-owner-replay.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: numilab-owner-replay-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native-physics:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Numi2/numi-lab
+          ref: 4a369ca846fde93016f3708f3fd9386c992b52a4
+          path: native-owner
+          persist-credentials: false
+      - name: Record source and toolchain
+        run: |
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/brain-revision.txt
+          git -C native-owner rev-parse HEAD > diagnostics/native-revision.txt
+          sw_vers > diagnostics/host.txt
+          xcodebuild -version >> diagnostics/host.txt
+      - name: Build actual native physical owner
+        run: |
+          set -euo pipefail
+          cmake -S native-owner -B native-owner/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build native-owner/build --target metalrobo -j 4 2>&1 | tee diagnostics/native-build.txt
+      - name: Build and execute the real owner replay check
+        run: |
+          set -euo pipefail
+          library="$PWD/native-owner/build/libmetalrobo.dylib"
+          metallib="$PWD/native-owner/build/shaders/MetalRobo.metallib"
+          test -f "$library"
+          test -f "$metallib"
+          shasum -a 256 "$library" "$metallib" > diagnostics/native-binaries.sha256
+          clang -std=c11 -Wall -Wextra -Wpedantic -Werror -c Sources/NumiBrainNumiLabBridgeABI/NumiBrainNumiLabBridgeABI.c -I Sources/NumiBrainNumiLabBridgeABI/include -o diagnostics/bridge.o
+          clang++ -std=c++20 -Wall -Wextra -Wpedantic -Werror tools/numilab_owner_replay_check.cpp diagnostics/bridge.o -I Sources/NumiBrainNumiLabBridgeABI/include -I native-owner/include "$library" -Wl,-rpath,"$PWD/native-owner/build" -o diagnostics/native-replay
+          diagnostics/native-replay "$library" "$metallib" 2>&1 | tee diagnostics/replay.txt
+          test "$(grep -c '^NUMILAB_NATIVE_REPLAY ' diagnostics/replay.txt)" = 3
+          git diff --exit-code
+          git -C native-owner diff --exit-code
+          printf '%s\n' 'Real pinned NumiLab physics and C bridge, four accepted steps in each original/replay/altered run. No neural controller, Brain joint publication, learned behavior or hardware admission.' > diagnostics/scope.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: numilab-owner-replay-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 30
+          if-no-files-found: error
