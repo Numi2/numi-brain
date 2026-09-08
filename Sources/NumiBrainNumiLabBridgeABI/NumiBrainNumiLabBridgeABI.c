@@ -82,11 +82,15 @@ typedef struct MRTaskRolloutLayoutC {
   double total_submission_milliseconds;
 } MRTaskRolloutLayoutC;
 
+typedef NBNumiLabActionBindingV1 MRTaskActionBindingC;
 typedef MRTaskRolloutLayoutC (*layout_fn)(const void*);
 typedef int (*advance_fn)(
   void*, const float*, size_t, const uint32_t*, size_t, uint32_t,
   uint64_t, uint32_t, MRTaskRolloutAdvanceC*
 );
+typedef size_t (*action_binding_count_fn)(const void*);
+typedef int (*copy_action_bindings_fn)(const void*, MRTaskActionBindingC*, size_t);
+typedef uint64_t (*resident_state_fingerprint_fn)(void*);
 typedef const char* (*last_error_fn)(void);
 
 struct NBNumiLabBorrowedRollout {
@@ -94,6 +98,9 @@ struct NBNumiLabBorrowedRollout {
   void* rollout;
   layout_fn layout;
   advance_fn advance;
+  action_binding_count_fn action_binding_count;
+  copy_action_bindings_fn copy_action_bindings;
+  resident_state_fingerprint_fn resident_state_fingerprint;
   last_error_fn last_error;
   char error[512];
 };
@@ -135,19 +142,28 @@ NBNumiLabBorrowedRollout* nb_numilab_borrowed_rollout_open(
   bridge->rollout = rollout_handle;
   bridge->layout = (layout_fn)dlsym(library, "mr_task_rollout_layout");
   bridge->advance = (advance_fn)dlsym(library, "mr_task_rollout_advance");
+  bridge->action_binding_count = (action_binding_count_fn)dlsym(
+    library, "mr_task_rollout_action_binding_count");
+  bridge->copy_action_bindings = (copy_action_bindings_fn)dlsym(
+    library, "mr_task_rollout_copy_action_bindings");
+  bridge->resident_state_fingerprint = (resident_state_fingerprint_fn)dlsym(
+    library, "mr_task_rollout_resident_state_fingerprint");
   bridge->last_error = (last_error_fn)dlsym(library, "mr_last_error");
-  if (bridge->layout == NULL || bridge->advance == NULL || bridge->last_error == NULL) {
-    set_error(bridge, "NumiLab rollout ABI symbols are missing");
+  if (bridge->layout == NULL || bridge->advance == NULL ||
+      bridge->action_binding_count == NULL || bridge->copy_action_bindings == NULL ||
+      bridge->resident_state_fingerprint == NULL || bridge->last_error == NULL) {
+    set_error(bridge, "NumiLab physical-owner ABI symbols are missing");
     copy_error(error_buffer, error_buffer_count, bridge->error);
     nb_numilab_borrowed_rollout_destroy(bridge);
     return NULL;
   }
   MRTaskRolloutLayoutC layout = bridge->layout(bridge->rollout);
+  const size_t binding_count = bridge->action_binding_count(bridge->rollout);
   if (layout.environment_count == 0 || layout.action_count == 0 ||
       layout.run_fingerprint == 0 || layout.world_fingerprint == 0 ||
       layout.task_fingerprint == 0 || layout.action_fingerprint == 0 ||
-      layout.robot_fingerprint == 0) {
-    set_error(bridge, "borrowed NumiLab rollout returned an invalid identity");
+      layout.robot_fingerprint == 0 || binding_count != layout.action_count) {
+    set_error(bridge, "borrowed NumiLab rollout returned an invalid physical-owner identity");
     copy_error(error_buffer, error_buffer_count, bridge->error);
     nb_numilab_borrowed_rollout_destroy(bridge);
     return NULL;
@@ -171,7 +187,8 @@ int nb_numilab_borrowed_rollout_identity(
   if (value.environment_count == 0 || value.action_count == 0 ||
       value.run_fingerprint == 0 || value.world_fingerprint == 0 ||
       value.task_fingerprint == 0 || value.action_fingerprint == 0 ||
-      value.robot_fingerprint == 0) {
+      value.robot_fingerprint == 0 ||
+      bridge->action_binding_count(bridge->rollout) != value.action_count) {
     set_error(bridge, "live NumiLab rollout identity became invalid");
     return -2;
   }
@@ -189,6 +206,47 @@ int nb_numilab_borrowed_rollout_identity(
   return 0;
 }
 
+size_t nb_numilab_borrowed_rollout_action_binding_count(
+  NBNumiLabBorrowedRollout* bridge
+) {
+  if (bridge == NULL || bridge->action_binding_count == NULL) return 0;
+  return bridge->action_binding_count(bridge->rollout);
+}
+
+int nb_numilab_borrowed_rollout_copy_action_bindings(
+  NBNumiLabBorrowedRollout* bridge,
+  NBNumiLabActionBindingV1* output,
+  size_t output_count
+) {
+  if (bridge == NULL || output == NULL || bridge->copy_action_bindings == NULL) return -1;
+  const size_t expected = bridge->action_binding_count(bridge->rollout);
+  if (expected == 0 || output_count != expected) {
+    set_error(bridge, "NumiLab action-binding output count is not exact");
+    return -2;
+  }
+  const int status = bridge->copy_action_bindings(
+    bridge->rollout, (MRTaskActionBindingC*)output, output_count);
+  if (status != 0) {
+    set_error(bridge, "NumiLab failed to copy compiled action bindings");
+    return status;
+  }
+  for (size_t index = 0; index < output_count; ++index) {
+    if (output[index].action_index != index) {
+      set_error(bridge, "NumiLab compiled action binding order is not canonical");
+      return -3;
+    }
+  }
+  bridge->error[0] = '\0';
+  return 0;
+}
+
+uint64_t nb_numilab_borrowed_rollout_resident_state_fingerprint(
+  NBNumiLabBorrowedRollout* bridge
+) {
+  if (bridge == NULL || bridge->resident_state_fingerprint == NULL) return 0;
+  return bridge->resident_state_fingerprint(bridge->rollout);
+}
+
 int nb_numilab_borrowed_rollout_advance(
   NBNumiLabBorrowedRollout* bridge,
   const float* normalized_actions,
@@ -199,8 +257,9 @@ int nb_numilab_borrowed_rollout_advance(
   if (bridge == NULL || output == NULL || normalized_actions == NULL ||
       normalized_action_count == 0 || bridge->advance == NULL) return -1;
   MRTaskRolloutLayoutC before = bridge->layout(bridge->rollout);
-  if (before.environment_count != 1 || before.action_count != normalized_action_count) {
-    set_error(bridge, "compatibility advance requires one environment and one exact action frame");
+  if (before.environment_count != 1 || before.action_count != normalized_action_count ||
+      bridge->action_binding_count(bridge->rollout) != normalized_action_count) {
+    set_error(bridge, "compatibility advance requires one environment and one exact compiled action frame");
     return -2;
   }
   MRTaskRolloutAdvanceC native = {0};
@@ -227,8 +286,9 @@ int nb_numilab_borrowed_rollout_advance(
       after.action_fingerprint != before.action_fingerprint ||
       after.robot_fingerprint != before.robot_fingerprint ||
       after.submission_count != before.submission_count + 1 ||
-      after.submitted_control_steps != before.submitted_control_steps + 1) {
-    set_error(bridge, "NumiLab rollout identity or submission counters drifted during advance");
+      after.submitted_control_steps != before.submitted_control_steps + 1 ||
+      bridge->action_binding_count(bridge->rollout) != normalized_action_count) {
+    set_error(bridge, "NumiLab rollout identity, bindings, or submission counters drifted during advance");
     return -3;
   }
   output->control_step_count = native.control_step_count;
