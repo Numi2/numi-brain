@@ -2,7 +2,7 @@ name: NumiLab real physical owner replay
 on:
   push:
     branches: [main]
-    paths: ['Sources/NumiBrainNumiLabBridgeABI/**', 'tools/numilab_owner_replay_check.cpp', '.github/workflows/numilab-owner-replay.yml']
+    paths: ['Sources/NumiBrainNumiLabBridgeABI/**', 'tools/numilab_owner_replay_check.cpp', 'tools/numilab_pipeline_probe.mm', '.github/workflows/numilab-owner-replay.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -50,6 +50,22 @@ jobs:
           git diff --exit-code
           git -C native-owner diff --exit-code
           printf '%s\n' 'Real pinned NumiLab physics and C bridge, four accepted steps in each original/replay/altered run. No neural controller, Brain joint publication, learned behavior or hardware admission.' > diagnostics/scope.txt
+      - name: Diagnose exact native kernels after an execution failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          source = Path('native-owner/src/metal/MetalWorld.mm').read_text()
+          begin = source.index('MetalWorldDiagnostics initializeContext(')
+          end = source.index('std::size_t growthCapacity(', begin)
+          names = sorted(set(re.findall(r'@"(mr_[a-z0-9_]+)"', source[begin:end])))
+          assert 0 < len(names) <= 256
+          Path('diagnostics/required-kernels.txt').write_text('\n'.join(names)+'\n')
+          PY
+          clang++ -std=c++20 -fobjc-arc -Wall -Wextra -Wpedantic -Werror tools/numilab_pipeline_probe.mm -framework Foundation -framework Metal -o diagnostics/pipeline-probe 2>&1 | tee diagnostics/probe-build.txt
+          diagnostics/pipeline-probe native-owner/build/shaders/MetalRobo.metallib diagnostics/required-kernels.txt 2>&1 | tee diagnostics/pipelines.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
