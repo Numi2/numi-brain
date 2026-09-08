@@ -1,7 +1,7 @@
 import Foundation
 import NumiBrainConnectomeABI
 
-public struct ConnectomeReceptorProjection: Codable, Sendable {
+public struct ConnectomeReceptorProjection: Codable, Equatable, Sendable {
   public let neuronIdentifier: UInt64
   public let modality: SensoryModality
   public let receptorIndex: UInt32
@@ -18,7 +18,7 @@ public struct ConnectomeReceptorProjection: Codable, Sendable {
     self.weight = weight; self.scale = scale; self.bias = bias; self.clip = clip
   }
 }
-public struct ConnectomeDescendingProjection: Codable, Sendable {
+public struct ConnectomeDescendingProjection: Codable, Equatable, Sendable {
   public let neuronIdentifier: UInt64
   public let channel: UInt32
   public let weight: Float

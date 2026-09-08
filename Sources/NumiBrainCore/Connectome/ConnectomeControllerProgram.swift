@@ -4,7 +4,7 @@ import NumiBrainConnectomeABI
 /// Portable, body-specific controller input. Decoding this value confers no
 /// runtime authority: compile it against the exact graph and compiled species.
 /// The recurrent connectome is frozen; weights are actuator-major readout logits.
-public struct ConnectomeControllerSpec: Codable, Sendable {
+public struct ConnectomeControllerSpec: Codable, Equatable, Sendable {
   public static let currentVersion: UInt32 = 1
   public let version: UInt32
   public let graphFingerprint: UInt64
