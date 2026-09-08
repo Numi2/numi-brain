@@ -33,10 +33,10 @@ public struct NumiLabExecutedPositionCandidate: Sendable {
 
 /// Ordered compatibility execution of one position-command candidate.
 ///
-/// This function deliberately stops after producing the canonical accepted
-/// physics token. It never calls Brain commit APIs. The caller must pass the
-/// returned token to the already-existing joint transaction, which preserves
-/// the sole authoritative accept/commit/abort ordering.
+/// The complete physical-state proof is read directly from NumiLab's accepted
+/// resident arena after the exact advance. No application callback may supply
+/// or substitute state identity. This function still stops before Brain commit;
+/// the existing joint transaction remains the sole accept/commit/abort owner.
 @available(macOS 26.0, *)
 public enum NumiLabPositionPhysicalExecutor {
   public static func execute(
@@ -46,8 +46,7 @@ public enum NumiLabPositionPhysicalExecutor {
     transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken,
     rollout: NumiLabBorrowedTaskRollout,
-    policyRevision: UInt64 = 0,
-    physicalStateProof: (NumiLabLiveRolloutSnapshot) throws -> NumiLabPhysicalOwnerStateProof
+    policyRevision: UInt64 = 0
   ) throws -> NumiLabExecutedPositionCandidate {
     let before = try rollout.snapshot()
     try submission.validate(
@@ -69,12 +68,22 @@ public enum NumiLabPositionPhysicalExecutor {
         "NumiLab execution receipt is not the admitted pre-advance rollout"
       )
     }
-    let proof = try physicalStateProof(advance.after)
-    guard proof.liveRollout == advance.after else {
+    let physicalStateFingerprint = try rollout.residentStateFingerprint()
+    let liveAfterProof = try rollout.snapshot()
+    guard liveAfterProof == advance.after else {
       throw TissueError.transaction(
-        "NumiLab physical state proof belongs to a different post-advance rollout"
+        "NumiLab resident-state fingerprint was not captured at the accepted rollout boundary"
       )
     }
+    let (physicsGeneration, overflow) = transaction.basePhysicsGeneration.addingReportingOverflow(1)
+    guard !overflow else {
+      throw TissueError.transaction("NumiLab accepted physics generation overflow")
+    }
+    let proof = try NumiLabPhysicalOwnerStateProof(
+      liveRollout: liveAfterProof,
+      physicalStateFingerprint: physicalStateFingerprint,
+      physicsGeneration: physicsGeneration
+    )
     let receipt = try NumiLabAcceptedPhysicsReceipt(
       submission: submission,
       transaction: transaction,
