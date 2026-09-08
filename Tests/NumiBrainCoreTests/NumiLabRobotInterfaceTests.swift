@@ -84,7 +84,7 @@ final class NumiLabRobotInterfaceTests: XCTestCase {
     guard let directory = ProcessInfo.processInfo.environment["NUMIBRAIN_NUMILAB_INTERFACES"] else {
       throw XCTSkip("native C++ asset export directory is not configured")
     }
-    let nativeRevision = "5db0c5aa169bfe1270ef7448e01dd7fbcd99d123"
+    let nativeRevision = "4a369ca846fde93016f3708f3fd9386c992b52a4"
     for (id, bodies, joints, actuators) in [("franka_panda",11,10,9), ("unitree_g1",30,29,29), ("px4_x500",1,0,4)] {
       let data = try Data(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent(id+".json"))
       let imported = try NumiLabRobotInterface(data: data,
