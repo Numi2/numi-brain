@@ -1,0 +1,152 @@
+diff --git a/Sources/NumiBrainCore/Species/SpeciesTemplate.swift b/Sources/NumiBrainCore/Species/SpeciesTemplate.swift
+--- a/Sources/NumiBrainCore/Species/SpeciesTemplate.swift
++++ b/Sources/NumiBrainCore/Species/SpeciesTemplate.swift
+@@ -30,7 +30,8 @@
+     actuatorCount: UInt32,
+     morphologyCode: UInt64
+   ) throws {
+-    guard bodyCount > 1, jointCount > 0, jointTopologyFingerprint > 0,
++    guard bodyCount > 0, jointTopologyFingerprint > 0,
++      jointCount == bodyCount - 1,
+       (muscleCount == 0) == (muscleAttachmentFingerprint == 0),
+       skinSurfaceCount > 0,
+       actuatorCount > 0, morphologyCode > 0
+ diff --git a/Sources/NumiBrainCore/Belief/NumanXJointTopologyCatalog.swift b/Sources/NumiBrainCore/Belief/NumanXJointTopologyCatalog.swift
+--- a/Sources/NumiBrainCore/Belief/NumanXJointTopologyCatalog.swift
++++ b/Sources/NumiBrainCore/Belief/NumanXJointTopologyCatalog.swift
+@@ -196,7 +196,7 @@
+     bodyCount: UInt32,
+     joints: [NumanXJointTopology]
+   ) throws {
+-    guard numanXModelFingerprint > 0, bodyCount > 1, !joints.isEmpty else {
++    guard numanXModelFingerprint > 0, bodyCount > 0 else {
+       throw BrainRuntimeError.invalidDescriptor(
+         "NumanX joint topology catalog identity is incomplete"
+       )
+ diff --git a/Sources/NumiBrainMetal/MetalAgentStateArena.swift b/Sources/NumiBrainMetal/MetalAgentStateArena.swift
+--- a/Sources/NumiBrainMetal/MetalAgentStateArena.swift
++++ b/Sources/NumiBrainMetal/MetalAgentStateArena.swift
+@@ -125,7 +125,8 @@
+     elementCount: Int,
+     elementStride: Int
+   ) throws {
+-    guard byteOffset >= 0, byteCount > 0, elementCount > 0, elementStride > 0,
++    guard byteOffset >= 0, byteCount > 0, elementCount >= 0, elementStride > 0,
++      byteCount >= elementStride,
+       elementCount <= byteCount / elementStride
+     else {
+       throw BrainRuntimeError.capacity("Metal arena section layout is invalid")
+@@ -484,7 +485,8 @@
+     try builder.append(
+       .jointBelief,
+       count: Int(species.body.jointCount),
+-      stride: Self.jointBeliefStride
++      stride: Self.jointBeliefStride,
++      allowEmpty: true
+     )
+     var hash: UInt64 = 14_695_981_039_346_656_037
+     Self.mix(species.fingerprint, into: &hash)
+@@ -766,16 +768,15 @@
+   private(set) var sections: [MetalArenaSectionLayout<Section>] = []
+   private(set) var totalByteCount = 0
+ 
+-  mutating func append(_ section: Section, count: Int, stride: Int) throws {
+-    guard count > 0, stride > 0 else {
+-      throw BrainRuntimeError.capacity("Metal arena section count must be positive")
+-    }
+-    let alignedOffset = (totalByteCount + 255) & ~255
+-    let (rawBytes, overflow) = count.multipliedReportingOverflow(by: stride)
+-    guard !overflow else {
+-      throw BrainRuntimeError.capacity("Metal arena section size overflows Int")
+-    }
+-    let alignedBytes = (rawBytes + 255) & ~255
++  mutating func append(_ section: Section, count: Int, stride: Int, allowEmpty: Bool = false) throws {
++    guard count >= 0, (count > 0 || allowEmpty), stride > 0 else {
++      throw BrainRuntimeError.capacity("Metal arena section count is invalid")
++    }
++    let alignedOffset = try MetalAgentStateLayout.checkedAdd(totalByteCount, 255) & ~255
++    // Reserve bindable padding for absent optional state, but preserve a
++    // logical count of zero. Padding never becomes an anatomical joint.
++    let rawBytes = try MetalAgentStateLayout.checkedMultiply(max(count, 1), stride)
++    let alignedBytes = try MetalAgentStateLayout.checkedAdd(rawBytes, 255) & ~255
+     sections.append(
+       try MetalArenaSectionLayout(
+         section: section,
+ diff --git a/Sources/NumiBrainMetal/MetalMemoryRuntime.swift b/Sources/NumiBrainMetal/MetalMemoryRuntime.swift
+--- a/Sources/NumiBrainMetal/MetalMemoryRuntime.swift
++++ b/Sources/NumiBrainMetal/MetalMemoryRuntime.swift
+@@ -749,7 +749,6 @@
+       acceptedAutonomic.elementCount, acceptedActiveSensing.elementCount,
+       internalActions.elementCount,
+       bodyBelief.elementCount,
+-      jointBelief.elementCount,
+       muscleBelief.elementCount,
+       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
+       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
+@@ -761,6 +760,7 @@
+       $0.modality.rawValue < $1.modality.rawValue
+     }
+     guard observationValidity.elementCount == observations.elementCount,
++      jointBelief.elementCount >= 0, jointBelief.elementCount <= Int(UInt32.max),
+       counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
+       [objectSlots, otherAgentSlots, relationSlots, spatialTransforms]
+         .allSatisfy({ $0.elementCount <= Int(UInt32.max) }),
+ diff --git a/Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift b/Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift
+--- a/Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift
++++ b/Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift
+@@ -1210,12 +1210,14 @@
+       )
+     )
+     barrier(encoder)
+-    dispatch(
+-      encoder,
+-      pipeline: pipelines[10],
+-      count: Int(species.body.jointCount)
+-    )
+-    barrier(encoder)
++    if species.body.jointCount > 0 {
++      dispatch(
++        encoder,
++        pipeline: pipelines[10],
++        count: Int(species.body.jointCount)
++      )
++      barrier(encoder)
++    }
+     dispatch(encoder, pipeline: pipelines[12], count: 1)
+     barrier(encoder)
+     if species.body.muscleCount > 0 {
+ diff --git a/Sources/NumiBrainMetal/MetalJointAgentStateTransaction.swift b/Sources/NumiBrainMetal/MetalJointAgentStateTransaction.swift
+--- a/Sources/NumiBrainMetal/MetalJointAgentStateTransaction.swift
++++ b/Sources/NumiBrainMetal/MetalJointAgentStateTransaction.swift
+@@ -62,6 +62,8 @@
+     encoder: any MTL4ComputeCommandEncoder,
+     sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalConnectomeRuntime.DescendingView {
+     lock.lock(); defer { lock.unlock() }; try require(.open)
++    try Self.validateConnectomeSpecies(binding: connectome.binding,
++      ownerSpeciesFingerprint: runtime.arena.layout.speciesTemplateFingerprint)
+     if let candidate = connectomeCandidate {
+       guard candidate.owner === connectome else {
+         throw ConnectomeError.invalid("a root cannot replace its connectome participant on retry")
+@@ -199,6 +201,8 @@
+       throw ConnectomeError.invalid("prepared recovery must supply the exact optional neural participant")
+     }
+     if let neural = image.connectomeState, let connectome {
++      try validateConnectomeSpecies(binding: connectome.binding,
++        ownerSpeciesFingerprint: runtime.arena.layout.speciesTemplateFingerprint)
+       try connectome.validatePrepared(neural, root: root)
+     }
+     try runtime.restoreRecoveryImage(MetalAgentStateRecoveryImage(generation: root.baseBrainGeneration,
+@@ -273,6 +277,13 @@
+     acceptedPhysicsFingerprint = nil; preparedGPUStateFinish = nil
+     preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .aborted
+   }
++  static func validateConnectomeSpecies(binding: ConnectomeBinding,
++    ownerSpeciesFingerprint: UInt64) throws {
++    guard ownerSpeciesFingerprint > 0, binding.speciesFingerprint == ownerSpeciesFingerprint else {
++      throw ConnectomeError.invalid("connectome participant belongs to a different species/body than the owning root")
++    }
++  }
++
+   private func require(_ expected: Status) throws {
+     guard currentStatus == expected else {
+       throw TissueError.transaction("joint brain-state transaction is \(currentStatus), expected \(expected)")
