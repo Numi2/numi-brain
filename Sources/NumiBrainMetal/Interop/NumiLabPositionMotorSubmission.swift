@@ -55,7 +55,7 @@ public struct NumiLabPositionMotorSubmission: Sendable {
     var mapped: [Lane] = []
     mapped.reserveCapacity(encoder.lanes.count)
     for (index, lane) in encoder.lanes.enumerated() {
-      guard lane.normalizedScale.isFinite, lane.normalizedScale > 0,
+      guard lane.nativeScale.isFinite, lane.nativeScale > 0,
         lane.minimumPosition.isFinite, lane.maximumPosition.isFinite,
         lane.minimumPosition <= lane.restPosition,
         lane.restPosition <= lane.maximumPosition else {
