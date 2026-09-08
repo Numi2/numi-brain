@@ -9,7 +9,7 @@ permissions:
   actions: read
 concurrency:
   group: connectome-source-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   apple-source-and-learning:
     runs-on: macos-latest
@@ -46,6 +46,7 @@ jobs:
           python3 -m venv /tmp/numi-connectome-check
           /tmp/numi-connectome-check/bin/python -m pip install numpy pyarrow
           /tmp/numi-connectome-check/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+          /tmp/numi-connectome-check/bin/python tools/test_connectome_audit.py 2>&1 | tee diagnostics/connectivity-tests.txt
           /tmp/numi-connectome-check/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
       - name: Build every package target and test target without source reconstruction
         run: |
@@ -57,7 +58,7 @@ jobs:
           NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
           set -euo pipefail
-          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeGraphTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
           grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
           git diff --exit-code
           printf '%s\n' 'Full package build and selected source/shader/learner checks. Production Metal 4 roots and physical tasks are not qualified.' > diagnostics/scope.txt

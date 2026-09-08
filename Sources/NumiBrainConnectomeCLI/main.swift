@@ -14,7 +14,7 @@ do {
       "bytes": graph.bytes.count,
       "manifest": try JSONSerialization.jsonObject(with: Data(graph.manifestJSON.utf8)),
       "runtimeQualification": "not established by inspection"]
-  } else if command == "validate-controller", args.count == 5 {
+  } else if (command == "validate-controller" || command == "audit-controller"), args.count == 5 {
     let graph = try ConnectomeGraph(contentsOf: URL(fileURLWithPath: args[1]))
     let spec = try ConnectomeControllerSpec.read(from: URL(fileURLWithPath: args[2]))
     let bodyURL = URL(fileURLWithPath: args[3])
@@ -26,7 +26,21 @@ do {
     let template = try JSONDecoder().decode(CompiledSpeciesTemplate.self, from: Data(contentsOf: bodyURL))
     let program = try ConnectomeControllerProgram(graph: graph, spec: spec,
       template: template, parameterVersionFingerprint: version)
-    result = ["programFingerprint": String(format: "%016llx", program.programFingerprint),
+    let audit = try ConnectomeConnectivityAudit(graph: program.graph, binding: program.binding)
+    let undrivenActuators = (0..<Int(program.actuatorCount)).filter { actuator in
+      !(0..<Int(program.binding.channelCount)).contains { channel in
+        audit.channelHopsFromInput[channel] != nil &&
+          spec.decoderWeights[actuator * Int(program.binding.channelCount) + channel] != 0
+      }
+    }
+    if command == "audit-controller" {
+      try audit.requireAllChannelsReachable()
+      guard undrivenActuators.isEmpty else {
+        throw ConnectomeError.invalid("decoder has no sensory path to actuator rows \(undrivenActuators)")
+      }
+    }
+    let auditJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(audit))
+    result = ["connectivity": auditJSON, "undrivenActuators": undrivenActuators, "allChannelsReachable": audit.allChannelsReachable, "programFingerprint": String(format: "%016llx", program.programFingerprint),
       "bindingFingerprint": String(format: "%016llx", program.binding.fingerprint),
       "actuators": program.actuatorCount, "channels": program.binding.channelCount,
       "qualification": "unqualified; structural validation only"]
@@ -45,7 +59,7 @@ do {
     try data.write(to: target, options: [.atomic])
     result = ["nodes": graph.nodeCount, "catalog": target.path]
   } else {
-    throw ConnectomeError.invalid("usage: inspect GRAPH | catalog GRAPH OUTPUT.jsonl | validate-controller GRAPH SPEC.json BODY.json PARAMETER_HEX")
+    throw ConnectomeError.invalid("usage: inspect GRAPH | catalog GRAPH OUTPUT.jsonl | validate-controller GRAPH SPEC.json BODY.json PARAMETER_HEX | audit-controller GRAPH SPEC.json BODY.json PARAMETER_HEX")
   }
   let json = try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
   FileHandle.standardOutput.write(json); FileHandle.standardOutput.write(Data([10]))

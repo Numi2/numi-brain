@@ -1,0 +1,20 @@
+{
+  "graphSHA256": "58314f44a02afe0726e5ba699a533d203b85b2fd6125bc0542b5db72cf993a1c",
+  "scope": "all annotated sensory/ascending to all annotated motor/descending; not a robot binding or physical controller evaluation",
+  "graphNodes": 166700,
+  "graphEdges": 25582938,
+  "status": 0,
+  "seconds": 0.8064770180000096,
+  "graph": 6782009767362565498,
+  "scratch": 105665756,
+  "edges": 25582938,
+  "active_inputs": 19791,
+  "active_readouts": 2147,
+  "nodes": 166635,
+  "useful_inputs": 19510,
+  "reachable_readouts": 2147,
+  "channels": 1,
+  "max_hops": 2,
+  "unreachableReadouts": 0,
+  "unproductiveInputs": 281
+}
