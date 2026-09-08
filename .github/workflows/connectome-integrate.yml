@@ -1,0 +1,105 @@
+name: Integrate and verify native connectome controller
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.numi/connectome-integration/**'
+      - '.github/workflows/connectome-integrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integrate:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Verify and apply the exact source increment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/base-revision.txt
+          python3 - <<'PY'
+          import base64, hashlib, lzma, pathlib, re, subprocess
+          root = pathlib.Path('.numi/connectome-integration')
+          chunks = [root / f'{i:02}.b64' for i in range(4)]
+          compressed = base64.b64decode(''.join(p.read_text().strip() for p in chunks), validate=True)
+          expected = '4c5ca271facb70013bb559e4f55530c5ce635e3c8e11f2aa7dc00083e091becc'
+          assert hashlib.sha256(compressed).hexdigest() == expected, 'payload SHA-256 mismatch'
+          patch = lzma.decompress(compressed)
+          assert len(patch) == 142755
+          paths = re.findall(r'^diff --git a/(\S+) b/\1$', patch.decode(), re.M)
+          assert len(paths) == 23 and len(set(paths)) == 23
+          assert all('..' not in pathlib.PurePosixPath(p).parts and p.startswith(('Sources/', 'Tests/', 'tools/')) for p in paths)
+          pathlib.Path('diagnostics/increment.patch').write_bytes(patch)
+          pathlib.Path('diagnostics/paths.txt').write_text('\n'.join(paths)+'\n')
+          subprocess.run(['git','apply','--check','--whitespace=error','diagnostics/increment.patch'],check=True)
+          subprocess.run(['git','apply','--whitespace=error','diagnostics/increment.patch'],check=True)
+          PY
+          git diff --check
+      - name: Native and Arrow source-table checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/numi-connectome-python
+          /tmp/numi-connectome-python/bin/python -m pip install numpy pyarrow
+          /tmp/numi-connectome-python/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+          /tmp/numi-connectome-python/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
+          python3 scripts/check-executable-model-contract.py
+      - name: Compile and link on the Apple target
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers | tee diagnostics/apple-host.txt
+          xcodebuild -version | tee -a diagnostics/apple-host.txt
+          swift --version | tee -a diagnostics/apple-host.txt
+          swift package resolve 2>&1 | tee diagnostics/resolve.txt
+          swift build -c release --product numi-brain-connectome 2>&1 | tee diagnostics/connectome-build.txt
+          swift build -c release --product numi-brain-experiment 2>&1 | tee diagnostics/experiment-build.txt
+      - name: Run focused controller, checkpoint and recovery tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test -c release --filter Connectome 2>&1 | tee diagnostics/connectome-tests.txt
+          swift test -c release --filter PreparedGPU 2>&1 | tee diagnostics/prepared-tests.txt
+          swift test -c release --filter BrainAllGatesVerifierTests 2>&1 | tee diagnostics/qualification-regression.txt
+      - name: Publish only the tested source through a non-forced fast-forward
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          paths = Path('diagnostics/paths.txt').read_text().splitlines()
+          subprocess.run(['git','add','--',*paths],check=True)
+          PY
+          git rm -- .numi/connectome-integration/00.b64 .numi/connectome-integration/01.b64 .numi/connectome-integration/02.b64 .numi/connectome-integration/03.b64 .github/workflows/connectome-integrate.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: integrate body-bound connectome control, acquisition and complete neural persistence' -m 'Apply SHA-256-verified source increment after native/Arrow tests, Apple release builds, connectome and prepared-recovery regressions. Preserve unrelated source-constrained Human world changes. This source qualification does not establish full-release neural execution or learned robot behavior.'
+          git push origin HEAD:main
+          git rev-parse HEAD > diagnostics/published-revision.txt
+      - name: Retain exact applied source and diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          git diff > diagnostics/remaining-diff.patch
+          tar --exclude=.git --exclude=.build --exclude=diagnostics --exclude=.numi/connectome-integration -czf /tmp/numi-connectome-source.tar.gz .
+          mv /tmp/numi-connectome-source.tar.gz diagnostics/source.tar.gz
+          shasum -a 256 diagnostics/source.tar.gz > diagnostics/source.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-integration-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
