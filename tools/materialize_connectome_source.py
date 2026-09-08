@@ -57,9 +57,11 @@ def main():
         if p.is_absolute() or '..' in p.parts or name in EXCLUDED or not name.startswith(('Sources/', 'Tests/', 'tools/', 'docs/', 'evidence/', 'README.md')):
             raise ValueError('unsafe source path: ' + name)
     if args.output_patch:
-        output = args.output_patch.absolute()
-        if output in {ROOT/name for name in paths} or output.is_symlink():
-            raise ValueError('output patch cannot overwrite an affected source or symlink')
+        output = args.output_patch.resolve(strict=False)
+        if output in {ROOT/name for name in paths} or args.output_patch.is_symlink() or output.exists():
+            raise ValueError('output patch must be a new file outside the affected source paths')
+        if any(parent.is_symlink() for parent in args.output_patch.absolute().parents):
+            raise ValueError('output patch cannot use a symlinked parent')
     head = git('rev-parse', 'HEAD').decode().strip()
     if args.expected_head and head != args.expected_head:
         raise ValueError('repository HEAD differs from the requested revision')
@@ -99,6 +101,12 @@ def main():
         if text.count('neural.activitySHA256') != 1:
             raise ValueError('unexpected checkpoint test revision')
         root_test.write_text(text.replace('neuralSHA256=\\(neural.activitySHA256)', 'neuralCheckpointSHA256=\\(neural.sha256)'))
+        study_test = work/'Tests/NumiBrainCoreTests/ConnectomeDecoderStudyTests.swift'
+        text = study_test.read_text()
+        if text.count('func run(') != 1 or text.count('try run(') != 2 or text.count('run: run(') != 1:
+            raise ValueError('unexpected study test fixture revision')
+        study_test.write_text(text.replace('func run(', 'func captureFixture(')
+            .replace('try run(', 'try captureFixture(').replace('run: run(', 'run: captureFixture('))
         combined = ''
         for name in paths:
             data = (work/name).read_bytes()
@@ -116,7 +124,8 @@ def main():
         git('apply', '--check', '--whitespace=error', str(target))
         if args.output_patch:
             args.output_patch.parent.mkdir(parents=True, exist_ok=True)
-            args.output_patch.write_text(combined)
+            with args.output_patch.open('x', encoding='utf-8') as stream:
+                stream.write(combined)
         if args.apply:
             if git('rev-parse', 'HEAD').decode().strip() != head or any(snapshot(ROOT/name) != data for name, data in before.items()):
                 raise ValueError('source changed during preflight; refusing to apply')

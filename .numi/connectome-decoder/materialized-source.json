@@ -13,7 +13,7 @@
     "Sources/NumiBrainMetal/Interop/MetalNumanXGateCRootRunner.swift": "aab57667aec105ae219b29981b8b91da3d62710efe78bfb9c2f68e25fd85f482",
     "Sources/NumiBrainMetal/MetalEmbodiedBrainRuntime.swift": "90c9068a9c52aca8d5766ea732f89ec92ca0ab27ebbd25a039e8556fe1b04070",
     "Sources/NumiBrainMetal/MetalNumiBrainRuntime.swift": "95e4fdaf3231a880a692b3cfe4823e8ec625c84a3935b592c5f3217f90ea5a0b",
-    "Tests/NumiBrainCoreTests/ConnectomeDecoderStudyTests.swift": "ea34f7ec3e17712fc1af539cea5010db10cd649ac788ea8fde0c8a4fd62ab969",
+    "Tests/NumiBrainCoreTests/ConnectomeDecoderStudyTests.swift": "23a81eb2ef4c02ff62d4be373706602dbde82fd9a3a30c660058640a45ac6f89",
     "Tests/NumiBrainMetalTests/MLXConnectomeDecoderCalibrationTests.swift": "1bc70f466bdcb4f10655263f1d5c6e7d460f85ea425b75aceaa013688c32f07e",
     "Tests/NumiBrainMetalTests/MetalConnectomeRootTests.swift": "ef322a4865f268fa06ff4181a0209b3d865dd03820e0af724e7833e00a0cb63a",
     "docs/CONNECTOME_DECODER_LEARNING.md": "5801b4612791c1dc61eb590ceebf7fe47b150f68df5a43e964072fcf38eecc71",
