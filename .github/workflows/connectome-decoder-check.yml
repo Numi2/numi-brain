@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Numi2/numi-lab
-          ref: 5db0c5aa169bfe1270ef7448e01dd7fbcd99d123
+          ref: 4a369ca846fde93016f3708f3fd9386c992b52a4
           path: .build/numilab-source
           persist-credentials: false
           sparse-checkout: |
@@ -64,10 +64,10 @@ jobs:
           NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
           set -euo pipefail
-          swift test -c release --skip-build --filter 'NumiLabPositionHostActionAdapterTests|NumiLabTaskActionContractTests|NumiLabRobotInterfaceTests|ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          swift test -c release --skip-build --filter 'NumiLabReplayCheckpointTests|NumiLabPositionHostActionAdapterTests|NumiLabTaskActionContractTests|NumiLabRobotInterfaceTests|ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
           grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
           git diff --exit-code
-          printf '%s\n' 'Full package build plus selected source/shader/learner/action-contract and authenticated NumiLab host-transport checks. Production Metal 4 joint roots and external physical-state owner proofs are not qualified.' > diagnostics/scope.txt
+          printf '%s\n' 'Full package build plus selected source/shader/learner/action-contract, replay-checkpoint and authenticated NumiLab host-transport checks against the exact hardened owner revision. The owner ABI supplies live compiled action bindings and a logical-byte resident-state digest. Production Metal 4 joint-root campaigns, learned robot-task performance and hardware safety are not qualified by this job.' > diagnostics/scope.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
