@@ -30,7 +30,8 @@ public struct SpeciesBodyTopology: Codable, Equatable, Hashable, Sendable {
     actuatorCount: UInt32,
     morphologyCode: UInt64
   ) throws {
-    guard bodyCount > 1, jointCount > 0, jointTopologyFingerprint > 0,
+    guard bodyCount > 0, jointTopologyFingerprint > 0,
+      jointCount == bodyCount - 1,
       (muscleCount == 0) == (muscleAttachmentFingerprint == 0),
       skinSurfaceCount > 0,
       actuatorCount > 0, morphologyCode > 0

@@ -62,6 +62,8 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     encoder: any MTL4ComputeCommandEncoder,
     sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalConnectomeRuntime.DescendingView {
     lock.lock(); defer { lock.unlock() }; try require(.open)
+    try Self.validateConnectomeSpecies(binding: connectome.binding,
+      ownerSpeciesFingerprint: runtime.arena.layout.speciesTemplateFingerprint)
     if let candidate = connectomeCandidate {
       guard candidate.owner === connectome else {
         throw ConnectomeError.invalid("a root cannot replace its connectome participant on retry")
@@ -199,6 +201,8 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       throw ConnectomeError.invalid("prepared recovery must supply the exact optional neural participant")
     }
     if let neural = image.connectomeState, let connectome {
+      try validateConnectomeSpecies(binding: connectome.binding,
+        ownerSpeciesFingerprint: runtime.arena.layout.speciesTemplateFingerprint)
       try connectome.validatePrepared(neural, root: root)
     }
     try runtime.restoreRecoveryImage(MetalAgentStateRecoveryImage(generation: root.baseBrainGeneration,
@@ -273,6 +277,13 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     acceptedPhysicsFingerprint = nil; preparedGPUStateFinish = nil
     preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .aborted
   }
+  static func validateConnectomeSpecies(binding: ConnectomeBinding,
+    ownerSpeciesFingerprint: UInt64) throws {
+    guard ownerSpeciesFingerprint > 0, binding.speciesFingerprint == ownerSpeciesFingerprint else {
+      throw ConnectomeError.invalid("connectome participant belongs to a different species/body than the owning root")
+    }
+  }
+
   private func require(_ expected: Status) throws {
     guard currentStatus == expected else {
       throw TissueError.transaction("joint brain-state transaction is \(currentStatus), expected \(expected)")

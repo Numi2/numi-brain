@@ -6,7 +6,6 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: connectome-source-${{ github.ref }}
   cancel-in-progress: false
@@ -27,38 +26,30 @@ jobs:
           swift --version >> diagnostics/host.txt
           test ! -e .numi/connectome-decoder
           test ! -e tools/materialize_connectome_source.py
-      - uses: actions/download-artifact@v4
-        with:
-          github-token: ${{ github.token }}
-          repository: Numi2/numi-brain
-          run-id: 34173965507
-          name: male-cns-v1.0-classified-neuron-pack
-          path: downloaded/
-      - name: Verify graph and import contracts
+      - name: Acquire checksum-pinned public data release
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import hashlib
-          p=Path('downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns')
-          assert hashlib.sha256(p.read_bytes()).hexdigest()=='58314f44a02afe0726e5ba699a533d203b85b2fd6125bc0542b5db72cf993a1c'
-          PY
+          python3 tools/fetch_connectome_release.py --output-dir downloaded/packs | tee diagnostics/data.json
+      - name: Verify import and native contracts
+        run: |
+          set -euo pipefail
           python3 -m venv /tmp/numi-connectome-check
           /tmp/numi-connectome-check/bin/python -m pip install numpy pyarrow
           /tmp/numi-connectome-check/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
           /tmp/numi-connectome-check/bin/python tools/test_connectome_audit.py 2>&1 | tee diagnostics/connectivity-tests.txt
           /tmp/numi-connectome-check/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
+          /tmp/numi-connectome-check/bin/python tools/test_connectome_release.py 2>&1 | tee diagnostics/data-tests.txt
       - name: Build every package target and test target without source reconstruction
         run: |
           set -euo pipefail
           swift build -c release -Xswiftc -enable-testing --build-tests 2>&1 | tee diagnostics/package-build.txt
           sh tools/build_swiftpm_mlx_metallib.sh release 2>&1 | tee diagnostics/mlx-library.txt
-      - name: Exercise graph, decoder and full-data shader tests
+      - name: Exercise graph, body, decoder and full-data shader tests
         env:
           NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
           set -euo pipefail
-          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
           grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
           git diff --exit-code
           printf '%s\n' 'Full package build and selected source/shader/learner checks. Production Metal 4 roots and physical tasks are not qualified.' > diagnostics/scope.txt

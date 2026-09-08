@@ -749,7 +749,6 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       acceptedAutonomic.elementCount, acceptedActiveSensing.elementCount,
       internalActions.elementCount,
       bodyBelief.elementCount,
-      jointBelief.elementCount,
       muscleBelief.elementCount,
       fastPlasticity.elementCount, regionalPlasticModulation.elementCount,
       cerebellar.elementCount, cerebellarExpertMemory.elementCount,
@@ -761,6 +760,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       $0.modality.rawValue < $1.modality.rawValue
     }
     guard observationValidity.elementCount == observations.elementCount,
+      jointBelief.elementCount >= 0, jointBelief.elementCount <= Int(UInt32.max),
       counts.allSatisfy({ $0 > 0 && $0 <= Int(UInt32.max) }),
       [objectSlots, otherAgentSlots, relationSlots, spatialTransforms]
         .allSatisfy({ $0.elementCount <= Int(UInt32.max) }),

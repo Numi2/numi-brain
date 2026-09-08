@@ -196,7 +196,7 @@ public struct NumanXJointTopologyCatalog: Codable, Equatable, Hashable, Sendable
     bodyCount: UInt32,
     joints: [NumanXJointTopology]
   ) throws {
-    guard numanXModelFingerprint > 0, bodyCount > 1, !joints.isEmpty else {
+    guard numanXModelFingerprint > 0, bodyCount > 0 else {
       throw BrainRuntimeError.invalidDescriptor(
         "NumanX joint topology catalog identity is incomplete"
       )

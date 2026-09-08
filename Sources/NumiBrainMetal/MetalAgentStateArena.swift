@@ -125,7 +125,8 @@ where Section.RawValue == UInt16 {
     elementCount: Int,
     elementStride: Int
   ) throws {
-    guard byteOffset >= 0, byteCount > 0, elementCount > 0, elementStride > 0,
+    guard byteOffset >= 0, byteCount > 0, elementCount >= 0, elementStride > 0,
+      byteCount >= elementStride,
       elementCount <= byteCount / elementStride
     else {
       throw BrainRuntimeError.capacity("Metal arena section layout is invalid")
@@ -484,7 +485,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     try builder.append(
       .jointBelief,
       count: Int(species.body.jointCount),
-      stride: Self.jointBeliefStride
+      stride: Self.jointBeliefStride,
+      allowEmpty: true
     )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
@@ -766,16 +768,15 @@ where Section.RawValue == UInt16 {
   private(set) var sections: [MetalArenaSectionLayout<Section>] = []
   private(set) var totalByteCount = 0
 
-  mutating func append(_ section: Section, count: Int, stride: Int) throws {
-    guard count > 0, stride > 0 else {
-      throw BrainRuntimeError.capacity("Metal arena section count must be positive")
+  mutating func append(_ section: Section, count: Int, stride: Int, allowEmpty: Bool = false) throws {
+    guard count >= 0, (count > 0 || allowEmpty), stride > 0 else {
+      throw BrainRuntimeError.capacity("Metal arena section count is invalid")
     }
-    let alignedOffset = (totalByteCount + 255) & ~255
-    let (rawBytes, overflow) = count.multipliedReportingOverflow(by: stride)
-    guard !overflow else {
-      throw BrainRuntimeError.capacity("Metal arena section size overflows Int")
-    }
-    let alignedBytes = (rawBytes + 255) & ~255
+    let alignedOffset = try MetalAgentStateLayout.checkedAdd(totalByteCount, 255) & ~255
+    // Reserve bindable padding for absent optional state, but preserve a
+    // logical count of zero. Padding never becomes an anatomical joint.
+    let rawBytes = try MetalAgentStateLayout.checkedMultiply(max(count, 1), stride)
+    let alignedBytes = try MetalAgentStateLayout.checkedAdd(rawBytes, 255) & ~255
     sections.append(
       try MetalArenaSectionLayout(
         section: section,
