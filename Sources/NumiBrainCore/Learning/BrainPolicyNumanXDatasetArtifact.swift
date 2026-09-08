@@ -328,6 +328,8 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
   public let learningBatchFingerprint: UInt64
   public let promotable: Bool
   public let roots: [BrainPolicyNumanXCaptureRootReference]
+  /// Format 3 research captures retain the actual neural graph and decoder.
+  public let connectome: ConnectomeCaptureIdentity?
 
   public init(
     runIdentifier: String,
@@ -343,8 +345,10 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
     declaredMaximumInferenceLatencyMicroseconds: UInt64? = nil,
     learningBatchArtifactSHA256: String,
     learningBatchFingerprint: UInt64,
-    roots: [BrainPolicyNumanXCaptureRootReference]
+    roots: [BrainPolicyNumanXCaptureRootReference],
+    connectome: ConnectomeCaptureIdentity? = nil
   ) throws {
+    try connectome?.validate()
     let canonicalRoots = roots.sorted { $0.controlStep < $1.controlStep }
     guard !runIdentifier.isEmpty, !sourceRevision.isEmpty,
       !datasetSourceIdentifier.isEmpty, !datasetSourceRevision.isEmpty,
@@ -366,7 +370,7 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
         "NumanX capture run artifact is invalid"
       )
     }
-    self.formatVersion = Self.formatVersion
+    self.formatVersion = connectome == nil ? Self.formatVersion : 3
     self.runIdentifier = runIdentifier
     self.sourceRevision = sourceRevision
     self.datasetSourceIdentifier = datasetSourceIdentifier
@@ -385,6 +389,7 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
     self.learningBatchFingerprint = learningBatchFingerprint
     self.promotable = false
     self.roots = canonicalRoots
+    self.connectome = connectome
   }
 
   public func encoded() throws -> Data {
@@ -404,7 +409,7 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
   }
 
   public func validate() throws {
-    guard formatVersion == Self.formatVersion, !promotable,
+    guard formatVersion == (connectome == nil ? Self.formatVersion : 3), !promotable,
       try Self(
         runIdentifier: runIdentifier,
         sourceRevision: sourceRevision,
@@ -421,7 +426,7 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
           declaredMaximumInferenceLatencyMicroseconds,
         learningBatchArtifactSHA256: learningBatchArtifactSHA256,
         learningBatchFingerprint: learningBatchFingerprint,
-        roots: roots
+        roots: roots, connectome: connectome
       ) == self
     else {
       throw BrainRuntimeError.invalidParameterVersion(
@@ -763,7 +768,8 @@ public enum BrainPolicyNumanXCaptureVerifier {
 
   public static func verify(
     runArtifactSHA256: String,
-    artifactDirectory: URL
+    artifactDirectory: URL,
+    allowingResearchConnectome: Bool = false
   ) throws -> BrainPolicyNumanXCaptureVerificationReceipt {
     let run = try BrainPolicyNumanXCaptureRunArtifact.decode(
       verifiedData(
@@ -771,7 +777,14 @@ public enum BrainPolicyNumanXCaptureVerifier {
         directory: artifactDirectory
       )
     )
+    try ConnectomeCaptureIdentity.requireScope(run: run, allowingResearch: allowingResearchConnectome)
     var hashes = [runArtifactSHA256]
+    if let identity = run.connectome {
+      _ = try identity.verify(directory: artifactDirectory,
+        expectedTemplateFingerprint: run.compiledSpeciesTemplateFingerprint,
+        parameterVersionFingerprint: run.parameterVersionFingerprint)
+      hashes.append(contentsOf: identity.artifactSHA256)
+    }
     let retainedLearningBatch = try verifiedLearningBatch(
       sha256: run.learningBatchArtifactSHA256,
       expectedParameterVersionFingerprint: run.parameterVersionFingerprint,
@@ -785,6 +798,11 @@ public enum BrainPolicyNumanXCaptureVerifier {
       throw BrainRuntimeError.invalidParameterVersion(
         "NumanX capture run does not bind its exact learning batch"
       )
+    }
+    if let identity = run.connectome {
+      guard learningBatch.speciesTemplateFingerprint == identity.speciesFingerprint else {
+        throw ConnectomeError.invalid("learning batch does not belong to captured connectome body")
+      }
     }
     hashes.append(contentsOf: retainedLearningBatch.hashes)
     var accepted: UInt64 = 0
@@ -803,12 +821,23 @@ public enum BrainPolicyNumanXCaptureVerifier {
           directory: artifactDirectory
         )
       )
+      if let identity = run.connectome {
+        guard sample.speciesTemplateFingerprint == identity.speciesFingerprint,
+          sample.sensoryProfileFingerprint == identity.sensoryProfileFingerprint else {
+          throw ConnectomeError.invalid("root sensor sample belongs to another connectome embodiment")
+        }
+      }
       let execution = try BrainPolicyNumanXRootExecution.decode(
         verifiedData(
           sha256: root.executionSHA256,
           directory: artifactDirectory
         )
       )
+      if let identity = run.connectome {
+        try identity.validate(execution: execution)
+      } else if execution.connectomeProgramFingerprint != nil {
+        throw ConnectomeError.invalid("native connectome execution cannot be relabeled as a legacy policy run")
+      }
       guard sample.coordinates.datasetSourceIdentifier
           == run.datasetSourceIdentifier,
         sample.coordinates.datasetSourceRevision == run.datasetSourceRevision,

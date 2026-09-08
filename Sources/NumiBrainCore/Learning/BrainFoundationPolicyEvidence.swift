@@ -75,6 +75,9 @@ public enum BrainPolicyNumanXRootOutcome: String, Codable, Sendable {
 public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
   public let sampleSHA256: String
   public let ownerProgramFingerprint: UInt64
+  /// Both are present only for an explicitly captured connectome controller.
+  public let brainProgramFingerprint: UInt64?
+  public let connectomeProgramFingerprint: UInt64?
   public let transactionFingerprint: UInt64
   public let linearizationEpoch: UInt64
   public let slotGeneration: UInt64
@@ -102,10 +105,15 @@ public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
     physicsSubstepCount: UInt32,
     outcome: BrainPolicyNumanXRootOutcome,
     appliedRecordFingerprint: UInt64,
-    jointCommitFingerprint: UInt64
+    jointCommitFingerprint: UInt64,
+    brainProgramFingerprint: UInt64? = nil,
+    connectomeProgramFingerprint: UInt64? = nil
   ) throws {
     guard BrainPolicyEvidenceArtifact.isSHA256(sampleSHA256),
       ownerProgramFingerprint > 0,
+      (brainProgramFingerprint == nil) == (connectomeProgramFingerprint == nil),
+      brainProgramFingerprint == nil || brainProgramFingerprint! > 0,
+      connectomeProgramFingerprint == nil || connectomeProgramFingerprint! > 0,
       transactionFingerprint > 0,
       linearizationEpoch > 0,
       slotGeneration > 0,
@@ -123,6 +131,8 @@ public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
     }
     self.sampleSHA256 = sampleSHA256
     self.ownerProgramFingerprint = ownerProgramFingerprint
+    self.brainProgramFingerprint = brainProgramFingerprint
+    self.connectomeProgramFingerprint = connectomeProgramFingerprint
     self.transactionFingerprint = transactionFingerprint
     self.linearizationEpoch = linearizationEpoch
     self.slotGeneration = slotGeneration
@@ -171,7 +181,9 @@ public struct BrainPolicyNumanXRootExecution: Codable, Equatable, Sendable {
       physicsSubstepCount: physicsSubstepCount,
       outcome: outcome,
       appliedRecordFingerprint: appliedRecordFingerprint,
-      jointCommitFingerprint: jointCommitFingerprint
+      jointCommitFingerprint: jointCommitFingerprint,
+      brainProgramFingerprint: brainProgramFingerprint,
+      connectomeProgramFingerprint: connectomeProgramFingerprint
     ) == self else {
       throw BrainRuntimeError.invalidParameterVersion(
         "policy NumanX root execution is not canonical"

@@ -115,6 +115,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   public let nativeWorldInfo: MetalNumanXBridgeV1Runtime.WorldInfo?
   public let parameterVersionFingerprint: UInt64
   public let declaredMaximumInferenceLatencyMicroseconds: UInt64?
+  public let connectomeCaptureIdentity: ConnectomeCaptureIdentity?
 
   private let device: any MTLDevice
   private let brain: MetalNumiBrainRuntime
@@ -174,16 +175,16 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       latencyMicroseconds: timestepMicroseconds,
       anatomy: anatomy
     )
+    let connectomeProgram: ConnectomeControllerProgram?
     if let connectome {
       // This runner remains explicitly simulation/research-only for the new
       // controller. Production receipts cannot be inherited from another policy.
       guard !enableProductionUncertaintyGate else {
         throw ConnectomeError.invalid("connectome research capture cannot reuse production policy admission")
       }
-      let specBytes = try JSONEncoder().encode(connectome.specification)
-      _ = try BrainPolicyEvidenceArtifact.write(specBytes, to: artifactDirectory)
-      _ = try BrainPolicyEvidenceArtifact.write(connectome.graph.bytes, to: artifactDirectory)
-    }
+      connectomeProgram = try ConnectomeControllerProgram(graph: connectome.graph, spec: connectome.specification,
+        template: compiled, parameterVersionFingerprint: publication.version.fingerprint)
+    } else { connectomeProgram = nil }
     let parameters = TissueParameters.corticalSheetV0
     let brain = try MetalNumiBrainRuntime.makeRuntime(
       configuration: MetalNumiBrainConfiguration(
@@ -209,6 +210,11 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         ? MetalNumanXUncertaintyGateConfiguration() : nil,
       device: device
     )
+    if let connectomeProgram {
+      connectomeCaptureIdentity = try ConnectomeCaptureIdentity.retain(program: connectomeProgram,
+        template: compiled, brainProgramFingerprint: brain.cognitive.numanXBrainProgramFingerprint,
+        directory: artifactDirectory)
+    } else { connectomeCaptureIdentity = nil }
     self.device = device
     self.compiledSpeciesTemplate = compiled
     self.artifactDirectory = artifactDirectory
@@ -297,7 +303,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
           longHorizonPhase: $0.longHorizonContext?.phase,
           externalGoalArtifactSHA256: $0.externalGoalArtifactSHA256
         )
-      }
+      },
+      connectome: connectomeCaptureIdentity
     )
     return try artifact.write(to: artifactDirectory)
   }

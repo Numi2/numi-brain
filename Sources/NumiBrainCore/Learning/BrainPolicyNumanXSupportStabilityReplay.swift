@@ -389,6 +389,8 @@ public enum BrainPolicyNumanXSupportStabilityReplayVerifier {
     _ rhs: BrainPolicyNumanXRootExecution
   ) -> Bool {
     lhs.ownerProgramFingerprint == rhs.ownerProgramFingerprint
+      && lhs.brainProgramFingerprint == rhs.brainProgramFingerprint
+      && lhs.connectomeProgramFingerprint == rhs.connectomeProgramFingerprint
       && lhs.transactionFingerprint == rhs.transactionFingerprint
       && lhs.linearizationEpoch == rhs.linearizationEpoch
       && lhs.slotGeneration == rhs.slotGeneration

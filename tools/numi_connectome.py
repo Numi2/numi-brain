@@ -1,8 +1,7 @@
 """Male CNS acquisition/compiler for the shared NumiLab/NumiBrain NUMICNS1 format.
 
 The official Janelia/Google release remains the source of truth. This module
-turns its Arrow/Feather tables into compact, deterministic NumiLab graph and
-embodiment packs. The runtime is connectivity-grounded and parameterizable;
+turns its Arrow/Feather tables into compact, deterministic shared graph packs. The runtime is connectivity-grounded and parameterizable;
 it does not claim that static morphology alone supplies complete biological
 cell dynamics, receptor kinetics, neuromodulation, or learned state.
 """
@@ -76,6 +75,18 @@ OFFICIAL_FILES: Final[dict[str, str]] = {
         "connectome-weights-male-cns-v1.0-minconf-0.5.feather"
     ),
 }
+
+# Audited v1.0 source bytes. Versioned URLs alone are not content pins. A
+# future source revision requires an explicit reviewed update of these hashes.
+OFFICIAL_SHA256: Final[dict[str, str]] = {
+    "annotations": "2177e246113e4cfbf1e7772ec37c6da1955ff22e8063d0b1f833101f99a9a3b2",
+    "neurotransmitters": "95c9289220663abeb3409f3ad9e5a7f8a53f8093f5139d15502cd08da8879621",
+    "weights": "e35da783d1c686b2b58b3b87cd6a403ae43bfcfba8bff28e08ef752c1a56afc1",
+}
+
+def verify_official_digest(name: str, digest: str) -> None:
+    if name not in OFFICIAL_SHA256 or digest != OFFICIAL_SHA256[name]:
+        raise ConnectomeError(f"official release content pin mismatch: {name}")
 
 NODE_DTYPE: Final[np.dtype[Any]] = np.dtype(
     [
@@ -487,7 +498,7 @@ def _require_pyarrow() -> tuple[Any, Any]:
     except ImportError as error:
         raise ConnectomeError(
             "connectome compilation requires the optional dependency: "
-            "python -m pip install 'metalrobo[connectome]'"
+            "python3 -m pip install numpy pyarrow"
         ) from error
     return pa, feather
 
@@ -569,6 +580,8 @@ def _read_annotations(path: Path) -> dict[str, Any]:
         if type_column is not None
         else [None] * len(body_ids)
     )
+    status_column = _resolve_column(names, ("status", "statusLabel", "status_label"))
+    statuses = _column_pylist(table, status_column) if status_column is not None else [None] * len(body_ids)
     superclasses = (
         _column_pylist(table, superclass_column)
         if superclass_column is not None
@@ -580,6 +593,7 @@ def _read_annotations(path: Path) -> dict[str, Any]:
         "superclasses": [
             "" if value is None else str(value).strip() for value in superclasses
         ],
+        "statuses": ["" if value is None else str(value).strip() for value in statuses],
         "columns": names,
     }
 
@@ -600,6 +614,7 @@ def _dominant_nt_coefficients(path: Path | None, body_ids: np.ndarray) -> np.nda
         "acetylcholine": 1.0,
         "ach": 1.0,
         "gaba": -1.0,
+        "histamine": -1.0,
         "glutamate": -1.0,
         "glut": -1.0,
         "dopamine": 0.25,
@@ -613,6 +628,7 @@ def _dominant_nt_coefficients(path: Path | None, body_ids: np.ndarray) -> np.nda
     categorical = _resolve_column(
         names,
         (
+            "consensus_nt",
             "predicted_nt",
             "predictedNt",
             "neurotransmitter",
@@ -780,9 +796,23 @@ def compile_official_graph(
     source_hashes = {"annotations": _sha256(sources.annotations), "weights": _sha256(sources.weights)}
     if sources.neurotransmitters is not None: source_hashes["neurotransmitters"] = _sha256(sources.neurotransmitters)
     annotation = _read_annotations(sources.annotations)
-    body_ids: np.ndarray = annotation["body_ids"]
-    type_labels: list[str] = annotation["types"]
-    superclasses: list[str] = annotation["superclasses"]
+    # The release annotation table also contains glia, orphan artifacts and
+    # unclassified segments. Those are NOT interchangeable with neurons in
+    # this rate model. Preserve every explicitly classified neuronal entry,
+    # including its isolated nodes, and report excluded annotation records.
+    annotation_count = len(annotation["body_ids"])
+    selected = np.asarray([
+        bool(superclass) and superclass.lower() not in {"unknown", "none", "glia"}
+        and not any(token in status.lower() for token in ("glia", "artifact", "unimportant"))
+        for superclass, status in zip(annotation["superclasses"], annotation["statuses"], strict=True)
+    ], dtype=bool)
+    selected_indices = np.flatnonzero(selected)
+    if selected_indices.size == 0:
+        raise ConnectomeError("no explicitly classified neuronal entries; refusing to simulate glia or unknown segments as neurons")
+    excluded_annotations = annotation_count - int(selected_indices.size)
+    body_ids: np.ndarray = annotation["body_ids"][selected_indices]
+    type_labels: list[str] = [annotation["types"][i] for i in selected_indices]
+    superclasses: list[str] = [annotation["superclasses"][i] for i in selected_indices]
     body_nt = (
         _dominant_nt_coefficients(sources.neurotransmitters, body_ids)
         if sign_mode == "heuristic"
@@ -976,12 +1006,13 @@ def compile_official_graph(
     )
 
     source_fingerprint = _source_fingerprint(sources)
+    official_source = all(OFFICIAL_SHA256.get(name) == digest for name, digest in source_hashes.items())
     manifest = {
         "format": "numilab-connectome-graph",
         "format_version": GRAPH_ABI,
         "source": {
-            "dataset": OFFICIAL_VERSION,
-            "license": "CC-BY-4.0",
+            "dataset": OFFICIAL_VERSION if official_source else "unverified:user-tables",
+            "license": "CC-BY-4.0" if official_source else "unverified",
             "annotations": sources.annotations.name,
             "neurotransmitters": (
                 sources.neurotransmitters.name
@@ -990,8 +1021,8 @@ def compile_official_graph(
             ),
             "weights": sources.weights.name,
             "sha256": source_hashes,
-            "url": "https://male-cns.janelia.org/download/",
-            "scope": "curated annotated neurons; unannotated segments are excluded and counted",
+            "url": "https://male-cns.janelia.org/download/" if official_source else None,
+            "scope": "explicitly classified neuronal entries; glia, artifacts, unimportant and unclassified annotation records excluded and counted",
         },
         "compilation": {
             "resolution": "cell-type" if resolution_code else "neuron",
@@ -1008,7 +1039,9 @@ def compile_official_graph(
         "counts": {
             "nodes": node_count,
             "edges": int(source_nodes.size),
-            "annotated_neurons": int(annotation["body_ids"].size),
+            "annotation_records": annotation_count,
+            "excluded_annotation_records": excluded_annotations,
+            "classified_neuronal_entries": int(selected_indices.size),
             "source_weight_rows": source_edge_count,
             "thresholded_source_rows": thresholded_edges,
             "unmapped_endpoint_rows": excluded_endpoint_edges,
@@ -1150,6 +1183,7 @@ def download_official_dataset(output_dir: Path, refresh: bool = False) -> Source
         if path.exists() and not refresh:
             if not previous or previous.get("url") != url or previous.get("bytes") != path.stat().st_size or previous.get("sha256") != _sha256(path):
                 raise ConnectomeError(f"unverified or changed cache file {filename}; use --refresh to reacquire")
+            verify_official_digest(name, previous["sha256"])
             records[name] = previous
             continue
         fd, tempname = tempfile.mkstemp(prefix="." + filename, dir=output_dir)
@@ -1168,6 +1202,7 @@ def download_official_dataset(output_dir: Path, refresh: bool = False) -> Source
                 metadata = {"etag": response.headers.get("ETag"), "generation": response.headers.get("x-goog-generation")}
             if total == 0 or (expected is not None and total != int(expected)):
                 raise ConnectomeError("truncated release object")
+            verify_official_digest(name, digest.hexdigest())
             os.replace(temp, path)
             records[name] = {"name": filename, "url": url, "bytes": total, "sha256": digest.hexdigest(), **metadata}
             # Pin successful objects individually, so an interrupted acquisition
@@ -1188,6 +1223,7 @@ def source_paths(source_dir: Path) -> SourcePaths:
         raise ConnectomeError("source manifest does not identify the pinned release")
     for name, filename in OFFICIAL_FILES.items():
         row = manifest["files"][name]; path = source_dir / filename
+        verify_official_digest(name, row["sha256"])
         if row.get("url") != f"{OFFICIAL_BASE}/{filename}" or path.stat().st_size != row["bytes"] or _sha256(path) != row["sha256"]:
             raise ConnectomeError(f"source integrity mismatch: {filename}")
     return SourcePaths(source_dir / OFFICIAL_FILES["annotations"],

@@ -58,6 +58,9 @@ public enum MLXPhysicalMotorCalibration {
     try settings.validate(); try parent.validate(); try negative.validate(); try positive.validate()
     try requireCoordinateOnlyProbe(parent: parent, probe: negative, coordinate: settings.coordinate)
     try requireCoordinateOnlyProbe(parent: parent, probe: positive, coordinate: settings.coordinate)
+    guard negativeEvaluation.connectome == nil, positiveEvaluation.connectome == nil else {
+      throw ConnectomeError.invalid("legacy motor calibration cannot learn from a connectome decoder capture")
+    }
     let n = negativeEvaluation.experiment, p = positiveEvaluation.experiment
     let settingsHash = BrainPolicyEvidenceArtifact.sha256(try BrainPolicyEvidenceArtifact.encodeCanonical(settings))
     guard n.calibrationSettingsSHA256 == settingsHash, p.calibrationSettingsSHA256 == settingsHash,

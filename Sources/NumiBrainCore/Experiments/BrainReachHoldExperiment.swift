@@ -74,8 +74,12 @@ public struct BrainVerifiedReachHoldEvaluation: Sendable {
   public let artifact: BrainReachHoldEvaluation
   public let artifactSHA256: String
   public let experiment: BrainReachHoldProtocol
-  fileprivate init(artifact: BrainReachHoldEvaluation, hash: String, experiment: BrainReachHoldProtocol) {
+  public let capture: BrainPolicyNumanXCaptureRunArtifact
+  public var connectome: ConnectomeCaptureIdentity? { capture.connectome }
+  fileprivate init(artifact: BrainReachHoldEvaluation, hash: String, experiment: BrainReachHoldProtocol,
+    capture: BrainPolicyNumanXCaptureRunArtifact) {
     self.artifact = artifact; artifactSHA256 = hash; self.experiment = experiment
+    self.capture = capture
   }
 }
 
@@ -88,10 +92,12 @@ public enum BrainReachHoldExperiment {
     try BrainPolicyEvidenceArtifact.write(BrainPolicyEvidenceArtifact.encodeCanonical(value), to: directory)
   }
 
-  public static func evaluate(protocolSHA256: String, runSHA256: String, directory: URL) throws -> BrainVerifiedReachHoldEvaluation {
+  public static func evaluate(protocolSHA256: String, runSHA256: String, directory: URL,
+    allowingResearchConnectome: Bool = false) throws -> BrainVerifiedReachHoldEvaluation {
     let experiment = try read(BrainReachHoldProtocol.self, hash: protocolSHA256, directory: directory)
     try experiment.validate()
-    let verified = try BrainPolicyNumanXCaptureVerifier.verify(runArtifactSHA256: runSHA256, artifactDirectory: directory)
+    let verified = try BrainPolicyNumanXCaptureVerifier.verify(runArtifactSHA256: runSHA256,
+      artifactDirectory: directory, allowingResearchConnectome: allowingResearchConnectome)
     let run = try BrainPolicyNumanXCaptureRunArtifact.decode(
       BrainPolicyNumanXCaptureVerifier.verifiedData(sha256: runSHA256, directory: directory))
     guard run.sourceRevision == experiment.sourceRevision, run.datasetSourceRevision == protocolSHA256,
@@ -188,12 +194,14 @@ public enum BrainReachHoldExperiment {
       acceptedRoots: verified.acceptedRootCount, rejectedRoots: verified.rejectedRootCount,
       initialRelativeHeadHeightMeters: positions.first?.positionMeters[0], result: result, failures: failures)
     let hash = try retain(artifact, directory: directory)
-    return BrainVerifiedReachHoldEvaluation(artifact: artifact, hash: hash, experiment: experiment)
+    return BrainVerifiedReachHoldEvaluation(artifact: artifact, hash: hash, experiment: experiment, capture: run)
   }
 
-  public static func verify(evaluationSHA256: String, directory: URL) throws -> BrainVerifiedReachHoldEvaluation {
+  public static func verify(evaluationSHA256: String, directory: URL,
+    allowingResearchConnectome: Bool = false) throws -> BrainVerifiedReachHoldEvaluation {
     let saved = try read(BrainReachHoldEvaluation.self, hash: evaluationSHA256, directory: directory)
-    let rebuilt = try evaluate(protocolSHA256: saved.protocolSHA256, runSHA256: saved.runSHA256, directory: directory)
+    let rebuilt = try evaluate(protocolSHA256: saved.protocolSHA256, runSHA256: saved.runSHA256, directory: directory,
+      allowingResearchConnectome: allowingResearchConnectome)
     guard saved == rebuilt.artifact, evaluationSHA256 == rebuilt.artifactSHA256 else {
       throw BrainRuntimeError.transaction("reach/hold metrics or retained source relation changed")
     }

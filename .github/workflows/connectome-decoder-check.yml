@@ -1,33 +1,32 @@
-name: Check recovered connectome decoder sources
+name: Connectome checked-out source and learning
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/connectome-decoder-check.yml'
-      - 'tools/materialize_connectome_source.py'
-      - 'tools/run_connectome_apple_tests.py'
-      - '.numi/connectome-decoder/materialized-source.json'
-      - '.numi/connectome-decoder/numerical-publication.patch'
+    paths: ['Sources/**', 'Tests/**', 'Package.swift', 'tools/*connectome*', '.github/workflows/connectome-decoder-check.yml']
   workflow_dispatch:
 permissions:
   contents: read
   actions: read
+concurrency:
+  group: connectome-source-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   apple-source-and-learning:
     runs-on: macos-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Reconstruct reviewed source in this temporary checkout only
+      - name: Record exact checkout
         run: |
-          set -euo pipefail
           mkdir -p diagnostics
-          git rev-parse HEAD > diagnostics/base-revision.txt
-          python3 tools/materialize_connectome_source.py --apply --expected-head "$GITHUB_SHA" --output-patch diagnostics/full-source.patch | tee diagnostics/materialization.json
-          git diff --check
+          git rev-parse HEAD > diagnostics/revision.txt
+          sw_vers > diagnostics/host.txt
+          xcodebuild -version >> diagnostics/host.txt
+          swift --version >> diagnostics/host.txt
+          test ! -e .numi/connectome-decoder
+          test ! -e tools/materialize_connectome_source.py
       - uses: actions/download-artifact@v4
         with:
           github-token: ${{ github.token }}
@@ -35,7 +34,7 @@ jobs:
           run-id: 34173965507
           name: male-cns-v1.0-classified-neuron-pack
           path: downloaded/
-      - name: Verify data and portable contracts
+      - name: Verify graph and import contracts
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -44,33 +43,28 @@ jobs:
           p=Path('downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns')
           assert hashlib.sha256(p.read_bytes()).hexdigest()=='58314f44a02afe0726e5ba699a533d203b85b2fd6125bc0542b5db72cf993a1c'
           PY
-          cp downloaded/packs/inspection.json diagnostics/full-graph-inspection.json
-          python3 -m venv /tmp/numi-decoder-check
-          /tmp/numi-decoder-check/bin/python -m pip install numpy pyarrow
-          /tmp/numi-decoder-check/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
-          /tmp/numi-decoder-check/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
-      - name: Compile real Apple sources and execute shader and learner tests
+          python3 -m venv /tmp/numi-connectome-check
+          /tmp/numi-connectome-check/bin/python -m pip install numpy pyarrow
+          /tmp/numi-connectome-check/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+          /tmp/numi-connectome-check/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
+      - name: Build every package target and test target without source reconstruction
         run: |
           set -euo pipefail
-          sw_vers | tee diagnostics/apple-host.txt
-          xcodebuild -version | tee -a diagnostics/apple-host.txt
-          swift --version | tee -a diagnostics/apple-host.txt
-          export NUMIBRAIN_CONNECTOME_GRAPH="$PWD/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns"
-          python3 tools/run_connectome_apple_tests.py --with-learning 2>&1 | tee diagnostics/apple-tests.txt
-          grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/apple-tests.txt > diagnostics/full-graph-kernel.txt
-          printf '%s\n' 'Source/kernel/learner checks only. Production Metal 4 roots and physical robot tasks are not qualified.' > diagnostics/scope.txt
-      - name: Retain reviewed source and diagnostics without publishing code
-        if: always()
+          swift build -c release -Xswiftc -enable-testing --build-tests 2>&1 | tee diagnostics/package-build.txt
+          sh tools/build_swiftpm_mlx_metallib.sh release 2>&1 | tee diagnostics/mlx-library.txt
+      - name: Exercise graph, decoder and full-data shader tests
+        env:
+          NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
-          mkdir -p diagnostics
-          git diff > diagnostics/remaining-diff.patch
-          tar --exclude=.git --exclude=.build --exclude=diagnostics --exclude=downloaded --exclude=.numi/connectome-finalize --exclude=.numi/connectome-decoder -czf /tmp/connectome-checked-source.tar.gz .
-          mv /tmp/connectome-checked-source.tar.gz diagnostics/source.tar.gz
-          shasum -a 256 diagnostics/source.tar.gz > diagnostics/source.sha256
+          set -euo pipefail
+          swift test -c release --skip-build --filter 'ConnectomeControllerTests|ConnectomeGraphTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
+          git diff --exit-code
+          printf '%s\n' 'Full package build and selected source/shader/learner checks. Production Metal 4 roots and physical tasks are not qualified.' > diagnostics/scope.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: connectome-decoder-check-${{ github.sha }}
+          name: connectome-package-${{ github.sha }}
           path: diagnostics/
           retention-days: 90
           if-no-files-found: error

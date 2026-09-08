@@ -206,6 +206,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   public let memoryRuntime: MetalMemoryRuntime
 
   private let connectomeController: MetalConnectomeController?
+  var connectomeProgramFingerprint: UInt64? { connectomeController?.program.programFingerprint }
   private let device: any MTLDevice
   private let species: SpeciesTemplate
   private let acceptedPhysicsGateRuntime: MetalAcceptedPhysicsGateRuntime

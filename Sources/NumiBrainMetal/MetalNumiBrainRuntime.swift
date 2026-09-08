@@ -2920,7 +2920,9 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       outcome: outcome,
       appliedRecordFingerprint:
         ticket.qualificationAppliedRecordFingerprint,
-      jointCommitFingerprint: ticket.qualificationJointCommitFingerprint
+      jointCommitFingerprint: ticket.qualificationJointCommitFingerprint,
+      brainProgramFingerprint: cognitive.connectomeProgramFingerprint == nil ? nil : cognitive.numanXBrainProgramFingerprint,
+      connectomeProgramFingerprint: cognitive.connectomeProgramFingerprint
     )
   }
 

@@ -273,3 +273,23 @@ before long GPU runs, and describe only what the evidence proves.
 
 No open-source license has been declared yet. Until one is added, the source is
 publicly visible but standard copyright restrictions apply.
+
+## Male-CNS research controller
+
+NumiBrain imports the male fruit-fly CNS graph into its normal Metal controller.
+Body-specific receptor mappings and actuator decoders share immutable
+connectivity while keeping each agent's neural state independent. Complete
+checkpoints and prepared recovery retain the connectome state. The compiled
+v1.0 pack contains 166,700 classified neuronal entries and 25,582,938 weighted
+neuron-pair connections; its rate dynamics are explicit modeling assumptions.
+See [the integration guide](docs/CONNECTOME_NATIVE.md) and
+[measured build/data evidence](evidence/connectome-native-v1/README.md).
+This does not establish learned robot behavior or biological fidelity.
+
+### Outcome-based connectome decoder learning
+
+`numi-brain-experiment study-connectome` runs a frozen pair of native physical
+experiments and proposes a bounded update to the connectome's actual actuator
+decoder. Graph connectivity stays fixed; graph/spec/body bytes and the executing
+brain program are bound to each capture. No production admission or learned
+robot skill is inferred from a proposal. See [the executable study workflow](docs/CONNECTOME_DECODER_LEARNING.md).

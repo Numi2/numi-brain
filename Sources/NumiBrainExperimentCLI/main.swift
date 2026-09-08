@@ -35,6 +35,22 @@ private struct CalibrationInput: Codable {
   let negativeEvaluationSHA256: String; let positiveEvaluationSHA256: String
   let settings: MLXPhysicalMotorCalibration.Settings
 }
+private struct DecoderSettingsInput: Codable {
+  let artifactDirectory: String; let settings: ConnectomeDecoderStudySettings
+}
+private struct DecoderProbeInput: Codable {
+  let artifactDirectory: String; let parentRunSHA256: String; let protocolSHA256: String
+  let settings: ConnectomeDecoderStudySettings
+}
+private struct DecoderCalibrationInput: Codable {
+  let artifactDirectory: String; let probePlanSHA256: String
+  let negativeEvaluationSHA256: String; let positiveEvaluationSHA256: String
+}
+private struct DecoderStudyInput: Codable {
+  let artifactDirectory: String; let parentRunSHA256: String; let protocolSHA256: String
+  let settings: ConnectomeDecoderStudySettings
+  let negativeCapture: CaptureInput; let positiveCapture: CaptureInput
+}
 private struct CommandResult: Encodable {
   let promotable = false
   let scope = "native-muscle-control-experiment"
@@ -119,7 +135,7 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL, c
     guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
       throw BrainRuntimeError.transaction("native model differs from frozen experiment")
     }
-    let coordinates = try BrainPolicyNumanXDatasetCoordinates(datasetSourceIdentifier: "numibrain.reach-hold.v1",
+    let coordinates = try BrainPolicyNumanXDatasetCoordinates(datasetSourceIdentifier: connectomeResearch ? ConnectomeCaptureIdentity.datasetIdentifier : "numibrain.reach-hold.v1",
       datasetSourceRevision: input.protocolSHA256, episodeIdentifier: protocolValue.episodeIdentifier,
       taskFingerprint: protocolValue.taskFingerprint, sceneFingerprint: protocolValue.sceneFingerprint,
       objectFingerprint: protocolValue.objectFingerprint, embodimentFingerprint: protocolValue.embodimentFingerprint)
@@ -166,11 +182,46 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL, c
   }
 }
 
+/// Two fresh native runs, then a verified decoder-only proposal. This bounded
+/// orchestrator does not accept raw losses, replace physics, or publish a policy.
+private func decoderStudy(_ input: DecoderStudyInput, directory: URL) throws -> String {
+  let negative = input.negativeCapture, positive = input.positiveCapture
+  guard negative.artifactDirectory == input.artifactDirectory,
+    positive.artifactDirectory == input.artifactDirectory,
+    negative.protocolSHA256 == input.protocolSHA256, positive.protocolSHA256 == input.protocolSHA256,
+    negative.publicationSHA256 == positive.publicationSHA256,
+    negative.runIdentifier != positive.runIdentifier,
+    negative.connectomeSpecificationPath == nil, positive.connectomeSpecificationPath == nil else {
+    throw ConnectomeError.invalid("paired decoder study requires distinct runs, one frozen protocol/publication and plan-owned specifications")
+  }
+  let plan = try MLXConnectomeDecoderCalibration.prepare(parentRunSHA256: input.parentRunSHA256,
+    protocolSHA256: input.protocolSHA256, settings: input.settings, directory: directory)
+  let planHash = try BrainReachHoldExperiment.retain(plan, directory: directory)
+  func evaluate(_ base: CaptureInput, specificationSHA256: String) throws -> String {
+    let specURL = try BrainPolicyEvidenceArtifact.url(forSHA256: specificationSHA256, in: directory)
+    let configured = CaptureInput(artifactDirectory: base.artifactDirectory,
+      protocolSHA256: base.protocolSHA256, publicationSHA256: base.publicationSHA256,
+      runIdentifier: base.runIdentifier, nativePaths: base.nativePaths,
+      connectomeGraphPath: base.connectomeGraphPath, connectomeSpecificationPath: specURL.path,
+      watchdog: base.watchdog, watchdogLifecycle: base.watchdogLifecycle)
+    let configHash = try BrainReachHoldExperiment.retain(configured, directory: directory)
+    let runHash = try capture(configured, configSHA: configHash, directory: directory, connectomeResearch: true)
+    return try BrainReachHoldExperiment.evaluate(protocolSHA256: input.protocolSHA256,
+      runSHA256: runHash, directory: directory, allowingResearchConnectome: true).artifactSHA256
+  }
+  let n = try evaluate(negative, specificationSHA256: plan.negativeSpecificationSHA256)
+  let p = try evaluate(positive, specificationSHA256: plan.positiveSpecificationSHA256)
+  let proposal = try MLXConnectomeDecoderCalibration.update(planSHA256: planHash,
+    negativeEvaluationSHA256: n, positiveEvaluationSHA256: p, directory: directory)
+  return try BrainReachHoldExperiment.retain(proposal, directory: directory)
+}
+
 let args = Array(CommandLine.arguments.dropFirst())
 do {
   guard args.count == 3, args[1] == "--config",
-    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "capture-connectome", "evaluate", "calibrate"].contains(args[0]) else {
-    print("numi-brain-experiment seed|freeze-settings|freeze-protocol|probe|capture|capture-connectome|evaluate|calibrate --config FILE\nExplicit research-only configurations; see docs/CREDIBLE_ROUTE_PROGRESS.md.")
+    ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "capture-connectome", "evaluate", "calibrate",
+     "freeze-connectome-settings", "probe-connectome", "evaluate-connectome", "calibrate-connectome", "study-connectome"].contains(args[0]) else {
+    print("numi-brain-experiment COMMAND --config FILE\nLegacy: seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate\nConnectome: capture-connectome|freeze-connectome-settings|probe-connectome|evaluate-connectome|calibrate-connectome|study-connectome\nResearch-only; see docs/CONNECTOME_DECODER_LEARNING.md.")
     exit(64)
   }
   let bytes = try QualificationFileDirectory.readFile(URL(fileURLWithPath: args[2]), maximumBytes: 1_048_576)
@@ -212,14 +263,18 @@ do {
       artifactSHA256: try capture(input, configSHA: configHash, directory: store,
         connectomeResearch: args[0] == "capture-connectome"),
       kind: args[0] == "capture-connectome" ? "unqualified-connectome-native-run" : "retained-native-run")
-  case "evaluate":
+  case "evaluate", "evaluate-connectome":
     let input = try read(EvaluationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
-    let evaluation = try BrainReachHoldExperiment.evaluate(protocolSHA256: input.protocolSHA256, runSHA256: input.runSHA256, directory: store)
+    let evaluation = try BrainReachHoldExperiment.evaluate(protocolSHA256: input.protocolSHA256, runSHA256: input.runSHA256,
+      directory: store, allowingResearchConnectome: args[0] == "evaluate-connectome")
+    guard args[0] != "evaluate-connectome" || evaluation.connectome != nil else {
+      throw ConnectomeError.invalid("evaluate-connectome requires exact decoder capture provenance")
+    }
     result = CommandResult(configurationSHA256: configHash, artifactSHA256: evaluation.artifactSHA256, kind: "physical-task-evaluation")
     try emit(result)
     exit(evaluation.artifact.result?.succeeds == true ? 0 : 1)
-  default:
+  case "calibrate":
     let input = try read(CalibrationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
     let negative = try BrainReachHoldExperiment.verify(evaluationSHA256: input.negativeEvaluationSHA256, directory: store)
@@ -229,6 +284,34 @@ do {
       negativeEvaluation: negative, positiveEvaluation: positive, settings: input.settings)
     result = CommandResult(configurationSHA256: configHash,
       artifactSHA256: try BrainReachHoldExperiment.retain(candidate, directory: store), kind: "unevaluated-physical-loss-proposal", parameterVersionFingerprint: candidate.version.fingerprint)
+  case "freeze-connectome-settings":
+    let input = try read(DecoderSettingsInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    try input.settings.validate()
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(input.settings, directory: store), kind: "predeclared-connectome-decoder-settings")
+  case "probe-connectome":
+    let input = try read(DecoderProbeInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    let plan = try MLXConnectomeDecoderCalibration.prepare(parentRunSHA256: input.parentRunSHA256,
+      protocolSHA256: input.protocolSHA256, settings: input.settings, directory: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(plan, directory: store), kind: "unevaluated-connectome-decoder-probes")
+  case "calibrate-connectome":
+    let input = try read(DecoderCalibrationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    let proposal = try MLXConnectomeDecoderCalibration.update(planSHA256: input.probePlanSHA256,
+      negativeEvaluationSHA256: input.negativeEvaluationSHA256,
+      positiveEvaluationSHA256: input.positiveEvaluationSHA256, directory: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try BrainReachHoldExperiment.retain(proposal, directory: store), kind: "unevaluated-connectome-decoder-proposal")
+  case "study-connectome":
+    let input = try read(DecoderStudyInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try decoderStudy(input, directory: store), kind: "unevaluated-connectome-decoder-proposal")
+  default:
+    throw ConnectomeError.invalid("unsupported experiment command")
   }
   let storePath: String = try {
     let object = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
