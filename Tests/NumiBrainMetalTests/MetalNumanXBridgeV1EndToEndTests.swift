@@ -140,6 +140,27 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v6>.offset(of: \.expected_costal_binding_fingerprint), 232)
   }
 
+  func testPreparedInitialStateRequiresCompleteSourceOwnerAndV7Layout() throws {
+    typealias Initial = MetalNumanXBridgeV1Runtime.PreparedInitialState
+    typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
+    XCTAssertThrowsError(try Initial(payloadPath: "", fingerprint: 1))
+    XCTAssertThrowsError(try Initial(payloadPath: "initial\0other", fingerprint: 1))
+    XCTAssertThrowsError(try Initial(payloadPath: "initial.nhinit", fingerprint: 0))
+    let initial = try Initial(payloadPath: "initial.nhinit", fingerprint: 8)
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 1,
+      worldFingerprint: 2, preparedInitialState: initial))
+    XCTAssertThrowsError(try World(packagePath: "world", humanSourceFingerprint: 1,
+      worldFingerprint: 2, sourceJointEqualities: .init(payloadPath: "eq", fingerprint: 3),
+      preparedInitialState: initial))
+    let world = try World(packagePath: "world", humanSourceFingerprint: 1, worldFingerprint: 2,
+      sourceJointEqualities: .init(payloadPath: "eq", fingerprint: 3),
+      sourceJointLimits: .init(payloadPath: "limit", fingerprint: 4), preparedInitialState: initial)
+    XCTAssertEqual(world.preparedInitialState?.fingerprint, 8)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v7>.stride, 264)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v7>.offset(of: \.initial_state_payload_path), 248)
+    XCTAssertEqual(MemoryLayout<mrnx_runtime_config_v7>.offset(of: \.expected_initial_state_fingerprint), 256)
+  }
+
   func testCostalOwnershipRequiresConstrainedWorldAndV5Layout() throws {
     typealias Tissue = MetalNumanXBridgeV1Runtime.CostalTissueOwnership
     typealias World = MetalNumanXBridgeV1Runtime.AuthoredMatterWorld
@@ -1309,9 +1330,59 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         bindingPayloadPath: XCTUnwrap(environment[tissueKeys[1]]),
         bindingFingerprint: XCTUnwrap(environment[tissueKeys[2]].flatMap { UInt64($0, radix: 16) }))
     }
+    var initial: MetalNumanXBridgeV1Runtime.PreparedInitialState?
+    if environment["NUMANX_INITIAL_STATE"] != nil || environment["NUMANX_INITIAL_STATE_FP"] != nil {
+      initial = try .init(payloadPath: XCTUnwrap(environment["NUMANX_INITIAL_STATE"]),
+        fingerprint: XCTUnwrap(environment["NUMANX_INITIAL_STATE_FP"].flatMap { UInt64($0, radix: 16) }))
+    }
     return try .init(packagePath: path,
       humanSourceFingerprint: human, worldFingerprint: world,
-      sourceJointEqualities: equalities, sourceJointLimits: limits, costalTissueOwnership: tissue)
+      sourceJointEqualities: equalities, sourceJointLimits: limits, costalTissueOwnership: tissue,
+      preparedInitialState: initial)
+  }
+
+  func testPreparedInitialStateNativeAdmissionRejectsPayloadDrift() throws {
+    let world = try configuredAuthoredWorld()
+    guard let initial = world.preparedInitialState, world.costalTissueOwnership == nil else {
+      throw XCTSkip("NHINIT1 prepared small authored fixture is not configured")
+    }
+    let paths = try bridgePaths()
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let original = try Data(contentsOf: URL(fileURLWithPath: initial.payloadPath))
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    func make(_ state: MetalNumanXBridgeV1Runtime.PreparedInitialState?) throws -> MetalNumanXBridgeV1Runtime {
+      let candidate = try MetalNumanXBridgeV1Runtime.AuthoredMatterWorld(
+        packagePath: world.packagePath, humanSourceFingerprint: world.humanSourceFingerprint,
+        worldFingerprint: world.worldFingerprint, sourceJointEqualities: world.sourceJointEqualities,
+        sourceJointLimits: world.sourceJointLimits, preparedInitialState: state)
+      return try MetalNumanXBridgeV1Runtime(libraryPath: paths.library, device: device,
+        configuration: .init(rigidPayloadPath: paths.rigid, musclePayloadPath: paths.muscle,
+          supportContactPayloadPath: paths.contacts, visualPackPath: paths.visualPack,
+          visionProfilePath: paths.visionProfile, metalRoboMetallibPath: paths.metalRoboMetallib,
+          matterMetallibPath: paths.matterMetallib, timestepMicroseconds: 100,
+          maximumRetainedBytes: 1 << 30, transactionSlotCount: 2, authoredMatterWorld: candidate))
+    }
+    let valid = try make(initial)
+    XCTAssertEqual(try valid.currentWorldInfo().worldFingerprint, world.worldFingerprint)
+    // Omitting the prepared state must not silently relocate the cooked nodes.
+    XCTAssertThrowsError(try make(nil))
+    let mutations: [(String, Int?, UInt8)] = [
+      ("fingerprint", nil, 0), ("magic", 0, 1), ("abi", 8, 1), ("dimension", 16, 1),
+      ("flags", 32, 1), ("reserved", 36, 1), ("human", 40, 1), ("world", 48, 1),
+      ("clock", 56, 1), ("archive", 64, 1), ("root-frame", 99, 16),
+      ("root-quaternion", 123, 32), ("activation", 1131, 64), ("fiber", 1135, 128)
+    ]
+    for (name, offset, mask) in mutations {
+      var payload = original
+      if let offset { payload[offset] ^= mask }
+      let url = directory.appendingPathComponent(name + ".nhinit")
+      try payload.write(to: url)
+      let fingerprint = payload.reduce(UInt64(0xcbf29ce484222325)) { ($0 ^ UInt64($1)) &* 0x100000001b3 }
+      XCTAssertThrowsError(try make(.init(payloadPath: url.path,
+        fingerprint: offset == nil ? fingerprint ^ 1 : fingerprint)), name)
+    }
   }
 
   func testSourceJointLimitNativeAdmissionRejectsPayloadDrift() throws {
@@ -1353,6 +1424,24 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     authoredWorld: MetalNumanXBridgeV1Runtime.AuthoredMatterWorld?
   ) throws {
     let gateBTimestepMicroseconds: UInt64 = authoredWorld?.costalTissueOwnership == nil ? 100 : 10
+    func recordPreparedState(_ aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot, device: any MTLDevice) throws {
+      guard authoredWorld?.preparedInitialState != nil,
+        ProcessInfo.processInfo.environment["NUMANX_GATE_B_EVIDENCE"] == "1" else { return }
+      let kinesthesia = try XCTUnwrap(aggregate.channels.first { $0.modality == .kinesthesia })
+      let vestibular = try XCTUnwrap(aggregate.channels.first { $0.modality == .vestibular })
+      let k = try qualificationUInt32s(from: qualificationReadback(kinesthesia.values, device: device))
+        .map { Float(bitPattern: $0) }
+      let root = try qualificationUInt32s(from: qualificationReadback(vestibular.values, device: device))
+        .map { Float(bitPattern: $0) }
+      let q = Array(root.prefix(7)) + (6..<128).map { k[7 * $0] }
+      let v = (0..<128).map { k[7 * $0 + 1] }
+      let record: [String: Any] = ["schema": "numi.human.accepted-prepared-state.v1",
+        "physics_generation": aggregate.physicsGeneration,
+        "elapsed_microseconds": aggregate.physicsGeneration * gateBTimestepMicroseconds,
+        "q": q, "v": v]
+      let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+      print("prepared_accepted_state=" + String(decoding: data, as: UTF8.self))
+    }
     let initialCommittedTimestampMicroseconds: UInt64 = 1_000
     func gateBTimestamp(_ boundary: UInt64) -> BrainTimestamp {
       BrainTimestamp(
@@ -1471,6 +1560,12 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
             }
           }
         }
+        if let initial = authoredWorld.preparedInitialState {
+          for byte in "NHINIT1".utf8 { expectedSource = (expectedSource ^ UInt64(byte)) &* fnvPrime }
+          for shift in stride(from: 0, to: 64, by: 8) {
+            expectedSource = (expectedSource ^ ((initial.fingerprint >> shift) & 0xff)) &* fnvPrime
+          }
+        }
         XCTAssertEqual(native.info.modelSourceFingerprint, expectedSource,
           "The source equality program must participate in the runtime model identity")
         if let expected = ProcessInfo.processInfo.environment["NUMANX_CONSTRAINED_HUMAN_SOURCE_FP"] {
@@ -1508,6 +1603,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     )
     let physical = first.physical
     let aggregate = first.aggregate
+    try recordPreparedState(aggregate, device: device)
     XCTAssertNil(first.cultureActionGeneration)
     XCTAssertEqual(aggregate.publicationEpoch, 1)
     XCTAssertEqual(aggregate.brainGeneration, brain.committedGeneration)
@@ -1660,6 +1756,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       XCTAssertNotEqual(second.motorExcitations, first.motorExcitations)
     }
     XCTAssertEqual(second.physical.identity.controlStep, 2)
+    try recordPreparedState(second.aggregate, device: device)
     XCTAssertEqual(second.aggregate.publicationEpoch, 2)
     XCTAssertEqual(second.aggregate.brainGeneration, 2)
     XCTAssertEqual(second.aggregate.physicsGeneration, 2)
@@ -1769,6 +1866,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       sensors: thirdSensors,
       device: device
     )
+    try recordPreparedState(third.aggregate, device: device)
     XCTAssertEqual(third.aggregate.publicationEpoch, 3)
     XCTAssertEqual(third.aggregate.brainGeneration, 3)
     XCTAssertEqual(third.aggregate.physicsGeneration, 3)
@@ -1892,6 +1990,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       retried.cultureActionGeneration,
       cultureBeforeReject?.culture.generation
     )
+    try recordPreparedState(retried.aggregate, device: device)
     XCTAssertEqual(retried.aggregate.publicationEpoch, 4)
     XCTAssertEqual(retried.aggregate.brainGeneration, 4)
     XCTAssertEqual(retried.aggregate.physicsGeneration, 4)
@@ -1999,6 +2098,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         sensors: sensors,
         device: device
       ).aggregate
+      try recordPreparedState(heldoutAggregate, device: device)
     }
     XCTAssertEqual(heldoutAggregate.brainGeneration, 8)
     let heldoutBatch = try brain.makeLearningBatch()

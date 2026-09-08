@@ -191,3 +191,24 @@ The anatomical source remains fourteen regions with 13,516 nodes, 46,278
 tetrahedra and 2,871 torso attachments. All rib/sternal endpoints resolve to
 torso 20. These contracts do not establish independent rib articulation,
 experimental tissue calibration, sustained control or real-time operation.
+
+## Prepared construction state (v7)
+
+`PreparedInitialState(payloadPath:fingerprint:)` carries an immutable native
+NHINIT1 initial condition through `AuthoredMatterWorld.preparedInitialState`.
+It requires both source joint equalities and limits. Gate C accepts
+`--initial-state PATH --initial-state-fp HEX` with the same authored world and
+source-law arguments. Swift transports this descriptor; native code admits
+complete q/v and source-ordered excitation, activation and fibre state, binds
+source/world/clock identity and validates the matching FEM attachment frames.
+Source rest coordinates remain unchanged, and no live reset is installed.
+
+The prepared stance qualification also covers curved NHCNT2 contact rows. The
+native GPU reduces the 18 physical endpoint rows into ten source-geometry touch
+receptors, conserving impulse and centre of pressure. Supplemental sensing and
+the optional culture consumer share that derived receptor view; physical force
+and acceptance remain Matter-owned.
+
+A v7 construction/transaction pass is not a claim of equilibrium, calibrated
+anatomical tissue, sustained standing/walking or performance. The native format
+and validation rules are in `docs/HUMAN_PREPARED_INITIAL_STATE.md` in numi-lab.

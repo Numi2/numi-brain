@@ -211,7 +211,8 @@ private func authoredMatterWorld(in options: [String: String]) throws
   let equalityKeys = ["--joint-equalities", "--joint-equality-fp"]
   let limitKeys = ["--joint-limits", "--joint-limit-fp"]
   let tissueKeys = ["--costal-cartilage", "--costal-binding", "--costal-binding-fp"]
-  guard (keys + equalityKeys + limitKeys + tissueKeys).contains(where: { options[$0] != nil }) else {
+  let initialKeys = ["--initial-state", "--initial-state-fp"]
+  guard (keys + equalityKeys + limitKeys + tissueKeys + initialKeys).contains(where: { options[$0] != nil }) else {
     _ = required("--material", in: options)
     return nil
   }
@@ -243,10 +244,19 @@ private func authoredMatterWorld(in options: [String: String]) throws
       bindingPayloadPath: required("--costal-binding", in: options),
       bindingFingerprint: fingerprint("--costal-binding-fp", in: options))
   }
+  var initial: MetalNumanXBridgeV1Runtime.PreparedInitialState?
+  if initialKeys.contains(where: { options[$0] != nil }) {
+    guard initialKeys.allSatisfy({ options[$0] != nil }), limits != nil else {
+      usage("Prepared state requires --initial-state, --initial-state-fp and source joint equalities/limits")
+    }
+    initial = try .init(payloadPath: required("--initial-state", in: options),
+      fingerprint: fingerprint("--initial-state-fp", in: options))
+  }
   return try .init(packagePath: required("--matter-world", in: options),
     humanSourceFingerprint: fingerprint("--human-source-fp", in: options),
     worldFingerprint: fingerprint("--matter-world-fp", in: options),
-    sourceJointEqualities: equalities, sourceJointLimits: limits, costalTissueOwnership: tissue)
+    sourceJointEqualities: equalities, sourceJointLimits: limits, costalTissueOwnership: tissue,
+    preparedInitialState: initial)
 }
 
 private func nativeConfiguration(in options: [String: String], timestep: UInt32) throws
@@ -285,6 +295,7 @@ private func usage(_ message: String? = nil) -> Never {
     through native configuration v4. The equality key is FNV-1a64 of its bytes;
     --human-source-fp remains the base NHRIGID/NHMYO/NHCNT world-admission key.
     Unsupported native v4 fails without an unconstrained fallback.
+    Add --initial-state PATH --initial-state-fp HEX for NHINIT1 prepared construction with source limits
     Add --joint-limits PATH --joint-limit-fp HEX for NHLIM1 scalar source limits
     through native configuration v6. This requires NHEQ2 and optionally accepts
     the complete costal ownership group. The limit key is FNV-1a64 of its bytes.

@@ -50,6 +50,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v6>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV7 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v7>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
@@ -141,6 +145,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreateV4: RuntimeCreateV4?
   let runtimeCreateV5: RuntimeCreateV5?
   let runtimeCreateV6: RuntimeCreateV6?
+  let runtimeCreateV7: RuntimeCreateV7?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
@@ -209,6 +214,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCreateV6 = try? Self.symbol(
         "mrnx_bridge_v1_runtime_create_v6", library: library
+      )
+      runtimeCreateV7 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v7", library: library
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
@@ -1249,6 +1257,23 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
   }
 
+  /// Construction-only NHINIT1 transport. Native code owns finite-state,
+  /// source/world/clock, attachment-frame and immutable identity admission.
+  public struct PreparedInitialState: Sendable {
+    public let payloadPath: String
+    public let fingerprint: UInt64
+
+    public init(payloadPath: String, fingerprint: UInt64) throws {
+      guard !payloadPath.isEmpty, !payloadPath.utf8.contains(0), fingerprint != 0 else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Prepared initial state requires an NHINIT1 path and nonzero fingerprint"
+        )
+      }
+      self.payloadPath = payloadPath
+      self.fingerprint = fingerprint
+    }
+  }
+
   public struct AuthoredMatterWorld: Sendable {
     public let packagePath: String
     public let humanSourceFingerprint: UInt64
@@ -1256,16 +1281,23 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let sourceJointEqualities: SourceJointEqualities?
     public let sourceJointLimits: SourceJointLimits?
     public let costalTissueOwnership: CostalTissueOwnership?
+    public let preparedInitialState: PreparedInitialState?
 
     public init(packagePath: String, humanSourceFingerprint: UInt64,
                 worldFingerprint: UInt64,
                 sourceJointEqualities: SourceJointEqualities? = nil,
                 sourceJointLimits: SourceJointLimits? = nil,
-                costalTissueOwnership: CostalTissueOwnership? = nil) throws {
+                costalTissueOwnership: CostalTissueOwnership? = nil,
+                preparedInitialState: PreparedInitialState? = nil) throws {
       guard !packagePath.isEmpty, !packagePath.utf8.contains(0),
         humanSourceFingerprint != 0, worldFingerprint != 0 else {
         throw MetalNumanXBridgeV1Error.invalidABI(
           "Authored Matter requires a package path and nonzero Human/world identities"
+        )
+      }
+      guard preparedInitialState == nil || (sourceJointLimits != nil && sourceJointEqualities != nil) else {
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Prepared initial state requires the complete NHEQ2/NHLIM1 authored-world solver"
         )
       }
       guard sourceJointLimits == nil || sourceJointEqualities != nil else {
@@ -1284,6 +1316,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.sourceJointEqualities = sourceJointEqualities
       self.sourceJointLimits = sourceJointLimits
       self.costalTissueOwnership = costalTissueOwnership
+      self.preparedInitialState = preparedInitialState
     }
   }
 
@@ -1446,7 +1479,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     }
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
     if let world = configuration.authoredMatterWorld {
-      if world.sourceJointLimits != nil {
+      if world.preparedInitialState != nil {
+        guard symbols.runtimeCreateV7 != nil else {
+          throw MetalNumanXBridgeV1Error.invalidABI("Native runtime lacks prepared initial state configuration v7")
+        }
+      } else if world.sourceJointLimits != nil {
         guard symbols.runtimeCreateV6 != nil else {
           throw MetalNumanXBridgeV1Error.invalidABI(
             "Native runtime lacks source joint limit configuration v6"
@@ -1543,6 +1580,17 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                                             limited.costal_cartilage_payload_path = cartilage
                                             limited.costal_binding_payload_path = binding
                                             limited.expected_costal_binding_fingerprint = world.costalTissueOwnership?.bindingFingerprint ?? 0
+                                            if let initial = world.preparedInitialState {
+                                              return initial.payloadPath.withCString { initialPath in
+                                                var prepared = mrnx_runtime_config_v7()
+                                                prepared.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V7)
+                                                prepared.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v7>.stride)
+                                                prepared.runtime = limited
+                                                prepared.initial_state_payload_path = initialPath
+                                                prepared.expected_initial_state_fingerprint = initial.fingerprint
+                                                return symbols.runtimeCreateV7?(&prepared, &rawInfo)
+                                              }
+                                            }
                                             return symbols.runtimeCreateV6?(&limited, &rawInfo)
                                           }
                                         }
