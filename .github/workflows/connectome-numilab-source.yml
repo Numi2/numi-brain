@@ -1,0 +1,30 @@
+name: Retain pinned NumiLab integration source
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/connectome-numilab-source.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Numi2/numi-lab
+          ref: 68f5aa441a8437426de193a5c9beeac5a78113b6
+          persist-credentials: false
+      - name: Archive existing native interfaces and implementations without executing them
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/numilab-revision.txt
+          git archive --format=tar.gz --output=diagnostics/native-source.tar.gz HEAD include src apps CMakeLists.txt AGENTS.md
+          sha256sum diagnostics/native-source.tar.gz > diagnostics/source.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: numilab-native-integration-source
+          path: diagnostics/
+          retention-days: 7
+          if-no-files-found: error
