@@ -37,7 +37,7 @@ Q multiply(Q a,Q b) {
 V rotate(Q q,V v) { auto t=scale(cross({q[0],q[1],q[2]},v),2);return add(v,add(scale(t,q[3]),cross({q[0],q[1],q[2]},t))); }
 Q angle(V axis,double a) { const auto s=std::sin(a/2);return {axis[0]*s,axis[1]*s,axis[2]*s,std::cos(a/2)}; }
 struct Joint {
- uint32_t id,parent,child,kind,qIndex;
+ uint32_t id,parent,child,kind,qIndex=MR_INVALID_INDEX,vIndex=MR_INVALID_INDEX;
  V parentAnchor,childAnchor,axis{};
  Q orientation;
  float lower=0,upper=0,rest=0;
@@ -54,13 +54,17 @@ std::vector<Joint> convert(const metalrobo::EngineModel &m) {
   const bool fixed=j.jointType==MR_JOINT_FIXED;
   if(j.nq!=(fixed?0u:1u)||j.nv!=(fixed?0u:1u)) throw std::runtime_error("native joint coordinate dimensions disagree");
   const auto rp=normalized(quat(j.parentRotation)), rc=normalized(quat(j.childRotation));
-  Joint out{i,j.parentBody,j.childBody,fixed?0u:(j.jointType==MR_JOINT_PRISMATIC?2u:1u),j.qOffset,
-    xyz(j.parentAnchor),xyz(j.childAnchor),{},multiply(rp,conjugate(rc))};
+  Joint out;
+  out.id=i;out.parent=j.parentBody;out.child=j.childBody;
+  out.kind=fixed?0u:(j.jointType==MR_JOINT_PRISMATIC?2u:1u);
+  out.parentAnchor=xyz(j.parentAnchor);out.childAnchor=xyz(j.childAnchor);
+  out.orientation=multiply(rp,conjugate(rc));
   if(!fixed) {
    if(j.vOffset>=m.dofs.size()||j.qOffset>=m.defaultQ.size()) throw std::runtime_error("coordinate range missing");
    const auto &d=m.dofs[j.vOffset];
    if(d.jointIndex!=i || d.qIndex!=j.qOffset || d.vIndex!=j.vOffset || d.localDof!=0 ||
       !(d.flags&MR_DOF_FLAG_POSITION_LIMIT)) throw std::runtime_error("coordinate needs exact native ownership and authored bounds");
+   out.qIndex=d.qIndex;out.vIndex=d.vIndex;
    out.lower=d.limits.x;out.upper=d.limits.y;out.rest=m.defaultQ[j.qOffset];
    if(!std::isfinite(out.rest)||!std::isfinite(out.lower)||!std::isfinite(out.upper)||
       !(out.lower<out.upper)||out.rest<out.lower||out.rest>out.upper) throw std::runtime_error("invalid authored joint range");
@@ -131,8 +135,21 @@ std::string exportRobot(const metalrobo::RobotPack &pack) {
  for(const auto &a:pack.actuators) {
   if(a.id.empty()||!ids.insert(a.id).second||!std::isfinite(a.scale)||!std::isfinite(a.responseTimeSeconds)||a.responseTimeSeconds<0)
    throw std::runtime_error("invalid authored actuator identity or scale");
+  const Joint *coordinate=nullptr;
+  if(a.kind==metalrobo::RobotActuatorKind::jointPosition || a.kind==metalrobo::RobotActuatorKind::jointVelocity ||
+     a.kind==metalrobo::RobotActuatorKind::jointEffort || a.kind==metalrobo::RobotActuatorKind::gripperPosition) {
+   const auto it=std::find(m.jointNames.begin(),m.jointNames.end(),a.target);
+   if(it==m.jointNames.end() || a.component!=0) throw std::runtime_error("joint actuator target/component does not resolve exactly");
+   const auto index=static_cast<size_t>(std::distance(m.jointNames.begin(),it));
+   if(index>=joints.size() || joints[index].kind==0 || joints[index].qIndex==MR_INVALID_INDEX || joints[index].vIndex==MR_INVALID_INDEX)
+    throw std::runtime_error("joint actuator has no scalar native coordinate identity");
+   coordinate=&joints[index];
+  }
   if(!first)s<<',';first=false;
-  s<<"{\"id\":"<<quoted(a.id)<<",\"kind\":"<<uint32_t(a.kind)<<",\"target\":"<<quoted(a.target)<<",\"scale\":"<<a.scale<<",\"responseTimeSeconds\":"<<a.responseTimeSeconds<<",\"component\":"<<a.component<<",\"parameters\":[";
+  s<<"{\"id\":"<<quoted(a.id)<<",\"kind\":"<<uint32_t(a.kind)<<",\"target\":"<<quoted(a.target)<<",\"scale\":"<<a.scale<<",\"responseTimeSeconds\":"<<a.responseTimeSeconds<<",\"component\":"<<a.component<<",\"qIndex\":";
+  if(coordinate)s<<coordinate->qIndex;else s<<"null";
+  s<<",\"vIndex\":";if(coordinate)s<<coordinate->vIndex;else s<<"null";
+  s<<",\"parameters\":[";
   const auto p=a.parameters;const std::array<float,4> pars{p.x,p.y,p.z,p.w};
   for(size_t i=0;i<4;++i){if(!std::isfinite(pars[i]))throw std::runtime_error("nonfinite actuator parameter");if(i)s<<',';s<<pars[i];}
   s<<"],\"terms\":[";bool ft=true;for(const auto &t:a.terms){if(!std::isfinite(t.coefficient))throw std::runtime_error("nonfinite actuator term");if(!ft)s<<',';ft=false;s<<"{\"joint\":"<<quoted(t.joint)<<",\"coefficient\":"<<t.coefficient<<'}';}s<<"]}";
