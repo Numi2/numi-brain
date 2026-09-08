@@ -1,0 +1,117 @@
+name: Verify full connectome through the normal Apple controller
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.numi/connectome-finalize/**'
+      - '.github/workflows/connectome-finalize.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  full-controller:
+    runs-on: macos-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Apply exact audited source and normal-root tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          git rev-parse HEAD > diagnostics/base-revision.txt
+          python3 - <<'PY'
+          import base64,hashlib,lzma,pathlib,re,subprocess
+          root=pathlib.Path('.numi/connectome-finalize')
+          data=base64.b64decode(''.join((root/f'{i:02}.b64').read_text().strip() for i in range(2)),validate=True)
+          assert hashlib.sha256(data).hexdigest()=='d9246b682ce717093f70208b8fa022d231a0ca6988ee4f0f48168a25fbe5f63c'
+          patch=lzma.decompress(data)
+          assert len(patch)==48786
+          paths=re.findall(r'^diff --git a/(\S+) b/\1$',patch.decode(),re.M)
+          assert len(paths)==7 and len(set(paths))==7
+          assert all('..' not in pathlib.PurePosixPath(p).parts and p.startswith(('Tests/','tools/','docs/','evidence/','README.md')) for p in paths)
+          pathlib.Path('diagnostics/increment.patch').write_bytes(patch)
+          pathlib.Path('diagnostics/paths.txt').write_text('\n'.join(paths)+'\n')
+          subprocess.run(['git','apply','--check','--whitespace=error','diagnostics/increment.patch'],check=True)
+          subprocess.run(['git','apply','--whitespace=error','diagnostics/increment.patch'],check=True)
+          PY
+          git diff --check
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: Numi2/numi-brain
+          run-id: 34173965507
+          name: male-cns-v1.0-classified-neuron-pack
+          path: downloaded/
+      - name: Verify exact audited neuronal data
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          p=Path('downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='58314f44a02afe0726e5ba699a533d203b85b2fd6125bc0542b5db72cf993a1c'
+          PY
+          cp downloaded/packs/inspection.json diagnostics/full-graph-inspection.json
+          cp downloaded/packs/SHA256SUMS diagnostics/full-graph-sha256.txt
+      - name: Check native and source-table contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv /tmp/numi-connectome-final
+          /tmp/numi-connectome-final/bin/python -m pip install numpy pyarrow
+          /tmp/numi-connectome-final/bin/python tools/test_connectome_native.py 2>&1 | tee diagnostics/native-tests.txt
+          /tmp/numi-connectome-final/bin/python tools/test_connectome_import.py 2>&1 | tee diagnostics/import-tests.txt
+      - name: Exercise the real graph, independent minds, different bodies and checkpoint replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers | tee diagnostics/apple-host.txt
+          xcodebuild -version | tee -a diagnostics/apple-host.txt
+          swift --version | tee -a diagnostics/apple-host.txt
+          export NUMIBRAIN_CONNECTOME_GRAPH="$PWD/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns"
+          python3 tools/run_connectome_apple_tests.py 2>&1 | tee diagnostics/full-controller-tests.txt
+          grep 'NUMIBRAIN_FULL_CONNECTOME ' diagnostics/full-controller-tests.txt > diagnostics/full-graph-execution.txt
+      - name: Publish tested source without overwriting concurrent work
+        shell: bash
+        env:
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os,subprocess
+          p=Path('evidence/connectome-native-v1/README.md')
+          p.write_text(p.read_text()+'\n## Normal-root and full-graph Apple execution\n\nRun: '+os.environ['RUN_URL']+'\n\nThe exact owning Core and Metal source modules passed the focused Apple tests, including the full released graph, independent minds, 4- versus 6-actuator bodies, synchronous/asynchronous decisions, abort isolation and complete checkpoint restoration. Physical receipts in these tests are explicitly synthetic; this does not establish a physical robot task result.\n\n```text\n'+Path('diagnostics/full-graph-execution.txt').read_text()+'```\n')
+          paths=Path('diagnostics/paths.txt').read_text().splitlines()
+          subprocess.run(['git','add','--',*paths],check=True)
+          PY
+          git rm -- .numi/connectome-finalize/00.b64 .numi/connectome-finalize/01.b64 .github/workflows/connectome-finalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: verify the audited full male-CNS graph through native embodied control' -m 'Pin official source bytes, exclude non-neuronal records, retain classified isolated neurons, and exercise the normal Metal controller across independent minds and distinct actuator bodies. Verify root abort isolation and exact complete checkpoint restoration. Preserve the distinction between source/GPU execution and learned robot task success.'
+          git push origin HEAD:main
+          git rev-parse HEAD > diagnostics/published-revision.txt
+      - name: Retain exact source and execution diagnostics
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p diagnostics
+          git diff > diagnostics/remaining-diff.patch
+          tar --exclude=.git --exclude=.build --exclude=diagnostics --exclude=downloaded --exclude=.numi/connectome-finalize -czf /tmp/connectome-final-source.tar.gz .
+          mv /tmp/connectome-final-source.tar.gz diagnostics/source.tar.gz
+          shasum -a 256 diagnostics/source.tar.gz > diagnostics/source.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-full-controller-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 90
+          if-no-files-found: error
