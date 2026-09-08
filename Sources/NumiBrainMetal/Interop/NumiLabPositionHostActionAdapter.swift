@@ -2,10 +2,7 @@ import Foundation
 @preconcurrency import Metal
 import NumiBrainCore
 
-/// One exact action frame for the current compatibility transport. The public
-/// NumiLab rollout ABI packs [control step][environment][action]; a single
-/// NumiBrain motor candidate owns one environment and one control candidate,
-/// so this value cannot represent or be mistaken for a batched rollout.
+/// One [control step][environment][action] frame, never a batched rollout.
 @available(macOS 26.0, *)
 @frozen
 public struct NumiLabPositionHostActionFrame: Equatable, Sendable {
@@ -24,34 +21,28 @@ public struct NumiLabPositionHostActionFrame: Equatable, Sendable {
   }
 }
 
-/// Explicit compatibility transport for NumiLab's current host-action API.
-/// NumiBrain remains GPU-authoritative: this adapter only reads the exact
-/// lease-retained command allocation after transaction and live-rollout
-/// admission, then converts absolute position commands to the normalized task
-/// coordinates consumed by `mr_task_rollout_advance` / `advance(normalizedActions:)`.
-///
-/// This is intentionally not described as zero-copy. A future NumiLab device
-/// action boundary can replace this adapter without changing task ownership or
-/// joint-root semantics.
+/// Explicit host-action compatibility transport, not a zero-copy production path.
+/// Requires the actual completed motor submission ticket, not merely a retained
+/// GPU address or event. The owner remains responsible for settling/reaping work.
 @available(macOS 26.0, *)
 public enum NumiLabPositionHostActionAdapter {
-  public static func makeFrame(
-    submission: NumiLabPositionMotorSubmission,
-    lease: MetalTissueRuntime.NumanXMotorBufferLease,
-    encoder: NumiLabPositionActionEncoder,
-    transaction: BrainJointTransactionToken,
+  public static func makeFrame(submission: NumiLabPositionMotorSubmission,
+    ticket: MetalTissueRuntime.NumanXMotorSubmissionTicket,
+    encoder: NumiLabPositionActionEncoder, transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken,
-    liveRollout: NumiLabLiveRolloutIdentity
-  ) throws -> NumiLabPositionHostActionFrame {
-    try submission.validate(
-      transaction: transaction,
-      substep: substep,
-      liveRollout: liveRollout
-    )
-    guard liveRollout.environmentCount == 1,
-      submission.environmentIdentifier == 0,
-      encoder.isPhysicalOwnerBound,
-      encoder.compiledRunFingerprint == submission.compiledRunFingerprint,
+    liveRollout: NumiLabLiveRolloutIdentity) throws -> NumiLabPositionHostActionFrame {
+    // Poll terminal owner feedback and the exact motor-ready gate. No private
+    // queue, unsynchronized staging, or guessed producer completion is allowed.
+    guard try ticket.completionFeedbackIfAvailable() != nil,
+      ticket.motorEvaluation.hasValidSuccess(),
+      ticket.candidate.fingerprint == submission.motorCandidateFingerprint,
+      ticket.fastSystems.substep == substep else {
+      throw TissueError.transaction("NumiLab host transport requires this candidate's completed successful motor ticket")
+    }
+    let lease = ticket.buffers
+    try submission.validate(transaction: transaction, substep: substep, liveRollout: liveRollout)
+    guard liveRollout.environmentCount == 1, submission.environmentIdentifier == 0,
+      encoder.isPhysicalOwnerBound, encoder.compiledRunFingerprint == submission.compiledRunFingerprint,
       encoder.contract.worldFingerprint == submission.worldFingerprint,
       encoder.contract.taskFingerprint == submission.taskFingerprint,
       encoder.contract.actionFingerprint == submission.actionFingerprint,
@@ -59,48 +50,31 @@ public enum NumiLabPositionHostActionAdapter {
       UInt32(encoder.lanes.count) == submission.actionCount,
       lease.output.muscleExcitationGPUAddress == submission.sourceCommandGPUAddress,
       lease.output.muscleExcitationByteCount == Int(submission.sourceCommandByteCount),
-      lease.output.muscleCount == submission.actionCount
-    else {
-      throw TissueError.transaction(
-        "NumiLab host action transport does not own one exact single-environment motor allocation"
-      )
+      lease.output.muscleCount == submission.actionCount else {
+      throw TissueError.transaction("NumiLab host action transport does not own one exact single-environment motor allocation")
     }
-
-    let object = Unmanaged<AnyObject>
-      .fromOpaque(lease.excitationMetalBufferObject)
-      .takeUnretainedValue()
+    let object = Unmanaged<AnyObject>.fromOpaque(lease.excitationMetalBufferObject).takeUnretainedValue()
     guard let buffer = object as? any MTLBuffer else {
       throw TissueError.metal("NumiLab motor lease does not contain an MTLBuffer")
     }
-    let commands = try absolutePositionCommands(
-      buffer: buffer,
-      gpuAddress: submission.sourceCommandGPUAddress,
-      byteCount: Int(submission.sourceCommandByteCount),
-      scalarCount: Int(submission.actionCount)
-    )
+    let commands = try absolutePositionCommands(buffer: buffer,
+      gpuAddress: submission.sourceCommandGPUAddress, byteCount: Int(submission.sourceCommandByteCount),
+      scalarCount: Int(submission.actionCount))
     let normalized = try encoder.encodeAbsolutePositions(commands)
     guard normalized.count == Int(liveRollout.actionCount) else {
       throw TissueError.transaction("NumiLab action frame width changed after admission")
     }
-    return NumiLabPositionHostActionFrame(
-      normalizedActions: normalized,
-      liveRollout: liveRollout
-    )
+    return NumiLabPositionHostActionFrame(normalizedActions: normalized, liveRollout: liveRollout)
   }
 
-  /// Host readback is deliberately restricted to CPU-visible Metal storage.
-  /// Private-memory output must use a future physical-owner device-action path;
-  /// silently allocating an unsynchronized staging copy here would weaken the
-  /// producer/consumer timeline contract.
-  static func absolutePositionCommands(
-    buffer: any MTLBuffer,
-    gpuAddress: UInt64,
-    byteCount: Int,
-    scalarCount: Int
-  ) throws -> [Float] {
-    guard scalarCount > 0,
-      byteCount == scalarCount * MemoryLayout<Float>.stride,
-      buffer.gpuAddress > 0,
+  /// Testable range reader; production callers first validate terminal producer
+  /// feedback above. Managed memory needs resource synchronization not supplied
+  /// by this API; private memory is never staged behind the owning timeline.
+  static func absolutePositionCommands(buffer: any MTLBuffer, gpuAddress: UInt64,
+    byteCount: Int, scalarCount: Int) throws -> [Float] {
+    let expectedBytes = scalarCount.multipliedReportingOverflow(by: MemoryLayout<Float>.stride)
+    guard !expectedBytes.overflow, scalarCount > 0, scalarCount <= 4096,
+      byteCount == expectedBytes.partialValue, buffer.gpuAddress > 0,
       gpuAddress >= buffer.gpuAddress else {
       throw TissueError.transaction("NumiLab motor command range is malformed")
     }
@@ -111,23 +85,24 @@ public enum NumiLabPositionHostActionAdapter {
     let offset = Int(offset64)
     let (end, overflow) = offset.addingReportingOverflow(byteCount)
     guard !overflow, offset >= 0, end <= buffer.length,
-      offset.isMultiple(of: MemoryLayout<Float>.alignment),
-      buffer.storageMode == .shared || buffer.storageMode == .managed else {
-      throw TissueError.transaction(
-        "NumiLab host action transport requires an exact CPU-visible command buffer range"
-      )
+      offset.isMultiple(of: MemoryLayout<Float>.alignment) else {
+      throw TissueError.transaction("NumiLab host action transport requires an exact command buffer range")
     }
-    let values = buffer.contents().advanced(by: offset)
-      .assumingMemoryBound(to: Float.self)
+    try validateHostReadableStorage(buffer.storageMode)
+    let values = buffer.contents().advanced(by: offset).assumingMemoryBound(to: Float.self)
     var result = [Float]()
     result.reserveCapacity(scalarCount)
     for index in 0..<scalarCount {
       let value = values[index]
-      guard value.isFinite else {
-        throw TissueError.transaction("NumiLab motor command contains a non-finite scalar")
-      }
+      guard value.isFinite else { throw TissueError.transaction("NumiLab motor command contains a non-finite scalar") }
       result.append(value)
     }
     return result
+  }
+
+  static func validateHostReadableStorage(_ mode: MTLStorageMode) throws {
+    guard mode == .shared else {
+      throw TissueError.transaction("NumiLab host transport requires shared storage and completed producer work")
+    }
   }
 }

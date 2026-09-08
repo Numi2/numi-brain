@@ -28,26 +28,24 @@ public struct NumiLabExecutedPositionCandidate: Sendable {
   public let acceptedPhysicsState: AcceptedPhysicsStateToken
 }
 
-/// Ordered compatibility execution of one position-command candidate.
-/// The native owner supplies its logical-byte resident digest. This function
-/// holds exclusive rollout access across advance and digest capture, but does
-/// not commit the Brain root or roll the physical world back. A post-advance
-/// failure quarantines the target until disposal and fresh physical restoration.
+/// Ordered host-action compatibility execution, not a joint publication owner.
+/// Producer completion, native generation, action conversion, advance and digest
+/// capture are admitted in order. A post-advance failure quarantines the world;
+/// neither this function nor Brain abort is claimed to restore physical state.
 @available(macOS 26.0, *)
 public enum NumiLabPositionPhysicalExecutor {
   public static func execute(submission: NumiLabPositionMotorSubmission,
-    lease: MetalTissueRuntime.NumanXMotorBufferLease,
+    ticket: MetalTissueRuntime.NumanXMotorSubmissionTicket,
     encoder: NumiLabPositionActionEncoder, transaction: BrainJointTransactionToken,
     substep: BrainJointSubstepToken, rollout: NumiLabBorrowedTaskRollout,
     policyRevision: UInt64 = 0) throws -> NumiLabExecutedPositionCandidate {
     return try rollout.withExclusiveAccess {
-      // This fallible preflight must run BEFORE native physics can mutate.
-      let (physicsGeneration, overflow) = transaction.basePhysicsGeneration.addingReportingOverflow(1)
-      guard !overflow else { throw TissueError.transaction("NumiLab accepted physics generation overflow") }
       let before = try rollout.snapshot()
+      // Reject exhausted/stale/reused roots BEFORE native physics can mutate.
+      let physicsGeneration = try before.nextPhysicsGeneration(expectedBase: transaction.basePhysicsGeneration)
       try submission.validate(transaction: transaction, substep: substep, liveRollout: before.identity)
       let frame = try NumiLabPositionHostActionAdapter.makeFrame(submission: submission,
-        lease: lease, encoder: encoder, transaction: transaction, substep: substep, liveRollout: before.identity)
+        ticket: ticket, encoder: encoder, transaction: transaction, substep: substep, liveRollout: before.identity)
       let advance = try rollout.advance(frame: frame, policyRevision: policyRevision)
       do {
         guard advance.before == before, advance.fullyAccepted else {

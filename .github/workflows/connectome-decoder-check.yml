@@ -70,10 +70,10 @@ jobs:
           NUMIBRAIN_CONNECTOME_GRAPH: ${{ github.workspace }}/downloaded/packs/male-cns-v1.0-neuron-unsigned.numicns
         run: |
           set -euo pipefail
-          swift test -c release --skip-build --filter 'NumiLabRolloutAccessGateTests|NumiLabRolloutReceiptTests|NumiLabReplayCheckpointTests|NumiLabPositionHostActionAdapterTests|NumiLabTaskActionContractTests|NumiLabRobotInterfaceTests|ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
+          swift test -c release --skip-build --filter 'NumiLab.*Tests|ConnectomeControllerTests|ConnectomeDecoderForkTests|ConnectomeBodyContractTests|ConnectomeGraphTests|ConnectomeConnectivityAuditTests|ConnectomeDecoderStudyTests|MetalConnectomeKernelTests|MLXConnectomeDecoderCalibrationTests' 2>&1 | tee diagnostics/tests.txt
           grep 'NUMIBRAIN_FULL_CONNECTOME_KERNEL ' diagnostics/tests.txt > diagnostics/full-graph-kernel.txt
           git diff --exit-code
-          printf '%s\n' 'Full package build and selected source, shader, learner, action-contract, gate, receipt and replay checks. Native fault fixtures are synthetic. Production Metal 4 brain/robot campaigns, physical rollback, learned task performance and hardware safety are not qualified by this job.' > diagnostics/scope.txt
+          printf '%s\n' 'Full package build and selected source, shader, learner, action-contract, gate, receipt, readiness and replay checks. Native fault fixtures are synthetic. Production Metal 4 brain/robot campaigns, physical rollback, learned task performance and hardware safety are not qualified by this job.' > diagnostics/scope.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
