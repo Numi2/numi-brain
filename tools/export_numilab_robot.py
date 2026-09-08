@@ -18,7 +18,7 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_REVISION = '68f5aa441a8437426de193a5c9beeac5a78113b6'
+DEFAULT_REVISION = '5db0c5aa169bfe1270ef7448e01dd7fbcd99d123'
 SOURCES = ['RunProgram', 'EngineModel', 'PX4X500', 'G1', 'FrankaHand',
            'SurgicalPSM', 'Franka', 'FrankaEngine', 'ConstraintIR', 'Model',
            'GeometryCooker', 'LocomotionWorld', 'ArticulatedDynamics']
@@ -77,7 +77,6 @@ def export(native: Path, destination: Path, revision: str, robots: list[str], cx
                                       'bodies': len(decoded['bodyNames']),
                                       'joints': len(decoded['joints']), 'actuators': len(decoded['actuators'])})
         (Path(stage)/'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True)+'\n')
-        # Reserve a fresh destination; never merge into or replace user files.
         destination.mkdir()
         try:
             for p in Path(stage).iterdir():
