@@ -1435,12 +1435,22 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         .map { Float(bitPattern: $0) }
       let q = Array(root.prefix(7)) + (6..<128).map { k[7 * $0] }
       let v = (0..<128).map { k[7 * $0 + 1] }
+      var packed = Data()
+      for value in q + v {
+        var word = value.bitPattern.littleEndian
+        withUnsafeBytes(of: &word) { packed.append(contentsOf: $0) }
+      }
       let record: [String: Any] = ["schema": "numi.human.accepted-prepared-state.v1",
         "physics_generation": aggregate.physicsGeneration,
         "elapsed_microseconds": aggregate.physicsGeneration * gateBTimestepMicroseconds,
-        "q": q, "v": v]
+        "nq": 129, "nv": 128, "q_v_fp32_le_base64": packed.base64EncodedString()]
       let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
-      print("prepared_accepted_state=" + String(decoding: data, as: UTF8.self))
+      // One write below PIPE_BUF avoids interleaving native stderr diagnostics
+      // into a long JSON array through xctest's merged output pipe.
+      let line = Data(("prepared_accepted_state=" + String(decoding: data, as: UTF8.self) + "\n").utf8)
+      XCTAssertLessThan(line.count, 4096)
+      let count = line.withUnsafeBytes { Darwin.write(STDOUT_FILENO, $0.baseAddress, $0.count) }
+      XCTAssertEqual(count, line.count, "accepted-state evidence write was incomplete")
     }
     let initialCommittedTimestampMicroseconds: UInt64 = 1_000
     func gateBTimestamp(_ boundary: UInt64) -> BrainTimestamp {
