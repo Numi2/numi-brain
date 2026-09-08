@@ -1,0 +1,43 @@
+name: Inspect Apple connectome execution hardware
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/connectome-hardware-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  metal4-device:
+    runs-on: macos-26-xlarge
+    timeout-minutes: 5
+    steps:
+      - name: Identify actual devices and Metal 4 factories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          sw_vers > diagnostics/host.txt
+          xcodebuild -version >> diagnostics/host.txt
+          swift --version >> diagnostics/host.txt
+          cat > /tmp/connectome-device.swift <<'SWIFT'
+          import Foundation
+          import Metal
+          var available = false
+          for device in MTLCopyAllDevices() {
+            let queue = device.makeMTL4CommandQueue() != nil
+            let allocator = device.makeCommandAllocator() != nil
+            let buffer = device.makeCommandBuffer() != nil
+            print("device=\(device.name) registry=\(device.registryID) familyMetal4=\(device.supportsFamily(.metal4)) queue=\(queue) allocator=\(allocator) commandBuffer=\(buffer)")
+            available = available || (queue && allocator && buffer)
+          }
+          print("productionMetal4Available=\(available)")
+          if !available { exit(2) }
+          SWIFT
+          swift /tmp/connectome-device.swift 2>&1 | tee diagnostics/devices.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connectome-apple-device-${{ github.sha }}
+          path: diagnostics/
+          retention-days: 30
+          if-no-files-found: error
