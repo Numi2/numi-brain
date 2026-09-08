@@ -34,14 +34,51 @@ final class NumiLabTaskActionContractTests: XCTestCase {
       actuatorIdentifiers: ids, normalizedMinimum: minimum, normalizedMaximum: maximum)
   }
 
+  private func receipt(q: UInt32? = 7, v: UInt32? = 6, scale: Float = 0.5,
+    lower: Float = 0, upper: Float = 1, actionFingerprint: UInt64 = 3) throws -> NumiLabCompiledTaskActionReceipt {
+    try NumiLabCompiledTaskActionReceipt(runFingerprint: 9, worldFingerprint: 1,
+      taskFingerprint: 2, actionFingerprint: actionFingerprint, robotFingerprint: 4,
+      bindings: [NumiLabCompiledTaskActionBinding(actionIndex: 0, qIndex: q, vIndex: v,
+        actuatorKind: .jointPosition, resolvedComponent: 0, componentLane: 0,
+        normalizedScale: scale, lowerTarget: lower, upperTarget: upper,
+        responseTimeSeconds: 0)])
+  }
+
   func testAbsoluteAndNormalizedPositionCoordinatesRoundTrip() throws {
     let robot = try robot()
     let encoder = try NumiLabPositionActionEncoder(robot: robot, contract: contract(robot))
+    XCTAssertFalse(encoder.isPhysicalOwnerBound)
     XCTAssertEqual(try encoder.encodeAbsolutePositions([0.5]), [0])
     XCTAssertEqual(try encoder.encodeAbsolutePositions([0.75]), [0.5])
     XCTAssertEqual(try encoder.encodeAbsolutePositions([0]), [-1])
     XCTAssertEqual(try encoder.decodeNormalizedPositions([0.5]), [0.75])
     XCTAssertEqual(try encoder.decodeNormalizedPositions([-1]), [0])
+  }
+
+  func testCompiledTaskReceiptProducesExecutionBoundEncoder() throws {
+    let robot = try robot(), contract = try contract(robot)
+    let encoder = try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt())
+    XCTAssertTrue(encoder.isPhysicalOwnerBound)
+    XCTAssertEqual(encoder.compiledRunFingerprint, 9)
+    XCTAssertEqual(encoder.lanes[0].qIndex, 7)
+    XCTAssertEqual(encoder.lanes[0].vIndex, 6)
+    XCTAssertEqual(encoder.lanes[0].minimumPosition, 0)
+    XCTAssertEqual(encoder.lanes[0].maximumPosition, 1)
+    XCTAssertEqual(try encoder.encodeAbsolutePositions([0.75]), [0.5])
+    XCTAssertThrowsError(try encoder.encodeAbsolutePositions([-0.25]))
+  }
+
+  func testCompiledTaskReceiptRejectsForeignCoordinateAuthorityAndIdentity() throws {
+    let robot = try robot(), contract = try contract(robot)
+    XCTAssertThrowsError(try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt(q: 8)))
+    XCTAssertThrowsError(try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt(scale: 0.25)))
+    XCTAssertThrowsError(try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt(lower: -1.25)))
+    XCTAssertThrowsError(try NumiLabPositionActionEncoder(robot: robot, contract: contract,
+      compiledTask: receipt(actionFingerprint: 30)))
   }
 
   func testJointLimitsDoNotSilentlyExpandNormalizedTaskAuthority() throws {
