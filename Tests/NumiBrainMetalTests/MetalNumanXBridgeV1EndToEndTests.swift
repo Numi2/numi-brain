@@ -94,6 +94,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   /// Equal-duration controller comparison at the native-admitted prepared pose.
   /// The independent loaded-equilibrium and behavior gates remain separate.
   func testPreparedRecruitmentAcceptedRoots() throws {
+    try qualifyPreparedRecruitment(rootCount: 4)
+  }
+
+  func testPreparedRecruitmentSixMillisecondHorizon() throws {
+    try qualifyPreparedRecruitment(rootCount: 64)
+  }
+
+  private func qualifyPreparedRecruitment(rootCount: UInt64) throws {
     guard let programPath = ProcessInfo.processInfo.environment["NUMANX_PREPARED_RECRUITMENT"] else {
       throw XCTSkip("prepared recruitment program is not configured")
     }
@@ -111,25 +119,11 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     let publication = try BrainParameterPublication.developmentalSeedV1(species: compiled.species, tissueParameters: .corticalSheetV0)
     func run(_ controller: MuscleLocomotorProgram?, unavailable: Bool = false) throws -> AcceptedScenario {
       try runAcceptedScenario(paths: paths, contactPath: paths.contacts, compiled: compiled,
-        publication: publication, device: device, rootCount: 4, timestepMicroseconds: 100,
+        publication: publication, device: device, rootCount: rootCount, timestepMicroseconds: 100,
         muscleLocomotor: controller, sensorIntervention: unavailable ? .ablated(.proprioception) : nil,
         authoredWorld: world)
     }
-    let active = try run(program), replay = try run(program)
-    let zero = try run(nil), unavailable = try run(program, unavailable: true)
-    XCTAssertEqual(active.motorExcitationsByGeneration, replay.motorExcitationsByGeneration)
-    XCTAssertEqual(active.sensorFingerprints, replay.sensorFingerprints)
-    XCTAssertTrue(active.motorExcitationsByGeneration[0].allSatisfy { $0 == 0 })
-    XCTAssertTrue(active.motorExcitationsByGeneration.dropFirst().allSatisfy { ($0.max() ?? 0) > 0 })
-    XCTAssertTrue(active.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0.isFinite && (0...1).contains($0) })
-    XCTAssertTrue(unavailable.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
-    XCTAssertTrue(zero.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
-    func muscleFeature(_ scenario: AcceptedScenario, _ feature: Int) throws -> [Float] {
-      stride(from: feature, to: 4160, by: 10).map { scenario.finalSensorValuesByModality[.proprioception]![$0] }
-    }
-    XCTAssertNotEqual(try muscleFeature(active, 1), try muscleFeature(zero, 1), "activation must respond")
-    XCTAssertNotEqual(try muscleFeature(active, 6), try muscleFeature(zero, 6), "applied force must respond")
-    for (label, scenario) in [("recruited", active), ("replay", replay), ("zero", zero), ("unavailable", unavailable)] {
+    func emit(_ label: String, _ scenario: AcceptedScenario) throws {
       for (index, frame) in scenario.sensorValuesByGeneration.enumerated() {
         let root = try XCTUnwrap(frame[.vestibular]), k = try XCTUnwrap(frame[.kinesthesia])
         let q = Array(root.prefix(7)) + (6..<128).map { k[7 * $0] }
@@ -155,7 +149,28 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         }
       }
     }
-    print("prepared_recruitment=observed roots_per_scenario=4 timestep_us=100 replay=bitwise unavailable=zero boundary=controller_transport_not_loaded_equilibrium_or_standing")
+    // Preserve every completed scenario even if a later one fails or times out.
+    let active = try run(program)
+    try emit("recruited", active)
+    let replay = try run(program)
+    try emit("replay", replay)
+    let zero = try run(nil)
+    try emit("zero", zero)
+    let unavailable = try run(program, unavailable: true)
+    try emit("unavailable", unavailable)
+    XCTAssertEqual(active.motorExcitationsByGeneration, replay.motorExcitationsByGeneration)
+    XCTAssertEqual(active.sensorFingerprints, replay.sensorFingerprints)
+    XCTAssertTrue(active.motorExcitationsByGeneration[0].allSatisfy { $0 == 0 })
+    XCTAssertTrue(active.motorExcitationsByGeneration.dropFirst().allSatisfy { ($0.max() ?? 0) > 0 })
+    XCTAssertTrue(active.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0.isFinite && (0...1).contains($0) })
+    XCTAssertTrue(unavailable.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
+    XCTAssertTrue(zero.motorExcitationsByGeneration.flatMap { $0 }.allSatisfy { $0 == 0 })
+    func muscleFeature(_ scenario: AcceptedScenario, _ feature: Int) throws -> [Float] {
+      stride(from: feature, to: 4160, by: 10).map { scenario.finalSensorValuesByModality[.proprioception]![$0] }
+    }
+    XCTAssertNotEqual(try muscleFeature(active, 1), try muscleFeature(zero, 1), "activation must respond")
+    XCTAssertNotEqual(try muscleFeature(active, 6), try muscleFeature(zero, 6), "applied force must respond")
+    print("prepared_recruitment=observed roots_per_scenario=\(rootCount) timestep_us=100 replay=bitwise unavailable=zero boundary=controller_transport_not_loaded_equilibrium_or_standing")
   }
 
   func testAuthoredMatterDescriptorRejectsMissingIdentity() throws {
