@@ -158,12 +158,14 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
   private func emitPreparedTrace(_ label: String, _ scenario: AcceptedScenario, timestepMicroseconds: UInt32 = 100) throws {
     for (index, frame) in scenario.sensorValuesByGeneration.enumerated() {
       try emitPreparedFrame(label, rootIndex: index + 1, frame: frame,
-        motorExcitations: scenario.motorExcitationsByGeneration[index], timestepMicroseconds: timestepMicroseconds)
+        motorExcitations: scenario.motorExcitationsByGeneration[index], timestepMicroseconds: timestepMicroseconds,
+        identity: scenario.acceptedIdentitiesByGeneration[index])
     }
   }
 
   private func emitPreparedFrame(_ label: String, rootIndex: Int,
-    frame: [SensoryModality: [Float]], motorExcitations: [Float], timestepMicroseconds: UInt32) throws {
+    frame: [SensoryModality: [Float]], motorExcitations: [Float], timestepMicroseconds: UInt32,
+    identity: PreparedAcceptedIdentity) throws {
     let root = try XCTUnwrap(frame[.vestibular]), k = try XCTUnwrap(frame[.kinesthesia])
     let q = Array(root.prefix(7)) + (6..<128).map { k[7 * $0] }
     let v = (0..<128).map { k[7 * $0 + 1] }
@@ -182,7 +184,10 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     }
     // Separate bounded records preserve state, command and force bytes atomically.
     for (kind, values) in [("qv", q + v), ("motor", motorExcitations)] + muscleFields {
-      let object: [String: Any] = ["schema": "numi.human.prepared-recruitment-trace.v2", "scenario": label,
+      let object: [String: Any] = ["schema": "numi.human.prepared-recruitment-trace.v3", "scenario": label,
+        "transaction_fingerprint": String(format: "%016llx", identity.transactionFingerprint),
+        "physics_generation": identity.physicsGeneration,
+        "accepted_timestamp_microseconds": identity.acceptedTimestampMicroseconds,
         "root": rootIndex, "elapsed_microseconds": rootIndex * Int(timestepMicroseconds), "kind": kind,
         "fp32_le_base64": packed(values)]
       let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
@@ -228,6 +233,116 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(zero.sensorFingerprints, replay.sensorFingerprints)
     XCTAssertEqual(zero.sensorValuesByGeneration, replay.sensorValuesByGeneration)
     print("prepared_timestep=observed roots_per_scenario=\(duration / timestep) timestep_us=\(timestep) duration_us=\(duration) replay=bitwise boundary=bounded_native_trajectory")
+  }
+
+  /// Actual prepared-state physics stays inside GateCRootRunner. This checks
+  /// attachment and accepted-only collection, not a standing trial or policy.
+  func testPreparedGateCBehaviorTelemetry() throws {
+    let environment = ProcessInfo.processInfo.environment
+    guard let programPath = environment["NUMANX_BEHAVIOR_METRIC_PROGRAM"] else {
+      throw XCTSkip("prepared Gate C behavior telemetry is not configured")
+    }
+    let expectedSHA = try XCTUnwrap(environment["NUMANX_BEHAVIOR_METRIC_SHA256"])
+    let outputPath = try XCTUnwrap(environment["NUMANX_BEHAVIOR_OUTPUT_DIRECTORY"])
+    let timestep = try XCTUnwrap(UInt32(environment["NUMANX_PREPARED_TIMESTEP_US"] ?? "25"))
+    let rootCount = try XCTUnwrap(UInt32(environment["NUMANX_BEHAVIOR_ROOTS"] ?? "4"))
+    guard timestep > 0, (2...16).contains(rootCount), !outputPath.isEmpty else {
+      XCTFail("invalid bounded behavior telemetry configuration"); return
+    }
+    let programData = try Data(contentsOf: URL(fileURLWithPath: programPath))
+    XCTAssertEqual(BrainPolicyEvidenceArtifact.sha256(programData), expectedSHA)
+    let output = URL(fileURLWithPath: outputPath, isDirectory: true)
+    guard !FileManager.default.fileExists(atPath: output.path) else {
+      XCTFail("behavior qualification output must be new; retained attempts cannot be overwritten"); return
+    }
+    try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+    let world = try configuredAuthoredWorld()
+    _ = try XCTUnwrap(world.preparedInitialState)
+    let paths = try bridgePaths(), device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    // This temporary context only decodes the actual anatomy needed to compile
+    // the Brain seed. All physical roots below use the one production runner.
+    let compiled: CompiledSpeciesTemplate = try {
+      let anatomyOwner = try makeNativeRuntime(paths: paths, device: device,
+        timestepMicroseconds: timestep, authoredWorld: world)
+      return try NumanXFullBodyTransportTemplate.compile(latencyMicroseconds: timestep,
+        anatomy: anatomyOwner.fullBodyAnatomy())
+    }()
+    let publication = try BrainParameterPublication.developmentalSeedV1(
+      species: compiled.species, tissueParameters: .corticalSheetV0)
+    let runner = try MetalNumanXGateCRootRunner(libraryPath: paths.library,
+      bridgeConfiguration: .init(rigidPayloadPath: paths.rigid,
+        musclePayloadPath: paths.muscle, supportContactPayloadPath: paths.contacts,
+        visualPackPath: paths.visualPack, visionProfilePath: paths.visionProfile,
+        metalRoboMetallibPath: paths.metalRoboMetallib,
+        matterMetallibPath: paths.matterMetallib, matterMaterialPath: "",
+        timestepMicroseconds: UInt64(timestep), maximumRetainedBytes: 1 << 30,
+        transactionSlotCount: 2, authoredMatterWorld: world),
+      publication: publication, artifactDirectory: output.appendingPathComponent("roots"),
+      episodeIdentifier: 1, randomSeed: 17, device: device)
+    try runner.configureBehaviorMetrics(path: programPath, expectedSHA256: expectedSHA)
+    let coordinates = try BrainPolicyNumanXDatasetCoordinates(
+      datasetSourceIdentifier: "accepted-behavior-producer-probe",
+      datasetSourceRevision: expectedSHA, episodeIdentifier: 1,
+      taskFingerprint: 0x4e4842485631, sceneFingerprint: world.worldFingerprint,
+      objectFingerprint: world.humanSourceFingerprint,
+      embodimentFingerprint: runner.nativeInfo.modelSourceFingerprint)
+    var accepted: UInt64 = 0, rejected: UInt64 = 0
+    var lastTransaction: UInt64 = 0
+    var lastAccepted: MetalNumanXGateCRootRunner.PublishedGenerations?
+    var roots: [[String: Any]] = []
+    for controlStep in UInt32(1)...rootCount {
+      let result = try runner.runRoot(controlStep: controlStep, coordinates: coordinates)
+      lastTransaction = result.execution.transactionFingerprint
+      if result.execution.outcome == .accepted {
+        accepted += 1
+        let aggregate = try XCTUnwrap(result.aggregate)
+        XCTAssertEqual(aggregate.transactionFingerprint, lastTransaction)
+        XCTAssertEqual(aggregate.physicsGeneration, accepted)
+        XCTAssertEqual(aggregate.acceptedTimestampMicroseconds, UInt64(timestep) * (1 + accepted))
+        XCTAssertNotEqual(result.execution.jointCommitFingerprint, 0)
+        lastAccepted = aggregate
+      } else {
+        rejected += 1
+        XCTAssertEqual(result.aggregate?.physicsGeneration ?? 0, accepted)
+        XCTAssertEqual(result.execution.jointCommitFingerprint, 0)
+      }
+      roots.append(["control_step": controlStep,
+        "outcome": result.execution.outcome == .accepted ? "accepted" : "rejected",
+        "transaction_fingerprint": String(format: "%016llx", lastTransaction),
+        "published_physics_generation": result.aggregate?.physicsGeneration ?? 0,
+        "published_timestamp_microseconds": result.aggregate?.acceptedTimestampMicroseconds ?? UInt64(timestep),
+        "execution_sha256": result.executionArtifactSHA256])
+      // Retain real completed attempts even if a later attempt fails.
+      try JSONSerialization.data(withJSONObject: roots, options: [.sortedKeys, .prettyPrinted])
+        .write(to: output.appendingPathComponent("completed-roots.json"), options: .atomic)
+    }
+    let first = try runner.collectBehaviorMetrics()
+    try first.json.write(to: output.appendingPathComponent("metric-snapshot.json"), options: .atomic)
+    let repeated = try runner.collectBehaviorMetrics()
+    try repeated.json.write(to: output.appendingPathComponent("metric-snapshot-repeat.json"), options: .atomic)
+    XCTAssertEqual(first.json, repeated.json, "explicit final flush must be exactly once and idempotent")
+    let metrics = first.snapshot
+    XCTAssertEqual(metrics.metricProgramSHA256, expectedSHA)
+    XCTAssertEqual(metrics.initialPhysicsGeneration, 0)
+    XCTAssertEqual(metrics.initialTimestampNanoseconds, UInt64(timestep) * 1000)
+    XCTAssertGreaterThan(metrics.initialTimestampNanoseconds, 0)
+    XCTAssertEqual(metrics.stepNanoseconds, UInt64(timestep) * 1000)
+    XCTAssertEqual(metrics.acceptedRootCount, accepted)
+    XCTAssertEqual(metrics.rejectedAttemptCount, rejected)
+    XCTAssertEqual(metrics.completedAttemptCount, UInt64(rootCount))
+    XCTAssertEqual(metrics.metricSampleCount, accepted, "only jointly accepted candidates may be reduced")
+    XCTAssertEqual(metrics.lastTransactionFingerprint, lastTransaction)
+    if rejected == 0 {
+      XCTAssertNotEqual(metrics.lastJointFenceFingerprint, 0)
+      XCTAssertEqual(metrics.endNanoseconds, try XCTUnwrap(lastAccepted).acceptedTimestampMicroseconds * 1000)
+    }
+    XCTAssertEqual(metrics.auditCoveredRootCount, 0)
+    XCTAssertEqual(metrics.auditCoveredAttemptCount, 0)
+    XCTAssertFalse(metrics.fullBehaviorQualified)
+    XCTAssertTrue(metrics.finalized)
+    XCTAssertEqual(accepted, UInt64(rootCount), "this bounded producer qualification requires all requested roots to publish")
+    XCTAssertEqual(rejected, 0)
+    print("prepared_behavior=observed roots=\(rootCount) accepted=\(accepted) rejected=\(rejected) samples=\(metrics.metricSampleCount) initial_ns=\(metrics.initialTimestampNanoseconds) end_ns=\(metrics.endNanoseconds) final_flush=bitwise boundary=accepted_metric_producer_not_full_behavior")
   }
 
   func testAuthoredMatterDescriptorRejectsMissingIdentity() throws {
@@ -2417,11 +2532,30 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     )
   }
 
+  private struct PreparedAcceptedIdentity {
+    let transactionFingerprint: UInt64
+    let physicsGeneration: UInt64
+    let acceptedTimestampMicroseconds: UInt64
+
+    init(_ aggregate: MetalNumanXBridgeV1Runtime.AggregateSnapshot) throws {
+      let timestamp = aggregate.proprioception.deliveryTimestamp.rawValue
+      guard aggregate.identity.transactionFingerprint != 0, aggregate.physicsGeneration != 0,
+        !aggregate.channels.isEmpty,
+        aggregate.channels.allSatisfy({ $0.deliveryTimestamp.rawValue == timestamp }) else {
+        throw TissueError.transaction("prepared trace aggregate has inconsistent accepted identity")
+      }
+      transactionFingerprint = aggregate.identity.transactionFingerprint
+      physicsGeneration = aggregate.physicsGeneration
+      acceptedTimestampMicroseconds = timestamp
+    }
+  }
+
   private struct AcceptedScenario {
     let batch: MetalLearningBatch
     let finalSensorValues: [Float]
     let finalSensorValuesByModality: [SensoryModality: [Float]]
     let sensorValuesByGeneration: [[SensoryModality: [Float]]]
+    let acceptedIdentitiesByGeneration: [PreparedAcceptedIdentity]
     let sensorFingerprints: [UInt64]
     let candidateSensorFingerprints: [UInt64]
     let motorExcitationsByGeneration: [[Float]]
@@ -2491,6 +2625,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     var finalSensorValues: [Float] = []
     var finalSensorValuesByModality: [SensoryModality: [Float]] = [:]
     var sensorValuesByGeneration: [[SensoryModality: [Float]]] = []
+    var acceptedIdentitiesByGeneration: [PreparedAcceptedIdentity] = []
     var motorExcitationsByGeneration: [[Float]] = []
     var descendingSomaticByGeneration: [[Float]] = []
     var activeVisionCommands: [Float] = []
@@ -2546,6 +2681,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
           activeSensingCommandScale: activeSensingCommandScale
         )
         aggregate = published.aggregate
+        let acceptedIdentity = try PreparedAcceptedIdentity(published.aggregate)
+        acceptedIdentitiesByGeneration.append(acceptedIdentity)
         candidateSensorFingerprints.append(
           fingerprint(published.candidateSensorValues)
         )
@@ -2560,7 +2697,8 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
         motorExcitationsByGeneration.append(published.motorExcitations)
         if let label = preparedTraceLabel {
           try emitPreparedFrame(label, rootIndex: Int(controlStep), frame: finalSensorValuesByModality,
-            motorExcitations: published.motorExcitations, timestepMicroseconds: timestepMicroseconds)
+            motorExcitations: published.motorExcitations, timestepMicroseconds: timestepMicroseconds,
+            identity: acceptedIdentity)
         }
         descendingSomaticByGeneration.append(published.descendingSomatic)
         activeVisionCommands.append(published.activeVisionCommand)
@@ -2593,6 +2731,7 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
       finalSensorValues: finalSensorValues,
       finalSensorValuesByModality: finalSensorValuesByModality,
       sensorValuesByGeneration: sensorValuesByGeneration,
+      acceptedIdentitiesByGeneration: acceptedIdentitiesByGeneration,
       sensorFingerprints: sensorFingerprints,
       candidateSensorFingerprints: candidateSensorFingerprints,
       motorExcitationsByGeneration: motorExcitationsByGeneration,

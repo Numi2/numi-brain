@@ -99,12 +99,17 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     public let brainGeneration: UInt64
     public let physicsGeneration: UInt64
     public let sensorGeneration: UInt64
+    public let transactionFingerprint: UInt64
+    /// Native aggregate delivery time is the accepted-root timestamp.
+    public let acceptedTimestampMicroseconds: UInt64
 
     init(_ snapshot: MetalNumanXBridgeV1Runtime.AggregateSnapshot) {
       publicationEpoch = snapshot.publicationEpoch
       brainGeneration = snapshot.brainGeneration
       physicsGeneration = snapshot.physicsGeneration
       sensorGeneration = snapshot.sensorGeneration
+      transactionFingerprint = snapshot.identity.transactionFingerprint
+      acceptedTimestampMicroseconds = snapshot.proprioception.deliveryTimestamp.rawValue
     }
   }
 
@@ -343,6 +348,21 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
       makeLearningBatch(),
       artifactDirectory: artifactDirectory
     )
+  }
+
+  /// Configure a privileged diagnostic reducer on this exact native runtime.
+  /// The existing root runner remains the sole scheduling/publication path.
+  public func configureBehaviorMetrics(path: String, expectedSHA256: String) throws {
+    lock.lock(); defer { lock.unlock() }
+    let (nanoseconds, overflow) = committedTimestampMicroseconds.multipliedReportingOverflow(by: 1000)
+    guard !overflow else { throw TissueError.transaction("Behavior initial clock overflow") }
+    try native.attachBehaviorMetricProgram(path: path, expectedSHA256: expectedSHA256,
+      initialCommittedTimestampNanoseconds: nanoseconds)
+  }
+
+  public func collectBehaviorMetrics() throws -> (snapshot: MetalNumanXBehaviorMetricSnapshot, json: Data) {
+    lock.lock(); defer { lock.unlock() }
+    return try native.collectBehaviorMetricSnapshot()
   }
 
   public func runAcceptedRoot(

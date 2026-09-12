@@ -1465,6 +1465,50 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   fileprivate let cultureEnabled: Bool
   public let info: Info
 
+  /// Attach privileged source-bound metrics before the first physical attempt.
+  /// Generic TaskPack lowering, source audits and behavior qualification are
+  /// separate contracts; this does not expose diagnostics to Brain perception.
+  public func attachBehaviorMetricProgram(
+    path: String, expectedSHA256: String, initialCommittedTimestampNanoseconds: UInt64
+  ) throws {
+    typealias Attach = @convention(c) (
+      UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UInt64
+    ) -> UInt8
+    guard !path.isEmpty, !path.utf8.contains(0), expectedSHA256.utf8.count == 64,
+      expectedSHA256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+      let address = dlsym(symbols.library, "mrnx_bridge_v1_runtime_behavior_attach") else {
+      throw MetalNumanXBridgeV1Error.invalidABI("Native source-bound behavior metrics are unavailable")
+    }
+    let attach = unsafeBitCast(address, to: Attach.self)
+    let accepted = path.withCString { path in expectedSHA256.withCString { sha in
+      attach(runtime, path, sha, initialCommittedTimestampNanoseconds)
+    } }
+    guard accepted != 0 else {
+      throw MetalNumanXBridgeV1Error.rejected("Native behavior metric program/source/initial epoch admission failed")
+    }
+  }
+
+  /// Explicit final collection on the existing native owner queue. It creates
+  /// no physical step. Repeated quiescent calls must be byte-identical.
+  public func collectBehaviorMetricSnapshot() throws -> (snapshot: MetalNumanXBehaviorMetricSnapshot, json: Data) {
+    typealias Flush = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutablePointer<CChar>?, Int) -> Int
+    guard let address = dlsym(symbols.library, "mrnx_bridge_v1_runtime_behavior_flush_json") else {
+      throw MetalNumanXBridgeV1Error.invalidABI("Native accepted metric collector is unavailable")
+    }
+    let flush = unsafeBitCast(address, to: Flush.self)
+    let required = flush(runtime, nil, 0)
+    guard required > 1, required <= 65536 else {
+      throw MetalNumanXBridgeV1Error.rejected("Accepted metric flush requires a quiescent valid released root")
+    }
+    var bytes = [CChar](repeating: 0, count: required)
+    let count = bytes.withUnsafeMutableBufferPointer { flush(runtime, $0.baseAddress, $0.count) }
+    guard count == required, bytes[required - 1] == 0 else {
+      throw MetalNumanXBridgeV1Error.rejected("Native metric publication changed during collection")
+    }
+    let data = bytes.withUnsafeBytes { Data($0.prefix(required - 1)) }
+    return (try MetalNumanXBehaviorMetricSnapshot.decode(data), data)
+  }
+
   public init(
     libraryPath: String,
     device: any MTLDevice,
