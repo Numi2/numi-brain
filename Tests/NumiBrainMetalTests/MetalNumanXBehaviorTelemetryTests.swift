@@ -12,19 +12,20 @@ final class MetalNumanXBehaviorTelemetryTests: XCTestCase {
     "minimum_root_height_m_hi_lo":[1.0,1e-8],"maximum_trunk_tilt_rad_hi_lo":[0.0,0.0],
     "maximum_planar_speed_mps_hi_lo":[0.0,0.0],"speed_squared_error_sum_hi_lo":[0.0,0.0],
     "last_transaction_fingerprint":12,"last_joint_fence_fingerprint":23,
-    "initial_posture_valid":NSNull(),"initial_settled":NSNull(),"forbidden_contact_coverage":"unavailable",
-    "native_audit_coverage":"unavailable","generic_taskpack_lowering":"unavailable",
+    "initial_posture_valid":true,"initial_settled":true,"forbidden_contact_coverage":"unavailable",
+    "native_audit_coverage":"unavailable","generic_taskpack_lowering":"source_bound_metric_program",
     "full_behavior_qualified":false,"accepted_root_proof_sha256":NSNull(),"finalized":true] }
   private func decode(_ x: [String:Any]) throws -> MetalNumanXBehaviorMetricSnapshot {
     try .decode(JSONSerialization.data(withJSONObject:x,options:[.sortedKeys]))
   }
   func testPartialNativeSnapshotWithNonzeroEpoch() throws {
     let x=try decode(fixture());XCTAssertEqual(x.acceptedRootCount,2);XCTAssertEqual(x.rejectedAttemptCount,1)
-    XCTAssertFalse(x.fullBehaviorQualified);XCTAssertNil(x.initialSettled)
+    XCTAssertEqual(x.initialPostureValid, true); XCTAssertEqual(x.initialSettled, true)
+    XCTAssertFalse(x.fullBehaviorQualified)
   }
   func testFalsePromotionDenied() {var x=fixture();x["full_behavior_qualified"]=true;XCTAssertThrowsError(try decode(x))}
   func testMissingAuditOwnerCannotClaimCoverage() {var x=fixture();x["audit_covered_root_count"]=2;XCTAssertThrowsError(try decode(x))}
-  func testMissingResetCannotBeInvented() {var x=fixture();x["initial_settled"]=true;XCTAssertThrowsError(try decode(x))}
+  func testMalformedResetCannotBeInvented() {var x=fixture();x["initial_settled"]="true";XCTAssertThrowsError(try decode(x))}
   func testPendingPublicationDenied() {var x=fixture();x["finalized"]=false;XCTAssertThrowsError(try decode(x))}
   func testCandidateCannotIncreaseMetricCount() {var x=fixture();x["metric_sample_count"]=3;XCTAssertThrowsError(try decode(x))}
   func testMissingRejectedAttemptDenied() {var x=fixture();x["completed_attempt_count"]=2;XCTAssertThrowsError(try decode(x))}

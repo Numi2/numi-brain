@@ -90,9 +90,8 @@ public struct MetalNumanXBehaviorMetricSnapshot: Sendable, Decodable {
       value.stepNanoseconds > 0, !elapsedOverflow, !clockOverflow, !generationOverflow,
       value.endNanoseconds == expectedEnd,
       pairs.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) }),
-      value.initialPostureValid == nil, value.initialSettled == nil,
       value.forbiddenContactCoverage == "unavailable", value.nativeAuditCoverage == "unavailable",
-      value.genericTaskPackLowering == "unavailable", !value.fullBehaviorQualified,
+      value.genericTaskPackLowering == "source_bound_metric_program", !value.fullBehaviorQualified,
       value.acceptedRootProofSHA256 == nil, value.finalized,
       value.acceptedRootCount == 0 || value.lastTransactionFingerprint != 0 else {
       throw DecodingError.dataCorrupted(.init(codingPath: [],
