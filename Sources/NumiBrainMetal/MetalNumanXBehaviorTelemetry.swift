@@ -3,6 +3,11 @@ import Foundation
 /// Privileged accepted-root diagnostics. This never enters the Brain sensory
 /// channel and is deliberately not a behavior-trial.v1 qualification trace.
 public struct MetalNumanXBehaviorMetricSnapshot: Sendable, Decodable {
+  /// Human behavior receipts are admitted only on the native exact-clock
+  /// quantum. The native ABI8/v2 owner uses 12,500 ns; accepting a different
+  /// step here would make a Brain receipt incomparable with that owner.
+  public static let canonicalStepNanoseconds: UInt64 = 12_500
+
   public let schema: String
   public let metricProgramSHA256: String
   public let programFingerprint: UInt64
@@ -87,7 +92,8 @@ public struct MetalNumanXBehaviorMetricSnapshot: Sendable, Decodable {
       value.postureViolationCount <= value.acceptedRootCount,
       value.settledSuffixSteps <= value.acceptedRootCount,
       value.speedErrorSampleCount == 0 || value.speedErrorSampleCount == value.acceptedRootCount,
-      value.stepNanoseconds > 0, !elapsedOverflow, !clockOverflow, !generationOverflow,
+      value.stepNanoseconds == Self.canonicalStepNanoseconds,
+      !elapsedOverflow, !clockOverflow, !generationOverflow,
       value.endNanoseconds == expectedEnd,
       pairs.allSatisfy({ $0.count == 2 && $0.allSatisfy(\.isFinite) }),
       value.forbiddenContactCoverage == "unavailable", value.nativeAuditCoverage == "unavailable",

@@ -5,7 +5,7 @@ import XCTest
 final class MetalNumanXBehaviorTelemetryTests: XCTestCase {
   private func fixture() -> [String: Any] { [
     "schema":"numi.human.accepted-metric-snapshot.v1","metric_program_sha256":String(repeating:"a",count:64),
-    "program_fingerprint":1,"initial_physics_generation":4,"initial_timestamp_ns":100000,"end_ns":150000,"step_ns":25000,
+    "program_fingerprint":1,"initial_physics_generation":4,"initial_timestamp_ns":100000,"end_ns":125000,"step_ns":12500,
     "accepted_root_count":2,"rejected_attempt_count":1,"completed_attempt_count":3,"metric_sample_count":2,
     "audit_covered_root_count":0,"audit_covered_attempt_count":0,"posture_violation_count":0,"settled_suffix_steps":2,
     "speed_error_sample_count":0,"audit_violation_counts":[0,0,0,0,0,0,0,0],
@@ -34,6 +34,7 @@ final class MetalNumanXBehaviorTelemetryTests: XCTestCase {
   func testBackwardClockDenied() {var x=fixture();x["end_ns"]=99999;XCTAssertThrowsError(try decode(x))}
   func testClockCountMismatchDenied() {var x=fixture();x["end_ns"]=150001;XCTAssertThrowsError(try decode(x))}
   func testZeroStepDenied() {var x=fixture();x["step_ns"]=0;XCTAssertThrowsError(try decode(x))}
+  func testNonCanonicalStepDenied() {var x=fixture();x["step_ns"]=25000;XCTAssertThrowsError(try decode(x))}
   func testMissingStepDenied() {var x=fixture();x.removeValue(forKey:"step_ns");XCTAssertThrowsError(try decode(x))}
   func testElapsedClockOverflowDenied() {var x=fixture();x["step_ns"]=UInt64.max;XCTAssertThrowsError(try decode(x))}
   func testAbsoluteClockOverflowDenied() {var x=fixture();x["initial_timestamp_ns"]=UInt64.max;XCTAssertThrowsError(try decode(x))}
