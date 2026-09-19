@@ -111,9 +111,9 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     template: CompiledSpeciesTemplate,
     locomotorProgram: MuscleLocomotorProgram
   ) throws {
-    try locomotorProgram.validate(template: template)
+    try locomotorProgram.validateBaseline(template: template)
     guard version == Self.formatVersion,
-      locomotorProgramFingerprint == locomotorProgram.fingerprint,
+      locomotorProgramFingerprint == locomotorProgram.baselineFingerprint,
       modelSourceFingerprint == locomotorProgram.modelSourceFingerprint,
       sensoryProfileFingerprint == template.sensoryProfile.fingerprint,
       sensoryProfileFingerprint == locomotorProgram.sensoryProfileFingerprint,
@@ -177,19 +177,24 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
 
     let muscleIdentifiers = Set(locomotorProgram.channels.map(\.muscleIdentifier))
     var routeKeys = Set<UInt64>()
+    var maximumCorrectionByMuscle: [UInt32: Float] = [:]
     for route in routes {
       let key = UInt64(route.sourceIdentifier) << 32 | UInt64(route.muscleIdentifier)
+      let cumulativeMaximum =
+        maximumCorrectionByMuscle[route.muscleIdentifier, default: 0]
+        + route.maximumCorrection
       guard resolvedBindings[route.sourceIdentifier] != nil,
         muscleIdentifiers.contains(route.muscleIdentifier),
         route.gain.isFinite, route.gain != 0, abs(route.gain) <= 10,
-        route.maximumCorrection.isFinite,
-        (0...0.5).contains(route.maximumCorrection),
+        route.maximumCorrection.isFinite, route.maximumCorrection > 0,
+        route.maximumCorrection <= 0.5, cumulativeMaximum <= 0.5,
         routeKeys.insert(key).inserted
       else {
         throw BrainRuntimeError.invalidDescriptor(
           "balance feedback route is duplicated, unbound, or outside bounded excitation correction"
         )
       }
+      maximumCorrectionByMuscle[route.muscleIdentifier] = cumulativeMaximum
     }
   }
 
