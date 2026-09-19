@@ -343,18 +343,11 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
       }
     }
     for modality in requiredModalities {
-      guard let view = viewByModality[modality],
-        let topology = topologyByModality[modality], view.hasValidity,
-        view.receptorCount == topology.receptorCount,
-        view.featureDimension == topology.observationDimension,
-        view.receptorTimestamp.rawValue <= root.committedTimestamp.rawValue,
-        root.committedTimestamp.rawValue - view.receptorTimestamp.rawValue
-          >= UInt64(topology.latencyMicroseconds)
-      else {
-        throw TissueError.transaction(
-          "balance feedback requires its source-bound physical receptor packet"
-        )
-      }
+      try MetalMuscleBalanceSensorAdmission.validate(
+        view: viewByModality[modality],
+        topology: topologyByModality[modality],
+        committedTimestamp: root.committedTimestamp
+      )
     }
 
     let vestibular = viewByModality[.vestibular]
