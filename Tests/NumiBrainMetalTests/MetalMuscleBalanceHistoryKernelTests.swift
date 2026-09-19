@@ -210,6 +210,78 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     XCTAssertEqual(ready.filteredValidity.contents().load(as: UInt32.self), 1)
   }
 
+  func testFilterInitializationNeverEmitsOnItsFirstReadyRoot() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let pipeline = try device.makeComputePipelineState(
+      function: XCTUnwrap(
+        library.makeFunction(name: "nb_muscle_balance_history")
+      )
+    )
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    let values = try upload([Float(0)], device: device)
+    let timestamps = try upload([UInt64(0)], device: device)
+    let validity = try upload([UInt32(0)], device: device)
+    let prior = try upload([Float(0)], device: device)
+    let priorTimestamp = try upload([UInt64(0)], device: device)
+    let priorValidity = try upload([UInt32(0)], device: device)
+    let config = HistorySource(
+      delayMicroseconds: 0,
+      filterTimeConstantSeconds: 0.001
+    )
+
+    let initialized = try run(
+      pipeline: pipeline,
+      queue: queue,
+      observed: 1,
+      observedValidity: 1,
+      config: config,
+      committedValues: values,
+      committedTimestamps: timestamps,
+      committedValidity: validity,
+      committedFilteredValues: prior,
+      committedFilteredTimestamps: priorTimestamp,
+      committedFilteredValidity: priorValidity,
+      timestamp: 1_000,
+      capacity: 1,
+      writeIndex: 0,
+      correctionEnabled: 1,
+      device: device
+    )
+    XCTAssertEqual(initialized.output, 0)
+    XCTAssertEqual(initialized.outputValidity, 0)
+    XCTAssertEqual(
+      initialized.filteredValues.contents().load(as: Float.self),
+      1,
+      accuracy: 1e-6
+    )
+    XCTAssertEqual(
+      initialized.filteredValidity.contents().load(as: UInt32.self),
+      1
+    )
+
+    let ready = try run(
+      pipeline: pipeline,
+      queue: queue,
+      observed: 0,
+      observedValidity: 1,
+      config: config,
+      committedValues: initialized.values,
+      committedTimestamps: initialized.timestamps,
+      committedValidity: initialized.validity,
+      committedFilteredValues: initialized.filteredValues,
+      committedFilteredTimestamps: initialized.filteredTimestamps,
+      committedFilteredValidity: initialized.filteredValidity,
+      timestamp: 2_000,
+      capacity: 1,
+      writeIndex: 0,
+      correctionEnabled: 1,
+      device: device
+    )
+    XCTAssertEqual(ready.outputValidity, 1)
+    XCTAssertEqual(ready.output, exp(-1), accuracy: 1e-6)
+  }
+
   func testFilterUsesCommittedStateAndFailsClosedOnMissingSample() throws {
     let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
     let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
