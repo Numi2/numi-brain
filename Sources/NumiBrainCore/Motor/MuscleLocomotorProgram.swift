@@ -35,19 +35,24 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
   public let epochMicroseconds: UInt64
   public let periodMicroseconds: UInt64
   public let channels: [MuscleLocomotorChannel]
+  public let balanceFeedback: MuscleBalanceFeedbackProgram?
 
   public init(modelSourceFingerprint: UInt64, sensoryProfileFingerprint: UInt64,
     calibrationArtifactSHA256: String, epochMicroseconds: UInt64 = 0,
-    periodMicroseconds: UInt64 = 0, channels: [MuscleLocomotorChannel]) {
-    version = 1; self.modelSourceFingerprint = modelSourceFingerprint
+    periodMicroseconds: UInt64 = 0, channels: [MuscleLocomotorChannel],
+    balanceFeedback: MuscleBalanceFeedbackProgram? = nil) {
+    version = balanceFeedback == nil ? 1 : 2
+    self.modelSourceFingerprint = modelSourceFingerprint
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
     self.calibrationArtifactSHA256 = calibrationArtifactSHA256
     self.epochMicroseconds = epochMicroseconds; self.periodMicroseconds = periodMicroseconds
-    self.channels = channels
+    self.channels = channels; self.balanceFeedback = balanceFeedback
   }
 
-  public func validate(template: CompiledSpeciesTemplate) throws {
-    guard version == 1, modelSourceFingerprint != 0,
+  /// Validates the source-bound baseline without recursively validating an
+  /// optional whole-body feedback layer.
+  public func validateBaseline(template: CompiledSpeciesTemplate) throws {
+    guard modelSourceFingerprint != 0,
       sensoryProfileFingerprint == template.sensoryProfile.fingerprint,
       BrainPolicyEvidenceArtifact.isSHA256(calibrationArtifactSHA256),
       template.species.motor.actuatorCommandKind == .muscleExcitation,
@@ -85,12 +90,26 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
     }
   }
 
-  /// Canonical ordered bytes include all parameters and calibration provenance.
-  public var fingerprint: UInt64 {
+  public func validate(template: CompiledSpeciesTemplate) throws {
+    guard (version == 1 && balanceFeedback == nil)
+      || (version == 2 && balanceFeedback != nil)
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "locomotor program version does not match its whole-body feedback layer"
+      )
+    }
+    try validateBaseline(template: template)
+    try balanceFeedback?.validate(template: template, locomotorProgram: self)
+  }
+
+  /// Original v1 identity of the physical recruitment and spindle program.
+  /// A whole-body feedback layer binds this value and cannot silently replace
+  /// its prepared baseline.
+  public var baselineFingerprint: UInt64 {
     var hash: UInt64 = 0xcbf29ce484222325
     func bytes(_ values: [UInt8]) { for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 } }
     func integer(_ value: UInt64) { bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }) }
-    bytes(Array("NBMUSCLELOCOMOTOR1".utf8)); integer(UInt64(version))
+    bytes(Array("NBMUSCLELOCOMOTOR1".utf8)); integer(1)
     integer(modelSourceFingerprint); integer(sensoryProfileFingerprint)
     bytes(Array(calibrationArtifactSHA256.utf8)); integer(epochMicroseconds); integer(periodMicroseconds)
     integer(UInt64(channels.count))
@@ -99,6 +118,18 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
       for x in [c.referenceLengthMeters, c.tonicExcitation, c.lengthGain,
         c.velocityGainSeconds, c.gaitSine, c.gaitCosine, c.maximumExcitation] { integer(UInt64(x.bitPattern)) }
     }
+    return hash
+  }
+
+  /// Canonical ordered bytes include the v1 baseline and, for v2, the exact
+  /// independently qualified whole-body correction program.
+  public var fingerprint: UInt64 {
+    guard let balanceFeedback else { return baselineFingerprint }
+    var hash: UInt64 = 0xcbf29ce484222325
+    func bytes(_ values: [UInt8]) { for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 } }
+    func integer(_ value: UInt64) { bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }) }
+    bytes(Array("NBMUSCLELOCOMOTOR2".utf8)); integer(UInt64(version))
+    integer(baselineFingerprint); integer(balanceFeedback.fingerprint)
     return hash
   }
 }
