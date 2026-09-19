@@ -122,20 +122,26 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     }
   }
 
-  /// One slot for every delayed update plus the current sample. Validation
-  /// bounds this to at most 501 slots per source.
+  /// One slot for every delayed update plus the current sample. Invalid decoded
+  /// clocks saturate rather than trapping before `validate` can reject them.
   public var historyCapacity: UInt32 {
     guard updatePeriodMicroseconds > 0 else { return 0 }
-    return maximumConductionDelayMicroseconds / updatePeriodMicroseconds + 1
+    let quotient = maximumConductionDelayMicroseconds
+      / updatePeriodMicroseconds
+    let (capacity, overflow) = quotient.addingReportingOverflow(1)
+    return overflow ? .max : capacity
   }
 
   /// A stateful controller must remain on its prepared baseline until delayed
   /// evidence exists. Filtered sources receive at least one additional update
   /// to initialize their committed filter state before corrections are enabled.
+  /// Invalid decoded clocks saturate so validation remains fail-closed.
   public var minimumInitializationDurationMicroseconds: UInt32 {
-    maximumConductionDelayMicroseconds
-      + (sources.contains { $0.filterTimeConstantSeconds > 0 }
-        ? updatePeriodMicroseconds : 0)
+    let extra = sources.contains { $0.filterTimeConstantSeconds > 0 }
+      ? updatePeriodMicroseconds : 0
+    let (duration, overflow) = maximumConductionDelayMicroseconds
+      .addingReportingOverflow(extra)
+    return overflow ? .max : duration
   }
 
   public func validate(
