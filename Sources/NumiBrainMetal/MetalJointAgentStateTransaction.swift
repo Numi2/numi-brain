@@ -163,9 +163,9 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       let physics = acceptedPhysicsFingerprint else {
       throw TissueError.transaction("prepared capture requires completed, unpublished native state")
     }
-    guard try !MetalMuscleBalanceParticipantRegistry.hasTransactionalHistory(
+    guard !(try MetalMuscleBalanceParticipantRegistry.hasTransactionalHistory(
       transaction: self
-    ) else {
+    )) else {
       throw TissueError.transaction(
         "prepared recovery does not yet serialize unpublished muscle balance history"
       )
@@ -241,6 +241,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
             answer = .success(restored)
           } catch {
             restored.connectomeCandidate?.abort(); restored.connectomeCandidate = nil
+            MetalMuscleBalanceParticipantRegistry.abort(restored)
             restored.currentStatus = .recoveryFailed
             answer = .failure(error)
           }
