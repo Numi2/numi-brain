@@ -232,4 +232,38 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
       ).validate(template: template, locomotorProgram: locomotor)
     )
   }
+
+  func testMalformedDecodedHistoryClocksSaturateInsteadOfTrapping() {
+    let malformed = MuscleBalanceFeedbackProgram(
+      locomotorProgramFingerprint: 1,
+      modelSourceFingerprint: 1,
+      sensoryProfileFingerprint: 1,
+      calibrationArtifactSHA256: String(repeating: "a", count: 64),
+      mode: .posture,
+      updatePeriodMicroseconds: 1,
+      initializationDurationMicroseconds: 0,
+      sources: [
+        MuscleBalanceFeedbackSource(
+          identifier: 1,
+          bodyReceptorBindingIdentifier: 1,
+          referenceValue: 0,
+          filterTimeConstantSeconds: 1,
+          conductionDelayMicroseconds: .max
+        )
+      ],
+      routes: [
+        MuscleBalanceFeedbackRoute(
+          sourceIdentifier: 1,
+          muscleIdentifier: 0,
+          gain: 1
+        )
+      ]
+    )
+
+    XCTAssertEqual(malformed.historyCapacity, UInt32.max)
+    XCTAssertEqual(
+      malformed.minimumInitializationDurationMicroseconds,
+      UInt32.max
+    )
+  }
 }
