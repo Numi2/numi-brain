@@ -95,7 +95,7 @@ extension NumanXFullBodyTransportTemplate {
         endpoint.sourceEndpointIdentifier > 0,
         endpoint.bodyIdentifier < base.species.body.bodyCount,
         endpoint.touchReceptorIndex < touch.receptorCount,
-        endpoint.scale.isFinite, endpoint.bias.isFinite,
+        endpoint.scale.isFinite, endpoint.scale > 0, endpoint.bias.isFinite,
         endpoint.weight.isFinite, endpoint.weight > 0
       else {
         throw BrainRuntimeError.invalidDescriptor(
