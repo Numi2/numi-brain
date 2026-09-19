@@ -62,27 +62,27 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
           "muscle balance candidate does not match joint commit"
         )
       }
-      try historyCandidate?.validateCommit(receipt)
       owner.lock.lock()
       defer { owner.lock.unlock() }
       guard owner.pendingRoot == root.fingerprint else {
         throw TissueError.transaction("muscle balance candidate is stale")
       }
+      try historyCandidate?.validateCommit(receipt)
     }
 
     func publish() {
-      historyCandidate?.publish()
       owner.lock.lock()
       defer { owner.lock.unlock() }
       precondition(owner.pendingRoot == root.fingerprint)
+      historyCandidate?.publish()
       owner.pendingRoot = nil
     }
 
     func abort() {
-      historyCandidate?.abort()
       owner.lock.lock()
       defer { owner.lock.unlock() }
       if owner.pendingRoot == root.fingerprint {
+        historyCandidate?.abort()
         owner.pendingRoot = nil
       }
     }
@@ -415,7 +415,7 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
     ].enumerated() {
       sourceArguments.setAddress(address, index: index)
     }
-    var words = [
+    let words = [
       UInt32(sourceCount), UInt32(muscleCount),
       correctionEnabled ? UInt32(1) : UInt32(0), UInt32(routeCount),
     ]
