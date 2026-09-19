@@ -198,10 +198,12 @@ kernel void nb_muscle_balance_history(
 
   float filtered = delayed;
   const float tau = config.filter_time_constant_seconds;
-  if (tau > 0.0f && committed_filtered_validity[gid] != 0u) {
+  const bool filter_was_ready = committed_filtered_validity[gid] != 0u;
+  if (!isfinite(tau) || tau < 0.0f) return;
+  if (tau > 0.0f && filter_was_ready) {
     const ulong prior_timestamp = committed_filtered_timestamps[gid];
     const float prior = committed_filtered_values[gid];
-    if (!isfinite(tau) || !isfinite(prior)
+    if (!isfinite(prior)
         || prior_timestamp >= uniforms.sample_timestamp_microseconds) return;
     const float dt = float(
       uniforms.sample_timestamp_microseconds - prior_timestamp) * 0.000001f;
@@ -213,7 +215,8 @@ kernel void nb_muscle_balance_history(
   shadow_filtered_values[gid] = filtered;
   shadow_filtered_timestamps[gid] = uniforms.sample_timestamp_microseconds;
   shadow_filtered_validity[gid] = 1u;
-  if (uniforms.correction_enabled != 0u) {
+  const bool filter_output_ready = tau == 0.0f || filter_was_ready;
+  if (uniforms.correction_enabled != 0u && filter_output_ready) {
     output_errors[gid] = filtered;
     output_validity[gid] = 1u;
   }
