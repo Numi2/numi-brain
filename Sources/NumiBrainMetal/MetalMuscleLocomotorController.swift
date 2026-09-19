@@ -12,6 +12,7 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
   private let uniforms: any MTLBuffer
   private let pipeline: any MTLComputePipelineState
   private let arguments: any MTL4ArgumentTable
+  private let balanceController: MetalMuscleBalanceController?
 
   init(program: MuscleLocomotorProgram, template: CompiledSpeciesTemplate,
     parameterVersion: UInt64, device: any MTLDevice) throws {
@@ -43,20 +44,39 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     channels = try upload(words); logits = try upload([UInt32](repeating: 0, count: program.channels.count))
     uniforms = try upload([0, 0, 0, 0])
     let library = try Self.makeLibrary(device: device)
-    guard let function = library.makeFunction(name: "nb_muscle_locomotor") else { throw TissueError.metal("locomotor kernel missing") }
+    let balanceController = try program.balanceFeedback.map {
+      try MetalMuscleBalanceController(
+        program: $0,
+        locomotorProgram: program,
+        template: template,
+        library: library,
+        device: device
+      )
+    }
+    let functionName = balanceController == nil
+      ? "nb_muscle_locomotor" : "nb_muscle_locomotor_balanced"
+    guard let function = library.makeFunction(name: functionName) else {
+      throw TissueError.metal("locomotor kernel missing")
+    }
     pipeline = try device.makeComputePipelineState(function: function)
-    let descriptor = MTL4ArgumentTableDescriptor(); descriptor.maxBufferBindCount = 5; descriptor.initializeBindings = true
+    let descriptor = MTL4ArgumentTableDescriptor(); descriptor.maxBufferBindCount = 6; descriptor.initializeBindings = true
     arguments = try device.makeArgumentTable(descriptor: descriptor)
+    self.balanceController = balanceController
   }
   static func makeLibrary(device: any MTLDevice) throws -> any MTLLibrary {
     guard let url = Bundle.module.url(forResource: "MuscleLocomotor", withExtension: "metal", subdirectory: "Shaders")
       ?? Bundle.module.url(forResource: "MuscleLocomotor", withExtension: "metal") else {
       throw TissueError.metal("locomotor shader resource missing")
     }
-    let options = MTLCompileOptions(); options.mathMode = .safe
+    let options = MTLCompileOptions()
+    options.languageVersion = .version4_0
+    options.mathMode = .safe
+    options.mathFloatingPointFunctions = .precise
     return try device.makeLibrary(source: String(contentsOf: url, encoding: .utf8), options: options)
   }
-  var residencyAllocations: [any MTLAllocation] { [channels, logits, uniforms] }
+  var residencyAllocations: [any MTLAllocation] {
+    [channels, logits, uniforms] + (balanceController?.residencyAllocations ?? [])
+  }
 
   func encode(root: BrainJointTransactionToken, encoder: any MTL4ComputeCommandEncoder,
     rawSensors: [MetalRawSensorBufferView]) throws -> MetalDescendingMotorView {
@@ -77,8 +97,16 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     words.withUnsafeBytes { uniforms.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
     encoder.barrier(afterQueueStages: [.dispatch, .blit], beforeStages: .dispatch, visibilityOptions: .device)
     encoder.barrier(afterEncoderStages: [.dispatch, .blit], beforeEncoderStages: .dispatch, visibilityOptions: .device)
-    for (i, address) in [view.gpuAddress, view.validityGPUAddress, channels.gpuAddress,
-      logits.gpuAddress, uniforms.gpuAddress].enumerated() { arguments.setAddress(address, index: i) }
+    let correction = try balanceController?.encode(
+      root: root,
+      locomotorEpochMicroseconds: program.epochMicroseconds,
+      encoder: encoder,
+      rawSensors: rawSensors
+    )
+    var addresses = [view.gpuAddress, view.validityGPUAddress, channels.gpuAddress,
+      logits.gpuAddress, uniforms.gpuAddress]
+    if let correction { addresses.append(correction.gpuAddress) }
+    for (i, address) in addresses.enumerated() { arguments.setAddress(address, index: i) }
     encoder.setComputePipelineState(pipeline); encoder.setArgumentTable(arguments)
     encoder.dispatchThreads(threadsPerGrid: MTLSize(width: program.channels.count, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1))
