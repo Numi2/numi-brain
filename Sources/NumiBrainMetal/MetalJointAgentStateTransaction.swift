@@ -41,6 +41,12 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     self.cachedDecisionFingerprint = cachedDecisionFingerprint
     self.cachedRandomCounterGeneration = jointToken.randomCounterGeneration
     self.runtime = runtime
+    do {
+      try MetalMuscleBalanceParticipantRegistry.register(self)
+    } catch {
+      try? runtime.abort(transaction: token)
+      throw error
+    }
   }
 
   public func hotStateView() throws -> MetalAgentStateArena.HotStateView {
@@ -157,6 +163,13 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       let physics = acceptedPhysicsFingerprint else {
       throw TissueError.transaction("prepared capture requires completed, unpublished native state")
     }
+    guard try !MetalMuscleBalanceParticipantRegistry.hasTransactionalHistory(
+      transaction: self
+    ) else {
+      throw TissueError.transaction(
+        "prepared recovery does not yet serialize unpublished muscle balance history"
+      )
+    }
     // finishGPUState proves preceding neural work completed; cold shared-state
     // snapshots here include BOTH generations and the cached readout.
     let neuralImage = try connectomeCandidate?.snapshotPrepared()
@@ -254,6 +267,10 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
       throw TissueError.transaction("joint receipt cannot publish the complete agent-state generation")
     }
     try connectomeCandidate?.validateCommit(receipt)
+    try MetalMuscleBalanceParticipantRegistry.validateCommit(
+      transaction: self,
+      receipt: receipt
+    )
     preparedCommit = try runtime.prepareCommit(transaction: agentStateToken)
     currentStatus = .commitPrepared
   }
@@ -264,6 +281,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     }
     runtime.publishPreparedCommit(preparedCommit)
     connectomeCandidate?.publish(); connectomeCandidate = nil
+    MetalMuscleBalanceParticipantRegistry.publish(self)
     self.preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .committed
   }
   public func abort() throws {
@@ -274,6 +292,7 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     }
     try runtime.abort(transaction: agentStateToken)
     connectomeCandidate?.abort(); connectomeCandidate = nil
+    MetalMuscleBalanceParticipantRegistry.abort(self)
     acceptedPhysicsFingerprint = nil; preparedGPUStateFinish = nil
     preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .aborted
   }
