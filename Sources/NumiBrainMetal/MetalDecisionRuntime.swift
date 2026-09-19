@@ -31,7 +31,7 @@ private struct DecisionUniforms {
   var descendingSomaticBaselineOffset: UInt64 = 0
   var regionalPlasticModulationOffset: UInt64 = 0
   var parameterVersionFingerprint: UInt64 = 0
-  var reservedIdentity: UInt64 = 0
+  var affectiveStateOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
@@ -272,6 +272,8 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       MemoryLayout<DecisionAutonomicChannelDescriptor>.stride == 48,
       MemoryLayout<DecisionActiveSensingChannelDescriptor>.stride == 16,
       MemoryLayout<ExternalGoalDirectiveRecord>.stride == 240,
+      arena.layout.section(.affectiveState).elementCount == 1,
+      arena.layout.section(.affectiveState).elementStride == 64,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
       parameterVersion.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -992,7 +994,9 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
         arena.layout.section(.regionalPlasticModulation).byteOffset
       ),
       parameterVersionFingerprint: parameterVersion.fingerprint,
-      reservedIdentity: species.fingerprint,
+      affectiveStateOffset: UInt64(
+        arena.layout.section(.affectiveState).byteOffset
+      ),
       recurrentScalarCount: UInt32(recurrent.elementCount),
       workspaceScalarCount: UInt32(workspace.elementCount),
       workspaceCapacity: UInt32(workspaceMetadata.elementCount),

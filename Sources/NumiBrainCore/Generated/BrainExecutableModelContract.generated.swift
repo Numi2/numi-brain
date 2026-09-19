@@ -5,8 +5,8 @@ public enum BrainExecutableModelContract {
   public static let schemaVersion = 1
 
   public enum CommittedTransition {
-    public static let recordVersion: UInt32 = 11
-    public static let strideBytes = 1104
+    public static let recordVersion: UInt32 = 12
+    public static let strideBytes = 1152
     public static let validFlag: UInt32 = 1
     public static let hasEmbodiedTraceFlag: UInt32 = 2
     public static let acceptedStopFlag: UInt32 = 4
@@ -49,6 +49,10 @@ public enum BrainExecutableModelContract {
       public static let activeSensingAction = 848
       public static let internalAction = 912
       public static let bodySchemaTrace = 1040
+      public static let affect = 1104
+      public static let affectSourceValidityMask = 1136
+      public static let affectReserved = 1140
+      public static let affectTimestamp = 1144
     }
 
     public enum Count {
@@ -66,6 +70,7 @@ public enum BrainExecutableModelContract {
       public static let activeSensingAction = 16
       public static let internalAction = 32
       public static let bodySchemaTrace = 16
+      public static let affect = 8
     }
   }
 

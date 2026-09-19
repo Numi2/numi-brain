@@ -59,6 +59,7 @@ struct NBCognitiveUniforms {
   ulong somatic_output_offset;
   ulong accepted_autonomic_output_offset;
   ulong accepted_active_sensing_output_offset;
+  ulong affective_state_offset;
   uint recurrent_scalar_count;
   uint workspace_capacity;
   uint workspace_dimension;
@@ -340,7 +341,21 @@ struct NBPlasticityRegionRangeRecord {
   uint reserved;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 424);
+struct NBAffectiveStateRecord {
+  float pain;
+  float pleasure;
+  float relief;
+  float prior_pain_observation;
+  float source_evidence[5];
+  ushort source_validity_mask;
+  ushort previous_validity_mask;
+  ulong timestamp_microseconds;
+  ulong last_interoception_timestamp_microseconds;
+  ulong last_pain_timestamp_microseconds;
+};
+
+static_assert(sizeof(NBCognitiveUniforms) == 432);
+static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorStateRecord) == 16);
@@ -2979,6 +2994,10 @@ kernel void select_and_merge_foundation_workspace(
   );
   device const NBDriveStateRecord *drives =
     reinterpret_cast<device const NBDriveStateRecord *>(hot_state + uniforms.drive_offset);
+  device const NBAffectiveStateRecord *affect =
+    reinterpret_cast<device const NBAffectiveStateRecord *>(
+      hot_state + uniforms.affective_state_offset
+    );
   device const NBRegionalMaturationRecord *maturation =
     reinterpret_cast<device const NBRegionalMaturationRecord *>(
       hot_state + uniforms.regional_maturation_offset
@@ -3036,9 +3055,24 @@ kernel void select_and_merge_foundation_workspace(
     }
   }
 
+  const bool affect_timestamp_valid = affect->timestamp_microseconds > 0ul
+    && affect->source_validity_mask != 0u
+    && affect->timestamp_microseconds <= uniforms.target_timestamp_microseconds
+    && uniforms.target_timestamp_microseconds
+      - affect->timestamp_microseconds <= 100000ul;
+  const float affect_attention_score = affect_timestamp_valid
+    ? clamp(max(max(affect->pain, affect->pleasure), affect->relief), 0.0f, 1.0f)
+    : 0.0f;
+
   if (active_workspace_capacity > 0u) {
     constexpr uint drive_kind = 8u;
     constexpr uint drive_source_module = 70u;
+    constexpr uint affect_kind = 9u;
+    constexpr uint affect_source_module = 70u;
+    constexpr ulong affect_identity = 0x4146464543540001ul;
+    const bool selected_affect = affect_attention_score > selected_drive_score;
+    const float selected_foundation_score = selected_affect
+      ? affect_attention_score : selected_drive_score;
     const float persistence = clamp(memory_parameters[14], 0.0f, 1.0f);
     NBWorkspaceMetadataRecord prior = metadata[0];
     const float prior_persistence = (prior.flags & 1u) != 0u
@@ -3058,57 +3092,84 @@ kernel void select_and_merge_foundation_workspace(
     ) * nb_workspace_retention(
       memory_parameters, prior_persistence, prior_elapsed_seconds
     );
-    const ulong drive_identity = selected_drive == 0xffffffffu
-      ? 0ul : ulong(drives[selected_drive].kind);
-    const bool matches = selected_drive != 0xffffffffu
+    const ulong selected_identity = selected_affect ? affect_identity
+      : selected_drive == 0xffffffffu
+        ? 0ul : ulong(drives[selected_drive].kind);
+    const uint selected_kind = selected_affect ? affect_kind : drive_kind;
+    const uint selected_source_module = selected_affect
+      ? affect_source_module : drive_source_module;
+    const bool has_selected_foundation = selected_affect
+      || selected_drive != 0xffffffffu;
+    const bool matches = has_selected_foundation
       && nb_workspace_identity_matches(
-        prior, drive_kind, drive_source_module, drive_identity
+        prior, selected_kind, selected_source_module, selected_identity
       );
-    const bool replace = selected_drive_score >= minimum_score
+    const bool replace = has_selected_foundation
+      && selected_foundation_score >= minimum_score
       && (prior.identifier == 0ul || matches
-        || selected_drive_score > retained_selection_score
+        || selected_foundation_score > retained_selection_score
           + replacement_margin * (0.25f + 0.75f * prior_persistence));
     if (replace) {
-      const uint base = 0u;
-      const NBDriveStateRecord selected = drives[selected_drive];
-      for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
-        float value = 0.0f;
-        if (feature == 0u) value = selected.level;
-        else if (feature == 1u) value = selected.viable_minimum;
-        else if (feature == 2u) value = selected.viable_maximum;
-        else if (feature == 3u) value = selected.deficit;
-        else if (feature == 4u) value = selected.potential;
-        else if (feature == 5u) value = selected.estimated_rate;
-        else if (feature == 6u) value = selected.priority_weight;
-        else if (feature == 7u) value = float(selected.kind);
-        else if (feature >= 16u
-            && feature < 16u + uniforms.drive_count) {
-          value = drives[feature - 16u].deficit;
-        } else if (feature >= 32u
-            && feature < 32u + uniforms.drive_count) {
-          value = drives[feature - 32u].potential;
+      if (selected_affect) {
+        for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+          float value = 0.0f;
+          if (feature == 0u) value = affect->pain;
+          else if (feature == 1u) value = affect->pleasure;
+          else if (feature == 2u) value = affect->relief;
+          else if (feature == 3u) value = float(affect->source_validity_mask);
+          else if (feature >= 4u && feature < 9u) {
+            value = affect->source_evidence[feature - 4u];
+          } else if (feature == 9u) {
+            value = float(affect->previous_validity_mask);
+          }
+          content[feature] = value;
         }
-        content[base + feature] = value;
+      } else {
+        const uint base = 0u;
+        const NBDriveStateRecord selected = drives[selected_drive];
+        for (uint feature = 0u; feature < uniforms.workspace_dimension; ++feature) {
+          float value = 0.0f;
+          if (feature == 0u) value = selected.level;
+          else if (feature == 1u) value = selected.viable_minimum;
+          else if (feature == 2u) value = selected.viable_maximum;
+          else if (feature == 3u) value = selected.deficit;
+          else if (feature == 4u) value = selected.potential;
+          else if (feature == 5u) value = selected.estimated_rate;
+          else if (feature == 6u) value = selected.priority_weight;
+          else if (feature == 7u) value = float(selected.kind);
+          else if (feature >= 16u
+              && feature < 16u + uniforms.drive_count) {
+            value = drives[feature - 16u].deficit;
+          } else if (feature >= 32u
+              && feature < 32u + uniforms.drive_count) {
+            value = drives[feature - 32u].potential;
+          }
+          content[base + feature] = value;
+        }
       }
       NBWorkspaceMetadataRecord token = matches ? prior
         : NBWorkspaceMetadataRecord{};
       if (!matches) {
         token.identifier = (uniforms.target_timestamp_microseconds << 8u) | 1ul;
         token.source_timestamp_microseconds =
-          uniforms.target_timestamp_microseconds;
+          selected_affect ? affect->timestamp_microseconds
+            : uniforms.target_timestamp_microseconds;
+      }
+      if (selected_affect) {
+        token.source_timestamp_microseconds = affect->timestamp_microseconds;
       }
       token.last_refresh_timestamp_microseconds =
         uniforms.target_timestamp_microseconds;
-      token.entity_identifier = drive_identity;
+      token.entity_identifier = selected_identity;
       token.goal_identifier = 0ul;
       token.bound_token_identifier = 0ul;
       token.provenance_record_identifier = 0ul;
-      token.kind_and_source = drive_kind | (drive_source_module << 16u);
+      token.kind_and_source = selected_kind | (selected_source_module << 16u);
       token.confidence = matches
-        ? mix(retained_confidence, selected_drive_score, refresh_gain)
-        : selected_drive_score;
+        ? mix(retained_confidence, selected_foundation_score, refresh_gain)
+        : selected_foundation_score;
       token.persistence_priority = persistence;
-      token.selection_score = selected_drive_score;
+      token.selection_score = selected_foundation_score;
       token.provenance_kind = 0u;
       token.flags = 1u;
       token.provenance_source_generation = 0ul;

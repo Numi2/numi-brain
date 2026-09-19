@@ -9,6 +9,7 @@ COUNT_FIELDS = {
     "outcomeMetrics", "priorState", "posteriorState", "observation", "somaticAction",
     "factoredReinforcement", "teacherState", "fastPlasticityTrace", "cerebellarTrace",
     "activeSensingTrace", "autonomicAction", "activeSensingAction", "internalAction", "bodySchemaTrace",
+    "affect",
 }
 
 def load(path):
@@ -24,7 +25,19 @@ def load(path):
         assert field["offset"] == cursor, (field["name"], field["offset"], cursor)
         cursor += SIZES[field["type"]] * field["count"]
     assert cursor == transition["strideBytes"]
-    assert transition["fields"][-1]["name"] == "bodySchemaTrace"
+    assert transition["fields"][-5]["name"] == "bodySchemaTrace"
+    assert transition["fields"][-4]["name"] == "affect"
+    assert transition["fields"][-3]["name"] == "affectSourceValidityMask"
+    assert transition["fields"][-2]["name"] == "affectReserved"
+    assert transition["fields"][-1]["name"] == "affectTimestamp"
+    affect = {field["name"]: field for field in transition["fields"][-5:]}
+    assert affect["affect"]["count"] == 8 and affect["affect"]["type"] == "f32"
+    assert affect["affectSourceValidityMask"]["type"] == "u32"
+    assert affect["affectSourceValidityMask"]["count"] == 1
+    assert affect["affectReserved"]["type"] == "u32"
+    assert affect["affectReserved"]["count"] == 1
+    assert affect["affectTimestamp"]["type"] == "u64"
+    assert affect["affectTimestamp"]["count"] == 1
     p = data["policyHead"]
     assert p["primaryObservationCount"] + p["tailObservationCount"] == p["observationCount"]
     assert p["recurrentInputCount"] == p["somaticSynergyCount"] == p["primaryObservationCount"]

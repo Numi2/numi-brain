@@ -21,7 +21,7 @@ constant uint NB_COUNTERFACTUAL_IMAGINED = 2u;
 constant uint NB_COUNTERFACTUAL_ADMISSIBLE = 4u;
 constant uint NB_MEMORY_JOURNAL_STATUS_CAPACITY = 1u << 4;
 constant uint NB_MEMORY_RECORD_VERSION = 1u;
-constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 11u;
+constant uint NB_COMMITTED_TRANSITION_RECORD_VERSION = 12u;
 constant uint NB_COMMITTED_TRANSITION_HAS_EMBODIED_TRACE = 1u << 1;
 constant uint NB_COMMITTED_TRANSITION_ACCEPTED_STOP = 1u << 2;
 constant uint NB_REGIONAL_TRANSITION_RECORD_VERSION = 2u;
@@ -115,6 +115,7 @@ struct NBMemoryUniforms {
   uint regional_plastic_modulation_count;
   float boundary_threshold;
   float event_salience_weight;
+  ulong affective_state_offset;
 };
 
 struct NBEventQueueHeader {
@@ -457,6 +458,7 @@ struct NBCommittedTransitionUniforms {
   ulong regional_transition_memory_offset;
   ulong persistent_memory_byte_count;
   ulong journal_byte_count;
+  ulong affective_state_offset;
   uint recurrent_scalar_count;
   uint observation_count;
   uint action_count;
@@ -692,6 +694,19 @@ struct NBDriveRecord {
   float deficit;
   float potential;
   uint kind;
+};
+
+struct NBAffectiveStateRecord {
+  float pain;
+  float pleasure;
+  float relief;
+  float prior_pain_observation;
+  float source_evidence[5];
+  ushort source_validity_mask;
+  ushort previous_validity_mask;
+  ulong timestamp_microseconds;
+  ulong last_interoception_timestamp_microseconds;
+  ulong last_pain_timestamp_microseconds;
 };
 
 struct NBNeuromodulatorRecord {
@@ -1020,6 +1035,10 @@ struct NBCommittedTransitionRecord {
   float active_sensing_action[16];
   float internal_action[32];
   float body_schema_trace[16];
+  float affect[8];
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 /// One committed full-token sample for the exact effective matrix of one
@@ -1089,7 +1108,7 @@ struct NBReplayQueueSummaryRecord {
   ulong enqueued_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBMemoryUniforms) == 312);
+static_assert(sizeof(NBMemoryUniforms) == 320);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
@@ -1101,7 +1120,7 @@ static_assert(sizeof(NBMemoryRetrievalUniforms) == 304);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
-static_assert(sizeof(NBCommittedTransitionUniforms) == 512);
+static_assert(sizeof(NBCommittedTransitionUniforms) == 520);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
@@ -1112,6 +1131,7 @@ static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
 static_assert(sizeof(NBDriveRecord) == 32);
+static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBObjectSlotRecord) == 512);
@@ -1131,7 +1151,7 @@ static_assert(sizeof(NBProceduralTracePhase) == 112);
 static_assert(sizeof(NBProceduralExecutionTrace) == 1024);
 static_assert(sizeof(NBProspectiveIntentionSummaryRecord) == 336);
 static_assert(sizeof(NBProspectiveLifecycleState) == 512);
-static_assert(sizeof(NBCommittedTransitionRecord) == 1104);
+static_assert(sizeof(NBCommittedTransitionRecord) == 1152);
 static_assert(sizeof(NBRegionalTokenLayoutRecord) == 40);
 static_assert(sizeof(NBRegionalTransitionRecord) == 1152);
 static_assert(sizeof(NBCounterfactualLearningRecord) == 256);
@@ -4880,6 +4900,14 @@ kernel void journal_committed_learning_transition(
     reinterpret_cast<device const NBDriveRecord *>(
       output_hot_state + uniforms.drive_offset
     );
+  device const NBDriveRecord *prior_drives =
+    reinterpret_cast<device const NBDriveRecord *>(
+      input_hot_state + uniforms.drive_offset
+    );
+  device const NBAffectiveStateRecord *affect =
+    reinterpret_cast<device const NBAffectiveStateRecord *>(
+      output_hot_state + uniforms.affective_state_offset
+    );
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       output_hot_state + uniforms.neuromodulation_offset
@@ -4954,6 +4982,20 @@ kernel void journal_committed_learning_transition(
   record.mean_drive_deficit = uniforms.drive_count == 0u
     ? 0.0f : drive_deficit / float(uniforms.drive_count);
   record.pain = uniforms.drive_count > 5u ? drives[5].level : 0.0f;
+  record.affect[0] = isfinite(affect->pain)
+    ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f;
+  record.affect[1] = isfinite(affect->pleasure)
+    ? clamp(affect->pleasure, 0.0f, 1.0f) : 0.0f;
+  record.affect[2] = isfinite(affect->relief)
+    ? clamp(affect->relief, 0.0f, 1.0f) : 0.0f;
+  for (uint source = 0u; source < 5u; ++source) {
+    const float evidence = affect->source_evidence[source];
+    record.affect[source + 3u] = isfinite(evidence)
+      ? clamp(evidence, 0.0f, 1.0f) : 0.0f;
+  }
+  record.affect_source_validity_mask = uint(affect->source_validity_mask);
+  record.affect_reserved = 0u;
+  record.affect_timestamp_microseconds = affect->timestamp_microseconds;
   record.model_error = uniforms.neuromodulator_count > 1u
     ? neuromodulators[1].value : 0.0f;
   record.predicted_information_gain = control->predicted_information_gain;
@@ -5334,7 +5376,18 @@ kernel void journal_committed_learning_transition(
     record.damage_cvar,
     max(record.body_schema_trace[13], record.body_schema_trace[15])
   );
-  record.factored_reinforcement[0] = -record.mean_drive_deficit;
+  float prior_homeostatic_potential = 0.0f;
+  float accepted_homeostatic_potential = 0.0f;
+  for (uint drive = 0u; drive < uniforms.drive_count; ++drive) {
+    if (isfinite(prior_drives[drive].potential)) {
+      prior_homeostatic_potential += prior_drives[drive].potential;
+    }
+    if (isfinite(drives[drive].potential)) {
+      accepted_homeostatic_potential += drives[drive].potential;
+    }
+  }
+  record.factored_reinforcement[0] = prior_homeostatic_potential
+    - accepted_homeostatic_potential;
   record.factored_reinforcement[1] = control->selected_score;
   record.factored_reinforcement[2] = uniforms.drive_count > 9u
     ? drives[9].potential : 0.0f;
@@ -5732,6 +5785,10 @@ kernel void segment_and_journal_episode(
     reinterpret_cast<device const NBObjectSlotRecord *>(
       hot_state + uniforms.object_slot_offset
     );
+  device const NBAffectiveStateRecord *affect =
+    reinterpret_cast<device const NBAffectiveStateRecord *>(
+      hot_state + uniforms.affective_state_offset
+    );
 
   const uint sample_count = min(
     min(uniforms.surprise_sample_count, uniforms.recurrent_scalar_count),
@@ -5885,6 +5942,21 @@ kernel void segment_and_journal_episode(
       embodied_event_kind = 7u;
     }
     embodied_uncertainty = max(embodied_uncertainty, prediction_error);
+  }
+  const float affect_pain = isfinite(affect->pain)
+    ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f;
+  const float affect_pleasure = isfinite(affect->pleasure)
+    ? clamp(affect->pleasure, 0.0f, 1.0f) : 0.0f;
+  const float affect_relief = isfinite(affect->relief)
+    ? clamp(affect->relief, 0.0f, 1.0f) : 0.0f;
+  const float affect_salience = max(
+    affect_pain, max(affect_pleasure, affect_relief)
+  );
+  if (affect->timestamp_microseconds == uniforms.target_timestamp_microseconds
+      && affect_salience > embodied_salience) {
+    embodied_salience = affect_salience;
+    embodied_source = uint(affect->source_validity_mask);
+    embodied_event_kind = 12u;
   }
   if (embodied_salience > event_salience) {
     strongest_event_kind = embodied_event_kind;

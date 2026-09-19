@@ -277,6 +277,7 @@ func makeNumanXInteropCompiledTemplate(
   touchReceptorCount: UInt32 = 0,
   touchFeatureDimension: UInt32 = 0,
   touchLatencyMicroseconds: UInt32 = 250,
+  includeTouchNociceptionBinding: Bool = false,
   interoceptorCount: UInt32 = 1,
   interoceptionFeatureDimension: UInt32 = 1,
   interoceptionLatencyMicroseconds: UInt32 = 1_000,
@@ -505,23 +506,40 @@ func makeNumanXInteropCompiledTemplate(
     development: development,
     capacities: capacities
   )
+  var bodyEndpoints = [
+    try NumanXReceptorEndpoint(
+      identifier: 1,
+      sourceEndpointIdentifier: 101,
+      bodyIdentifier: 0,
+      modality: .proprioception,
+      receptorIndex: 0,
+      featureIndex: 0,
+      signal: .position,
+      component: 0
+    )
+  ]
+  if includeTouchNociceptionBinding {
+    guard touchReceptorCount > 0, touchFeatureDimension > 0 else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "touch nociception binding requires an enabled touch topology"
+      )
+    }
+    bodyEndpoints.append(try NumanXReceptorEndpoint(
+      identifier: 2,
+      sourceEndpointIdentifier: 102,
+      bodyIdentifier: 0,
+      modality: .touch,
+      receptorIndex: 0,
+      featureIndex: 0,
+      signal: .nociception
+    ))
+  }
   let receptorAnatomy = try NumanXReceptorAnatomyCatalog(
     species: species,
     jointTopologyCatalog: jointTopology,
     muscleAttachmentCatalog: nil,
     numanXModelFingerprint: jointTopology.numanXModelFingerprint,
-    endpoints: [
-      try NumanXReceptorEndpoint(
-        identifier: 1,
-        sourceEndpointIdentifier: 101,
-        bodyIdentifier: 0,
-        modality: .proprioception,
-        receptorIndex: 0,
-        featureIndex: 0,
-        signal: .position,
-        component: 0
-      )
-    ],
+    endpoints: bodyEndpoints,
     jointEndpoints: try JointReceptorSignal.allCases.enumerated().map { index, signal in
       try NumanXJointReceptorEndpoint(
         identifier: UInt32(10 + index),

@@ -4,7 +4,7 @@ import Foundation
 /// are referenced by fingerprint and never embedded here.
 @frozen
 public struct BrainAgentState: Codable, Equatable, Sendable {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 3
 
   public let environmentIdentifier: UInt32
   public let speciesTemplateFingerprint: UInt64
@@ -16,6 +16,7 @@ public struct BrainAgentState: Codable, Equatable, Sendable {
   public let memory: CompleteMemoryState
   public let drives: DriveState
   public let neuromodulation: NeuromodulatoryState
+  public let affect: AffectiveState
   public let fastPlasticity: FastPlasticityState
   public let control: ActiveControlState
   public let development: BrainDevelopmentalState
@@ -32,6 +33,7 @@ public struct BrainAgentState: Codable, Equatable, Sendable {
     memory: CompleteMemoryState,
     drives: DriveState,
     neuromodulation: NeuromodulatoryState,
+    affect: AffectiveState,
     fastPlasticity: FastPlasticityState,
     control: ActiveControlState,
     development: BrainDevelopmentalState,
@@ -48,6 +50,7 @@ public struct BrainAgentState: Codable, Equatable, Sendable {
       worldModel.parameterVersionFingerprint == runtime.parameterVersionFingerprint,
       workspace.timestamp == timestamp,
       drives.timestamp == timestamp, neuromodulation.timestamp == timestamp,
+      affect.timestamp == timestamp,
       fastPlasticity.timestamp == timestamp, control.timestamp == timestamp,
       workspace.generation == generation, memory.generation == generation,
       fastPlasticity.generation == generation,
@@ -87,6 +90,7 @@ public struct BrainAgentState: Codable, Equatable, Sendable {
     self.memory = memory
     self.drives = drives
     self.neuromodulation = neuromodulation
+    self.affect = affect
     self.fastPlasticity = fastPlasticity
     self.control = control
     self.development = development
@@ -158,6 +162,7 @@ public struct BrainCommittedCheckpoint: Codable, Equatable, Sendable {
     Self.mix(state.regionalProgramFingerprint, into: &hash)
     Self.mix(scheduleFingerprint, into: &hash)
     Self.mix(state.parameterVersionFingerprint, into: &hash)
+    Self.mix(state.affect.causalFingerprint, into: &hash)
     Self.mix(physicalCheckpointFingerprint, into: &hash)
     self.formatVersion = BrainAgentState.formatVersion
     self.state = state

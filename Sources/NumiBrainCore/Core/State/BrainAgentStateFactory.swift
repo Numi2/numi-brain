@@ -187,6 +187,7 @@ public enum BrainAgentStateFactory {
         )
       }
     )
+    let affect = try AffectiveState.neutral(at: initialTimestamp)
     let fastPlasticity = try makeFastPlasticity(
       species: species,
       timestamp: initialTimestamp
@@ -243,6 +244,7 @@ public enum BrainAgentStateFactory {
       memory: memory,
       drives: drives,
       neuromodulation: neuromodulation,
+      affect: affect,
       fastPlasticity: fastPlasticity,
       control: control,
       development: development,

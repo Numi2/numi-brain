@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "committedTransition": {
-    "recordVersion": 11,
-    "strideBytes": 1104,
+    "recordVersion": 12,
+    "strideBytes": 1152,
     "flags": {
       "valid": 1,
       "hasEmbodiedTrace": 2,
@@ -45,7 +45,11 @@
       {"name":"autonomicAction","offset":784,"type":"f32","count":16},
       {"name":"activeSensingAction","offset":848,"type":"f32","count":16},
       {"name":"internalAction","offset":912,"type":"f32","count":32},
-      {"name":"bodySchemaTrace","offset":1040,"type":"f32","count":16}
+      {"name":"bodySchemaTrace","offset":1040,"type":"f32","count":16},
+      {"name":"affect","offset":1104,"type":"f32","count":8},
+      {"name":"affectSourceValidityMask","offset":1136,"type":"u32","count":1},
+      {"name":"affectReserved","offset":1140,"type":"u32","count":1},
+      {"name":"affectTimestamp","offset":1144,"type":"u64","count":1}
     ]
   },
   "policyHead": {

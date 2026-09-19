@@ -56,6 +56,9 @@ constant uint NB_CEREBELLAR_JOINT_FEATURE_BASE = 64u;
 constant uint NB_CEREBELLAR_MUSCLE_FEATURE_BASE = 128u;
 constant uint NB_CEREBELLAR_FEATURE_MASK = 0xffu;
 constant uint NB_CEREBELLAR_ACTUATOR_SHIFT = 8u;
+constant float NB_AFFECT_PLEASURE_VALUE_GAIN = 0.10f;
+constant float NB_AFFECT_RELIEF_VALUE_GAIN = 0.15f;
+constant float NB_AFFECT_PAIN_CAUTION_GAIN = 0.15f;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -86,7 +89,7 @@ struct NBDecisionUniforms {
   ulong descending_somatic_baseline_offset;
   ulong regional_plastic_modulation_offset;
   ulong parameter_version_fingerprint;
-  ulong reserved_identity;
+  ulong affective_state_offset;
   uint recurrent_scalar_count;
   uint workspace_scalar_count;
   uint workspace_capacity;
@@ -147,6 +150,19 @@ struct NBDriveRecord {
   float deficit;
   float potential;
   uint kind;
+};
+
+struct NBAffectiveStateRecord {
+  float pain;
+  float pleasure;
+  float relief;
+  float prior_pain_observation;
+  float source_evidence[5];
+  ushort source_validity_mask;
+  ushort previous_validity_mask;
+  ulong timestamp_microseconds;
+  ulong last_interoception_timestamp_microseconds;
+  ulong last_pain_timestamp_microseconds;
 };
 
 struct NBNeuromodulatorRecord {
@@ -251,6 +267,23 @@ struct NBOptionCandidateRecord {
   uint parameter_count;
   float parameters[16];
 };
+
+inline float nb_affective_option_value(
+  float pain,
+  float pleasure,
+  float relief,
+  thread const NBOptionCandidateRecord &candidate)
+{
+  const float restorative_gain = clamp(candidate.homeostatic_value, 0.0f, 1.0f);
+  const float caution_cost = clamp(
+    candidate.damage_cvar + 0.25f * candidate.effort_cost,
+    0.0f,
+    1.0f
+  );
+  return NB_AFFECT_PLEASURE_VALUE_GAIN * pleasure * restorative_gain
+    + NB_AFFECT_RELIEF_VALUE_GAIN * relief * restorative_gain
+    - NB_AFFECT_PAIN_CAUTION_GAIN * pain * caution_cost;
+}
 
 struct NBPlanStepRecord {
   ulong option_identifier;
@@ -538,6 +571,7 @@ struct NBDevelopmentalHeader {
 
 static_assert(sizeof(NBDecisionUniforms) == 456);
 static_assert(sizeof(NBDriveRecord) == 32);
+static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
@@ -2478,6 +2512,10 @@ kernel void simulate_candidate_option_outcomes(
   device const uint *policy_observation_metadata [[buffer(24)]],
   uint gid [[thread_position_in_grid]])
 {
+  device const NBAffectiveStateRecord *affect =
+    reinterpret_cast<device const NBAffectiveStateRecord *>(
+      hot_state + uniforms.affective_state_offset
+    );
   device const NBDevelopmentalHeader *development =
     reinterpret_cast<device const NBDevelopmentalHeader *>(
       hot_state + uniforms.developmental_state_offset
@@ -2523,6 +2561,14 @@ kernel void simulate_candidate_option_outcomes(
       policy_observation_sketch, policy_observation_metadata
     );
   const float embodied_self_risk = nb_embodied_self_risk(hot_state, uniforms);
+  const bool affect_timestamp_valid = affect->timestamp_microseconds
+    <= uniforms.target_timestamp_microseconds;
+  const float affect_pain = affect_timestamp_valid && isfinite(affect->pain)
+    ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f;
+  const float affect_pleasure = affect_timestamp_valid && isfinite(affect->pleasure)
+    ? clamp(affect->pleasure, 0.0f, 1.0f) : 0.0f;
+  const float affect_relief = affect_timestamp_valid && isfinite(affect->relief)
+    ? clamp(affect->relief, 0.0f, 1.0f) : 0.0f;
   float rollout_state[16];
   for (uint component = 0u; component < 16u; ++component) {
     rollout_state[component] = candidates[gid].parameters[component];
@@ -2595,6 +2641,9 @@ kernel void simulate_candidate_option_outcomes(
             + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
           0.0f, 1.0f
         );
+        const float followup_affective_value = nb_affective_option_value(
+          affect_pain, affect_pleasure, affect_relief, followup
+        );
         const float followup_score = value_parameters[0] * followup.task_value
           + value_parameters[1] * followup.homeostatic_value
           + value_parameters[2] * followup.social_value
@@ -2605,6 +2654,7 @@ kernel void simulate_candidate_option_outcomes(
           + value_parameters[0] * followup_semantic.support
             * followup_semantic.reinforcement
           + value_parameters[0] * followup_goal_alignment
+          + followup_affective_value
           + compatibility - value_parameters[4] * uniforms.risk_weight
             * followup_risk
           - value_parameters[5] * followup.effort_cost
@@ -2665,6 +2715,9 @@ kernel void simulate_candidate_option_outcomes(
         + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
       0.0f, 1.0f
     );
+    const float affective_value = nb_affective_option_value(
+      affect_pain, affect_pleasure, affect_relief, candidate
+    );
     accumulated_damage = 1.0f
       - (1.0f - accumulated_damage) * (1.0f - step_damage);
     const float step_effort = candidate.effort_cost * (1.0f + epistemic);
@@ -2681,6 +2734,7 @@ kernel void simulate_candidate_option_outcomes(
         + value_parameters[0] * episodic.support * episodic.reinforcement
         + value_parameters[0] * semantic.support * semantic.reinforcement
         + value_parameters[0] * external_goal_alignment
+        + affective_value
         - value_parameters[4] * uniforms.risk_weight * step_damage
         - value_parameters[5] * step_effort
         - value_parameters[6]

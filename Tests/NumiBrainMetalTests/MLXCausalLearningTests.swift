@@ -192,6 +192,40 @@ final class MLXCausalLearningTests: XCTestCase {
     XCTAssertEqual(gathers.twoStepMask.shape, [count, 1])
   }
 
+  func testAffectAddsLearningEmphasisOnlyWithCurrentSourceEvidence() {
+    Device.withDefaultDevice(.cpu) {
+      let affect = MLXArray(
+        [
+          Float(0.8), 0.4, 0.5, 0, 0, 0, 0, 0,
+          0.1, 0.9, 0.1, 0, 0, 0, 0, 0,
+          0, 0.65, 0.4, 0.9, 0, 0, 0, 0,
+        ], [3, 8])
+      let sourceValidityMask = MLXArray(
+        [UInt32](arrayLiteral: 1, 0, 32), [3, 1]
+      )
+      let emphasis = MLXCommittedTransitionBatch.learningEmphasis(
+        affect: affect, sourceValidityMask: sourceValidityMask
+      )
+      XCTAssertEqual(emphasis.shape, [3, 1])
+      let values = emphasis.asArray(Float.self)
+      XCTAssertEqual(values.count, 3)
+      XCTAssertEqual(values[0], 0.8, accuracy: 1.0e-6)
+      XCTAssertEqual(values[1], 0, accuracy: 1.0e-6)
+      XCTAssertEqual(values[2], 0.65, accuracy: 1.0e-6)
+    }
+  }
+
+  func testCommittedTransitionContractIncludesVersionedAffectWithoutWideningReward() {
+    let contract = BrainExecutableModelContract.CommittedTransition.self
+    XCTAssertEqual(contract.recordVersion, 12)
+    XCTAssertEqual(contract.strideBytes, 1_152)
+    XCTAssertEqual(contract.Count.factoredReinforcement, 8)
+    XCTAssertEqual(contract.Offset.affect, 1_104)
+    XCTAssertEqual(contract.Count.affect, 8)
+    XCTAssertEqual(contract.Offset.affectSourceValidityMask, 1_136)
+    XCTAssertEqual(contract.Offset.affectTimestamp, 1_144)
+  }
+
   func testTimestampShiftClearsMissingEvidenceAndPreservesDonorValidity() {
     let indices = MLXArray([Int32](arrayLiteral: 0, 0))
     let exists = MLXArray([Float](arrayLiteral: 0, 1), [2, 1])

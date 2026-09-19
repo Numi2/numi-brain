@@ -304,6 +304,110 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(second.generation, 1)
   }
 
+  func testAcceptedNociceptionAndReliefMatchCPUOracle() throws {
+    let compiled = try makeNumanXInteropCompiledTemplate(
+      touchReceptorCount: 1,
+      touchFeatureDimension: 1,
+      includeTouchNociceptionBinding: true
+    )
+    let fixture = try makeFixture(compiledSpeciesTemplate: compiled)
+    let first = try runAcceptedRoot(
+      fixture: fixture,
+      token: fixture.token,
+      touchNociceptionValue: 0.8,
+      cachedDecisionFingerprint: 0x5eed_1001
+    )
+    let affectSection = fixture.runtime.agentStateRuntime.arena.layout.section(
+      .affectiveState
+    )
+    XCTAssertEqual(affectSection.elementStride, 64)
+
+    func float(_ payload: MetalAgentStateRuntime.CheckpointPayload, _ offset: Int) -> Float {
+      payload.hotState.withUnsafeBytes {
+        $0.loadUnaligned(
+          fromByteOffset: affectSection.byteOffset + offset,
+          as: Float.self
+        )
+      }
+    }
+    func mask(_ payload: MetalAgentStateRuntime.CheckpointPayload) -> UInt16 {
+      payload.hotState.withUnsafeBytes {
+        $0.loadUnaligned(
+          fromByteOffset: affectSection.byteOffset + 36,
+          as: UInt16.self
+        )
+      }
+    }
+    func timestamp(_ payload: MetalAgentStateRuntime.CheckpointPayload) -> UInt64 {
+      payload.hotState.withUnsafeBytes {
+        $0.loadUnaligned(
+          fromByteOffset: affectSection.byteOffset + 40,
+          as: UInt64.self
+        )
+      }
+    }
+    func cpuSample(
+      from payload: MetalAgentStateRuntime.CheckpointPayload,
+      targetTimestamp: UInt64,
+      nociceptionTimestamp: UInt64
+    ) throws -> AffectivePhysiologySample {
+      let directNociception = float(payload, 12)
+      let painEvent = float(payload, 0) > directNociception
+        ? float(payload, 0) : nil
+      return try AffectivePhysiologySample(
+        nociceptionTimestamp: BrainTimestamp(microseconds: nociceptionTimestamp),
+        painEventTimestamp: painEvent.map {
+          _ in BrainTimestamp(microseconds: targetTimestamp)
+        },
+        nociception: directNociception,
+        painEvent: painEvent
+      )
+    }
+
+    let cpuPain = try AffectiveState.neutral(
+      at: BrainTimestamp(microseconds: 10_000)
+    ).advanced(
+      to: BrainTimestamp(microseconds: 11_000),
+      sample: cpuSample(
+        from: first, targetTimestamp: 11_000, nociceptionTimestamp: 10_750
+      )
+    )
+    XCTAssertEqual(float(first, 0), cpuPain.pain, accuracy: 1.0e-5)
+    XCTAssertEqual(float(first, 4), cpuPain.pleasure, accuracy: 1.0e-5)
+    XCTAssertEqual(float(first, 8), cpuPain.relief, accuracy: 1.0e-5)
+    XCTAssertEqual(mask(first) & (1 << 5), 1 << 5)
+    XCTAssertEqual(timestamp(first), 11_000)
+
+    let nextToken = try BrainJointTransactionToken(
+      environmentIdentifier: fixture.token.environmentIdentifier,
+      episodeIdentifier: fixture.token.episodeIdentifier,
+      controlStepIdentifier: fixture.token.controlStepIdentifier + 1,
+      parameterVersionFingerprint: fixture.token.parameterVersionFingerprint,
+      baseBrainGeneration: 1,
+      basePhysicsGeneration: 101,
+      committedTimestamp: BrainTimestamp(microseconds: 11_000),
+      targetTimestamp: BrainTimestamp(microseconds: 12_000),
+      randomCounterGeneration: 1
+    )
+    let second = try runAcceptedRoot(
+      fixture: fixture,
+      token: nextToken,
+      touchNociceptionValue: 0.2,
+      cachedDecisionFingerprint: 0x5eed_1002
+    )
+    let cpuRelief = try cpuPain.advanced(
+      to: BrainTimestamp(microseconds: 12_000),
+      sample: cpuSample(
+        from: second, targetTimestamp: 12_000, nociceptionTimestamp: 11_750
+      )
+    )
+    XCTAssertEqual(float(second, 0), cpuRelief.pain, accuracy: 1.0e-5)
+    XCTAssertEqual(float(second, 4), cpuRelief.pleasure, accuracy: 1.0e-5)
+    XCTAssertEqual(float(second, 8), cpuRelief.relief, accuracy: 1.0e-5)
+    XCTAssertEqual(mask(second) & (1 << 5), 1 << 5)
+    XCTAssertEqual(timestamp(second), 12_000)
+  }
+
   func testAcceptedPhysicsGatePendingAndWrongTokenMutateNoShadowBytes() throws {
     let pending = try runRejectedAcceptedPhysicsGate(.zero)
     let wrong = try runRejectedAcceptedPhysicsGate(.wrongToken)
@@ -592,13 +696,29 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     -> MetalAgentStateRuntime.CheckpointPayload
   {
     let fixture = try makeFixture()
-    let transaction = try fixture.runtime.beginControl(
-      jointToken: fixture.token,
+    return try runAcceptedRoot(
+      fixture: fixture,
+      token: fixture.token,
+      touchNociceptionValue: nil,
       cachedDecisionFingerprint: 0x5eed_0001
+    )
+  }
+
+  private func runAcceptedRoot(
+    fixture: Fixture,
+    token: BrainJointTransactionToken,
+    touchNociceptionValue: Float?,
+    cachedDecisionFingerprint: UInt64
+  ) throws -> MetalAgentStateRuntime.CheckpointPayload {
+    let transaction = try fixture.runtime.beginControl(
+      jointToken: token,
+      cachedDecisionFingerprint: cachedDecisionFingerprint
     )
     let committedSensors = try makeSensorPacket(
       fixture: fixture,
-      acceptedPhysicsState: nil
+      acceptedPhysicsState: nil,
+      touchNociceptionValue: touchNociceptionValue,
+      token: token
     )
     let event = try XCTUnwrap(fixture.device.makeSharedEvent())
     let decisionTicket = try fixture.runtime.submitInferAndDecide(
@@ -614,21 +734,23 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       timeoutMilliseconds: 10_000
     )
 
-    var physicalLedger = BrainJointTransaction(token: fixture.token)
+    var physicalLedger = BrainJointTransaction(token: token)
     let substep = try physicalLedger.beginPhysicsSubstep(
-      durationMicroseconds: fixture.token.targetTimestamp.rawValue
-        - fixture.token.committedTimestamp.rawValue
+      durationMicroseconds: token.targetTimestamp.rawValue
+        - token.committedTimestamp.rawValue
     )
     let accepted = try AcceptedPhysicsStateToken(
-      transaction: fixture.token,
+      transaction: token,
       substep: substep,
-      physicsStateFingerprint: 0xfeed_0001,
-      physicsGeneration: fixture.token.basePhysicsGeneration + 1
+      physicsStateFingerprint: 0xfeed_0001 ^ token.baseBrainGeneration,
+      physicsGeneration: token.basePhysicsGeneration + 1
     )
     try physicalLedger.acceptPhysicsSubstep(accepted, for: substep)
     let acceptedSensors = try makeSensorPacket(
       fixture: fixture,
-      acceptedPhysicsState: accepted
+      acceptedPhysicsState: accepted,
+      touchNociceptionValue: touchNociceptionValue,
+      token: token
     )
     let consequenceTicket = try fixture.runtime.submitAcceptedConsequence(
       transaction: transaction,
@@ -890,8 +1012,15 @@ final class MetalSharedEventTimelineTests: XCTestCase {
   }
 
   private func makeFixture() throws -> Fixture {
+    try makeFixture(compiledSpeciesTemplate: nil)
+  }
+
+  private func makeFixture(
+    compiledSpeciesTemplate: CompiledSpeciesTemplate?
+  ) throws -> Fixture {
     let device = try requireMetal4Device()
-    let compiled = try makeNumanXInteropCompiledTemplate()
+    let compiled = try compiledSpeciesTemplate
+      ?? makeNumanXInteropCompiledTemplate()
     let parameters = TissueParameters.corticalSheetV0
     let publication = try BrainParameterPublication.developmentalSeedV1(
       species: compiled.species,
@@ -944,13 +1073,16 @@ final class MetalSharedEventTimelineTests: XCTestCase {
 
   private func makeSensorPacket(
     fixture: Fixture,
-    acceptedPhysicsState: AcceptedPhysicsStateToken?
+    acceptedPhysicsState: AcceptedPhysicsStateToken?,
+    touchNociceptionValue: Float? = nil,
+    token: BrainJointTransactionToken? = nil
   ) throws -> NumanXSensorPacketLease {
     try makeSensorPacket(
       device: fixture.device,
       compiled: fixture.compiled,
-      token: fixture.token,
-      acceptedPhysicsState: acceptedPhysicsState
+      token: token ?? fixture.token,
+      acceptedPhysicsState: acceptedPhysicsState,
+      touchNociceptionValue: touchNociceptionValue
     )
   }
 
@@ -1026,7 +1158,8 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     device: any MTLDevice,
     compiled: CompiledSpeciesTemplate,
     token: BrainJointTransactionToken,
-    acceptedPhysicsState: AcceptedPhysicsStateToken?
+    acceptedPhysicsState: AcceptedPhysicsStateToken?,
+    touchNociceptionValue: Float? = nil
   ) throws -> NumanXSensorPacketLease {
     let deliveryTimestamp = acceptedPhysicsState?.acceptedTimestamp
       ?? token.committedTimestamp
@@ -1043,6 +1176,9 @@ final class MetalSharedEventTimelineTests: XCTestCase {
         let scalars = buffer.contents().assumingMemoryBound(to: Float.self)
         for index in 0..<scalarCount {
           scalars[index] = Float(sensorIndex + 1) * 0.125 + Float(index) * 0.03125
+        }
+        if let touchNociceptionValue, topology.modality == .touch, scalarCount > 0 {
+          scalars[0] = touchNociceptionValue
         }
         let validity: (any MTLBuffer)?
         if topology.modality == .proprioception {

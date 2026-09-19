@@ -74,6 +74,8 @@ public enum MetalAgentHotSection: UInt16, Codable, CaseIterable, Sendable {
   case sensoryValidity = 46
   /// Articulated parent/child coordinate posterior, one record per joint.
   case jointBelief = 47
+  /// Per-agent affect and fresh prior receptor evidence for transactional relief.
+  case affectiveState = 48
 }
 
 @frozen
@@ -147,6 +149,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let bodyBeliefLayoutVersion: UInt64 = 3
   public static let jointBeliefStride = 256
   public static let jointBeliefLayoutVersion: UInt64 = 1
+  public static let affectiveStateLayoutVersion: UInt64 = 1
+  public static let affectiveStateStride = 64
   public static let worldModelLayoutVersion: UInt64 = 2
   public static let cerebellarExpertLayoutVersion: UInt64 = 2
   public static let muscleBeliefStride = 192
@@ -488,11 +492,18 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       stride: Self.jointBeliefStride,
       allowEmpty: true
     )
+    try builder.append(
+      .affectiveState,
+      count: 1,
+      stride: Self.affectiveStateStride
+    )
     var hash: UInt64 = 14_695_981_039_346_656_037
     Self.mix(species.fingerprint, into: &hash)
     Self.mix(regionalProgram.fingerprint, into: &hash)
     Self.mix(Self.bodyBeliefLayoutVersion, into: &hash)
     Self.mix(Self.jointBeliefLayoutVersion, into: &hash)
+    Self.mix(Self.affectiveStateLayoutVersion, into: &hash)
+    Self.mix(AffectiveModelConfiguration.reference.fingerprint, into: &hash)
     Self.mix(Self.muscleBeliefLayoutVersion, into: &hash)
     Self.mix(Self.worldModelLayoutVersion, into: &hash)
     Self.mix(Self.cerebellarExpertLayoutVersion, into: &hash)
@@ -539,7 +550,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 17
+  public static let recordLayoutVersion: UInt32 = 18
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
@@ -550,7 +561,7 @@ public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
   public static let proceduralSkillStride = 1_024
   public static let prospectiveIntentionStride = 640
   public static let replayQueueStride = 32
-  public static let committedTransitionStride = 1_104
+  public static let committedTransitionStride = 1_152
   public static let counterfactualRolloutStride = 256
   public static let regionalTransitionStride = 1_152
 

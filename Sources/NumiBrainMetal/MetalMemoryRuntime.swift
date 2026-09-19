@@ -55,6 +55,7 @@ private struct MemoryUniforms {
   var regionalPlasticModulationCount: UInt32 = 0
   var boundaryThreshold: Float = 0
   var eventSalienceWeight: Float = 0
+  var affectiveStateOffset: UInt64 = 0
 }
 
 private struct MemoryRetrievalUniforms {
@@ -281,6 +282,7 @@ private struct CommittedTransitionUniforms {
   var regionalTransitionMemoryOffset: UInt64 = 0
   var persistentMemoryByteCount: UInt64 = 0
   var journalByteCount: UInt64 = 0
+  var affectiveStateOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var observationCount: UInt32 = 0
   var actionCount: UInt32 = 0
@@ -413,12 +415,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     retrieval: MemoryRetrievalDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<MemoryUniforms>.stride == 312,
+    guard MemoryLayout<MemoryUniforms>.stride == 320,
       MemoryLayout<MemoryRetrievalUniforms>.stride == 304,
       MemoryLayout<MemoryReconsolidationUniforms>.stride == 296,
       MemoryLayout<MemoryConsolidationUniforms>.stride == 248,
       MemoryLayout<ProspectiveLifecycleUniforms>.stride == 136,
-      MemoryLayout<CommittedTransitionUniforms>.stride == 512,
+      MemoryLayout<CommittedTransitionUniforms>.stride == 520,
       MemoryLayout<CounterfactualLearningUniforms>.stride == 128,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
       arena.layout.regionalProgramFingerprint == regionalProgram.fingerprint,
@@ -825,6 +827,9 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       regionalTransitionMemoryOffset: UInt64(regionalTransitions.byteOffset),
       persistentMemoryByteCount: UInt64(memory.memoryByteCount),
       journalByteCount: UInt64(memory.journalByteCount),
+      affectiveStateOffset: UInt64(
+        arena.layout.section(.affectiveState).byteOffset
+      ),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       observationCount: UInt32(observations.elementCount),
       actionCount: UInt32(somatic.elementCount),
@@ -1610,7 +1615,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
         arena.layout.section(.regionalPlasticModulation).elementCount
       ),
       boundaryThreshold: segmentation.boundaryThreshold,
-      eventSalienceWeight: segmentation.eventSalienceWeight
+      eventSalienceWeight: segmentation.eventSalienceWeight,
+      affectiveStateOffset: UInt64(
+        arena.layout.section(.affectiveState).byteOffset
+      )
     )
     withUnsafeBytes(of: &uniforms) { bytes in
       guard let source = bytes.baseAddress else { return }

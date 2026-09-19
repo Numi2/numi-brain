@@ -3,6 +3,8 @@ import MLX
 import NumiBrainCore
 import NumiBrainMetal
 
+private typealias NBCommittedSequenceABI = BrainExecutableModelContract.CommittedTransition
+
 /// Bounded temporal gathers over one private committed-transition ring.
 /// Integer metadata are indexed once at the immutable learner boundary. The
 /// MLX graph stores O(N) indices/masks, not N-by-N adjacency or its square.
@@ -22,7 +24,7 @@ public struct MLXCommittedSequenceBatch: @unchecked Sendable {
     let lease = try source.makeSharedStorageLease()
     guard source.transitionCapacity > 0,
       source.transitionCapacity <= Int(Int32.max),
-      source.transitionStride >= 72,
+      source.transitionStride == NBCommittedSequenceABI.strideBytes,
       lease.byteCount / source.transitionStride == source.transitionCapacity,
       lease.byteCount % source.transitionStride == 0
     else {
@@ -42,17 +44,23 @@ public struct MLXCommittedSequenceBatch: @unchecked Sendable {
       func u32(_ offset: Int) -> UInt32 {
         UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: offset, as: UInt32.self))
       }
-      guard u64(0) > 0,
-        u32(64) == MetalLearningBatch.transitionRecordVersion,
-        (u32(68) & 1) == 1,
-        u64(24) == source.parameterVersionFingerprint,
-        u64(32) > 0, u64(32) <= source.sourceGeneration,
-        u64(16) >= u64(8)
+      guard u64(NBCommittedSequenceABI.Offset.identifier) > 0,
+        u32(NBCommittedSequenceABI.Offset.formatVersion) == NBCommittedSequenceABI.recordVersion,
+        (u32(NBCommittedSequenceABI.Offset.flags) & NBCommittedSequenceABI.validFlag) != 0,
+        u64(NBCommittedSequenceABI.Offset.parameterVersionFingerprint) == source.parameterVersionFingerprint,
+        u64(NBCommittedSequenceABI.Offset.sourceGeneration) > 0,
+        u64(NBCommittedSequenceABI.Offset.sourceGeneration) <= source.sourceGeneration,
+        u64(NBCommittedSequenceABI.Offset.endTimestamp) >= u64(NBCommittedSequenceABI.Offset.startTimestamp),
+        u64(NBCommittedSequenceABI.Offset.affectTimestamp)
+          == u64(NBCommittedSequenceABI.Offset.endTimestamp),
+        u32(NBCommittedSequenceABI.Offset.affectReserved) == 0
       else { return nil }
       return BrainCommittedSequenceRecord(
-        identifier: u64(0), sourceGeneration: u64(32),
-        startTimestampMicroseconds: u64(8), endTimestampMicroseconds: u64(16),
-        parameterVersionFingerprint: u64(24)
+        identifier: u64(NBCommittedSequenceABI.Offset.identifier),
+        sourceGeneration: u64(NBCommittedSequenceABI.Offset.sourceGeneration),
+        startTimestampMicroseconds: u64(NBCommittedSequenceABI.Offset.startTimestamp),
+        endTimestampMicroseconds: u64(NBCommittedSequenceABI.Offset.endTimestamp),
+        parameterVersionFingerprint: u64(NBCommittedSequenceABI.Offset.parameterVersionFingerprint)
       )
     }
     let index = try BrainCommittedSequenceIndex(

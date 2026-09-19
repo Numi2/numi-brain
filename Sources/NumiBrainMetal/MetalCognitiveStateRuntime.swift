@@ -34,6 +34,7 @@ private struct CognitiveUniforms {
   var somaticOutputOffset: UInt64 = 0
   var acceptedAutonomicOutputOffset: UInt64 = 0
   var acceptedActiveSensingOutputOffset: UInt64 = 0
+  var affectiveStateOffset: UInt64 = 0
   var recurrentScalarCount: UInt32 = 0
   var workspaceCapacity: UInt32 = 0
   var workspaceDimension: UInt32 = 0
@@ -182,7 +183,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 424,
+    guard MemoryLayout<CognitiveUniforms>.stride == 432,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       MemoryLayout<PlasticityRegionRangeRecord>.stride == 24,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -787,6 +788,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       somaticOutputOffset: offset(.somaticOutput),
       acceptedAutonomicOutputOffset: offset(.acceptedAutonomicOutput),
       acceptedActiveSensingOutputOffset: offset(.acceptedActiveSensingOutput),
+      affectiveStateOffset: offset(.affectiveState),
       recurrentScalarCount: UInt32(regionalProgram.scalarCount),
       workspaceCapacity: UInt32(species.capacities.workspaceTokenCapacity),
       workspaceDimension: UInt32(species.capacities.workspaceTokenDimension),

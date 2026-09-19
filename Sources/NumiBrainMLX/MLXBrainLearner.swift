@@ -560,16 +560,18 @@ public final class MLXBrainLearner: @unchecked Sendable {
       min: 0,
       max: 4
     )
+    let affectSalience = batch.affectLearningEmphasis
     let transitionMask =
       batch.validMask
-      * (Float(1) + replayTransitionWeights)
+      * (Float(1) + replayTransitionWeights + Float(0.5) * affectSalience)
     let riskTransitionMask =
       batch.validMask
       * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights
         + Float(2) * batch.acceptedStopMask)
     let bodyTransitionMask =
       batch.embodiedStateMask
-      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights)
+      * (Float(1) + replayTransitionWeights + Float(2) * threatTransitionWeights
+        + Float(0.5) * affectSalience)
     let acceptedRiskMask = maximum(
       batch.embodiedStateMask, batch.acceptedStopMask
     ) * (Float(1) + replayTransitionWeights

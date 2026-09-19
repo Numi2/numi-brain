@@ -17,6 +17,15 @@ constant uint NB_ACCEPTED_CONTROL_MODE_REFLEX = 1u;
 constant uint NB_ACCEPTED_REFLEX_ACTIVATED_IN_ROOT = 1u << 5;
 constant uint NB_ACCEPTED_PROTECTIVE_VALID = 1u;
 constant uint NB_ACCEPTED_PROTECTIVE_EMERGENCY_STOP = 1u << 1;
+constant uint NB_AFFECTIVE_FRAME_VALID = 1u;
+constant uint NB_AFFECTIVE_NOCICEPTION_SIGNAL = 6u;
+constant uint NB_AFFECTIVE_FATIGUE_SIGNAL = 4u;
+constant ulong NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS = 100000ul;
+constant float NB_AFFECTIVE_PAIN_DECAY_MICROSECONDS = 2000000.0f;
+constant float NB_AFFECTIVE_PLEASURE_DECAY_MICROSECONDS = 1000000.0f;
+constant float NB_AFFECTIVE_RELIEF_DECAY_MICROSECONDS = 500000.0f;
+constant float NB_AFFECTIVE_RECOVERY_GAIN = 1.0f;
+constant float NB_AFFECTIVE_RELIEF_GAIN = 1.0f;
 constant ulong NB_ACCEPTED_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
@@ -146,6 +155,30 @@ struct NBAcceptedConsequenceUniforms {
   float world_correction_gain;
   float cerebellar_learning_rate;
   float plasticity_learning_rate;
+  ulong sensory_frame_metadata_offset;
+  ulong affective_state_offset;
+};
+
+struct NBAffectiveStateRecord {
+  float pain;
+  float pleasure;
+  float relief;
+  float prior_pain_observation;
+  float source_evidence[5];
+  ushort source_validity_mask;
+  ushort previous_validity_mask;
+  ulong timestamp_microseconds;
+  ulong last_interoception_timestamp_microseconds;
+  ulong last_pain_timestamp_microseconds;
+};
+
+struct NBSensoryFrameMetadata {
+  ulong receptor_timestamp_microseconds;
+  ulong delivery_timestamp_microseconds;
+  uint modality;
+  uint receptor_count;
+  uint feature_dimension;
+  uint flags;
 };
 
 struct NBAcceptedPhysicsStateToken {
@@ -530,12 +563,15 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 432);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 448);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
+static_assert(sizeof(NBAffectiveStateRecord) == 64);
+static_assert(sizeof(NBSensoryFrameMetadata) == 32);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 448);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -1708,6 +1744,248 @@ kernel void assimilate_accepted_body_and_physiology(
       physiology[gid] = mix(physiology[gid], interoception, physiology_gain);
     }
   }
+}
+
+/// Derives affect from fresh, accepted interoceptive and nociceptive evidence.
+/// State changes stay in the transaction shadow and therefore disappear with
+/// every rejected physical future.
+kernel void update_accepted_affective_state(
+  device uchar *hot_state [[buffer(0)]],
+  constant NBAcceptedConsequenceUniforms &uniforms [[buffer(1)]],
+  device const NBBodyReceptorBindingTableHeader *body_receptor_table
+    [[buffer(9)]],
+  device const NBMuscleReceptorBindingTableHeader *muscle_receptor_table
+    [[buffer(11)]],
+  device const uint *acceptance_gate [[buffer(12)]],
+  uint gid [[thread_position_in_grid]])
+{
+  if (gid != 0u || acceptance_gate[0] != 1u) return;
+  device NBAffectiveStateRecord *state = reinterpret_cast<device NBAffectiveStateRecord *>(
+    hot_state + uniforms.affective_state_offset
+  );
+  const ulong now = uniforms.target_timestamp_microseconds;
+  if (now <= state->timestamp_microseconds) return;
+  const ulong elapsed = now - state->timestamp_microseconds;
+  const float pain_retention = exp(-float(elapsed)
+    / NB_AFFECTIVE_PAIN_DECAY_MICROSECONDS);
+  const float pleasure_retention = exp(-float(elapsed)
+    / NB_AFFECTIVE_PLEASURE_DECAY_MICROSECONDS);
+  const float relief_retention = exp(-float(elapsed)
+    / NB_AFFECTIVE_RELIEF_DECAY_MICROSECONDS);
+
+  device const float *observations = reinterpret_cast<device const float *>(
+    hot_state + uniforms.observation_offset
+  );
+  device const uint *validity = reinterpret_cast<device const uint *>(
+    hot_state + uniforms.observation_validity_offset
+  );
+  device const NBSensoryFrameMetadata *frames =
+    reinterpret_cast<device const NBSensoryFrameMetadata *>(
+      hot_state + uniforms.sensory_frame_metadata_offset
+    );
+
+  NBSensoryFrameMetadata interoception_frame = {};
+  bool interoception_frame_valid = false;
+  NBSensoryFrameMetadata touch_frame = {};
+  bool touch_frame_valid = false;
+  for (uint index = 0u; index < 9u; ++index) {
+    const NBSensoryFrameMetadata frame = frames[index];
+    const bool timely = (frame.flags & NB_AFFECTIVE_FRAME_VALID) != 0u
+      && frame.delivery_timestamp_microseconds == now
+      && frame.receptor_timestamp_microseconds <= now
+      && now - frame.receptor_timestamp_microseconds
+        <= NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS;
+    if (!timely) continue;
+    if (frame.modality == 8u) {
+      interoception_frame = frame;
+      interoception_frame_valid = true;
+    } else if (frame.modality == 3u) {
+      touch_frame = frame;
+      touch_frame_valid = true;
+    }
+  }
+
+  const float source_weights[5] = {0.24f, 0.24f, 0.16f, 0.18f, 0.18f};
+  uint current_feature_mask = 0u;
+  float recovery = 0.0f;
+  bool interoception_is_new = interoception_frame_valid
+    && (interoception_frame.receptor_timestamp_microseconds
+        > state->last_interoception_timestamp_microseconds
+      || (state->last_interoception_timestamp_microseconds == 0ul
+        && state->timestamp_microseconds == 0ul));
+  if (interoception_is_new && interoception_frame.feature_dimension > 0u
+      && interoception_frame.receptor_count
+        * interoception_frame.feature_dimension == uniforms.interoception_count) {
+    device const NBMuscleTopologyRecord *muscle_topologies =
+      reinterpret_cast<device const NBMuscleTopologyRecord *>(
+        muscle_receptor_table + 1
+      );
+    device const NBBodyReceptorBindingRange *muscle_ranges =
+      reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+        muscle_topologies + muscle_receptor_table->muscle_count
+      );
+    device const NBMuscleReceptorBindingRecord *muscle_bindings =
+      reinterpret_cast<device const NBMuscleReceptorBindingRecord *>(
+        muscle_ranges + muscle_receptor_table->muscle_count
+      );
+    float fatigue_total = 0.0f;
+    float fatigue_weight = 0.0f;
+    for (uint binding_index = 0u;
+        binding_index < muscle_receptor_table->binding_count; ++binding_index) {
+      const NBMuscleReceptorBindingRecord binding = muscle_bindings[binding_index];
+      if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+          || binding.signal != NB_AFFECTIVE_FATIGUE_SIGNAL
+          || binding.observation_scalar_index < uniforms.interoception_offset
+          || binding.observation_scalar_index
+            >= uniforms.interoception_offset + uniforms.interoception_count
+          || validity[binding.observation_scalar_index] == 0u
+          || !isfinite(observations[binding.observation_scalar_index])
+          || !isfinite(binding.scale) || !isfinite(binding.bias)
+          || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+      const float fatigue = fma(
+        observations[binding.observation_scalar_index], binding.scale, binding.bias
+      );
+      if (!isfinite(fatigue)) continue;
+      fatigue_total += clamp(fatigue, 0.0f, 1.0f) * binding.weight;
+      fatigue_weight += binding.weight;
+    }
+    if (fatigue_weight > 0.0f) {
+      const float fatigue_deficit = clamp(fatigue_total / fatigue_weight, 0.0f, 1.0f);
+      current_feature_mask |= 1u << 3u;
+      if ((state->previous_validity_mask & ushort(1u << 3u)) != 0u) {
+        recovery += source_weights[3]
+          * max(state->source_evidence[3] - fatigue_deficit, 0.0f);
+      }
+      state->source_evidence[3] = fatigue_deficit;
+    }
+    state->last_interoception_timestamp_microseconds =
+      interoception_frame.receptor_timestamp_microseconds;
+  }
+
+  float current_nociception = 0.0f;
+  bool nociception_is_new = false;
+  if (touch_frame_valid
+      && (touch_frame.receptor_timestamp_microseconds
+          > state->last_pain_timestamp_microseconds
+        || (state->last_pain_timestamp_microseconds == 0ul
+          && state->timestamp_microseconds == 0ul))
+      && touch_frame.receptor_count * touch_frame.feature_dimension
+        == uniforms.touch_count) {
+    device const NBBodyReceptorBindingRange *ranges =
+      reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+        body_receptor_table + 1
+      );
+    device const NBBodyReceptorBindingRecord *bindings =
+      reinterpret_cast<device const NBBodyReceptorBindingRecord *>(
+        ranges + body_receptor_table->body_count
+      );
+    float strongest_body_pain = 0.0f;
+    bool has_nociception_source = false;
+    for (uint body = 0u; body < body_receptor_table->body_count; ++body) {
+      float weighted_pain = 0.0f;
+      float total_weight = 0.0f;
+      const NBBodyReceptorBindingRange range = ranges[body];
+      const uint binding_end = min(
+        range.binding_offset + range.binding_count,
+        body_receptor_table->binding_count
+      );
+      for (uint index = range.binding_offset; index < binding_end; ++index) {
+        const NBBodyReceptorBindingRecord binding = bindings[index];
+        if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+            || binding.body_identifier != body
+            || binding.signal != NB_AFFECTIVE_NOCICEPTION_SIGNAL
+            || binding.observation_scalar_index < uniforms.touch_offset
+            || binding.observation_scalar_index
+              >= uniforms.touch_offset + uniforms.touch_count
+            || validity[binding.observation_scalar_index] == 0u
+            || !isfinite(observations[binding.observation_scalar_index])
+            || !isfinite(binding.scale) || !isfinite(binding.bias)
+            || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+        const float evidence = clamp(
+          observations[binding.observation_scalar_index] * binding.scale
+            + binding.bias,
+          0.0f,
+          1.0f
+        );
+        weighted_pain += evidence * binding.weight;
+        total_weight += binding.weight;
+      }
+      if (total_weight > 0.0f) {
+        has_nociception_source = true;
+        strongest_body_pain = max(
+          strongest_body_pain, weighted_pain / total_weight
+        );
+      }
+    }
+    if (has_nociception_source) {
+      current_nociception = strongest_body_pain;
+      nociception_is_new = true;
+    }
+  }
+
+  device NBEventQueueHeader *event_header = reinterpret_cast<device NBEventQueueHeader *>(
+    hot_state + uniforms.event_queue_offset
+  );
+  const uint event_count = min(
+    atomic_load_explicit(&event_header->count, memory_order_relaxed),
+    event_header->capacity
+  );
+  device const NBReceptorEventRecord *events =
+    reinterpret_cast<device const NBReceptorEventRecord *>(event_header + 1);
+  float event_pain = 0.0f;
+  bool has_fresh_pain_event = false;
+  for (uint index = 0u; index < event_count; ++index) {
+    const NBReceptorEventRecord event = events[index];
+    if ((event.kind == 8u || event.kind == 9u)
+        && event.timestamp_microseconds <= now
+        && now - event.timestamp_microseconds
+          <= NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS
+        && isfinite(event.magnitude)) {
+      has_fresh_pain_event = true;
+      event_pain = max(event_pain, clamp(event.magnitude, 0.0f, 1.0f));
+    }
+  }
+
+  const float pain_observation = max(current_nociception, event_pain);
+  float relief_evidence = 0.0f;
+  if (nociception_is_new
+      && (state->previous_validity_mask & ushort(1u << 5u)) != 0u
+      && touch_frame.receptor_timestamp_microseconds
+        > state->last_pain_timestamp_microseconds) {
+    relief_evidence = max(
+      state->prior_pain_observation - current_nociception, 0.0f
+    );
+  }
+  if (nociception_is_new) {
+    state->prior_pain_observation = current_nociception;
+    state->last_pain_timestamp_microseconds =
+      touch_frame.receptor_timestamp_microseconds;
+  }
+
+  state->pain = clamp(max(
+    state->pain * pain_retention,
+    pain_observation
+  ), 0.0f, 1.0f);
+  state->relief = clamp(
+    state->relief * relief_retention
+      + NB_AFFECTIVE_RELIEF_GAIN * relief_evidence,
+    0.0f,
+    1.0f
+  );
+  state->pleasure = clamp(
+    state->pleasure * pleasure_retention
+      + NB_AFFECTIVE_RECOVERY_GAIN * recovery
+      + NB_AFFECTIVE_RELIEF_GAIN * relief_evidence,
+    0.0f,
+    1.0f
+  );
+  state->source_validity_mask = ushort(current_feature_mask
+    | ((nociception_is_new || has_fresh_pain_event) ? (1u << 5u) : 0u));
+  // A missing source breaks comparability. Returning after dropout establishes
+  // a new baseline and cannot create pleasure from an old observation.
+  state->previous_validity_mask = ushort(current_feature_mask
+    | (nociception_is_new ? (1u << 5u) : 0u));
+  state->timestamp_microseconds = now;
 }
 
 /// Fuses NumanX muscle length, velocity, tendon force, and fatigue receptors

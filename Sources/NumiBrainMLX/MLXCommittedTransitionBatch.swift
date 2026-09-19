@@ -3,6 +3,8 @@ import MLX
 import NumiBrainCore
 import NumiBrainMetal
 
+private typealias TransitionABI = BrainExecutableModelContract.CommittedTransition
+
 /// Zero-copy MLX view of committed-transition slots. Every valid record carries
 /// 19 recurrent features, five exact structured world-context features,
 /// accepted somatic-synergy, autonomic, active-sensing, and internal action
@@ -32,6 +34,10 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let completeActions: MLXArray
   public let factoredReinforcement: MLXArray
   public let outcomeMetrics: MLXArray
+  /// `[pain, pleasure, relief, energy, respiration, temperature, fatigue, tissue damage]`.
+  public let affect: MLXArray
+  public let affectSourceValidityMask: MLXArray
+  public let affectTimestamp: MLXArray
   public let teacherState: MLXArray
   public let fastPlasticityTrace: MLXArray
   public let cerebellarTrace: MLXArray
@@ -48,10 +54,30 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
   public let teacherMask: MLXArray
   public let imitationMask: MLXArray
 
+  public var affectLearningEmphasis: MLXArray {
+    Self.learningEmphasis(affect: affect, sourceValidityMask: affectSourceValidityMask)
+  }
+
+  static func learningEmphasis(
+    affect: MLXArray,
+    sourceValidityMask: MLXArray
+  ) -> MLXArray {
+    precondition(affect.ndim == 2 && affect.shape[1] == TransitionABI.Count.affect)
+    precondition(sourceValidityMask.shape == [affect.shape[0], 1])
+    let hasCurrentEvidence = (sourceValidityMask .!= UInt32(0)).asType(.float32)
+    let stateSalience = maximum(
+      affect[0..., 0..<1], maximum(affect[0..., 1..<2], affect[0..., 2..<3])
+    )
+    return clip(stateSalience * hasCurrentEvidence, min: 0, max: 1)
+  }
+
   public init(_ source: MetalLearningBatch) throws {
     guard source.formatVersion == MetalLearningBatch.formatVersion,
-      source.transitionRecordVersion == MetalLearningBatch.transitionRecordVersion,
-      source.transitionStride == Self.transitionStride
+      source.transitionRecordVersion == TransitionABI.recordVersion,
+      MetalLearningBatch.transitionRecordVersion == TransitionABI.recordVersion,
+      source.transitionStride == TransitionABI.strideBytes,
+      MetalLearningBatch.transitionStride == TransitionABI.strideBytes,
+      Self.transitionStride == TransitionABI.strideBytes
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "MLX committed-transition batch ABI is incompatible"
@@ -82,35 +108,65 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
           .== Float(count)
       ).asType(.float32)
     }
-    let identifiers = field(0, count: 1, dtype: .uint64)
-    let startTimestamps = field(8, count: 1, dtype: .uint64)
-    let endTimestamps = field(16, count: 1, dtype: .uint64)
-    let sourceGenerations = field(32, count: 1, dtype: .uint64)
-    let format = field(64, count: 1, dtype: .uint32)
-    let flags = field(68, count: 1, dtype: .uint32)
-    let parameterVersionFingerprints = field(24, count: 1, dtype: .uint64)
-    let rawPrior = field(128, count: 24, dtype: .float32)
-    let rawPosterior = field(224, count: 24, dtype: .float32)
-    let rawObservations = field(320, count: 24, dtype: .float32)
-    let observationValidityBits = field(92, count: 1, dtype: .uint32)
-    let rawActions = field(416, count: 16, dtype: .float32)
-    let rawReinforcement = field(480, count: 8, dtype: .float32)
-    let rawMetrics = field(96, count: 8, dtype: .float32)
-    let rawTeacher = field(528, count: 24, dtype: .float32)
-    let rawFastPlasticityTrace = field(624, count: 16, dtype: .float32)
-    let rawCerebellarTrace = field(688, count: 16, dtype: .float32)
-    let rawActiveSensingTrace = field(752, count: 4, dtype: .float32)
-    let completeActionCounts = field(768, count: 4, dtype: .uint32)
-    let rawAutonomicActions = field(784, count: 16, dtype: .float32)
-    let rawActiveSensingActions = field(848, count: 16, dtype: .float32)
-    let rawInternalActions = field(912, count: 32, dtype: .float32)
-    let rawBodySchemaTrace = field(1040, count: 16, dtype: .float32)
+    let abiOffset = TransitionABI.Offset.self
+    let abiCount = TransitionABI.Count.self
+    let identifiers = field(abiOffset.identifier, count: 1, dtype: .uint64)
+    let startTimestamps = field(abiOffset.startTimestamp, count: 1, dtype: .uint64)
+    let endTimestamps = field(abiOffset.endTimestamp, count: 1, dtype: .uint64)
+    let sourceGenerations = field(abiOffset.sourceGeneration, count: 1, dtype: .uint64)
+    let format = field(abiOffset.formatVersion, count: 1, dtype: .uint32)
+    let flags = field(abiOffset.flags, count: 1, dtype: .uint32)
+    let parameterVersionFingerprints = field(
+      abiOffset.parameterVersionFingerprint, count: 1, dtype: .uint64)
+    let rawPrior = field(abiOffset.priorState, count: abiCount.priorState, dtype: .float32)
+    let rawPosterior = field(
+      abiOffset.posteriorState, count: abiCount.posteriorState, dtype: .float32)
+    let rawObservations = field(abiOffset.observation, count: abiCount.observation, dtype: .float32)
+    let observationValidityBits = field(abiOffset.observationValidityMask, count: 1, dtype: .uint32)
+    let rawActions = field(abiOffset.somaticAction, count: abiCount.somaticAction, dtype: .float32)
+    let rawReinforcement = field(
+      abiOffset.factoredReinforcement, count: abiCount.factoredReinforcement, dtype: .float32)
+    let rawMetrics = field(
+      abiOffset.outcomeMetrics, count: abiCount.outcomeMetrics, dtype: .float32)
+    let rawTeacher = field(abiOffset.teacherState, count: abiCount.teacherState, dtype: .float32)
+    let rawFastPlasticityTrace = field(
+      abiOffset.fastPlasticityTrace, count: abiCount.fastPlasticityTrace, dtype: .float32)
+    let rawCerebellarTrace = field(
+      abiOffset.cerebellarTrace, count: abiCount.cerebellarTrace, dtype: .float32)
+    let rawActiveSensingTrace = field(
+      abiOffset.activeSensingTrace, count: abiCount.activeSensingTrace, dtype: .float32)
+    let completeActionCounts = field(abiOffset.autonomicActionSampleCount, count: 4, dtype: .uint32)
+    let rawAutonomicActions = field(
+      abiOffset.autonomicAction, count: abiCount.autonomicAction, dtype: .float32)
+    let rawActiveSensingActions = field(
+      abiOffset.activeSensingAction, count: abiCount.activeSensingAction, dtype: .float32)
+    let rawInternalActions = field(
+      abiOffset.internalAction, count: abiCount.internalAction, dtype: .float32)
+    let rawBodySchemaTrace = field(
+      abiOffset.bodySchemaTrace, count: abiCount.bodySchemaTrace, dtype: .float32)
+    let rawAffect = field(abiOffset.affect, count: abiCount.affect, dtype: .float32)
+    let rawAffectSourceValidityMask = field(
+      abiOffset.affectSourceValidityMask, count: 1, dtype: .uint32)
+    let rawAffectReserved = field(abiOffset.affectReserved, count: 1, dtype: .uint32)
+    let rawAffectTimestamp = field(abiOffset.affectTimestamp, count: 1, dtype: .uint64)
     let completeActionCountsValid = (
       (completeActionCounts[0..., 0..<1] .<= UInt32(8))
         * (completeActionCounts[0..., 1..<2] .<= UInt32(8))
         * (completeActionCounts[0..., 2..<3] .<= UInt32(8))
         * ((completeActionCounts[0..., 3..<4] & UInt32(1)) .== UInt32(1))
     ).asType(.float32)
+    let affectRangeValid = (
+      ((rawAffect .>= Float(0)).asType(.float32)
+        * (rawAffect .<= Float(1)).asType(.float32))
+        .sum(axis: 1, keepDims: true)
+        .== Float(TransitionABI.Count.affect)
+    ).asType(.float32)
+    let affectMetadataValid = (
+      (rawAffectTimestamp .== endTimestamps)
+        * (rawAffectReserved .== UInt32(0))
+        * ((rawAffectSourceValidityMask & UInt32(0xffff_ffc0)) .== UInt32(0))
+    ).asType(.float32) * allFinite(rawAffect, count: TransitionABI.Count.affect)
+      * affectRangeValid
     let validMask = (
       (identifiers .> UInt64(0))
         * (format .== UInt32(MetalLearningBatch.transitionRecordVersion))
@@ -133,6 +189,7 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       * allFinite(rawActiveSensingActions, count: 16)
       * allFinite(rawInternalActions, count: 32)
       * allFinite(rawBodySchemaTrace, count: 16)
+      * affectMetadataValid
       * completeActionCountsValid
     let observationMask = concatenated(
       (0..<24).map { component in
@@ -143,8 +200,8 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
       },
       axis: 1
     ) * validMask
-    let teacherCount = field(520, count: 1, dtype: .uint32)
-    let teacherFlags = field(524, count: 1, dtype: .uint32)
+    let teacherCount = field(TransitionABI.Offset.teacherScalarCount, count: 1, dtype: .uint32)
+    let teacherFlags = field(TransitionABI.Offset.teacherFlags, count: 1, dtype: .uint32)
     let teacherFiniteMask = allFinite(rawTeacher, count: 24)
     let somaticActions = finite(rawActions)
     let autonomicActions = finite(rawAutonomicActions)
@@ -156,7 +213,9 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     self.startTimestamps = startTimestamps
     self.endTimestamps = endTimestamps
     self.sourceGenerations = sourceGenerations
-    self.activeOptionIdentifiers = field(56, count: 1, dtype: .uint64)
+    self.activeOptionIdentifiers = field(
+      TransitionABI.Offset.activeOptionIdentifier, count: 1, dtype: .uint64
+    )
     self.parameterVersionFingerprints = parameterVersionFingerprints
     self.priorState = finite(rawPrior)
     self.posteriorState = finite(rawPosterior)
@@ -175,6 +234,13 @@ public struct MLXCommittedTransitionBatch: @unchecked Sendable {
     )
     self.factoredReinforcement = finite(rawReinforcement)
     self.outcomeMetrics = finite(rawMetrics)
+    self.affect = finite(rawAffect) * validMask
+    self.affectSourceValidityMask = which(
+      validMask .> Float(0), rawAffectSourceValidityMask, MLXArray(UInt32(0))
+    )
+    self.affectTimestamp = which(
+      validMask .> Float(0), rawAffectTimestamp, MLXArray(UInt64(0))
+    )
     self.teacherState = finite(rawTeacher)
     self.fastPlasticityTrace = finite(rawFastPlasticityTrace)
     self.cerebellarTrace = finite(rawCerebellarTrace)

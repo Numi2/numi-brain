@@ -44,8 +44,16 @@ def main():
     data = json.loads(CONTRACT.read_text())
     t = data["committedTransition"]
     arena = (ROOT / "Sources/NumiBrainMetal/MetalAgentStateArena.swift").read_text()
-    if not re.search(r"committedTransitionStride\s*=\s*1_?104\b", arena):
+    expected_stride = f"{t['strideBytes']:,}".replace(",", "_?")
+    if not re.search(rf"committedTransitionStride\s*=\s*{expected_stride}\b", arena):
         die("MetalAgentStateArena committed-transition stride drifted from contract")
+    if not re.search(r"recordLayoutVersion\s*:\s*UInt32\s*=\s*18\b", arena):
+        die("MetalAgentStateArena record-layout version must advance for affect metadata")
+    batch = (ROOT / "Sources/NumiBrainMetal/MetalLearningBatch.swift").read_text()
+    if not re.search(r"formatVersion\s*:\s*UInt32\s*=\s*13\b", batch):
+        die("MetalLearningBatch format version must advance for affect metadata")
+    if not re.search(rf"transitionRecordVersion\s*:\s*UInt32\s*=\s*{t['recordVersion']}\b", batch):
+        die("MetalLearningBatch transition record version drifted from contract")
     shader = (ROOT / "Sources/NumiBrainMetal/Shaders/MemoryState.metal").read_text()
     expected = {
         "NB_COMMITTED_TRANSITION_RECORD_VERSION": t["recordVersion"],
@@ -61,9 +69,18 @@ def main():
         "fast_plasticity_trace": 16, "cerebellar_trace": 16,
         "active_sensing_trace": 4, "autonomic_action": 16,
         "active_sensing_action": 16, "internal_action": 32, "body_schema_trace": 16,
+        "affect": 8,
     }
     for name, count in arrays.items():
         if not re.search(rf"float {name}\[{count}\];", shader):
+            die(f"Metal committed-transition field {name} drifted from contract")
+    scalars = {
+        "affect_source_validity_mask": "uint",
+        "affect_reserved": "uint",
+        "affect_timestamp_microseconds": "ulong",
+    }
+    for name, kind in scalars.items():
+        if not re.search(rf"{kind} {name};", shader):
             die(f"Metal committed-transition field {name} drifted from contract")
     mlx = (ROOT / "Sources/NumiBrainMLX/MLXEmbodiedPolicyHead.swift").read_text()
     if "BrainExecutableModelContract.PolicyHead" not in mlx:
