@@ -21,6 +21,21 @@ struct NBMuscleBalanceRange {
   uint route_start, route_count, reserved0, reserved1;
 };
 
+struct NBMuscleBalanceHistorySource {
+  uint delay_microseconds;
+  float filter_time_constant_seconds;
+  uint reserved0, reserved1;
+};
+
+struct NBMuscleBalanceHistoryUniforms {
+  ulong sample_timestamp_microseconds;
+  uint source_count;
+  uint history_capacity;
+  uint write_index;
+  uint correction_enabled;
+  uint reserved0, reserved1;
+};
+
 inline bool nb_muscle_locomotor_inputs(
   device const float *spindles,
   device const uint *validity,
@@ -76,8 +91,9 @@ kernel void nb_muscle_locomotor(
 }
 
 // Reads only the exact body-receptor rows named by the immutable feedback
-// program. Invalid receptor evidence produces no correction and is never
-// interpreted as a measured zero error.
+// program. Invalid receptor evidence is recorded as invalid and is never
+// interpreted as a measured zero error. Extraction continues during baseline
+// warmup so delayed and filtered state can become ready before correction.
 kernel void nb_muscle_balance_sources(
   device const float *vestibular [[buffer(0)]],
   device const uint *vestibular_validity [[buffer(1)]],
@@ -91,7 +107,6 @@ kernel void nb_muscle_balance_sources(
   if (gid >= uniforms.x) return;
   source_errors[gid] = 0.0f;
   source_validity[gid] = 0u;
-  if (uniforms.z == 0u) return;
 
   const auto source = sources[gid];
   float raw = 0.0f;
@@ -114,6 +129,96 @@ kernel void nb_muscle_balance_sources(
   source_validity[gid] = 1u;
 }
 
+// Builds a complete unpublished shadow history from the last committed state,
+// inserts this root's exact sample, resolves the declared delay by timestamp,
+// and advances a causal first-order filter. Publication or rollback is a host
+// pointer swap performed only with the joint root decision.
+kernel void nb_muscle_balance_history(
+  device const float *observed_errors [[buffer(0)]],
+  device const uint *observed_validity [[buffer(1)]],
+  device const NBMuscleBalanceHistorySource *source_config [[buffer(2)]],
+  device const float *committed_values [[buffer(3)]],
+  device const ulong *committed_timestamps [[buffer(4)]],
+  device const uint *committed_validity [[buffer(5)]],
+  device const float *committed_filtered_values [[buffer(6)]],
+  device const ulong *committed_filtered_timestamps [[buffer(7)]],
+  device const uint *committed_filtered_validity [[buffer(8)]],
+  device float *shadow_values [[buffer(9)]],
+  device ulong *shadow_timestamps [[buffer(10)]],
+  device uint *shadow_validity [[buffer(11)]],
+  device float *shadow_filtered_values [[buffer(12)]],
+  device ulong *shadow_filtered_timestamps [[buffer(13)]],
+  device uint *shadow_filtered_validity [[buffer(14)]],
+  device float *output_errors [[buffer(15)]],
+  device uint *output_validity [[buffer(16)]],
+  constant NBMuscleBalanceHistoryUniforms &uniforms [[buffer(17)]],
+  uint gid [[thread_position_in_grid]]) {
+  if (gid >= uniforms.source_count || uniforms.history_capacity == 0u) return;
+  output_errors[gid] = 0.0f;
+  output_validity[gid] = 0u;
+
+  const uint capacity = uniforms.history_capacity;
+  const uint base = gid * capacity;
+  for (uint slot = 0u; slot < capacity; ++slot) {
+    const uint index = base + slot;
+    shadow_values[index] = committed_values[index];
+    shadow_timestamps[index] = committed_timestamps[index];
+    shadow_validity[index] = committed_validity[index];
+  }
+  shadow_filtered_values[gid] = committed_filtered_values[gid];
+  shadow_filtered_timestamps[gid] = committed_filtered_timestamps[gid];
+  shadow_filtered_validity[gid] = committed_filtered_validity[gid];
+
+  if (uniforms.write_index >= capacity) return;
+  const uint write_index = base + uniforms.write_index;
+  const float observed = observed_errors[gid];
+  const bool observation_valid = observed_validity[gid] != 0u
+    && isfinite(observed);
+  shadow_values[write_index] = observation_valid ? observed : 0.0f;
+  shadow_timestamps[write_index] = uniforms.sample_timestamp_microseconds;
+  shadow_validity[write_index] = observation_valid ? 1u : 0u;
+
+  const auto config = source_config[gid];
+  if (uniforms.sample_timestamp_microseconds
+      < ulong(config.delay_microseconds)) return;
+  const ulong target_timestamp = uniforms.sample_timestamp_microseconds
+    - ulong(config.delay_microseconds);
+  float delayed = 0.0f;
+  bool delayed_valid = false;
+  for (uint slot = 0u; slot < capacity; ++slot) {
+    const uint index = base + slot;
+    if (shadow_validity[index] != 0u
+        && shadow_timestamps[index] == target_timestamp) {
+      delayed = shadow_values[index];
+      delayed_valid = isfinite(delayed);
+      break;
+    }
+  }
+  if (!delayed_valid) return;
+
+  float filtered = delayed;
+  const float tau = config.filter_time_constant_seconds;
+  if (tau > 0.0f && committed_filtered_validity[gid] != 0u) {
+    const ulong prior_timestamp = committed_filtered_timestamps[gid];
+    const float prior = committed_filtered_values[gid];
+    if (!isfinite(tau) || !isfinite(prior)
+        || prior_timestamp >= uniforms.sample_timestamp_microseconds) return;
+    const float dt = float(
+      uniforms.sample_timestamp_microseconds - prior_timestamp) * 0.000001f;
+    const float alpha = 1.0f - exp(-dt / tau);
+    filtered = fma(alpha, delayed - prior, prior);
+  }
+  if (!isfinite(filtered)) return;
+
+  shadow_filtered_values[gid] = filtered;
+  shadow_filtered_timestamps[gid] = uniforms.sample_timestamp_microseconds;
+  shadow_filtered_validity[gid] = 1u;
+  if (uniforms.correction_enabled != 0u) {
+    output_errors[gid] = filtered;
+    output_validity[gid] = 1u;
+  }
+}
+
 // Routes source errors through a canonical per-muscle sparse range. Each route
 // is independently bounded and the final correction cannot exceed 0.5.
 kernel void nb_muscle_balance_routes(
@@ -125,6 +230,10 @@ kernel void nb_muscle_balance_routes(
   constant uint4 &uniforms [[buffer(5)]],
   uint gid [[thread_position_in_grid]]) {
   if (gid >= uniforms.y) return;
+  if (uniforms.z == 0u) {
+    corrections[gid] = 0.0f;
+    return;
+  }
   const auto range = ranges[gid];
   if (range.route_start > uniforms.w
       || range.route_count > uniforms.w - range.route_start) {
