@@ -157,8 +157,7 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
     let capacity = Int(program.historyCapacity)
     guard sourceCount > 0, capacity > 0,
       sourceCount <= Int(UInt32.max), capacity <= Int(UInt32.max),
-      sourceCount <= device.maxThreadsPerThreadgroup.width
-        || device.maxThreadsPerThreadgroup.width > 0
+      device.maxThreadsPerThreadgroup.width > 0
     else {
       throw TissueError.metal(
         "transactional muscle balance history exceeds device bounds"
@@ -302,9 +301,9 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
     let update = UInt64(updatePeriodMicroseconds)
     let duration = root.targetTimestamp.rawValue
       - root.committedTimestamp.rawValue
-    guard elapsed % update == 0, duration % update == 0 else {
+    guard elapsed % update == 0, duration == update else {
       throw TissueError.transaction(
-        "muscle balance history root is not aligned to its update clock"
+        "stateful balance requires exactly one history update per joint root"
       )
     }
 
