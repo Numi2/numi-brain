@@ -49,6 +49,8 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
         program: $0,
         locomotorProgram: program,
         template: template,
+        parameterVersionFingerprint: parameterVersion,
+        initialGeneration: 0,
         library: library,
         device: device
       )
@@ -83,9 +85,11 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     let sense = template.species.senses.first { $0.enabled && $0.modality == .proprioception }!
     let views = rawSensors.filter { $0.modality == .proprioception }
     guard views.count == 1, let view = views.first, view.hasValidity,
-      view.receptorCount == sense.receptorCount, view.featureDimension == sense.observationDimension,
-      view.receptorTimestamp.rawValue <= root.committedTimestamp.rawValue,
-      root.committedTimestamp.rawValue - view.receptorTimestamp.rawValue >= UInt64(sense.latencyMicroseconds),
+      view.receptorCount == sense.receptorCount,
+      view.featureDimension == sense.observationDimension,
+      root.committedTimestamp.rawValue >= UInt64(sense.latencyMicroseconds),
+      view.receptorTimestamp.rawValue
+        == root.committedTimestamp.rawValue - UInt64(sense.latencyMicroseconds),
       root.parameterVersionFingerprint == version,
       root.committedTimestamp.rawValue >= program.epochMicroseconds else {
       throw TissueError.transaction("locomotor controller requires this root's delivered physical spindle packet")
@@ -97,15 +101,24 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     words.withUnsafeBytes { uniforms.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
     encoder.barrier(afterQueueStages: [.dispatch, .blit], beforeStages: .dispatch, visibilityOptions: .device)
     encoder.barrier(afterEncoderStages: [.dispatch, .blit], beforeEncoderStages: .dispatch, visibilityOptions: .device)
-    let correction = try balanceController?.encode(
+
+    let balanceCandidate = try balanceController?.encodeCandidate(
       root: root,
       locomotorEpochMicroseconds: program.epochMicroseconds,
       encoder: encoder,
       rawSensors: rawSensors
     )
+    if let balanceCandidate {
+      try MetalMuscleBalanceParticipantRegistry.bind(
+        balanceCandidate,
+        to: root
+      )
+    }
     var addresses = [view.gpuAddress, view.validityGPUAddress, channels.gpuAddress,
       logits.gpuAddress, uniforms.gpuAddress]
-    if let correction { addresses.append(correction.gpuAddress) }
+    if let balanceCandidate {
+      addresses.append(balanceCandidate.corrections.gpuAddress)
+    }
     for (i, address) in addresses.enumerated() { arguments.setAddress(address, index: i) }
     encoder.setComputePipelineState(pipeline); encoder.setArgumentTable(arguments)
     encoder.dispatchThreads(threadsPerGrid: MTLSize(width: program.channels.count, height: 1, depth: 1),
