@@ -35,7 +35,7 @@ private struct SensoryDescriptorRecord {
   var latencyMicroseconds: UInt64 = 0
   var adaptationTimeConstantSeconds: Float = 0
   var noiseStandardDeviation: Float = 0
-  var reserved0: UInt64 = 0
+  var featureSchemaFingerprint: UInt64 = 0
   var reserved1: UInt64 = 0
 }
 
@@ -235,7 +235,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
           adaptationTimeConstantSeconds:
             Float(topology.adaptationTimeConstantMicroseconds) * 0.000_001,
           noiseStandardDeviation: topology.noiseStandardDeviation,
-          reserved0: 0,
+          featureSchemaFingerprint: topology.featureSchemaFingerprint ?? 0,
           reserved1: 0
         )
       )

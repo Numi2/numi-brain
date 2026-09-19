@@ -16,15 +16,34 @@ Touch nociception also requires an enabled body-receptor binding for the
 nociception signal. Pain events of kinds 8 and 9 can contribute pain when their
 timestamps are within the same 100 ms bound.
 
-The five-slot homeostatic vector names energy, respiration, temperature,
-fatigue, and tissue damage, but the Metal path does not infer those meanings
-from untyped interoception feature positions. At present it accepts only
-fatigue observations with an explicit `.fatigue` muscle-receptor binding in the
-compiled sensory profile, and direct nociception observations with an explicit
-body-receptor binding. Unmapped interoception values cannot create pain or
-pleasure. Other homeostatic channels remain available to the CPU oracle when a
-caller supplies their named, normalized values; a production Metal mapping for
-them requires calibrated profile entries.
+### Typed NumanX interoception
+
+`NumanXFullBodyV1` names the six normalized features carried at each of the 416
+NumanX interoception receptors. Its schema fingerprint binds feature names,
+order, direction, and ranges into the species-template identity (format v9).
+Metal interprets the flattened vector by position only when the compiled
+interoception topology carries this exact fingerprint and dimension six.
+For this typed channel, sensory transduction preserves the normalized physical
+values and does not apply generic perceptual bias, noise, or receptor
+adaptation before affect reads them.
+
+| Feature | Meaning and accepted range | Affect evidence |
+| --- | --- | --- |
+| 0 | Energy availability, `[0, 1]`, higher is better | Energy deficit `1 - availability` |
+| 1 | Oxygen availability, `[0, 1]`, higher is better | Combined with CO₂ as below |
+| 2 | Carbon-dioxide burden, `[0, 1]`, higher is worse | Respiratory deficit `max(1 - oxygen, CO₂ burden)` |
+| 3 | Signed temperature deviation, `[-1, 1]` | Absolute deviation |
+| 4 | Muscle fatigue, `[0, 1]`, higher is worse | Fatigue deficit |
+| 5 | Tissue damage, `[0, 1]`, higher is worse | Damage deficit and fresh pain evidence |
+
+Each mapped source is averaged across receptors only when every receptor has a
+valid, finite, in-range value for that source. Respiratory evidence additionally
+requires both oxygen and CO₂ to be valid at every receptor. A source that lacks
+complete coverage is absent for that frame; changing receptor coverage cannot
+be interpreted as recovery. An opaque or unknown schema is never interpreted
+by feature position. Such a profile may still supply fatigue through fully
+valid explicit calibrated `.fatigue` muscle-receptor bindings. Direct
+nociception continues to require an explicit body-receptor binding.
 
 Source mask bits 0–4 identify observed homeostatic channels; bit 5 identifies
 fresh pain evidence from either direct nociception or pain/injury-risk event
@@ -46,19 +65,20 @@ and tissue damage are `0.24, 0.24, 0.16, 0.18, 0.18`. Recovery is the weighted
 sum of positive reductions in comparable deficits, capped with the resulting
 pleasure state at 1. Direct relief is a positive decrease between two fresh,
 comparable nociception samples. It increases both relief and pleasure. Pain is
-the maximum of retained pain, fresh nociception, and fresh pain/injury-risk
-event evidence. A missing pain source clears the comparison baseline while
-retaining the last-consumed timestamp, so a later sample cannot manufacture
-relief or reuse an old frame.
+the maximum of retained pain, fresh nociception, fresh mapped tissue-damage
+evidence, and fresh pain/injury-risk event evidence. A missing pain source
+clears the comparison baseline while retaining the last-consumed timestamp, so
+a later sample cannot manufacture relief or reuse an old frame.
 
 Each state decays against physical elapsed time using exponential retention
 `exp(-dt / tau)`: pain has a 2 s time constant, pleasure 1 s, and relief 0.5 s.
 New pain, recovery, and relief are then added according to the update above and
 clamped to `[0, 1]`. Passive decay does not create pleasure or relief. The
-reference gains are 1, and configuration gains, weights, and time bounds are
-validated and fingerprinted. The GPU currently contributes calibrated fatigue
-recovery and nociception/event pain; it does not promote unspecified physiology
-features into energy, respiratory, temperature, or tissue-damage evidence.
+Metal uses the same physical-time constants. When candidate options are scored,
+the planner also decays the stored affect values from their timestamp to the
+physical target time; zero or future timestamps contribute no candidate
+modulation. The reference gains are 1, and configuration gains, weights, and
+time bounds are validated and fingerprinted.
 
 ## Transaction and consumers
 
@@ -74,8 +94,9 @@ The current consumers are deliberately bounded:
   competes with the strongest drive for workspace slot 0. Its score is the
   maximum of pain, pleasure, and relief.
 - **Memory:** affect can become the embodied salient event (event kind 12) when
-  its timestamp matches the accepted target timestamp. Its values, source mask,
-  and timestamp are also copied into the committed transition.
+  its timestamp matches the accepted target timestamp and its source mask is
+  nonzero. Passive decay alone does not create a new event. Its values, source
+  mask, and timestamp are also copied into the committed transition.
 - **Decision:** the planner adds a small candidate value for pleasure or relief
   on homeostatic options and a small pain caution term based on candidate damage
   and effort. The existing risk estimate, admissibility test, risk budget, and
@@ -99,3 +120,13 @@ choices, not clinically calibrated measures. Passing CPU or Metal consistency
 checks establishes software behavior only; it does not establish biological
 validity, subjective experience, or safety in a physical organism. Any such
 claims require separate evidence from an appropriately validated system.
+
+Typed-schema CPU/Metal parity includes a synthetic one-receptor fixture. A
+separate synthetic 416-receptor Metal test checks per-source aggregation and
+rejects recovery when one receptor is invalid. A synthetic regression confirms
+that a fresh critical-physiology event still selects the protective reflex
+stop when stored pleasure is maximal. These tests do not exercise a native
+NumanX feed or physical intervention. No paired native NumanX comparison with
+affect enabled versus a matched control has been produced, and this evidence
+does not establish behavioral benefit, physiological calibration, or physical
+safety.

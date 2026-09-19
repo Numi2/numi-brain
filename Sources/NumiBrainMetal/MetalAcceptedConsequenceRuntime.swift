@@ -107,6 +107,7 @@ private struct AcceptedConsequenceUniforms {
   var plasticityLearningRate: Float = 0
   var sensoryFrameMetadataOffset: UInt64 = 0
   var affectiveStateOffset: UInt64 = 0
+  var interoceptionFeatureSchemaFingerprint: UInt64 = 0
 }
 
 private struct AcceptedActuatorDescriptor {
@@ -940,7 +941,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
         .latentDimension
     )
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 448,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 456,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
@@ -1440,7 +1441,10 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       cerebellarLearningRate: dynamics.cerebellarLearningRate,
       plasticityLearningRate: dynamics.plasticityLearningRate,
       sensoryFrameMetadataOffset: UInt64(hot(.sensoryFrameMetadata).byteOffset),
-      affectiveStateOffset: UInt64(hot(.affectiveState).byteOffset)
+      affectiveStateOffset: UInt64(hot(.affectiveState).byteOffset),
+      interoceptionFeatureSchemaFingerprint: species.senses.first {
+        $0.modality == .interoception
+      }?.featureSchemaFingerprint ?? 0
     )
   }
 

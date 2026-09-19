@@ -1,5 +1,39 @@
 import Foundation
 
+/// Semantic receptor feature contracts used by affect. A topology must name a
+/// schema before the Metal path may interpret flattened interoception values.
+public enum InteroceptiveFeatureSchema {
+  /// NumanX's normalized 416x6 local-physiology channel. The fingerprint
+  /// includes names, order, direction, and normalization bounds.
+  public enum NumanXFullBodyV1 {
+    public static let featureDimension: UInt32 = 6
+    public static let fingerprint: UInt64 = {
+      let descriptor = "numi-brain.interoception:numanx-fullbody-v1:"
+        + "0=energy-availability:[0,1]:higher-is-better;"
+        + "1=oxygen-availability:[0,1]:higher-is-better;"
+        + "2=carbon-dioxide-burden:[0,1]:higher-is-worse;"
+        + "3=temperature-deviation:[-1,1]:absolute-burden;"
+        + "4=muscle-fatigue:[0,1]:higher-is-worse;"
+        + "5=tissue-damage:[0,1]:higher-is-worse"
+      var hash: UInt64 = 14_695_981_039_346_656_037
+      for byte in descriptor.utf8 {
+        hash ^= UInt64(byte)
+        hash &*= 1_099_511_628_211
+      }
+      return hash
+    }()
+
+    public enum Feature: UInt32, CaseIterable, Sendable {
+      case energyAvailability = 0
+      case oxygenAvailability = 1
+      case carbonDioxideBurden = 2
+      case temperatureDeviation = 3
+      case fatigue = 4
+      case tissueDamage = 5
+    }
+  }
+}
+
 /// Physiological evidence used to derive per-agent affect from accepted
 /// embodied consequences. Values are normalized deficits in 0...1.
 @frozen

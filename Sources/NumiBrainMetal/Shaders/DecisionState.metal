@@ -59,6 +59,9 @@ constant uint NB_CEREBELLAR_ACTUATOR_SHIFT = 8u;
 constant float NB_AFFECT_PLEASURE_VALUE_GAIN = 0.10f;
 constant float NB_AFFECT_RELIEF_VALUE_GAIN = 0.15f;
 constant float NB_AFFECT_PAIN_CAUTION_GAIN = 0.15f;
+constant float NB_AFFECT_PAIN_DECAY_MICROSECONDS = 2000000.0f;
+constant float NB_AFFECT_PLEASURE_DECAY_MICROSECONDS = 1000000.0f;
+constant float NB_AFFECT_RELIEF_DECAY_MICROSECONDS = 500000.0f;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -2561,14 +2564,23 @@ kernel void simulate_candidate_option_outcomes(
       policy_observation_sketch, policy_observation_metadata
     );
   const float embodied_self_risk = nb_embodied_self_risk(hot_state, uniforms);
-  const bool affect_timestamp_valid = affect->timestamp_microseconds
-    <= uniforms.target_timestamp_microseconds;
+  const bool affect_timestamp_valid = affect->timestamp_microseconds > 0ul
+    && affect->timestamp_microseconds <= uniforms.target_timestamp_microseconds;
+  const float affect_age_microseconds = affect_timestamp_valid
+    ? float(uniforms.target_timestamp_microseconds
+      - affect->timestamp_microseconds) : 0.0f;
   const float affect_pain = affect_timestamp_valid && isfinite(affect->pain)
-    ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f;
+    ? clamp(affect->pain, 0.0f, 1.0f)
+      * exp(-affect_age_microseconds / NB_AFFECT_PAIN_DECAY_MICROSECONDS)
+    : 0.0f;
   const float affect_pleasure = affect_timestamp_valid && isfinite(affect->pleasure)
-    ? clamp(affect->pleasure, 0.0f, 1.0f) : 0.0f;
+    ? clamp(affect->pleasure, 0.0f, 1.0f)
+      * exp(-affect_age_microseconds / NB_AFFECT_PLEASURE_DECAY_MICROSECONDS)
+    : 0.0f;
   const float affect_relief = affect_timestamp_valid && isfinite(affect->relief)
-    ? clamp(affect->relief, 0.0f, 1.0f) : 0.0f;
+    ? clamp(affect->relief, 0.0f, 1.0f)
+      * exp(-affect_age_microseconds / NB_AFFECT_RELIEF_DECAY_MICROSECONDS)
+    : 0.0f;
   float rollout_state[16];
   for (uint component = 0u; component < 16u; ++component) {
     rollout_state[component] = candidates[gid].parameters[component];

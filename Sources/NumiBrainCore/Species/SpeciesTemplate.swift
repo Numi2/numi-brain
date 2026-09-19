@@ -69,6 +69,9 @@ public struct SensoryTopology: Codable, Equatable, Hashable, Sendable {
   public let modality: SensoryModality
   public let receptorCount: UInt32
   public let observationDimension: UInt32
+  /// Optional semantic identity for a flattened feature vector. Opaque
+  /// channels remain uninterpreted by physiology-specific consumers.
+  public let featureSchemaFingerprint: UInt64?
   public let latencyMicroseconds: UInt32
   public let adaptationTimeConstantMicroseconds: UInt32
   public let noiseStandardDeviation: Float
@@ -83,17 +86,29 @@ public struct SensoryTopology: Codable, Equatable, Hashable, Sendable {
     adaptationTimeConstantMicroseconds: UInt32,
     noiseStandardDeviation: Float,
     activeSensingActionDimension: UInt16,
-    enabled: Bool
+    enabled: Bool,
+    featureSchemaFingerprint: UInt64? = nil
   ) throws {
+    let numanXInteroceptionFingerprint =
+      InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    let numanXInteroceptionDimension =
+      InteroceptiveFeatureSchema.NumanXFullBodyV1.featureDimension
+    let featureSchemaIsCompatible = featureSchemaFingerprint.map { fingerprint in
+      modality == .interoception && fingerprint > 0
+        && (fingerprint != numanXInteroceptionFingerprint
+          || observationDimension == numanXInteroceptionDimension)
+    } ?? true
     guard !enabled || (receptorCount > 0 && observationDimension > 0),
       adaptationTimeConstantMicroseconds > 0,
-      noiseStandardDeviation.isFinite, noiseStandardDeviation >= 0
+      noiseStandardDeviation.isFinite, noiseStandardDeviation >= 0,
+      featureSchemaIsCompatible
     else {
       throw BrainRuntimeError.invalidDescriptor("sensory topology is invalid")
     }
     self.modality = modality
     self.receptorCount = receptorCount
     self.observationDimension = observationDimension
+    self.featureSchemaFingerprint = featureSchemaFingerprint
     self.latencyMicroseconds = latencyMicroseconds
     self.adaptationTimeConstantMicroseconds = adaptationTimeConstantMicroseconds
     self.noiseStandardDeviation = noiseStandardDeviation
@@ -686,8 +701,8 @@ public struct DevelopmentalStageTemplate: Codable, Equatable, Hashable, Sendable
 
 @frozen
 public struct SpeciesTemplate: Codable, Equatable, Sendable {
-  /// Version 8 binds the body graph to immutable NumanX joint topology.
-  public static let formatVersion: UInt32 = 8
+  /// Version 9 binds typed sensory feature schemas into template identity.
+  public static let formatVersion: UInt32 = 9
 
   public let family: SpeciesFamily
   public let name: String
@@ -835,6 +850,7 @@ public struct SpeciesTemplate: Codable, Equatable, Sendable {
       Self.mix(UInt32(sense.modality.rawValue), into: &hash)
       Self.mix(sense.receptorCount, into: &hash)
       Self.mix(sense.observationDimension, into: &hash)
+      Self.mix(sense.featureSchemaFingerprint ?? 0, into: &hash)
       Self.mix(sense.latencyMicroseconds, into: &hash)
       Self.mix(sense.adaptationTimeConstantMicroseconds, into: &hash)
       Self.mix(sense.noiseStandardDeviation.bitPattern, into: &hash)

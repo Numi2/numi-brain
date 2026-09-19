@@ -281,6 +281,8 @@ func makeNumanXInteropCompiledTemplate(
   interoceptorCount: UInt32 = 1,
   interoceptionFeatureDimension: UInt32 = 1,
   interoceptionLatencyMicroseconds: UInt32 = 1_000,
+  interoceptionFeatureSchemaFingerprint: UInt64? = nil,
+  extraEventRules: [ReceptorEventRule] = [],
   somaticSynergyCount: UInt16? = nil,
   planningHorizonSteps: UInt16 = 1,
   workspaceCapacity: UInt16 = 1,
@@ -358,7 +360,8 @@ func makeNumanXInteropCompiledTemplate(
         adaptationTimeConstantMicroseconds: 10_000,
         noiseStandardDeviation: 0,
         activeSensingActionDimension: 0,
-        enabled: true
+        enabled: true,
+        featureSchemaFingerprint: interoceptionFeatureSchemaFingerprint
       )
     case .kinesthesia:
       return try SensoryTopology(
@@ -555,7 +558,7 @@ func makeNumanXInteropCompiledTemplate(
   )
   let sensoryProfile = try SensoryTransductionProfile(
     species: species,
-    eventRules: [],
+    eventRules: extraEventRules,
     numanXReceptorAnatomy: receptorAnatomy,
     jointTopologyCatalog: jointTopology,
     muscleAttachmentCatalog: nil

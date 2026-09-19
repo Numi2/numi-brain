@@ -6,6 +6,8 @@ constant uint NB_SENSORY_FRAME_REUSED = 1u << 1u;
 constant uint NB_SENSORY_REUSE_MATCHING_FRAME = 1u;
 constant uint NB_RECEPTOR_EVENT_DERIVED = 1u;
 constant uint NB_SENSORY_VALIDITY_FLAG_SHIFT = 8u;
+constant ulong NB_SENSORY_NUMANX_FULLBODY_SCHEMA_FINGERPRINT =
+  0x5fe73ec812655efbul;
 
 struct NBSensoryUniforms {
   ulong target_timestamp_microseconds;
@@ -40,7 +42,7 @@ struct NBSensoryDescriptor {
   ulong latency_microseconds;
   float adaptation_time_constant_seconds;
   float noise_standard_deviation;
-  ulong reserved0;
+  ulong feature_schema_fingerprint;
   ulong reserved1;
 };
 
@@ -115,6 +117,15 @@ static_assert(sizeof(NBSensoryFrameMetadata) == 32);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBDevelopmentalHeader) == 256);
+
+inline bool nb_has_typed_numanx_fullbody_interoception(
+  NBSensoryDescriptor descriptor)
+{
+  return descriptor.modality == 8u
+    && descriptor.feature_dimension == 6u
+    && descriptor.feature_schema_fingerprint
+      == NB_SENSORY_NUMANX_FULLBODY_SCHEMA_FINGERPRINT;
+}
 
 inline uint nb_hash32(uint value) {
   value ^= value >> 16;
@@ -311,6 +322,7 @@ kernel void update_receptor_adaptation(
   );
   if (descriptor_index >= uniforms.descriptor_count) return;
   const NBSensoryDescriptor descriptor = descriptors[descriptor_index];
+  if (nb_has_typed_numanx_fullbody_interoception(descriptor)) return;
   const uint local_receptor = gid - descriptor.adaptation_offset;
   if (nb_raw_validity(
       descriptor.input_buffer_index, local_receptor, uniforms.flags,
@@ -407,9 +419,18 @@ kernel void transduce_receptor_observations(
     descriptor.modality,
     local_scalar
   );
-  observations[gid] = raw_value
-    - max(sensory_parameters[2], 0.0f) * adaptation[global_receptor]
-    + sensory_parameters[3] * noise + sensory_parameters[1];
+  const bool typed_numanx_interoception =
+    nb_has_typed_numanx_fullbody_interoception(descriptor);
+  const float raw_sample = nb_raw_input(
+    descriptor.input_buffer_index,
+    local_scalar,
+    input0, input1, input2, input3, input4, input5, input6, input7
+  );
+  observations[gid] = typed_numanx_interoception
+    ? raw_sample
+    : raw_value
+      - max(sensory_parameters[2], 0.0f) * adaptation[global_receptor]
+      + sensory_parameters[3] * noise + sensory_parameters[1];
 }
 
 kernel void extract_receptor_events(

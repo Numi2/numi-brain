@@ -5953,6 +5953,7 @@ kernel void segment_and_journal_episode(
     affect_pain, max(affect_pleasure, affect_relief)
   );
   if (affect->timestamp_microseconds == uniforms.target_timestamp_microseconds
+      && affect->source_validity_mask != 0u
       && affect_salience > embodied_salience) {
     embodied_salience = affect_salience;
     embodied_source = uint(affect->source_validity_mask);

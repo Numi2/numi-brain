@@ -89,7 +89,9 @@ public enum NumanXFullBodyTransportTemplate {
           modality: modality,
           receptorCount: 416,
           observationDimension: 6,
-          latencyMicroseconds: latencyMicroseconds
+          latencyMicroseconds: latencyMicroseconds,
+          featureSchemaFingerprint:
+            InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
         )
       case .kinesthesia:
         return try sensoryTopology(
@@ -484,7 +486,8 @@ public enum NumanXFullBodyTransportTemplate {
     observationDimension: UInt32,
     latencyMicroseconds: UInt32,
     adaptationTimeConstantMicroseconds: UInt32 = 10_000,
-    activeSensingActionDimension: UInt16 = 0
+    activeSensingActionDimension: UInt16 = 0,
+    featureSchemaFingerprint: UInt64? = nil
   ) throws -> SensoryTopology {
     try SensoryTopology(
       modality: modality,
@@ -494,7 +497,8 @@ public enum NumanXFullBodyTransportTemplate {
       adaptationTimeConstantMicroseconds: adaptationTimeConstantMicroseconds,
       noiseStandardDeviation: 0,
       activeSensingActionDimension: activeSensingActionDimension,
-      enabled: true
+      enabled: true,
+      featureSchemaFingerprint: featureSchemaFingerprint
     )
   }
 }

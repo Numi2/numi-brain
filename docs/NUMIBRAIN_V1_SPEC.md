@@ -1995,6 +1995,12 @@ r_t^{\mathrm{risk}}
 
 The planner predicts the complete future drive trajectory instead of receiving one compressed motivation scalar.
 
+The runtime also carries a per-agent affect state derived from fresh, accepted
+bodily evidence. This transient pain, pleasure, and relief state modulates
+downstream processing without becoming another reward scalar or replacing the
+factored homeostatic, pain, and risk signals. The implementation and its
+evidence limits are documented in [Affective state](AFFECTIVE_STATE.md).
+
 ---
 
 ## 21. Information-seeking behavior
@@ -2087,7 +2093,24 @@ Pain is not only a negative reward. It directly affects:
 * Arousal.
 * Future planning.
 
-Affective state is a derived configuration of drives, predicted prospects and neuromodulation. It is broadcast through workspace tokens and influences behavior without becoming a separate authoritative reward function.
+Affective state is a per-agent, transient configuration derived from accepted
+source-valid bodily evidence, drives, predicted prospects, and neuromodulation.
+Typed interoception schemas bind feature meaning before affect interprets
+flattened receptor values. Pain, pleasure, and relief can modulate workspace
+attention, memory salience, candidate-option scoring, and committed-transition
+learning emphasis. They do not replace factored pain and risk signals or the
+separate candidate admissibility and protective stop paths. See
+[Affective state](AFFECTIVE_STATE.md) for the implemented mapping, ABI, and
+evidence boundary.
+
+Typed-schema CPU/Metal parity includes a synthetic one-receptor fixture; a
+separate synthetic 416-receptor Metal test checks aggregation and incomplete
+coverage rejection. A synthetic maximum-pleasure regression confirms the
+protective reflex stop on a fresh critical-physiology event. These are not a
+native NumanX paired run or physical intervention; no paired native
+affect-enabled/control result has been established. Software tests do not
+establish receptor calibration, behavioral benefit, biological validity,
+subjective experience, or physical safety.
 
 ---
 

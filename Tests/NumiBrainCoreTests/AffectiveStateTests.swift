@@ -7,6 +7,37 @@ final class AffectiveStateTests: XCTestCase {
     BrainTimestamp(microseconds: microseconds)
   }
 
+  func testTypedNumanXSchemaRequiresItsDeclaredFeatureDimension() throws {
+    let fingerprint =
+      InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    XCTAssertNoThrow(
+      try SensoryTopology(
+        modality: .interoception,
+        receptorCount: 1,
+        observationDimension: 6,
+        latencyMicroseconds: 1_000,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true,
+        featureSchemaFingerprint: fingerprint
+      )
+    )
+    XCTAssertThrowsError(
+      try SensoryTopology(
+        modality: .interoception,
+        receptorCount: 1,
+        observationDimension: 5,
+        latencyMicroseconds: 1_000,
+        adaptationTimeConstantMicroseconds: 10_000,
+        noiseStandardDeviation: 0,
+        activeSensingActionDimension: 0,
+        enabled: true,
+        featureSchemaFingerprint: fingerprint
+      )
+    )
+  }
+
   private func physiology(
     interoceptionAt: UInt64? = nil,
     nociceptionAt: UInt64? = nil,
@@ -188,6 +219,45 @@ final class AffectiveStateTests: XCTestCase {
     XCTAssertEqual(decayed.pleasure, affect.pleasure * Float(Foundation.exp(-1.0)), accuracy: 1e-5)
     XCTAssertEqual(decayed.relief, affect.relief * Float(Foundation.exp(-2.0)), accuracy: 1e-5)
     XCTAssertEqual(decayed.sourceValidityMask, 0)
+  }
+
+  func testPassiveDecayIsEquivalentAcrossChunking() throws {
+    let baseline = try AffectiveState.neutral(at: time(0)).advanced(
+      to: time(10),
+      sample: physiology(
+        interoceptionAt: 10,
+        nociceptionAt: 10,
+        energy: 1,
+        nociception: 0.8
+      )
+    )
+    let seeded = try baseline.advanced(
+      to: time(20),
+      sample: physiology(
+        interoceptionAt: 20,
+        nociceptionAt: 20,
+        energy: 0.5,
+        nociception: 0.2
+      )
+    )
+    XCTAssertGreaterThan(seeded.pain, 0)
+    XCTAssertGreaterThan(seeded.pleasure, 0)
+    XCTAssertGreaterThan(seeded.relief, 0)
+
+    let target = time(1_000_020)
+    let oneStep = try seeded.advanced(to: target, sample: physiology())
+    var chunked = seeded
+    for timestamp: UInt64 in [20_000, 100_000, 250_000, 500_000, 750_000,
+      target.rawValue]
+    {
+      chunked = try chunked.advanced(to: time(timestamp), sample: physiology())
+    }
+
+    XCTAssertEqual(chunked.pain, oneStep.pain, accuracy: 1e-5)
+    XCTAssertEqual(chunked.pleasure, oneStep.pleasure, accuracy: 1e-5)
+    XCTAssertEqual(chunked.relief, oneStep.relief, accuracy: 1e-5)
+    XCTAssertEqual(oneStep.sourceValidityMask, 0)
+    XCTAssertEqual(chunked.sourceValidityMask, 0)
   }
 
   func testMissingStaleAndRepeatedSamplesCannotCreatePleasure() throws {
