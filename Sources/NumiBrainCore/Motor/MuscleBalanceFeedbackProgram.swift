@@ -107,6 +107,37 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     self.routes = routes
   }
 
+  /// Largest exact neural-delivery delay represented by the bounded history
+  /// ring. Delays are integer multiples of `updatePeriodMicroseconds`.
+  public var maximumConductionDelayMicroseconds: UInt32 {
+    sources.map(\.conductionDelayMicroseconds).max() ?? 0
+  }
+
+  /// Stateful execution is required for either an explicit delay or a causal
+  /// low-pass filter. Stateless programs retain the direct source path.
+  public var requiresTransactionalHistory: Bool {
+    sources.contains {
+      $0.conductionDelayMicroseconds > 0
+        || $0.filterTimeConstantSeconds > 0
+    }
+  }
+
+  /// One slot for every delayed update plus the current sample. Validation
+  /// bounds this to at most 501 slots per source.
+  public var historyCapacity: UInt32 {
+    guard updatePeriodMicroseconds > 0 else { return 0 }
+    return maximumConductionDelayMicroseconds / updatePeriodMicroseconds + 1
+  }
+
+  /// A stateful controller must remain on its prepared baseline until delayed
+  /// evidence exists. Filtered sources receive at least one additional update
+  /// to initialize their committed filter state before corrections are enabled.
+  public var minimumInitializationDurationMicroseconds: UInt32 {
+    maximumConductionDelayMicroseconds
+      + (sources.contains { $0.filterTimeConstantSeconds > 0 }
+        ? updatePeriodMicroseconds : 0)
+  }
+
   public func validate(
     template: CompiledSpeciesTemplate,
     locomotorProgram: MuscleLocomotorProgram
@@ -121,6 +152,10 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
       template.species.motor.actuatorCommandKind == .muscleExcitation,
       (1_000...20_000).contains(updatePeriodMicroseconds),
       initializationDurationMicroseconds <= 1_000_000,
+      initializationDurationMicroseconds % updatePeriodMicroseconds == 0,
+      initializationDurationMicroseconds
+        >= minimumInitializationDurationMicroseconds,
+      historyCapacity > 0, historyCapacity <= 501,
       !sources.isEmpty, sources.count <= 64,
       !routes.isEmpty, routes.count <= 65_536
     else {
@@ -151,6 +186,7 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
         source.filterTimeConstantSeconds.isFinite,
         (0...1).contains(source.filterTimeConstantSeconds),
         source.conductionDelayMicroseconds <= 500_000,
+        source.conductionDelayMicroseconds % updatePeriodMicroseconds == 0,
         let binding = bodyBindings[source.bodyReceptorBindingIdentifier],
         binding.sourceModelFingerprint == modelSourceFingerprint
       else {
