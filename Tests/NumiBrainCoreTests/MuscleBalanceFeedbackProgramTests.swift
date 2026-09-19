@@ -99,6 +99,8 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
       mode: MuscleBalanceFeedbackMode = .posture,
       baseline: UInt64? = nil,
       sensor: UInt64? = nil,
+      update: UInt32 = 4_000,
+      initialization: UInt32 = 100_000,
       sources: [MuscleBalanceFeedbackSource]? = nil,
       routes: [MuscleBalanceFeedbackRoute]? = nil
     ) -> MuscleBalanceFeedbackProgram {
@@ -108,8 +110,8 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
         sensoryProfileFingerprint: sensor ?? template.sensoryProfile.fingerprint,
         calibrationArtifactSHA256: String(repeating: "b", count: 64),
         mode: mode,
-        updatePeriodMicroseconds: 4_000,
-        initializationDurationMicroseconds: 100_000,
+        updatePeriodMicroseconds: update,
+        initializationDurationMicroseconds: initialization,
         sources: sources ?? [source],
         routes: routes ?? [route]
       )
@@ -117,6 +119,10 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
 
     let posture = program()
     try posture.validate(template: template, locomotorProgram: locomotor)
+    XCTAssertTrue(posture.requiresTransactionalHistory)
+    XCTAssertEqual(posture.maximumConductionDelayMicroseconds, 80_000)
+    XCTAssertEqual(posture.historyCapacity, 21)
+    XCTAssertEqual(posture.minimumInitializationDurationMicroseconds, 84_000)
     XCTAssertEqual(
       posture,
       try JSONDecoder().decode(
@@ -177,6 +183,25 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
         template: template,
         locomotorProgram: locomotor
       )
+    )
+    XCTAssertThrowsError(
+      try program(initialization: 80_000).validate(
+        template: template,
+        locomotorProgram: locomotor
+      )
+    )
+    XCTAssertThrowsError(
+      try program(
+        sources: [
+          MuscleBalanceFeedbackSource(
+            identifier: 1,
+            bodyReceptorBindingIdentifier: orientation.identifier,
+            referenceValue: 0,
+            filterTimeConstantSeconds: 0.04,
+            conductionDelayMicroseconds: 81_000
+          )
+        ]
+      ).validate(template: template, locomotorProgram: locomotor)
     )
     XCTAssertThrowsError(
       try program(
