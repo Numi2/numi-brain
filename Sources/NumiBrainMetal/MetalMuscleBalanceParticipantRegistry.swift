@@ -22,11 +22,16 @@ enum MetalMuscleBalanceParticipantRegistry {
     [BrainJointTransactionToken: Entry] = [:]
 
   static func register(_ transaction: MetalJointAgentStateTransaction) throws {
+    var staleCandidate: MetalMuscleBalanceController.Candidate?
     lock.lock()
-    defer { lock.unlock() }
-    removeDeadEntriesLocked()
     let root = transaction.jointToken
+    if let existing = entries[root], existing.transaction.value == nil {
+      staleCandidate = existing.candidate
+      entries.removeValue(forKey: root)
+    }
     guard entries[root] == nil else {
+      lock.unlock()
+      staleCandidate?.abort()
       throw TissueError.transaction(
         "duplicate live joint root cannot own muscle balance state"
       )
@@ -35,22 +40,28 @@ enum MetalMuscleBalanceParticipantRegistry {
       transaction: WeakTransaction(transaction),
       candidate: nil
     )
+    lock.unlock()
+    staleCandidate?.abort()
   }
 
   static func bind(
     _ candidate: MetalMuscleBalanceController.Candidate,
     to root: BrainJointTransactionToken
   ) throws {
+    var staleCandidate: MetalMuscleBalanceController.Candidate?
     lock.lock()
-    defer { lock.unlock() }
-    removeDeadEntriesLocked()
+    if let existing = entries[root], existing.transaction.value == nil {
+      staleCandidate = existing.candidate
+      entries.removeValue(forKey: root)
+    }
     guard candidate.root == root,
       var entry = entries[root],
       let transaction = entry.transaction.value,
       transaction.jointToken == root,
-      transaction.status == .open,
       entry.candidate == nil
     else {
+      lock.unlock()
+      staleCandidate?.abort()
       candidate.abort()
       throw TissueError.transaction(
         "muscle balance candidate has no unique live owning transaction"
@@ -58,22 +69,35 @@ enum MetalMuscleBalanceParticipantRegistry {
     }
     entry.candidate = candidate
     entries[root] = entry
+    lock.unlock()
+    staleCandidate?.abort()
   }
 
   static func candidate(
     for transaction: MetalJointAgentStateTransaction
   ) throws -> MetalMuscleBalanceController.Candidate? {
+    var staleCandidate: MetalMuscleBalanceController.Candidate?
+    let result: MetalMuscleBalanceController.Candidate?
     lock.lock()
-    defer { lock.unlock() }
-    removeDeadEntriesLocked()
+    if let existing = entries[transaction.jointToken],
+      existing.transaction.value == nil
+    {
+      staleCandidate = existing.candidate
+      entries.removeValue(forKey: transaction.jointToken)
+    }
     guard let entry = entries[transaction.jointToken],
       entry.transaction.value === transaction
     else {
+      lock.unlock()
+      staleCandidate?.abort()
       throw TissueError.transaction(
         "joint transaction is not registered for muscle balance participation"
       )
     }
-    return entry.candidate
+    result = entry.candidate
+    lock.unlock()
+    staleCandidate?.abort()
+    return result
   }
 
   static func validateCommit(
@@ -119,15 +143,5 @@ enum MetalMuscleBalanceParticipantRegistry {
     }
     lock.unlock()
     candidate?.abort()
-  }
-
-  private static func removeDeadEntriesLocked() {
-    let dead = entries.compactMap { key, entry in
-      entry.transaction.value == nil ? key : nil
-    }
-    for key in dead {
-      entries[key]?.candidate?.abort()
-      entries.removeValue(forKey: key)
-    }
   }
 }
