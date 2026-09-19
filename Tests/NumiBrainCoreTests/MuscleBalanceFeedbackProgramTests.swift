@@ -139,6 +139,27 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
       ).fingerprint
     )
 
+    let balanced = MuscleLocomotorProgram(
+      modelSourceFingerprint: locomotor.modelSourceFingerprint,
+      sensoryProfileFingerprint: locomotor.sensoryProfileFingerprint,
+      calibrationArtifactSHA256: locomotor.calibrationArtifactSHA256,
+      epochMicroseconds: locomotor.epochMicroseconds,
+      periodMicroseconds: locomotor.periodMicroseconds,
+      channels: locomotor.channels,
+      balanceFeedback: posture
+    )
+    try balanced.validate(template: template)
+    XCTAssertEqual(balanced.version, 2)
+    XCTAssertEqual(balanced.baselineFingerprint, locomotor.fingerprint)
+    XCTAssertNotEqual(balanced.fingerprint, locomotor.fingerprint)
+    XCTAssertEqual(
+      balanced,
+      try JSONDecoder().decode(
+        MuscleLocomotorProgram.self,
+        from: JSONEncoder().encode(balanced)
+      )
+    )
+
     XCTAssertThrowsError(
       try program(mode: .supportAware).validate(
         template: template,
