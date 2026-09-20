@@ -584,6 +584,129 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(opaqueSourceMask, 0)
   }
 
+  func testSelectedAffectiveConfigurationControlsAcceptedUpdateAndFreshness()
+    throws
+  {
+    let typedTemplate = try makeNumanXInteropCompiledTemplate(
+      interoceptorCount: 1,
+      interoceptionFeatureDimension: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    )
+    let selected = try AffectiveModelConfiguration(
+      maximumEvidenceAgeMicroseconds: 2_000,
+      recoveryGain: 2,
+      sourceWeights: [1, 0, 0, 0, 0]
+    )
+    let fixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate,
+      affectiveModelConfiguration: selected
+    )
+    let firstValues: [Float] = [0.5, 1, 0, 0, 0, 0]
+    let first = try runAcceptedRoot(
+      fixture: fixture,
+      token: fixture.token,
+      touchNociceptionValue: nil,
+      interoceptionValues: firstValues,
+      cachedDecisionFingerprint: 0xaffe_0501
+    )
+    let secondToken = try BrainJointTransactionToken(
+      environmentIdentifier: fixture.token.environmentIdentifier,
+      episodeIdentifier: fixture.token.episodeIdentifier,
+      controlStepIdentifier: fixture.token.controlStepIdentifier + 1,
+      parameterVersionFingerprint: fixture.token.parameterVersionFingerprint,
+      baseBrainGeneration: 1,
+      basePhysicsGeneration: 101,
+      committedTimestamp: fixture.token.targetTimestamp,
+      targetTimestamp: BrainTimestamp(microseconds: 12_000),
+      randomCounterGeneration: 1
+    )
+    let secondValues: [Float] = [1, 1, 0, 0, 0, 0]
+    let second = try runAcceptedRoot(
+      fixture: fixture,
+      token: secondToken,
+      touchNociceptionValue: nil,
+      interoceptionValues: secondValues,
+      cachedDecisionFingerprint: 0xaffe_0502
+    )
+    let affectSection = fixture.runtime.agentStateRuntime.arena.layout.section(
+      .affectiveState
+    )
+    func affectFloat(
+      _ payload: MetalAgentStateRuntime.CheckpointPayload,
+      _ offset: Int
+    ) -> Float {
+      payload.hotState.withUnsafeBytes {
+        $0.loadUnaligned(
+          fromByteOffset: affectSection.byteOffset + offset,
+          as: Float.self
+        )
+      }
+    }
+    func sample(_ values: [Float], at timestamp: UInt64) throws
+      -> AffectivePhysiologySample
+    {
+      try AffectivePhysiologySample(
+        interoceptionTimestamp: BrainTimestamp(microseconds: timestamp),
+        energyDeficit: 1 - values[0],
+        respiratoryDeficit: max(1 - values[1], values[2]),
+        temperatureDeviation: abs(values[3]),
+        fatigue: values[4],
+        tissueDamage: values[5]
+      )
+    }
+    let cpuBaseline = try AffectiveState.neutral(
+      at: BrainTimestamp(microseconds: 0),
+      configuration: selected
+    ).advanced(
+      to: BrainTimestamp(microseconds: 11_000),
+      sample: sample(firstValues, at: 10_000),
+      configuration: selected
+    )
+    let cpuRecovered = try cpuBaseline.advanced(
+      to: BrainTimestamp(microseconds: 12_000),
+      sample: sample(secondValues, at: 11_000),
+      configuration: selected
+    )
+    XCTAssertEqual(affectFloat(first, 4), cpuBaseline.pleasure, accuracy: 1.0e-5)
+    XCTAssertEqual(affectFloat(second, 4), cpuRecovered.pleasure, accuracy: 1.0e-5)
+    XCTAssertEqual(cpuRecovered.pleasure, 1, accuracy: 1.0e-5)
+
+    let staleConfiguration = try AffectiveModelConfiguration(
+      maximumEvidenceAgeMicroseconds: 100
+    )
+    let staleFixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate,
+      affectiveModelConfiguration: staleConfiguration
+    )
+    let stale = try runAcceptedRoot(
+      fixture: staleFixture,
+      token: staleFixture.token,
+      touchNociceptionValue: nil,
+      interoceptionValues: [0, 1, 0, 0, 0, 1],
+      cachedDecisionFingerprint: 0xaffe_0503
+    )
+    let staleAffectSection = staleFixture.runtime.agentStateRuntime.arena.layout
+      .section(.affectiveState)
+    let stalePain = stale.hotState.withUnsafeBytes {
+      $0.loadUnaligned(fromByteOffset: staleAffectSection.byteOffset, as: Float.self)
+    }
+    let staleMask = stale.hotState.withUnsafeBytes {
+      $0.loadUnaligned(
+        fromByteOffset: staleAffectSection.byteOffset + 36,
+        as: UInt16.self
+      )
+    }
+    XCTAssertEqual(stalePain, 0)
+    XCTAssertEqual(staleMask, 0)
+    XCTAssertEqual(
+      try fixture.runtime.agentStateRuntime.snapshotCommittedState().hotState,
+      second.hotState,
+      "a separate runtime must not share another agent's affect state"
+    )
+  }
+
   func testTypedNumanXFullBodyAggregates416ReceptorsAndRejectsIncompleteCoverage()
     throws
   {
@@ -759,7 +882,13 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       interoceptionFeatureSchemaFingerprint:
         InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
     )
-    let fixture = try makeFixture(compiledSpeciesTemplate: typedTemplate)
+    let affectiveConfiguration = try AffectiveModelConfiguration(
+      painDecayMicroseconds: 3_000_000
+    )
+    let fixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate,
+      affectiveModelConfiguration: affectiveConfiguration
+    )
     let accepted = try runAcceptedRoot(
       fixture: fixture,
       token: fixture.token,
@@ -776,10 +905,23 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       physicalCheckpointFingerprint: physicalFingerprint
     )
 
-    let restoredFixture = try makeFixture(compiledSpeciesTemplate: typedTemplate)
+    let restoredFixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate,
+      affectiveModelConfiguration: affectiveConfiguration
+    )
     try restoredFixture.runtime.loadCheckpoint(
       checkpoint,
       physicalCheckpointFingerprint: physicalFingerprint
+    )
+    let mismatchedConfigurationFixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate
+    )
+    XCTAssertThrowsError(
+      try mismatchedConfigurationFixture.runtime.loadCheckpoint(
+        checkpoint,
+        physicalCheckpointFingerprint: physicalFingerprint
+      ),
+      "a checkpoint must not restore under a different affect configuration"
     )
     let roundTrip = try restoredFixture.runtime.saveCheckpoint(
       environmentIdentifier: fixture.token.environmentIdentifier,
@@ -798,6 +940,35 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(restoredAffect, originalAffect)
     XCTAssertGreaterThan(affectFloat(restoredAffect, offset: 0), 0)
     XCTAssertEqual(affectUInt16(restoredAffect, offset: 36) & 0x1f, 0x1f)
+
+    let continuationToken = try BrainJointTransactionToken(
+      environmentIdentifier: fixture.token.environmentIdentifier,
+      episodeIdentifier: fixture.token.episodeIdentifier,
+      controlStepIdentifier: fixture.token.controlStepIdentifier + 1,
+      parameterVersionFingerprint: fixture.token.parameterVersionFingerprint,
+      baseBrainGeneration: checkpoint.committedGeneration,
+      basePhysicsGeneration: fixture.token.basePhysicsGeneration + 1,
+      committedTimestamp: fixture.token.targetTimestamp,
+      targetTimestamp: BrainTimestamp(microseconds: 12_000),
+      randomCounterGeneration: 1
+    )
+    let originalContinuation = try runAcceptedRoot(
+      fixture: fixture,
+      token: continuationToken,
+      touchNociceptionValue: nil,
+      interoceptionValues: [0, 0, 0, 0, 1, 1],
+      cachedDecisionFingerprint: 0xaffe_0202
+    )
+    let restoredContinuation = try runAcceptedRoot(
+      fixture: restoredFixture,
+      token: continuationToken,
+      touchNociceptionValue: nil,
+      interoceptionValues: [0, 0, 0, 0, 1, 1],
+      cachedDecisionFingerprint: 0xaffe_0202
+    )
+    XCTAssertEqual(originalContinuation.hotState, restoredContinuation.hotState)
+    XCTAssertEqual(originalContinuation.generation, 2)
+    XCTAssertEqual(restoredContinuation.generation, 2)
   }
 
   func testMaximumPleasureDoesNotSuppressCurrentRootSafetyStop() throws {
@@ -1008,6 +1179,71 @@ final class MetalSharedEventTimelineTests: XCTestCase {
 
     XCTAssertEqual(pending.generation, 0)
     XCTAssertEqual(wrong.generation, 0)
+  }
+
+  func testRejectedAcceptedAffectEvidenceCannotMutateShadowOrCommit() throws {
+    let typedTemplate = try makeNumanXInteropCompiledTemplate(
+      interoceptorCount: 1,
+      interoceptionFeatureDimension: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    )
+    let fixture = try makeFixture(compiledSpeciesTemplate: typedTemplate)
+    let prepared = try makePreparedAcceptedRoot(
+      fixture: fixture,
+      interoceptionValues: [0, 0, 0, 0.5, 1, 1]
+    )
+    let affectSection = fixture.runtime.agentStateRuntime.arena.layout.section(
+      .affectiveState
+    )
+    let shadowBuffer = try fixture.runtime.agentStateRuntime.arena
+      .borrowShadowHotBuffer(transaction: prepared.transaction.agentStateToken)
+    let shadowBefore = try snapshot(buffer: shadowBuffer, device: fixture.device)
+    let gate = try makeAcceptedPhysicsGate(
+      device: fixture.device,
+      expected: prepared.accepted,
+      observed: nil
+    )
+    let event = try XCTUnwrap(fixture.device.makeSharedEvent())
+    let ticket = try fixture.runtime.submitAcceptedConsequence(
+      transaction: prepared.transaction,
+      acceptedPhysicsState: prepared.accepted,
+      candidateSubstep: prepared.substep,
+      acceptedPhysicsGate: gate,
+      numanXSensors: prepared.acceptedSensors,
+      acceptedRegionalRecurrentInput: fixture.recurrentView,
+      signal: try MetalSharedEventPoint(event: event, value: 82)
+    )
+
+    XCTAssertTrue(event.wait(untilSignaledValue: 82, timeoutMS: 10_000))
+    let shadowAfter = try snapshot(buffer: shadowBuffer, device: fixture.device)
+    XCTAssertEqual(shadowAfter, shadowBefore)
+    let shadowAffect = affectBytes(
+      shadowAfter,
+      sectionOffset: affectSection.byteOffset,
+      byteCount: affectSection.byteCount
+    )
+    XCTAssertEqual(affectFloat(shadowAffect, offset: 0), 0)
+    XCTAssertEqual(affectFloat(shadowAffect, offset: 4), 0)
+    XCTAssertEqual(affectUInt16(shadowAffect, offset: 36), 0)
+
+    XCTAssertThrowsError(
+      try fixture.runtime.finishAcceptedConsequenceSubmission(
+        ticket,
+        transaction: prepared.transaction,
+        acceptedPhysicsState: prepared.accepted,
+        timeoutMilliseconds: 10_000
+      )
+    )
+    XCTAssertEqual(prepared.transaction.status, .aborted)
+    let committedAfter = try fixture.runtime.agentStateRuntime
+      .snapshotCommittedState()
+    XCTAssertEqual(committedAfter.generation, 0)
+    let committedAffect = affectBytes(committedAfter, fixture: fixture)
+    XCTAssertEqual(affectFloat(committedAffect, offset: 0), 0)
+    XCTAssertEqual(affectFloat(committedAffect, offset: 4), 0)
+    XCTAssertEqual(affectUInt16(committedAffect, offset: 36), 0)
   }
 
   func testAcceptedPhysicsGateLateMutationAfterSubmitCannotPublish() throws {
@@ -1629,7 +1865,8 @@ final class MetalSharedEventTimelineTests: XCTestCase {
   }
 
   private func makeFixture(
-    compiledSpeciesTemplate: CompiledSpeciesTemplate?
+    compiledSpeciesTemplate: CompiledSpeciesTemplate?,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws -> Fixture {
     let device = try requireMetal4Device()
     let compiled = try compiledSpeciesTemplate
@@ -1645,7 +1882,8 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       compiledSpeciesTemplate: compiled,
       regionalProgram: regionalProgram,
       parameterVersion: publication.version,
-      sharedParameterArtifact: publication.sharedArtifact
+      sharedParameterArtifact: publication.sharedArtifact,
+      affectiveModelConfiguration: affectiveModelConfiguration
     )
     let token = try BrainJointTransactionToken(
       environmentIdentifier: 7,

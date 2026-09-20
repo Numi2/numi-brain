@@ -295,10 +295,48 @@ final class AffectiveStateTests: XCTestCase {
     XCTAssertEqual(afterRepeat.pleasure, 0)
   }
 
+  func testTimestampedAllInvalidFrameBreaksComparisonAndAdvancesBaseline() throws {
+    let neutral = try AffectiveState.neutral(at: time(0))
+    let baseline = try neutral.advanced(
+      to: time(10),
+      sample: physiology(interoceptionAt: 10, energy: 1)
+    )
+    let allInvalid = try baseline.advanced(
+      to: time(20),
+      sample: physiology(interoceptionAt: 20)
+    )
+    XCTAssertEqual(allInvalid.sourceValidityMask, 0)
+    XCTAssertEqual(allInvalid.previousSourceValidityMask, 0)
+    XCTAssertEqual(allInvalid.previousSampleTimestamp, time(20))
+
+    let olderFrame = try allInvalid.advanced(
+      to: time(30),
+      sample: physiology(interoceptionAt: 15, energy: 0)
+    )
+    XCTAssertEqual(olderFrame.sourceValidityMask, 0)
+    XCTAssertEqual(olderFrame.pleasure, 0)
+    XCTAssertEqual(olderFrame.previousSampleTimestamp, time(20))
+
+    let freshFrame = try olderFrame.advanced(
+      to: time(40),
+      sample: physiology(interoceptionAt: 40, energy: 0)
+    )
+    XCTAssertEqual(freshFrame.sourceValidityMask, 1)
+    XCTAssertEqual(freshFrame.pleasure, 0)
+    XCTAssertEqual(freshFrame.previousSampleTimestamp, time(40))
+  }
+
   func testConfigurationValidationFingerprintAndStateBinding() throws {
     let reference = AffectiveModelConfiguration.reference
     XCTAssertEqual(try AffectiveModelConfiguration(), reference)
     XCTAssertGreaterThan(reference.fingerprint, 0)
+    XCTAssertEqual(
+      try JSONDecoder().decode(
+        AffectiveModelConfiguration.self,
+        from: JSONEncoder().encode(reference)
+      ),
+      reference
+    )
 
     let changed = try AffectiveModelConfiguration(painDecayMicroseconds: 2_000_001)
     XCTAssertNotEqual(changed.fingerprint, reference.fingerprint)
@@ -306,6 +344,15 @@ final class AffectiveStateTests: XCTestCase {
     XCTAssertThrowsError(try AffectiveModelConfiguration(recoveryGain: 4.1))
     XCTAssertThrowsError(try AffectiveModelConfiguration(sourceWeights: [1, 0, 0, 0]))
     XCTAssertThrowsError(try AffectiveModelConfiguration(sourceWeights: [0.2, 0.2, 0.2, 0.2, 0.1]))
+    let invalidDecodedConfiguration = Data(
+      #"{"painDecayMicroseconds":0,"pleasureDecayMicroseconds":1000000,"reliefDecayMicroseconds":500000,"maximumEvidenceAgeMicroseconds":100000,"recoveryGain":1,"reliefGain":1,"sourceWeights":[0.24,0.24,0.16,0.18,0.18]}"#.utf8
+    )
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(
+        AffectiveModelConfiguration.self,
+        from: invalidDecodedConfiguration
+      )
+    )
 
     let bound = try AffectiveState.neutral(at: time(0), configuration: changed)
     XCTAssertEqual(bound.configurationFingerprint, changed.fingerprint)

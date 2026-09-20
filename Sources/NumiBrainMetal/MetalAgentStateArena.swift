@@ -184,7 +184,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     maximumRelationSlots: Int = 1_024,
     maximumSpatialTransforms: Int = 32,
     maximumEventTokens: Int = Self.defaultEventTokenCapacity,
-    maximumDelayMessages: Int = 4_096
+    maximumDelayMessages: Int = 4_096,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws {
     guard species.fingerprint > 0, regionalProgram.fingerprint > 0,
       regionalProgram.scheduleFingerprint == species.regionGraph.schedule.fingerprint,
@@ -503,7 +504,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     Self.mix(Self.bodyBeliefLayoutVersion, into: &hash)
     Self.mix(Self.jointBeliefLayoutVersion, into: &hash)
     Self.mix(Self.affectiveStateLayoutVersion, into: &hash)
-    Self.mix(AffectiveModelConfiguration.reference.fingerprint, into: &hash)
+    Self.mix(affectiveModelConfiguration.fingerprint, into: &hash)
     Self.mix(Self.muscleBeliefLayoutVersion, into: &hash)
     Self.mix(Self.worldModelLayoutVersion, into: &hash)
     Self.mix(Self.cerebellarExpertLayoutVersion, into: &hash)
@@ -879,6 +880,7 @@ public final class MetalAgentStateArena: @unchecked Sendable {
 
   public let layout: MetalAgentStateLayout
   public let memoryLayout: MetalAgentMemoryLayout
+  public let affectiveModelConfiguration: AffectiveModelConfiguration
   public let deviceName: String
   public private(set) var committedGeneration: UInt64
   public private(set) var initialized: Bool = false
@@ -897,9 +899,14 @@ public final class MetalAgentStateArena: @unchecked Sendable {
     device: any MTLDevice,
     species: SpeciesTemplate,
     regionalProgram: RegionalTokenProgram,
-    initialGeneration: UInt64 = 0
+    initialGeneration: UInt64 = 0,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws {
-    let layout = try MetalAgentStateLayout(species: species, regionalProgram: regionalProgram)
+    let layout = try MetalAgentStateLayout(
+      species: species,
+      regionalProgram: regionalProgram,
+      affectiveModelConfiguration: affectiveModelConfiguration
+    )
     let memoryLayout = try MetalAgentMemoryLayout(species: species)
     guard
       let firstHot = device.makeBuffer(
@@ -932,6 +939,7 @@ public final class MetalAgentStateArena: @unchecked Sendable {
     secondJournal.label = "NumiBrain memory mutation journal generation 1"
     self.layout = layout
     self.memoryLayout = memoryLayout
+    self.affectiveModelConfiguration = affectiveModelConfiguration
     self.deviceName = device.name
     self.committedGeneration = initialGeneration
     self.hotBuffers = [firstHot, secondHot]

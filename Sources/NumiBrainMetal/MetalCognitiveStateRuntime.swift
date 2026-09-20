@@ -79,6 +79,7 @@ private struct CognitiveUniforms {
   var internalActionCount: UInt32 = 0
   var plasticityParameterCount: UInt32 = 0
   var interoceptionFeatureDimension: UInt32 = 0
+  var affectiveMaximumEvidenceAgeMicroseconds: UInt64 = 0
 }
 
 private struct WorldModelLevelRecord {
@@ -183,7 +184,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalProgram: RegionalTokenProgram,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<CognitiveUniforms>.stride == 432,
+    guard MemoryLayout<CognitiveUniforms>.stride == 440,
       MemoryLayout<WorldModelLevelRecord>.stride == 48,
       MemoryLayout<PlasticityRegionRangeRecord>.stride == 24,
       arena.layout.speciesTemplateFingerprint == species.fingerprint,
@@ -834,7 +835,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       ),
       internalActionCount: internalActionCount,
       plasticityParameterCount: plasticityParameterCount,
-      interoceptionFeatureDimension: interoceptionFeatureDimension
+      interoceptionFeatureDimension: interoceptionFeatureDimension,
+      affectiveMaximumEvidenceAgeMicroseconds:
+        arena.affectiveModelConfiguration.maximumEvidenceAgeMicroseconds
     )
   }
 

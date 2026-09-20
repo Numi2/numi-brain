@@ -104,6 +104,7 @@ struct NBCognitiveUniforms {
   uint internal_action_count;
   uint plasticity_parameter_count;
   uint interoception_feature_dimension;
+  ulong affective_maximum_evidence_age_microseconds;
 };
 
 struct NBWorldModelLevelRecord {
@@ -354,7 +355,7 @@ struct NBAffectiveStateRecord {
   ulong last_pain_timestamp_microseconds;
 };
 
-static_assert(sizeof(NBCognitiveUniforms) == 432);
+static_assert(sizeof(NBCognitiveUniforms) == 440);
 static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBWorldModelLevelRecord) == 48);
 static_assert(sizeof(NBDriveStateRecord) == 32);
@@ -3059,7 +3060,8 @@ kernel void select_and_merge_foundation_workspace(
     && affect->source_validity_mask != 0u
     && affect->timestamp_microseconds <= uniforms.target_timestamp_microseconds
     && uniforms.target_timestamp_microseconds
-      - affect->timestamp_microseconds <= 100000ul;
+      - affect->timestamp_microseconds
+        <= uniforms.affective_maximum_evidence_age_microseconds;
   const float affect_attention_score = affect_timestamp_valid
     ? clamp(max(max(affect->pain, affect->pleasure), affect->relief), 0.0f, 1.0f)
     : 0.0f;

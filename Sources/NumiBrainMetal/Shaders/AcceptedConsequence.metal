@@ -23,12 +23,6 @@ constant uint NB_AFFECTIVE_FATIGUE_SIGNAL = 4u;
 constant uint NB_AFFECTIVE_NUMANX_FULLBODY_FEATURE_DIMENSION = 6u;
 constant ulong NB_AFFECTIVE_NUMANX_FULLBODY_SCHEMA_FINGERPRINT =
   0x5fe73ec812655efbul;
-constant ulong NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS = 100000ul;
-constant float NB_AFFECTIVE_PAIN_DECAY_MICROSECONDS = 2000000.0f;
-constant float NB_AFFECTIVE_PLEASURE_DECAY_MICROSECONDS = 1000000.0f;
-constant float NB_AFFECTIVE_RELIEF_DECAY_MICROSECONDS = 500000.0f;
-constant float NB_AFFECTIVE_RECOVERY_GAIN = 1.0f;
-constant float NB_AFFECTIVE_RELIEF_GAIN = 1.0f;
 constant ulong NB_ACCEPTED_INNATE_OPTION_NAMESPACE = 0x8000000000000000ul;
 constant ulong NB_ACCEPTED_REST_OPTION_IDENTIFIER =
   NB_ACCEPTED_INNATE_OPTION_NAMESPACE | 4ul;
@@ -161,6 +155,17 @@ struct NBAcceptedConsequenceUniforms {
   ulong sensory_frame_metadata_offset;
   ulong affective_state_offset;
   ulong interoception_feature_schema_fingerprint;
+  ulong affective_pain_decay_microseconds;
+  ulong affective_pleasure_decay_microseconds;
+  ulong affective_relief_decay_microseconds;
+  ulong affective_maximum_evidence_age_microseconds;
+  float affective_recovery_gain;
+  float affective_relief_gain;
+  float affective_source_weight_0;
+  float affective_source_weight_1;
+  float affective_source_weight_2;
+  float affective_source_weight_3;
+  float affective_source_weight_4;
 };
 
 struct NBAffectiveStateRecord {
@@ -567,7 +572,7 @@ struct NBCerebellarExpertRecord {
   float state[56];
 };
 
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 456);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 520);
 static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -575,7 +580,7 @@ static_assert(sizeof(NBFastPlasticityRecord) == 32);
 static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBSensoryFrameMetadata) == 32);
-static_assert(sizeof(NBAcceptedConsequenceUniforms) == 456);
+static_assert(sizeof(NBAcceptedConsequenceUniforms) == 520);
 static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
@@ -1771,11 +1776,11 @@ kernel void update_accepted_affective_state(
   if (now <= state->timestamp_microseconds) return;
   const ulong elapsed = now - state->timestamp_microseconds;
   const float pain_retention = exp(-float(elapsed)
-    / NB_AFFECTIVE_PAIN_DECAY_MICROSECONDS);
+    / float(uniforms.affective_pain_decay_microseconds));
   const float pleasure_retention = exp(-float(elapsed)
-    / NB_AFFECTIVE_PLEASURE_DECAY_MICROSECONDS);
+    / float(uniforms.affective_pleasure_decay_microseconds));
   const float relief_retention = exp(-float(elapsed)
-    / NB_AFFECTIVE_RELIEF_DECAY_MICROSECONDS);
+    / float(uniforms.affective_relief_decay_microseconds));
 
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
@@ -1798,7 +1803,7 @@ kernel void update_accepted_affective_state(
       && frame.delivery_timestamp_microseconds == now
       && frame.receptor_timestamp_microseconds <= now
       && now - frame.receptor_timestamp_microseconds
-        <= NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS;
+        <= uniforms.affective_maximum_evidence_age_microseconds;
     if (!timely) continue;
     if (frame.modality == 8u) {
       interoception_frame = frame;
@@ -1809,7 +1814,13 @@ kernel void update_accepted_affective_state(
     }
   }
 
-  const float source_weights[5] = {0.24f, 0.24f, 0.16f, 0.18f, 0.18f};
+  const float source_weights[5] = {
+    uniforms.affective_source_weight_0,
+    uniforms.affective_source_weight_1,
+    uniforms.affective_source_weight_2,
+    uniforms.affective_source_weight_3,
+    uniforms.affective_source_weight_4
+  };
   uint current_feature_mask = 0u;
   float recovery = 0.0f;
   bool interoception_is_new = interoception_frame_valid
@@ -2033,7 +2044,7 @@ kernel void update_accepted_affective_state(
     if ((event.kind == 8u || event.kind == 9u)
         && event.timestamp_microseconds <= now
         && now - event.timestamp_microseconds
-          <= NB_AFFECTIVE_MAX_EVIDENCE_AGE_MICROSECONDS
+          <= uniforms.affective_maximum_evidence_age_microseconds
         && isfinite(event.magnitude)) {
       has_fresh_pain_event = true;
       event_pain = max(event_pain, clamp(event.magnitude, 0.0f, 1.0f));
@@ -2066,14 +2077,14 @@ kernel void update_accepted_affective_state(
   ), 0.0f, 1.0f);
   state->relief = clamp(
     state->relief * relief_retention
-      + NB_AFFECTIVE_RELIEF_GAIN * relief_evidence,
+      + uniforms.affective_relief_gain * relief_evidence,
     0.0f,
     1.0f
   );
   state->pleasure = clamp(
     state->pleasure * pleasure_retention
-      + NB_AFFECTIVE_RECOVERY_GAIN * recovery
-      + NB_AFFECTIVE_RELIEF_GAIN * relief_evidence,
+      + uniforms.affective_recovery_gain * recovery
+      + uniforms.affective_relief_gain * relief_evidence,
     0.0f,
     1.0f
   );

@@ -8,13 +8,15 @@ signal, not a separate reward function or a claim about subjective experience.
 ## Evidence and comparability
 
 Only valid receptor observations in the accepted physical transaction are
-eligible. The Metal update requires the frame to be delivered at the target
-transaction timestamp, its receptor timestamp to be no later than that target,
-and its age to be at most 100 ms. Interoception and touch values are read only
+eligible. The selected `AffectiveModelConfiguration` sets the maximum evidence
+age (100 ms in the reference configuration). The Metal update requires the
+frame to be delivered at the target transaction timestamp, its receptor
+timestamp to be no later than that target, and its age to be within that bound.
+Interoception and touch values are read only
 when their respective accepted frame metadata and scalar-validity entries agree.
 Touch nociception also requires an enabled body-receptor binding for the
 nociception signal. Pain events of kinds 8 and 9 can contribute pain when their
-timestamps are within the same 100 ms bound.
+timestamps are within the selected evidence-age bound.
 
 ### Typed NumanX interoception
 
@@ -55,8 +57,10 @@ Pleasure from recovery requires a fresh observation for a channel and a prior
 valid observation for that same channel. A missing source breaks that channel's
 comparison; when it returns, the first sample establishes a new baseline.
 Repeated, stale, future-dated, or invalid observations cannot produce recovery
-or relief. The CPU `AffectiveState.advanced` implementation is the reference
-oracle for these rules.
+or relief. A newly consumed interoception frame timestamp still advances the
+baseline when every feature is invalid; this keeps an older frame from reviving
+after a complete validity dropout. The CPU `AffectiveState.advanced`
+implementation is the reference oracle for these rules.
 
 ## State update
 
@@ -71,14 +75,18 @@ clears the comparison baseline while retaining the last-consumed timestamp, so
 a later sample cannot manufacture relief or reuse an old frame.
 
 Each state decays against physical elapsed time using exponential retention
-`exp(-dt / tau)`: pain has a 2 s time constant, pleasure 1 s, and relief 0.5 s.
+`exp(-dt / tau)`: the reference configuration uses a 2 s pain time constant,
+1 s for pleasure, and 0.5 s for relief.
 New pain, recovery, and relief are then added according to the update above and
 clamped to `[0, 1]`. Passive decay does not create pleasure or relief. The
-Metal uses the same physical-time constants. When candidate options are scored,
-the planner also decays the stored affect values from their timestamp to the
-physical target time; zero or future timestamps contribute no candidate
-modulation. The reference gains are 1, and configuration gains, weights, and
-time bounds are validated and fingerprinted.
+Metal uses the selected physical-time constants for both state updates and
+planner decay. When candidate options are scored, the planner decays stored
+affect values from their timestamp to the physical target time; zero or future
+timestamps contribute no candidate modulation. The reference recovery and
+relief gains are 1. Gains are bounded to `[0, 4]`; the five source weights must
+be finite values in `[0, 1]` that sum to 1. The selected evidence-age bound,
+decays, gains, and weights are fingerprinted into the arena layout, so a
+checkpoint cannot be restored under a different affect configuration.
 
 ## Transaction and consumers
 
@@ -90,9 +98,9 @@ checkpoint fingerprint also include affect and its configuration identity.
 
 The current consumers are deliberately bounded:
 
-- **Attention:** fresh affect with a nonzero source mask and age at most 100 ms
-  competes with the strongest drive for workspace slot 0. Its score is the
-  maximum of pain, pleasure, and relief.
+- **Attention:** fresh affect with a nonzero source mask and age within the
+  selected evidence-age bound competes with the strongest drive for workspace
+  slot 0. Its score is the maximum of pain, pleasure, and relief.
 - **Memory:** affect can become the embodied salient event (event kind 12) when
   its timestamp matches the accepted target timestamp and its source mask is
   nonzero. Passive decay alone does not create a new event. Its values, source
@@ -130,3 +138,13 @@ NumanX feed or physical intervention. No paired native NumanX comparison with
 affect enabled versus a matched control has been produced, and this evidence
 does not establish behavioral benefit, physiological calibration, or physical
 safety.
+
+Matched synthetic Metal regressions also verify that fresh pleasure can change
+workspace selection, restorative option value, committed learner input, and
+the active episode's salient memory event. The memory assertion observes the
+committed accumulator before journaling by raising the test fixture's episode
+boundary threshold; it is a software-path check. Selected-configuration tests
+cover accepted recovery gains and evidence-age rejection, planner decay,
+checkpoint continuation and cross-configuration restore rejection, and
+rejected-evidence rollback. CPU affect tests pass 14/14; these remain software
+checks, not native NumanX behavioral or physiological qualification.

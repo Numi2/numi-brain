@@ -59,9 +59,6 @@ constant uint NB_CEREBELLAR_ACTUATOR_SHIFT = 8u;
 constant float NB_AFFECT_PLEASURE_VALUE_GAIN = 0.10f;
 constant float NB_AFFECT_RELIEF_VALUE_GAIN = 0.15f;
 constant float NB_AFFECT_PAIN_CAUTION_GAIN = 0.15f;
-constant float NB_AFFECT_PAIN_DECAY_MICROSECONDS = 2000000.0f;
-constant float NB_AFFECT_PLEASURE_DECAY_MICROSECONDS = 1000000.0f;
-constant float NB_AFFECT_RELIEF_DECAY_MICROSECONDS = 500000.0f;
 
 struct NBDecisionUniforms {
   ulong target_timestamp_microseconds;
@@ -142,6 +139,9 @@ struct NBDecisionUniforms {
   uint active_sensing_command_scale_bits;
   uint anatomical_muscle_count;
   uint connectome_motor_enabled;
+  ulong affective_pain_decay_microseconds;
+  ulong affective_pleasure_decay_microseconds;
+  ulong affective_relief_decay_microseconds;
 };
 
 struct NBDriveRecord {
@@ -572,7 +572,7 @@ struct NBDevelopmentalHeader {
   ulong reserved[21];
 };
 
-static_assert(sizeof(NBDecisionUniforms) == 456);
+static_assert(sizeof(NBDecisionUniforms) == 480);
 static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
@@ -2571,15 +2571,18 @@ kernel void simulate_candidate_option_outcomes(
       - affect->timestamp_microseconds) : 0.0f;
   const float affect_pain = affect_timestamp_valid && isfinite(affect->pain)
     ? clamp(affect->pain, 0.0f, 1.0f)
-      * exp(-affect_age_microseconds / NB_AFFECT_PAIN_DECAY_MICROSECONDS)
+      * exp(-affect_age_microseconds
+        / float(uniforms.affective_pain_decay_microseconds))
     : 0.0f;
   const float affect_pleasure = affect_timestamp_valid && isfinite(affect->pleasure)
     ? clamp(affect->pleasure, 0.0f, 1.0f)
-      * exp(-affect_age_microseconds / NB_AFFECT_PLEASURE_DECAY_MICROSECONDS)
+      * exp(-affect_age_microseconds
+        / float(uniforms.affective_pleasure_decay_microseconds))
     : 0.0f;
   const float affect_relief = affect_timestamp_valid && isfinite(affect->relief)
     ? clamp(affect->relief, 0.0f, 1.0f)
-      * exp(-affect_age_microseconds / NB_AFFECT_RELIEF_DECAY_MICROSECONDS)
+      * exp(-affect_age_microseconds
+        / float(uniforms.affective_relief_decay_microseconds))
     : 0.0f;
   float rollout_state[16];
   for (uint component = 0u; component < 16u; ++component) {

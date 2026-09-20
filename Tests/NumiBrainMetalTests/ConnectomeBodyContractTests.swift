@@ -83,6 +83,14 @@ final class ConnectomeBodyContractTests: XCTestCase {
     let template = try body()
     let layout = try MetalAgentStateLayout(species: template.species,
       regionalProgram: template.species.regionalProgram())
+    let changedAffectLayout = try MetalAgentStateLayout(
+      species: template.species,
+      regionalProgram: template.species.regionalProgram(),
+      affectiveModelConfiguration: AffectiveModelConfiguration(
+        painDecayMicroseconds: 2_000_001
+      )
+    )
+    XCTAssertNotEqual(layout.fingerprint, changedAffectLayout.fingerprint)
     let joints = layout.section(.jointBelief)
     XCTAssertEqual(joints.elementCount, 0)
     XCTAssertEqual(joints.byteCount, MetalAgentStateLayout.jointBeliefStride)

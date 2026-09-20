@@ -23,6 +23,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
   public let maximumSchedulerEvents: Int
   public let maximumSchedulerInvocations: Int
   public let maximumEncodedSubsteps: Int
+  public let affectiveModelConfiguration: AffectiveModelConfiguration
 
   public init(
     initialTissueState: TissueGrid,
@@ -39,7 +40,8 @@ public struct MetalNumiBrainConfiguration: Sendable {
     maximumSchedulerInvocations: Int = 4_096,
     maximumEncodedSubsteps: Int = 4_096,
     connectome: MetalConnectomeConfiguration? = nil,
-    muscleLocomotor: MuscleLocomotorProgram? = nil
+    muscleLocomotor: MuscleLocomotorProgram? = nil,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) {
     self.connectome = connectome
     self.muscleLocomotor = muscleLocomotor
@@ -56,6 +58,7 @@ public struct MetalNumiBrainConfiguration: Sendable {
     self.maximumSchedulerEvents = maximumSchedulerEvents
     self.maximumSchedulerInvocations = maximumSchedulerInvocations
     self.maximumEncodedSubsteps = maximumEncodedSubsteps
+    self.affectiveModelConfiguration = affectiveModelConfiguration
   }
 }
 
@@ -149,7 +152,8 @@ extension MetalNumiBrainRuntime {
         regionalProgram: regionalProgram,
         parameterVersion: version,
         sharedParameterArtifact: publication.sharedArtifact,
-        numanXUncertaintyGate: numanXUncertaintyGate
+        numanXUncertaintyGate: numanXUncertaintyGate,
+        affectiveModelConfiguration: configuration.affectiveModelConfiguration
       )
     } else {
       try MetalEmbodiedBrainRuntime(
@@ -160,7 +164,8 @@ extension MetalNumiBrainRuntime {
         sharedParameterArtifact: publication.sharedArtifact,
         foundationPolicyArchitecture: foundationPolicyArchitecture,
         connectome: connectomeSeed,
-        muscleLocomotor: configuration.muscleLocomotor
+        muscleLocomotor: configuration.muscleLocomotor,
+        affectiveModelConfiguration: configuration.affectiveModelConfiguration
       )
     }
     let fastTissue = try MetalTissueRuntime(

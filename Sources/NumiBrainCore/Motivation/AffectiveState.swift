@@ -65,8 +65,8 @@ public struct AffectivePhysiologySample: Codable, Equatable, Hashable, Sendable 
       fatigue, tissueDamage, nociception, painEvent]
     guard values.compactMap({ $0 }).allSatisfy({
       $0.isFinite && (0...1).contains($0)
-    }), (values.prefix(5).contains(where: { $0 != nil })
-        == (interoceptionTimestamp != nil)),
+    }), (!values.prefix(5).contains(where: { $0 != nil })
+        || interoceptionTimestamp != nil),
       ((nociception != nil) == (nociceptionTimestamp != nil)),
       ((painEvent != nil) == (painEventTimestamp != nil))
     else {
@@ -138,6 +138,41 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
     self.recoveryGain = recoveryGain
     self.reliefGain = reliefGain
     self.sourceWeights = sourceWeights
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    do {
+      try self.init(
+        painDecayMicroseconds: container.decode(UInt64.self, forKey: .painDecayMicroseconds),
+        pleasureDecayMicroseconds: container.decode(UInt64.self, forKey: .pleasureDecayMicroseconds),
+        reliefDecayMicroseconds: container.decode(UInt64.self, forKey: .reliefDecayMicroseconds),
+        maximumEvidenceAgeMicroseconds: container.decode(
+          UInt64.self, forKey: .maximumEvidenceAgeMicroseconds
+        ),
+        recoveryGain: container.decode(Float.self, forKey: .recoveryGain),
+        reliefGain: container.decode(Float.self, forKey: .reliefGain),
+        sourceWeights: container.decode([Float].self, forKey: .sourceWeights)
+      )
+    } catch {
+      throw DecodingError.dataCorrupted(
+        .init(
+          codingPath: decoder.codingPath,
+          debugDescription: "invalid affective model configuration",
+          underlyingError: error
+        )
+      )
+    }
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case painDecayMicroseconds
+    case pleasureDecayMicroseconds
+    case reliefDecayMicroseconds
+    case maximumEvidenceAgeMicroseconds
+    case recoveryGain
+    case reliefGain
+    case sourceWeights
   }
 
   public static let reference = try! AffectiveModelConfiguration()

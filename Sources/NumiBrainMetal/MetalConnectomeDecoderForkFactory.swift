@@ -47,7 +47,8 @@ extension MetalNumiBrainHandle {
       schedulerEnvironmentIdentifier: c.schedulerEnvironmentIdentifier,
       maximumSchedulerEvents: c.maximumSchedulerEvents,
       maximumSchedulerInvocations: c.maximumSchedulerInvocations,
-      maximumEncodedSubsteps: c.maximumEncodedSubsteps, connectome: newConnectome)
+      maximumEncodedSubsteps: c.maximumEncodedSubsteps, connectome: newConnectome,
+      affectiveModelConfiguration: c.affectiveModelConfiguration)
     let childRuntime = try MetalNumiBrainRuntime.makeRuntime(configuration: changed,
       publication: publication, device: device)
     try childRuntime.loadCheckpoint(fork.checkpoint,

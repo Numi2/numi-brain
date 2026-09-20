@@ -143,7 +143,9 @@ hardware MEA validation, biological calibration, or evidence of task advantage.
 git clone https://github.com/Numi2/numi-brain.git
 cd numi-brain
 swift build -c release
-swift test
+swift build --build-tests
+sh tools/build_swiftpm_mlx_metallib.sh debug
+swift test --skip-build
 ```
 
 ### Run the deterministic tissue slice

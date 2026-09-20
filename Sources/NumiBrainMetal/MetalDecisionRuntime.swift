@@ -81,6 +81,9 @@ private struct DecisionUniforms {
   var activeSensingCommandScaleBits: UInt32 = 0
   var anatomicalMuscleCount: UInt32 = 0
   var connectomeMotorEnabled: UInt32 = 0
+  var affectivePainDecayMicroseconds: UInt64 = 0
+  var affectivePleasureDecayMicroseconds: UInt64 = 0
+  var affectiveReliefDecayMicroseconds: UInt64 = 0
 }
 
 private struct CommunicationChannelDescriptor {
@@ -265,7 +268,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     dynamics: DecisionDynamics,
     sharedParameters: MetalSharedParameterBank
   ) throws {
-    guard MemoryLayout<DecisionUniforms>.stride == 456,
+    guard MemoryLayout<DecisionUniforms>.stride == 480,
       MemoryLayout<CommunicationChannelDescriptor>.stride == 16,
       MemoryLayout<CPGOscillatorDescriptor>.stride == 32,
       MemoryLayout<CPGCouplingDescriptor>.stride == 16,
@@ -1078,7 +1081,13 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       actuatorCommandKind: UInt32(species.motor.actuatorCommandKind.rawValue),
       activeSensingCommandScaleBits: activeSensingCommandScale.bitPattern,
       anatomicalMuscleCount: species.body.muscleCount,
-      connectomeMotorEnabled: 0
+      connectomeMotorEnabled: 0,
+      affectivePainDecayMicroseconds:
+        arena.affectiveModelConfiguration.painDecayMicroseconds,
+      affectivePleasureDecayMicroseconds:
+        arena.affectiveModelConfiguration.pleasureDecayMicroseconds,
+      affectiveReliefDecayMicroseconds:
+        arena.affectiveModelConfiguration.reliefDecayMicroseconds
     )
   }
 

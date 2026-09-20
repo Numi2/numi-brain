@@ -272,7 +272,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     foundationPolicyArchitecture: BrainFoundationPolicyArchitecture? = nil,
     initialGeneration: UInt64 = 0,
     connectome: MetalConnectomeControllerSeed? = nil,
-    muscleLocomotor: MuscleLocomotorProgram? = nil
+    muscleLocomotor: MuscleLocomotorProgram? = nil,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws {
     try self.init(
       device: device,
@@ -289,7 +290,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       },
       initialGeneration: initialGeneration,
       connectome: connectome,
-      muscleLocomotor: muscleLocomotor
+      muscleLocomotor: muscleLocomotor,
+      affectiveModelConfiguration: affectiveModelConfiguration
     )
   }
 
@@ -310,7 +312,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration,
     initialGeneration: UInt64 = 0,
     connectome: MetalConnectomeControllerSeed? = nil,
-    muscleLocomotor: MuscleLocomotorProgram? = nil
+    muscleLocomotor: MuscleLocomotorProgram? = nil,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws {
     try self.init(
       device: device,
@@ -325,7 +328,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       numanXUncertaintyGate: Optional(numanXUncertaintyGate),
       initialGeneration: initialGeneration,
       connectome: connectome,
-      muscleLocomotor: muscleLocomotor
+      muscleLocomotor: muscleLocomotor,
+      affectiveModelConfiguration: affectiveModelConfiguration
     )
   }
 
@@ -345,7 +349,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     numanXUncertaintyGate: MetalNumanXUncertaintyGateConfiguration?,
     initialGeneration: UInt64,
     connectome: MetalConnectomeControllerSeed?,
-    muscleLocomotor: MuscleLocomotorProgram?
+    muscleLocomotor: MuscleLocomotorProgram?,
+    affectiveModelConfiguration: AffectiveModelConfiguration
   ) throws {
     let species = compiledSpeciesTemplate.species
     let sensoryProfile = compiledSpeciesTemplate.sensoryProfile
@@ -387,7 +392,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       device: device,
       species: species,
       regionalProgram: regionalProgram,
-      initialGeneration: initialGeneration
+      initialGeneration: initialGeneration,
+      affectiveModelConfiguration: affectiveModelConfiguration
     )
     let sharedParameterBank = try MetalSharedParameterBank(
       device: device,

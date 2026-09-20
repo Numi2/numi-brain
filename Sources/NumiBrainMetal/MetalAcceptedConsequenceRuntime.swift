@@ -108,6 +108,17 @@ private struct AcceptedConsequenceUniforms {
   var sensoryFrameMetadataOffset: UInt64 = 0
   var affectiveStateOffset: UInt64 = 0
   var interoceptionFeatureSchemaFingerprint: UInt64 = 0
+  var affectivePainDecayMicroseconds: UInt64 = 0
+  var affectivePleasureDecayMicroseconds: UInt64 = 0
+  var affectiveReliefDecayMicroseconds: UInt64 = 0
+  var affectiveMaximumEvidenceAgeMicroseconds: UInt64 = 0
+  var affectiveRecoveryGain: Float = 0
+  var affectiveReliefGain: Float = 0
+  var affectiveSourceWeight0: Float = 0
+  var affectiveSourceWeight1: Float = 0
+  var affectiveSourceWeight2: Float = 0
+  var affectiveSourceWeight3: Float = 0
+  var affectiveSourceWeight4: Float = 0
 }
 
 private struct AcceptedActuatorDescriptor {
@@ -941,7 +952,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
         .latentDimension
     )
-    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 456,
+    guard MemoryLayout<AcceptedConsequenceUniforms>.stride == 520,
       MemoryLayout<AcceptedActuatorDescriptor>.stride == 32,
       MemoryLayout<AcceptedBodyReceptorBindingTableHeader>.stride == 16,
       MemoryLayout<AcceptedBodyReceptorBindingRange>.stride == 8,
@@ -1444,7 +1455,22 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       affectiveStateOffset: UInt64(hot(.affectiveState).byteOffset),
       interoceptionFeatureSchemaFingerprint: species.senses.first {
         $0.modality == .interoception
-      }?.featureSchemaFingerprint ?? 0
+      }?.featureSchemaFingerprint ?? 0,
+      affectivePainDecayMicroseconds:
+        arena.affectiveModelConfiguration.painDecayMicroseconds,
+      affectivePleasureDecayMicroseconds:
+        arena.affectiveModelConfiguration.pleasureDecayMicroseconds,
+      affectiveReliefDecayMicroseconds:
+        arena.affectiveModelConfiguration.reliefDecayMicroseconds,
+      affectiveMaximumEvidenceAgeMicroseconds:
+        arena.affectiveModelConfiguration.maximumEvidenceAgeMicroseconds,
+      affectiveRecoveryGain: arena.affectiveModelConfiguration.recoveryGain,
+      affectiveReliefGain: arena.affectiveModelConfiguration.reliefGain,
+      affectiveSourceWeight0: arena.affectiveModelConfiguration.sourceWeights[0],
+      affectiveSourceWeight1: arena.affectiveModelConfiguration.sourceWeights[1],
+      affectiveSourceWeight2: arena.affectiveModelConfiguration.sourceWeights[2],
+      affectiveSourceWeight3: arena.affectiveModelConfiguration.sourceWeights[3],
+      affectiveSourceWeight4: arena.affectiveModelConfiguration.sourceWeights[4]
     )
   }
 
