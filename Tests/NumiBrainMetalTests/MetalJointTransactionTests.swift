@@ -1023,7 +1023,14 @@ final class MetalJointTransactionTests: XCTestCase {
 
     XCTAssertThrowsError(
       try runtime.advanceFastSystems(candidateDurationMicroseconds: 500)
-    )
+    ) { error in
+      XCTAssertEqual(
+        error as? TissueError,
+        .transaction(
+          "physical relay history no longer covers target timestamp 0 us"
+        )
+      )
+    }
     try runtime.abortInteractiveJointControl()
     XCTAssertEqual(runtime.committedStep, 0)
     XCTAssertEqual(

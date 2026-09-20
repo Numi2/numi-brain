@@ -8678,52 +8678,54 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
-    fastAutonomicArgumentTable.setAddress(
-      fastAutonomicUniformBuffer.gpuAddress,
-      index: 0
-    )
-    fastAutonomicArgumentTable.setAddress(
-      baselineFastAutonomicCommandBuffer.gpuAddress,
-      index: 1
-    )
-    fastAutonomicArgumentTable.setAddress(
-      transducedSchedulerEventBuffer.gpuAddress,
-      index: 2
-    )
-    fastAutonomicArgumentTable.setAddress(
-      receptorEventTransductionResultBuffer.gpuAddress,
-      index: 3
-    )
-    fastAutonomicArgumentTable.setAddress(
-      baselineFastAutonomicStateBuffer.gpuAddress,
-      index: 4
-    )
-    fastAutonomicArgumentTable.setAddress(
-      stagedFastAutonomicStateBuffer.gpuAddress,
-      index: 5
-    )
-    fastAutonomicArgumentTable.setAddress(
-      stagedFastAutonomicOutputBuffer.gpuAddress,
-      index: 6
-    )
-    fastAutonomicArgumentTable.setAddress(
-      stagedFastCPGStateBuffer.gpuAddress,
-      index: 7
-    )
-    fastAutonomicArgumentTable.setAddress(
-      fastAutonomicChannelDescriptorBuffer.gpuAddress,
-      index: 8
-    )
-    encoder.setComputePipelineState(fastAutonomicPipeline)
-    encoder.setArgumentTable(fastAutonomicArgumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(
-        width: boundFastAutonomicChannelCount,
-        height: 1,
-        depth: 1
-      ),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    if boundFastAutonomicChannelCount > 0 {
+      fastAutonomicArgumentTable.setAddress(
+        fastAutonomicUniformBuffer.gpuAddress,
+        index: 0
+      )
+      fastAutonomicArgumentTable.setAddress(
+        baselineFastAutonomicCommandBuffer.gpuAddress,
+        index: 1
+      )
+      fastAutonomicArgumentTable.setAddress(
+        transducedSchedulerEventBuffer.gpuAddress,
+        index: 2
+      )
+      fastAutonomicArgumentTable.setAddress(
+        receptorEventTransductionResultBuffer.gpuAddress,
+        index: 3
+      )
+      fastAutonomicArgumentTable.setAddress(
+        baselineFastAutonomicStateBuffer.gpuAddress,
+        index: 4
+      )
+      fastAutonomicArgumentTable.setAddress(
+        stagedFastAutonomicStateBuffer.gpuAddress,
+        index: 5
+      )
+      fastAutonomicArgumentTable.setAddress(
+        stagedFastAutonomicOutputBuffer.gpuAddress,
+        index: 6
+      )
+      fastAutonomicArgumentTable.setAddress(
+        stagedFastCPGStateBuffer.gpuAddress,
+        index: 7
+      )
+      fastAutonomicArgumentTable.setAddress(
+        fastAutonomicChannelDescriptorBuffer.gpuAddress,
+        index: 8
+      )
+      encoder.setComputePipelineState(fastAutonomicPipeline)
+      encoder.setArgumentTable(fastAutonomicArgumentTable)
+      encoder.dispatchThreads(
+        threadsPerGrid: MTLSize(
+          width: boundFastAutonomicChannelCount,
+          height: 1,
+          depth: 1
+        ),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      )
+    }
   }
 
   private struct PreparedSchedulerWindow {
