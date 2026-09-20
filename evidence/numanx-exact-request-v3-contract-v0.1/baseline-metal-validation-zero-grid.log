@@ -1,0 +1,14 @@
+[0/1] Planning build
+error: Process '/Applications/Xcode-26.6.0.app/Contents/Developer/usr/bin/xctest -XCTest NumiBrainMetalTests.MetalJointTransactionTests/testCorrectedDurationHistoryCoverageFailsBeforeOverwrite /Users/n/Developer/numi-brain-exact-domain-a2783fc/.build/arm64-apple-macosx/debug/NumiBrainPackageTests.xctest' exited with unexpected signal code 6
+Test Suite 'Selected tests' started at 2026-09-20 05:17:49.726.
+Test Suite 'NumiBrainPackageTests.xctest' started at 2026-09-20 05:17:49.731.
+Test Suite 'MetalJointTransactionTests' started at 2026-09-20 05:17:49.731.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testCorrectedDurationHistoryCoverageFailsBeforeOverwrite]' started.
+2026-09-20 05:17:49.759 xctest[46512:9945849] Metal API Validation Enabled
+-[MTL4DebugComputeCommandEncoder dispatchThreads:threadsPerThreadgroup:]:273: failed assertion `Compute Command Encoder Dispatch Threads Validation
+(threadsPerGrid.width(0) * threadsPerGrid.y(1) * threadsPerGrid.depth(1))(0) must be > 0.
+'
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

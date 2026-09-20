@@ -1,0 +1,88 @@
+{
+  "schema": "numi.brain.numanx-exact-request-v3-contract.v1",
+  "status": "passed_inbound_execution_blocked",
+  "scope": "exact inbound motor contract and fail-closed physical admission",
+  "host": {
+    "model": "Mac mini",
+    "model_identifier": "Mac16,11",
+    "chip": "Apple M4 Pro",
+    "memory_gib": 24,
+    "macos": "26.6",
+    "build": "25G72",
+    "metal_api_validation": true
+  },
+  "brain": {
+    "commit": "5d9398bdeb4304224398f9b2df9f321cf549da12",
+    "tree": "662589d4c76489835e8dc872543e9626734fb2c6",
+    "branch": "main",
+    "tracked_source_status": "clean"
+  },
+  "native": {
+    "commit": "e7ad0ac14c14f8552509225076e21f0373d7da98",
+    "tree": "9a3164ea41c48330be29a50dec8697b34baa6787",
+    "branch": "human-native-runtime-20260915",
+    "tracked_source_status": "clean"
+  },
+  "contract": {
+    "historical_request_v2_layout": "all_v1_600_bytes",
+    "historical_request_v2_failure_stage": 901,
+    "exact_request_v3_layout": "all_exact_600_bytes",
+    "exact_request_v3_coherent_failure_stage": 900,
+    "clock_domain": 2,
+    "clock_quantum_nanoseconds": 1,
+    "gpu_submission": "blocked_before_resource_import",
+    "shared_fingerprints": {
+      "root": "986252871c867014",
+      "substep": "339760742e9d5b13",
+      "candidate": "d545ffb84702f6cc",
+      "motor_output": "d2997dd67ccf83f4",
+      "ready_gate": "7a7c4daa7709eef0"
+    }
+  },
+  "qualification": {
+    "fresh_brain_full_test_graph_build": "passed",
+    "brain_exact_and_layout_tests_with_metal_validation": "15_of_15_passed",
+    "brain_focused_compatibility_tests": "33_of_33_passed",
+    "native_warnings_as_errors_build": "passed",
+    "native_fixed_vector_cpu_contract": "1_of_1_passed",
+    "native_asset_backed_exact_admission": "1_of_1_passed",
+    "native_probe_result": "inbound_v3_validated_mixed_v1_rejected_gpu_submission_blocked"
+  },
+  "physical_probe_fingerprints": {
+    "root": "687174570fbcfaf5",
+    "substep": "3888e4c70de4dbb9",
+    "candidate": "68b006408eb2cc51"
+  },
+  "known_open_evidence": {
+    "baseline_commit": "a2783fcf2b78a2e64eca08da9ee9683794344d71",
+    "test": "MetalJointTransactionTests.testCorrectedDurationHistoryCoverageFailsBeforeOverwrite",
+    "condition": "Metal API validation enabled",
+    "result": "zero_grid_dispatch_assertion",
+    "introduced_by_exact_request_v3": false
+  },
+  "sha256": {
+    "libmetalrobo.dylib": "c988708a38f66f3db884bb35c093d217f8a9b8720344cc2cc15c5c394324bfa2",
+    "MetalRobo.metallib": "e0156b2dbcacea0a39653dee75722b9ade4e04e822e0184d10592f3bd6b8a093",
+    "NumiMatter.metallib": "6397674c0463683e182c41dc110944847c82a0832848ead4310bbe3e305033fc",
+    "NumiNeuron.metallib": "4ccbb796a6bfd5bdb18f7d37c8e18e0d767c9489d16047c523c97f679da33f1d",
+    "metalrobo_numanx_exact_request_v3_contract_test": "8fa3e5a36447ca3f53d12ecb18fc5a13d9688f5fc4bddad3880773bf1262d396",
+    "metalrobo_numanx_fullbody_bridge_probe": "904cc23b92db6979b536b6bba43354ed0f2e9e7e36d8f4c1906a07ec1236e3cf",
+    "brain-qualification.log": "59019874fc71d1d45bde713a87dd32d0f405be670ff9d27926cc6783c3652b70",
+    "native-qualification.log": "cc326efc5b6a86397755f6fc59dc8e1b0a503db4b22baa2bb889bacbd00c7620",
+    "baseline-metal-validation-zero-grid.log": "6dfaba7bf7b7a3fcfec75f7c06b8aea61bd4250d5d2a4057943c2a1540d7e010"
+  },
+  "claims": {
+    "exact_inbound_motor_contract": true,
+    "historical_request_v2_preserved": true,
+    "physical_request_v3_admission": true,
+    "no_touch_fail_closed_boundary": true,
+    "exact_gpu_root_submitted": false,
+    "exact_outbound_sensor_contract": false,
+    "exact_human_matter_close": false,
+    "brain_accepted_root": false,
+    "exact_persistent_continuation": false,
+    "standing": false,
+    "performance": false,
+    "production": false
+  }
+}

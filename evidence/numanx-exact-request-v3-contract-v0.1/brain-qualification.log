@@ -1,0 +1,145 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-20 05:17:30.827.
+Test Suite 'NumiBrainPackageTests.xctest' started at 2026-09-20 05:17:30.833.
+Test Suite 'BrainJointTransactionV2Tests' started at 2026-09-20 05:17:30.833.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactConstructionFailsClosedOnTimeAndGenerationOverflow]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactConstructionFailsClosedOnTimeAndGenerationOverflow]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactV2LayoutsAndNanosecondTransactionAreStable]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactV2LayoutsAndNanosecondTransactionAreStable]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV1RemainsLegacyAndSameNumericPayloadIsDomainSeparated]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV1RemainsLegacyAndSameNumericPayloadIsDomainSeparated]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV2RejectsLegacyNonUnitAndMixedClockMetadata]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV2RejectsLegacyNonUnitAndMixedClockMetadata]' passed (0.000 seconds).
+Test Suite 'BrainJointTransactionV2Tests' passed at 2026-09-20 05:17:30.833.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'ExactMotorBoundaryV2Tests' started at 2026-09-20 05:17:30.833.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorFamilyRejectsMixedClocksAndWeakAlignment]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorFamilyRejectsMixedClocksAndWeakAlignment]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorLayoutsAndSharedGoldenFingerprints]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorLayoutsAndSharedGoldenFingerprints]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testMotorOutputRejectsUnauthenticatedCandidateAndInvalidHeaderState]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testMotorOutputRejectsUnauthenticatedCandidateAndInvalidHeaderState]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testReadyGateRejectsWrongClockAndMismatchedHeaderMetadata]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testReadyGateRejectsWrongClockAndMismatchedHeaderMetadata]' passed (0.000 seconds).
+Test Suite 'ExactMotorBoundaryV2Tests' passed at 2026-09-20 05:17:30.834.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'MetalNumanXRuntimeConfigV8Tests' started at 2026-09-20 05:17:30.834.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockAndPhysicalRootRequestLayoutsMirrorNativeContract]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockAndPhysicalRootRequestLayoutsMirrorNativeContract]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockIsForwardedWithoutMicrosecondRounding]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockIsForwardedWithoutMicrosecondRounding]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRejectsZeroAndInvalidNanoseconds]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRejectsZeroAndInvalidNanoseconds]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRequiresPreparedStateAndNoLegacyClockAuthority]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRequiresPreparedStateAndNoLegacyClockAuthority]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testGateCRunnerAdmitsOnlyPositiveWholeMicrosecondClock]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testGateCRunnerAdmitsOnlyPositiveWholeMicrosecondClock]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testNoExactClockPreservesV7Compatibility]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testNoExactClockPreservesV7Compatibility]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testRuntimeConfigV8LayoutAndNesting]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testRuntimeConfigV8LayoutAndNesting]' passed (0.000 seconds).
+Test Suite 'MetalNumanXRuntimeConfigV8Tests' passed at 2026-09-20 05:17:30.834.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'NumiBrainPackageTests.xctest' passed at 2026-09-20 05:17:30.835.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 0.002 (0.002) seconds
+Test Suite 'Selected tests' passed at 2026-09-20 05:17:30.835.
+	 Executed 15 tests, with 0 failures (0 unexpected) in 0.002 (0.007) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-20 05:17:32.623.
+Test Suite 'NumiBrainPackageTests.xctest' started at 2026-09-20 05:17:32.628.
+Test Suite 'BrainJointTransactionTests' started at 2026-09-20 05:17:32.628.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testAcceptedMuscleLoadTransducesWithoutExposingForceToScheduler]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testAcceptedMuscleLoadTransducesWithoutExposingForceToScheduler]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testCompiledJointTransactionABIAndFingerprintsAreStable]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testCompiledJointTransactionABIAndFingerprintsAreStable]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testProvisionalAcceptanceRejectsStaleIdentityAndWideControlStep]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testProvisionalAcceptanceRejectsStaleIdentityAndWideControlStep]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testProvisionalPhysicsAcceptanceCannotPublishBeforeCanonicalToken]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testProvisionalPhysicsAcceptanceCannotPublishBeforeCanonicalToken]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testRejectedRetryPreservesDecisionIdentityAndJointCommitIsExact]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testRejectedRetryPreservesDecisionIdentityAndJointCommitIsExact]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testStaleTokensEarlyCommitAndInvalidPhysicsGenerationAreRejected]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionTests testStaleTokensEarlyCommitAndInvalidPhysicsGenerationAreRejected]' passed (0.000 seconds).
+Test Suite 'BrainJointTransactionTests' passed at 2026-09-20 05:17:32.629.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'BrainJointTransactionV2Tests' started at 2026-09-20 05:17:32.629.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactConstructionFailsClosedOnTimeAndGenerationOverflow]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactConstructionFailsClosedOnTimeAndGenerationOverflow]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactV2LayoutsAndNanosecondTransactionAreStable]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testExactV2LayoutsAndNanosecondTransactionAreStable]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV1RemainsLegacyAndSameNumericPayloadIsDomainSeparated]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV1RemainsLegacyAndSameNumericPayloadIsDomainSeparated]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV2RejectsLegacyNonUnitAndMixedClockMetadata]' started.
+Test Case '-[NumiBrainCoreTests.BrainJointTransactionV2Tests testV2RejectsLegacyNonUnitAndMixedClockMetadata]' passed (0.000 seconds).
+Test Suite 'BrainJointTransactionV2Tests' passed at 2026-09-20 05:17:32.630.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'ExactMotorBoundaryV2Tests' started at 2026-09-20 05:17:32.630.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorFamilyRejectsMixedClocksAndWeakAlignment]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorFamilyRejectsMixedClocksAndWeakAlignment]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorLayoutsAndSharedGoldenFingerprints]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testExactMotorLayoutsAndSharedGoldenFingerprints]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testMotorOutputRejectsUnauthenticatedCandidateAndInvalidHeaderState]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testMotorOutputRejectsUnauthenticatedCandidateAndInvalidHeaderState]' passed (0.000 seconds).
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testReadyGateRejectsWrongClockAndMismatchedHeaderMetadata]' started.
+Test Case '-[NumiBrainCoreTests.ExactMotorBoundaryV2Tests testReadyGateRejectsWrongClockAndMismatchedHeaderMetadata]' passed (0.000 seconds).
+Test Suite 'ExactMotorBoundaryV2Tests' passed at 2026-09-20 05:17:32.630.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'MetalJointTransactionTests' started at 2026-09-20 05:17:32.630.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testAcceptedSubstepInterruptAdvancesFastRegionalShadowBeforeRootFinish]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testAcceptedSubstepInterruptAdvancesFastRegionalShadowBeforeRootFinish]' passed (0.219 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testCorrectedDurationHistoryCoverageFailsBeforeOverwrite]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testCorrectedDurationHistoryCoverageFailsBeforeOverwrite]' passed (0.266 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testCorrectedDurationInteractiveRelayMatchesCPUAndRetryExactly]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testCorrectedDurationInteractiveRelayMatchesCPUAndRetryExactly]' passed (0.330 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testInteractiveAbortAndInvalidDurationPublishNothing]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testInteractiveAbortAndInvalidDurationPublishNothing]' passed (0.158 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testInteractiveJointCandidatesMatchBatchedLedgerExactly]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testInteractiveJointCandidatesMatchBatchedLedgerExactly]' passed (0.417 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testJointMetalAbortPublishesNoBrainHistory]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testJointMetalAbortPublishesNoBrainHistory]' passed (0.173 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testJointMetalBindingAcceptsCorrectedDurationAndRejectsStaleGeneration]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testJointMetalBindingAcceptsCorrectedDurationAndRejectsStaleGeneration]' passed (0.163 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testMetalRootPublishesOnlyThroughMatchingJointCommit]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testMetalRootPublishesOnlyThroughMatchingJointCommit]' passed (0.168 seconds).
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testPrivateBodyLoadFieldPersistsDecaysAndReleasesSourceProtection]' started.
+Test Case '-[NumiBrainMetalTests.MetalJointTransactionTests testPrivateBodyLoadFieldPersistsDecaysAndReleasesSourceProtection]' passed (0.163 seconds).
+Test Suite 'MetalJointTransactionTests' passed at 2026-09-20 05:17:34.687.
+	 Executed 9 tests, with 0 failures (0 unexpected) in 2.057 (2.057) seconds
+Test Suite 'MetalNumanXRuntimeConfigV8Tests' started at 2026-09-20 05:17:34.687.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockAndPhysicalRootRequestLayoutsMirrorNativeContract]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockAndPhysicalRootRequestLayoutsMirrorNativeContract]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockIsForwardedWithoutMicrosecondRounding]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockIsForwardedWithoutMicrosecondRounding]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRejectsZeroAndInvalidNanoseconds]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRejectsZeroAndInvalidNanoseconds]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRequiresPreparedStateAndNoLegacyClockAuthority]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testExactClockRequiresPreparedStateAndNoLegacyClockAuthority]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testGateCRunnerAdmitsOnlyPositiveWholeMicrosecondClock]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testGateCRunnerAdmitsOnlyPositiveWholeMicrosecondClock]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testNoExactClockPreservesV7Compatibility]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testNoExactClockPreservesV7Compatibility]' passed (0.000 seconds).
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testRuntimeConfigV8LayoutAndNesting]' started.
+Test Case '-[NumiBrainMetalTests.MetalNumanXRuntimeConfigV8Tests testRuntimeConfigV8LayoutAndNesting]' passed (0.000 seconds).
+Test Suite 'MetalNumanXRuntimeConfigV8Tests' passed at 2026-09-20 05:17:34.688.
+	 Executed 7 tests, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'NumanXInteropTests' started at 2026-09-20 05:17:34.688.
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testAcceptedSensorPacketIsBoundToExactAcceptedPhysicsToken]' started.
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testAcceptedSensorPacketIsBoundToExactAcceptedPhysicsToken]' passed (0.002 seconds).
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testCommittedSensorPacketRoundTripsAndRejectsShapeAndLeaseDrift]' started.
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testCommittedSensorPacketRoundTripsAndRejectsShapeAndLeaseDrift]' passed (0.002 seconds).
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testNumanXPacketABISizesAreExact]' started.
+Test Case '-[NumiBrainMetalTests.NumanXInteropTests testNumanXPacketABISizesAreExact]' passed (0.000 seconds).
+Test Suite 'NumanXInteropTests' passed at 2026-09-20 05:17:34.692.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.004 (0.004) seconds
+Test Suite 'NumiBrainPackageTests.xctest' passed at 2026-09-20 05:17:34.692.
+	 Executed 33 tests, with 0 failures (0 unexpected) in 2.063 (2.064) seconds
+Test Suite 'Selected tests' passed at 2026-09-20 05:17:34.692.
+	 Executed 33 tests, with 0 failures (0 unexpected) in 2.063 (2.069) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.

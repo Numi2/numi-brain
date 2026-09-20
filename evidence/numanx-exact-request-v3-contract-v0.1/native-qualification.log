@@ -1,0 +1,71 @@
+UpdateCTestConfiguration  from :/Users/n/Developer/numi-human-exact-request-build-e7ad0ac/DartConfiguration.tcl
+Parse Config file:/Users/n/Developer/numi-human-exact-request-build-e7ad0ac/DartConfiguration.tcl
+Test project /Users/n/Developer/numi-human-exact-request-build-e7ad0ac
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 66
+    Start 66: numanx.contract.exact_request_v3_cpu
+
+66: Test command: /Users/n/Developer/numi-human-exact-request-build-e7ad0ac/bin/metalrobo_numanx_exact_request_v3_contract_test
+66: Working Directory: /Users/n/Developer/numi-human-exact-request-build-e7ad0ac
+66: Test timeout computed to be: 1500
+66: numanx_exact_request_v3_contract=pass cpu_only=true
+1/1 Test #66: numanx.contract.exact_request_v3_cpu ...   Passed    0.00 sec
+
+The following tests passed:
+	numanx.contract.exact_request_v3_cpu
+
+100% tests passed out of 1
+
+Label Time Summary:
+contract    =   0.00 sec*proc (1 test)
+cpu         =   0.00 sec*proc (1 test)
+human       =   0.00 sec*proc (1 test)
+numanx      =   0.00 sec*proc (1 test)
+
+Total Test time (real) =   0.01 sec
+UpdateCTestConfiguration  from :/Users/n/Developer/numi-human-exact-request-build-e7ad0ac/DartConfiguration.tcl
+Parse Config file:/Users/n/Developer/numi-human-exact-request-build-e7ad0ac/DartConfiguration.tcl
+Test project /Users/n/Developer/numi-human-exact-request-build-e7ad0ac
+Constructing a list of tests
+Done constructing a list of tests
+Updating test list for fixtures
+Added 0 tests to meet fixture requirements
+Checking test dependency graph...
+Checking test dependency graph end
+test 82
+    Start 82: numanx.contract.fullbody_exact_request_v3_admission
+
+82: Test command: /Users/n/Developer/numi-human-exact-request-build-e7ad0ac/bin/metalrobo_numanx_fullbody_bridge_probe "--exact-clock"
+82: Working Directory: /Users/n/Developer/numi-human-exact-request-build-e7ad0ac
+82: Environment variables: 
+82:  MRNX_EXACT_WORLD=/Users/n/Developer/numi-human-runtime-identity-build-b1a9bdd/evidence/exact-v8-12500ns/prepared-12500ns.nmatterpack
+82:  MRNX_EXACT_INITIAL_STATE=/Users/n/Developer/numi-human-runtime-identity-build-b1a9bdd/evidence/exact-v8-12500ns/prepared.nhinit
+82:  MRNX_EXACT_SUPPORT_CONTACT=/Users/n/Developer/numi-human-nhinit3-c785aba/evidence/prepared-support-history/inputs/myosim-fullbody-support-primitives.nhcnt
+82:  MRNX_EXACT_JOINT_EQUALITIES=/Users/n/Developer/numi-human-nhinit3-c785aba/evidence/prepared-support-history/inputs/myosim-fullbody-joint-equalities-source-compliance.nheq
+82:  MRNX_EXACT_JOINT_LIMITS=/Users/n/Developer/numi-human-nhinit3-c785aba/evidence/prepared-support-history/inputs/myosim-fullbody-joint-limits.nhlim
+82: Test timeout computed to be: 180
+82: 2026-09-20 05:17:40.268 metalrobo_numanx_fullbody_bridge_probe[46457:9945555] Metal API Validation Enabled
+82: SUPPORT shape=0 total_velocity=-1 delta_velocity=-0.25 dual_fd_error=3.38554e-05
+82: SUPPORT shape=1 total_velocity=-1 delta_velocity=-0.25 dual_fd_error=3.38554e-05
+82: SUPPORT shape=2 total_velocity=-1 delta_velocity=-0.25 dual_fd_error=3.38554e-05
+82: numanx_fullbody_bridge_probe=pass clock=exact-nanoseconds timestep=12500ns inbound_v3=validated mixed_v1=rejected gpu_submission=blocked root_fp=7525924369587829493 substep_fp=4073757406539340729 candidate_fp=7543536250187336785
+1/1 Test #82: numanx.contract.fullbody_exact_request_v3_admission ...   Passed    0.11 sec
+
+The following tests passed:
+	numanx.contract.fullbody_exact_request_v3_admission
+
+100% tests passed out of 1
+
+Label Time Summary:
+contract       =   0.11 sec*proc (1 test)
+exact-clock    =   0.11 sec*proc (1 test)
+human          =   0.11 sec*proc (1 test)
+metal          =   0.11 sec*proc (1 test)
+numanx         =   0.11 sec*proc (1 test)
+
+Total Test time (real) =   0.11 sec
