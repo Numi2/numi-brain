@@ -139,6 +139,24 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   private var previousSettledSensorSnapshot:
     [MetalNumanXGateCCapture.SettledSensorChannel]?
 
+  static func admittedBrainTimestepMicroseconds(
+    for configuration: MetalNumanXBridgeV1Runtime.Configuration
+  ) throws -> UInt32 {
+    guard configuration.timestepNanoseconds == nil else {
+      throw TissueError.transaction(
+        "Gate C Brain transactions do not yet own exact nanosecond timestamps"
+      )
+    }
+    guard configuration.timestepMicroseconds > 0,
+      let timestep = UInt32(exactly: configuration.timestepMicroseconds)
+    else {
+      throw TissueError.transaction(
+        "Gate C Brain transactions require a positive UInt32 microsecond timestep"
+      )
+    }
+    return timestep
+  }
+
   public init(
     libraryPath: String,
     bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration,
@@ -153,12 +171,15 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     affectiveModelConfiguration: AffectiveModelConfiguration = .reference,
     device: any MTLDevice
   ) throws {
+    // v8 construction can admit an exact prepared-state clock, but this
+    // runner's Brain transaction and motor ABIs still carry whole
+    // microseconds. Fail closed rather than minting an inexact Brain ACK.
+    let timestepMicroseconds = try Self.admittedBrainTimestepMicroseconds(
+      for: bridgeConfiguration
+    )
     guard episodeIdentifier > 0, randomSeed > 0,
       declaredMaximumInferenceLatencyMicroseconds == nil
         || declaredMaximumInferenceLatencyMicroseconds! > 0,
-      let timestepMicroseconds = UInt32(exactly:
-        bridgeConfiguration.timestepMicroseconds
-      ),
       let randomSeed32 = UInt32(exactly: randomSeed),
       let episodeIdentifier32 = UInt32(exactly: episodeIdentifier),
       device.makeMTL4CommandQueue() != nil,

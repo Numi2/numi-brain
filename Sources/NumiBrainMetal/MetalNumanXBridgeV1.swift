@@ -54,6 +54,10 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
     UnsafePointer<mrnx_runtime_config_v7>?,
     UnsafeMutablePointer<mrnx_runtime_info_v1>?
   ) -> UnsafeMutableRawPointer?
+  typealias RuntimeCreateV8 = @convention(c) (
+    UnsafePointer<mrnx_runtime_config_v8>?,
+    UnsafeMutablePointer<mrnx_runtime_info_v1>?
+  ) -> UnsafeMutableRawPointer?
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
@@ -146,6 +150,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreateV5: RuntimeCreateV5?
   let runtimeCreateV6: RuntimeCreateV6?
   let runtimeCreateV7: RuntimeCreateV7?
+  let runtimeCreateV8: RuntimeCreateV8?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
@@ -217,6 +222,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCreateV7 = try? Self.symbol(
         "mrnx_bridge_v1_runtime_create_v7", library: library
+      )
+      runtimeCreateV8 = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_create_v8", library: library
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
@@ -1340,6 +1348,9 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let matterMaterialPath: String
     public let authoredMatterWorld: AuthoredMatterWorld?
     public let timestepMicroseconds: UInt64
+    /// Exact construction clock for native v8 prepared-state runtimes. When
+    /// present, `timestepMicroseconds` must be zero so one clock owns admission.
+    public let timestepNanoseconds: UInt64?
     public let maximumRetainedBytes: UInt64
     public let transactionSlotCount: UInt32
     public let culturePackPath: String?
@@ -1358,6 +1369,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       matterMetallibPath: String,
       matterMaterialPath: String = "",
       timestepMicroseconds: UInt64,
+      timestepNanoseconds: UInt64? = nil,
       maximumRetainedBytes: UInt64 = 1 << 30,
       transactionSlotCount: UInt32 = 2,
       culturePackPath: String? = nil,
@@ -1377,6 +1389,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.matterMaterialPath = matterMaterialPath
       self.authoredMatterWorld = authoredMatterWorld
       self.timestepMicroseconds = timestepMicroseconds
+      self.timestepNanoseconds = timestepNanoseconds
       self.maximumRetainedBytes = maximumRetainedBytes
       self.transactionSlotCount = transactionSlotCount
       self.culturePackPath = culturePackPath
@@ -1385,6 +1398,67 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       self.cultureWindowTicks = cultureWindowTicks
       self.cultureCurrentPerNewton = cultureCurrentPerNewton
     }
+  }
+
+  enum PreparedRuntimeConfiguration {
+    case v7(mrnx_runtime_config_v7)
+    case v8(mrnx_runtime_config_v8)
+  }
+
+  static func validateExactTimestepNanoseconds(
+    _ timestepNanoseconds: UInt64
+  ) throws {
+    guard timestepNanoseconds > 0,
+      timestepNanoseconds <= 1_000_000_000
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Exact NumanX timestep must be 1...1,000,000,000 nanoseconds"
+      )
+    }
+  }
+
+  static func validateExactClockConfiguration(
+    _ configuration: Configuration
+  ) throws {
+    guard let timestepNanoseconds = configuration.timestepNanoseconds else {
+      return
+    }
+    try validateExactTimestepNanoseconds(timestepNanoseconds)
+    guard configuration.timestepMicroseconds == 0 else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Exact NumanX construction requires the legacy microsecond clock to be zero"
+      )
+    }
+    guard configuration.authoredMatterWorld?.preparedInitialState != nil else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Exact NumanX construction requires the complete prepared-state v7 contract"
+      )
+    }
+  }
+
+  static func preparedRuntimeConfiguration(
+    limited: mrnx_runtime_config_v6,
+    initialStatePayloadPath: UnsafePointer<CChar>,
+    initialStateFingerprint: UInt64,
+    timestepNanoseconds: UInt64?
+  ) -> PreparedRuntimeConfiguration {
+    var prepared = mrnx_runtime_config_v7()
+    prepared.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V7)
+    prepared.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v7>.stride)
+    prepared.runtime = limited
+    prepared.initial_state_payload_path = initialStatePayloadPath
+    prepared.expected_initial_state_fingerprint = initialStateFingerprint
+    guard let timestepNanoseconds else { return .v7(prepared) }
+    precondition(timestepNanoseconds > 0 && timestepNanoseconds <= 1_000_000_000)
+    // Native v8 makes this word non-authoritative and rejects any nonzero
+    // legacy value. All remaining nested v7 identities are preserved exactly.
+    prepared.runtime.runtime.runtime.runtime.timestep_microseconds = 0
+    var exact = mrnx_runtime_config_v8()
+    exact.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V8)
+    exact.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v8>.stride)
+    exact.runtime = prepared
+    exact.timestep_nanoseconds = timestepNanoseconds
+    return .v8(exact)
   }
 
   public struct Info: Sendable {
@@ -1515,6 +1589,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     configuration: Configuration
   ) throws {
     precondition(MemoryLayout<mrnx_physical_root_request_v1>.stride == 600)
+    try Self.validateExactClockConfiguration(configuration)
     guard configuration.authoredMatterWorld == nil
       || configuration.matterMaterialPath.isEmpty else {
       throw MetalNumanXBridgeV1Error.invalidABI(
@@ -1524,8 +1599,16 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     let symbols = try MetalNumanXBridgeV1Symbols(path: libraryPath)
     if let world = configuration.authoredMatterWorld {
       if world.preparedInitialState != nil {
-        guard symbols.runtimeCreateV7 != nil else {
-          throw MetalNumanXBridgeV1Error.invalidABI("Native runtime lacks prepared initial state configuration v7")
+        if configuration.timestepNanoseconds != nil {
+          guard symbols.runtimeCreateV8 != nil else {
+            throw MetalNumanXBridgeV1Error.invalidABI(
+              "Native runtime lacks exact-clock prepared-state configuration v8"
+            )
+          }
+        } else if symbols.runtimeCreateV7 == nil {
+          throw MetalNumanXBridgeV1Error.invalidABI(
+            "Native runtime lacks prepared initial state configuration v7"
+          )
         }
       } else if world.sourceJointLimits != nil {
         guard symbols.runtimeCreateV6 != nil else {
@@ -1626,13 +1709,17 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
                                             limited.expected_costal_binding_fingerprint = world.costalTissueOwnership?.bindingFingerprint ?? 0
                                             if let initial = world.preparedInitialState {
                                               return initial.payloadPath.withCString { initialPath in
-                                                var prepared = mrnx_runtime_config_v7()
-                                                prepared.abi_version = UInt32(MRNX_RUNTIME_CONFIG_ABI_V7)
-                                                prepared.struct_size = UInt32(MemoryLayout<mrnx_runtime_config_v7>.stride)
-                                                prepared.runtime = limited
-                                                prepared.initial_state_payload_path = initialPath
-                                                prepared.expected_initial_state_fingerprint = initial.fingerprint
-                                                return symbols.runtimeCreateV7?(&prepared, &rawInfo)
+                                                switch Self.preparedRuntimeConfiguration(
+                                                  limited: limited,
+                                                  initialStatePayloadPath: initialPath,
+                                                  initialStateFingerprint: initial.fingerprint,
+                                                  timestepNanoseconds: configuration.timestepNanoseconds
+                                                ) {
+                                                case .v7(var prepared):
+                                                  return symbols.runtimeCreateV7?(&prepared, &rawInfo)
+                                                case .v8(var exact):
+                                                  return symbols.runtimeCreateV8?(&exact, &rawInfo)
+                                                }
                                               }
                                             }
                                             return symbols.runtimeCreateV6?(&limited, &rawInfo)

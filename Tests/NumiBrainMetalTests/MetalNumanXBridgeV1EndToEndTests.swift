@@ -1639,6 +1639,41 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     }
   }
 
+  func testExactNanosecondPreparedStateNativeAdmission() throws {
+    let world = try configuredAuthoredWorld()
+    guard world.preparedInitialState != nil, world.costalTissueOwnership == nil else {
+      throw XCTSkip("exact-clock prepared small authored fixture is not configured")
+    }
+    let paths = try bridgePaths()
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let native = try MetalNumanXBridgeV1Runtime(
+      libraryPath: paths.library,
+      device: device,
+      configuration: .init(
+        rigidPayloadPath: paths.rigid,
+        musclePayloadPath: paths.muscle,
+        supportContactPayloadPath: paths.contacts,
+        visualPackPath: paths.visualPack,
+        visionProfilePath: paths.visionProfile,
+        metalRoboMetallibPath: paths.metalRoboMetallib,
+        matterMetallibPath: paths.matterMetallib,
+        timestepMicroseconds: 0,
+        timestepNanoseconds: 12_500,
+        maximumRetainedBytes: 1 << 30,
+        transactionSlotCount: 2,
+        authoredMatterWorld: world
+      )
+    )
+    XCTAssertEqual(native.info.bodyCount, 157)
+    XCTAssertEqual(native.info.qCoordinateCount, 129)
+    XCTAssertEqual(native.info.dofCount, 128)
+    XCTAssertEqual(native.info.muscleCount, 416)
+    XCTAssertEqual(
+      try native.currentWorldInfo().worldFingerprint,
+      world.worldFingerprint
+    )
+  }
+
   func testSourceJointLimitNativeAdmissionRejectsPayloadDrift() throws {
     let world = try configuredAuthoredWorld()
     guard let limits = world.sourceJointLimits, world.costalTissueOwnership == nil else {

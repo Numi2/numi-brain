@@ -27,6 +27,7 @@
 #define MRNX_RUNTIME_CONFIG_ABI_V5 5u
 #define MRNX_RUNTIME_CONFIG_ABI_V6 6u
 #define MRNX_RUNTIME_CONFIG_ABI_V7 7u
+#define MRNX_RUNTIME_CONFIG_ABI_V8 8u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -316,6 +317,16 @@ typedef struct mrnx_runtime_config_v7 {
     uint64_t expected_initial_state_fingerprint;
 } mrnx_runtime_config_v7;
 
+// Exact-clock construction extends the complete v7 prepared-state contract.
+// The nested legacy microsecond word must be zero; timestep_nanoseconds is the
+// sole native clock authority. Legacy v1-v7 construction remains unchanged.
+typedef struct mrnx_runtime_config_v8 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    mrnx_runtime_config_v7 runtime;
+    uint64_t timestep_nanoseconds;
+} mrnx_runtime_config_v8;
+
 
 
 // Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
@@ -538,6 +549,9 @@ _Static_assert(sizeof(mrnx_runtime_config_v5) == 224u, "mrnx config v5 ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v7) == 264u, "mrnx config v7 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v7, initial_state_payload_path) == 248u, "mrnx config v7 initial state offset");
 _Static_assert(offsetof(mrnx_runtime_config_v7, expected_initial_state_fingerprint) == 256u, "mrnx config v7 initial state identity offset");
+_Static_assert(sizeof(mrnx_runtime_config_v8) == 280u, "mrnx config v8 ABI");
+_Static_assert(offsetof(mrnx_runtime_config_v8, runtime) == 8u, "mrnx config v8 nested runtime offset");
+_Static_assert(offsetof(mrnx_runtime_config_v8, timestep_nanoseconds) == 272u, "mrnx config v8 exact clock offset");
 _Static_assert(sizeof(mrnx_runtime_config_v6) == 240u, "mrnx config v6 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v6, joint_limit_payload_path) == 200u, "mrnx config v6 limits offset");
 _Static_assert(offsetof(mrnx_runtime_config_v6, costal_cartilage_payload_path) == 216u, "mrnx config v6 cartilage offset");
