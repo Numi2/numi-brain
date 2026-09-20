@@ -64,6 +64,21 @@ final class AffectiveStateTests: XCTestCase {
     )
   }
 
+  func testInvalidPhysiologyEvidenceIsRejectedAtTheBoundary() throws {
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, energy: -0.01))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, respiration: 1.01))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, temperature: .infinity))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, fatigue: .nan))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, damage: -.infinity))
+    XCTAssertThrowsError(
+      try physiology(nociceptionAt: 10, nociception: -0.01)
+    )
+    XCTAssertThrowsError(
+      try physiology(painEventAt: 10, painEvent: .infinity)
+    )
+    XCTAssertThrowsError(try physiology(energy: 0.5))
+  }
+
   func testNeutralInitializationAndFirstObservationDoNotCreatePleasure() throws {
     let neutral = try AffectiveState.neutral(at: time(0))
     XCTAssertEqual(neutral.pain, 0)

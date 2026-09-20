@@ -118,7 +118,77 @@ public struct EpisodicOutcome: Codable, Equatable, Hashable, Sendable {
 }
 
 @frozen
+public struct EpisodicAffectEvidence: Codable, Equatable, Hashable, Sendable {
+  public let pain: Float
+  public let pleasure: Float
+  public let relief: Float
+  public let sourceEvidence: [Float]
+  public let sourceValidityMask: UInt32
+  public let acceptedTimestamp: BrainTimestamp?
+
+  public init(
+    pain: Float,
+    pleasure: Float,
+    relief: Float,
+    sourceEvidence: [Float],
+    sourceValidityMask: UInt32,
+    acceptedTimestamp: BrainTimestamp?
+  ) throws {
+    let affectValues = [pain, pleasure, relief] + sourceEvidence
+    guard sourceEvidence.count == 5,
+      affectValues.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+      sourceValidityMask & ~0x3f == 0,
+      (sourceValidityMask == 0) == (acceptedTimestamp == nil),
+      sourceValidityMask != 0 || affectValues.allSatisfy({ $0 == 0 })
+    else {
+      throw BrainRuntimeError.transaction("episodic affect evidence is invalid")
+    }
+    self.pain = pain
+    self.pleasure = pleasure
+    self.relief = relief
+    self.sourceEvidence = sourceEvidence
+    self.sourceValidityMask = sourceValidityMask
+    self.acceptedTimestamp = acceptedTimestamp
+  }
+
+  private init(unavailable: Void) {
+    pain = 0
+    pleasure = 0
+    relief = 0
+    sourceEvidence = Array(repeating: 0, count: 5)
+    sourceValidityMask = 0
+    acceptedTimestamp = nil
+  }
+
+  public static let unavailable = Self(unavailable: ())
+
+  private enum CodingKeys: String, CodingKey {
+    case pain
+    case pleasure
+    case relief
+    case sourceEvidence
+    case sourceValidityMask
+    case acceptedTimestamp
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      pain: container.decode(Float.self, forKey: .pain),
+      pleasure: container.decode(Float.self, forKey: .pleasure),
+      relief: container.decode(Float.self, forKey: .relief),
+      sourceEvidence: container.decode([Float].self, forKey: .sourceEvidence),
+      sourceValidityMask: container.decode(UInt32.self, forKey: .sourceValidityMask),
+      acceptedTimestamp: container.decodeIfPresent(BrainTimestamp.self, forKey: .acceptedTimestamp)
+    )
+  }
+}
+
+@frozen
 public struct EpisodicRecord: Codable, Equatable, Hashable, Sendable {
+  public static let currentFormatVersion: UInt32 = 2
+
+  public let formatVersion: UInt32
   public let identifier: UInt64
   public let retrievalKey: BrainLatentVector
   public let compressedTrajectory: [BrainLatentVector]
@@ -132,6 +202,7 @@ public struct EpisodicRecord: Codable, Equatable, Hashable, Sendable {
   public let salience: Float
   public let redundancy: Float
   public let provenance: EpisodicProvenance
+  public let affectEvidence: EpisodicAffectEvidence
 
   public init(
     identifier: UInt64,
@@ -146,7 +217,8 @@ public struct EpisodicRecord: Codable, Equatable, Hashable, Sendable {
     epistemicUncertainty: Float,
     salience: Float,
     redundancy: Float,
-    provenance: EpisodicProvenance
+    provenance: EpisodicProvenance,
+    affectEvidence: EpisodicAffectEvidence = .unavailable
   ) throws {
     guard identifier > 0, startTimestamp <= endTimestamp,
       !compressedTrajectory.isEmpty,
@@ -155,10 +227,14 @@ public struct EpisodicRecord: Codable, Equatable, Hashable, Sendable {
       }),
       epistemicUncertainty.isFinite, epistemicUncertainty >= 0,
       salience.isFinite, (0...1).contains(salience),
-      redundancy.isFinite, (0...1).contains(redundancy)
+      redundancy.isFinite, (0...1).contains(redundancy),
+      affectEvidence.acceptedTimestamp.map({
+        $0 >= startTimestamp && $0 <= endTimestamp
+      }) ?? true
     else {
       throw BrainRuntimeError.transaction("episodic record is invalid")
     }
+    self.formatVersion = Self.currentFormatVersion
     self.identifier = identifier
     self.retrievalKey = retrievalKey
     self.compressedTrajectory = compressedTrajectory
@@ -172,6 +248,72 @@ public struct EpisodicRecord: Codable, Equatable, Hashable, Sendable {
     self.salience = salience
     self.redundancy = redundancy
     self.provenance = provenance
+    self.affectEvidence = affectEvidence
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case formatVersion
+    case identifier
+    case retrievalKey
+    case compressedTrajectory
+    case startTimestamp
+    case endTimestamp
+    case context
+    case activeGoalIdentifier
+    case optionIdentifiers
+    case outcome
+    case epistemicUncertainty
+    case salience
+    case redundancy
+    case provenance
+    case affectEvidence
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let version = try container.decode(UInt32.self, forKey: .formatVersion)
+    guard version == Self.currentFormatVersion else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .formatVersion,
+        in: container,
+        debugDescription: "unsupported episodic record format version \(version)"
+      )
+    }
+    try self.init(
+      identifier: container.decode(UInt64.self, forKey: .identifier),
+      retrievalKey: container.decode(BrainLatentVector.self, forKey: .retrievalKey),
+      compressedTrajectory: container.decode([BrainLatentVector].self, forKey: .compressedTrajectory),
+      startTimestamp: container.decode(BrainTimestamp.self, forKey: .startTimestamp),
+      endTimestamp: container.decode(BrainTimestamp.self, forKey: .endTimestamp),
+      context: container.decode(BrainLatentVector.self, forKey: .context),
+      activeGoalIdentifier: container.decodeIfPresent(UInt64.self, forKey: .activeGoalIdentifier),
+      optionIdentifiers: container.decode([UInt64].self, forKey: .optionIdentifiers),
+      outcome: container.decode(EpisodicOutcome.self, forKey: .outcome),
+      epistemicUncertainty: container.decode(Float.self, forKey: .epistemicUncertainty),
+      salience: container.decode(Float.self, forKey: .salience),
+      redundancy: container.decode(Float.self, forKey: .redundancy),
+      provenance: container.decode(EpisodicProvenance.self, forKey: .provenance),
+      affectEvidence: container.decode(EpisodicAffectEvidence.self, forKey: .affectEvidence)
+    )
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(formatVersion, forKey: .formatVersion)
+    try container.encode(identifier, forKey: .identifier)
+    try container.encode(retrievalKey, forKey: .retrievalKey)
+    try container.encode(compressedTrajectory, forKey: .compressedTrajectory)
+    try container.encode(startTimestamp, forKey: .startTimestamp)
+    try container.encode(endTimestamp, forKey: .endTimestamp)
+    try container.encode(context, forKey: .context)
+    try container.encodeIfPresent(activeGoalIdentifier, forKey: .activeGoalIdentifier)
+    try container.encode(optionIdentifiers, forKey: .optionIdentifiers)
+    try container.encode(outcome, forKey: .outcome)
+    try container.encode(epistemicUncertainty, forKey: .epistemicUncertainty)
+    try container.encode(salience, forKey: .salience)
+    try container.encode(redundancy, forKey: .redundancy)
+    try container.encode(provenance, forKey: .provenance)
+    try container.encode(affectEvidence, forKey: .affectEvidence)
   }
 }
 

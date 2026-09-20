@@ -3,7 +3,7 @@ using namespace metal;
 
 #define NB_MEMORY_ARCHIVE_SHORTLIST_COUNT 32u
 
-constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 2u;
+constant uint NB_MEMORY_EPISODE_RECORD_VERSION = 3u;
 constant uint NB_MEMORY_MUTATION_SECTION_ACTIVE_EPISODE = 1u;
 constant uint NB_MEMORY_MUTATION_SECTION_COMPRESSED_EPISODE = 2u;
 constant uint NB_MEMORY_MUTATION_SECTION_ARCHIVE_EPISODE = 9u;
@@ -177,6 +177,11 @@ struct NBEpisodicSummaryRecord {
   float damage_severity;
   float factored_reinforcement;
   float retrieval_key[10];
+  // Append-only accepted affect evidence. Keep all v2 offsets above intact.
+  float affect[8];
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 /// Quantized Tier-2 lived episode. Identity, provenance, time, outcome, and
@@ -203,6 +208,11 @@ struct NBArchivedEpisodicRecord {
   float retrieval_key_scale;
   char quantized_retrieval_key[16];
   uint reserved;
+  // Tier-2 keeps the same source-grounded affect evidence as the full record.
+  float affect[8];
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBActiveEpisodeAccumulator {
@@ -232,6 +242,11 @@ struct NBActiveEpisodeAccumulator {
   float latest_event_salience;
   float reserved_float;
   float retrieval_key_sum[30];
+  // Best timestamp-matched source snapshot observed in this open episode.
+  float affect_snapshot[8];
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBMemoryRetrievalUniforms {
@@ -573,6 +588,9 @@ struct NBWorkspaceMetadataRecord {
   uint flags;
   ulong provenance_source_generation;
   ulong last_score_update_timestamp_microseconds;
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBControlHeader {
@@ -1113,16 +1131,16 @@ static_assert(sizeof(NBEventQueueHeader) == 32);
 static_assert(sizeof(NBReceptorEventRecord) == 32);
 static_assert(sizeof(NBMemoryJournalHeader) == 48);
 static_assert(sizeof(NBMemoryMutation) == 64);
-static_assert(sizeof(NBEpisodicSummaryRecord) == 128);
-static_assert(sizeof(NBArchivedEpisodicRecord) == 128);
-static_assert(sizeof(NBActiveEpisodeAccumulator) == 256);
+static_assert(sizeof(NBEpisodicSummaryRecord) == 176);
+static_assert(sizeof(NBArchivedEpisodicRecord) == 176);
+static_assert(sizeof(NBActiveEpisodeAccumulator) == 304);
 static_assert(sizeof(NBMemoryRetrievalUniforms) == 304);
 static_assert(sizeof(NBMemoryConsolidationUniforms) == 248);
 static_assert(sizeof(NBMemoryReconsolidationUniforms) == 296);
 static_assert(sizeof(NBProspectiveLifecycleUniforms) == 136);
 static_assert(sizeof(NBCommittedTransitionUniforms) == 520);
 static_assert(sizeof(NBCounterfactualLearningUniforms) == 128);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 112);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);
@@ -1382,6 +1400,12 @@ inline NBArchivedEpisodicRecord compress_archived_episode(
   archived.epistemic_uncertainty = episode.epistemic_uncertainty;
   archived.damage_severity = episode.damage_severity;
   archived.factored_reinforcement = episode.factored_reinforcement;
+  for (uint index = 0u; index < 8u; ++index) {
+    archived.affect[index] = episode.affect[index];
+  }
+  archived.affect_source_validity_mask = episode.affect_source_validity_mask;
+  archived.affect_reserved = episode.affect_reserved;
+  archived.affect_timestamp_microseconds = episode.affect_timestamp_microseconds;
   float maximum_magnitude = 0.0f;
   for (uint component = 0u; component < 10u; ++component) {
     maximum_magnitude = max(maximum_magnitude, abs(episode.retrieval_key[component]));
@@ -1649,6 +1673,12 @@ inline bool journal_accumulated_episode(
   record.epistemic_uncertainty = accumulator->epistemic_sum * divisor;
   record.damage_severity = accumulator->maximum_damage;
   record.factored_reinforcement = accumulator->reinforcement_sum;
+  for (uint index = 0u; index < 8u; ++index) {
+    record.affect[index] = accumulator->affect_snapshot[index];
+  }
+  record.affect_source_validity_mask = accumulator->affect_source_validity_mask;
+  record.affect_reserved = 0u;
+  record.affect_timestamp_microseconds = accumulator->affect_timestamp_microseconds;
   for (uint index = 0u; index < 10u; ++index) {
     record.retrieval_key[index] = accumulator->retrieval_key_sum[index] * divisor;
   }
@@ -2460,7 +2490,7 @@ kernel void publish_memory_retrieval_winner(
     score = record->salience;
     episodic_value = record;
     value = record->retrieval_key;
-    value_count = 14u;
+    value_count = 22u;
   } else {
     local_index -= uniforms.active_episode_capacity;
     if (local_index < uniforms.compressed_episode_capacity) {
@@ -2474,7 +2504,7 @@ kernel void publish_memory_retrieval_winner(
       score = record->salience;
       episodic_value = record;
       value = record->retrieval_key;
-      value_count = 14u;
+      value_count = 22u;
     } else {
       local_index -= uniforms.compressed_episode_capacity;
     if (local_index < uniforms.archive_search_candidate_count) {
@@ -2499,7 +2529,7 @@ kernel void publish_memory_retrieval_winner(
       kind = 7u;
       identifier = archived_value->identifier;
       score = archived_value->salience;
-      value_count = 14u;
+      value_count = 22u;
     } else {
       local_index -= uniforms.archive_search_candidate_count;
     if (local_index < uniforms.semantic_capacity) {
@@ -2602,6 +2632,8 @@ kernel void publish_memory_retrieval_winner(
         episodic_component = episodic_value->damage_severity;
       } else if (index == 13u) {
         episodic_component = episodic_value->factored_reinforcement;
+      } else if (index < 22u) {
+        episodic_component = episodic_value->affect[index - 14u];
       }
       workspace[base + index] = episodic_component;
     } else if (kind == 7u && archived_value != nullptr) {
@@ -2617,6 +2649,8 @@ kernel void publish_memory_retrieval_winner(
         archived_component = archived_value->damage_severity;
       } else if (index == 13u) {
         archived_component = archived_value->factored_reinforcement;
+      } else if (index < 22u) {
+        archived_component = archived_value->affect[index - 14u];
       }
       workspace[base + index] = archived_component;
     } else if (kind == 5u && semantic_relation_value != nullptr) {
@@ -2795,6 +2829,15 @@ kernel void publish_memory_retrieval_winner(
       ? archived_value->source_generation : uniforms.shadow_generation);
   token.last_score_update_timestamp_microseconds =
     uniforms.target_timestamp_microseconds;
+  token.affect_source_validity_mask = episodic_value != nullptr
+    ? episodic_value->affect_source_validity_mask
+    : (archived_value != nullptr
+      ? archived_value->affect_source_validity_mask : 0u);
+  token.affect_reserved = 0u;
+  token.affect_timestamp_microseconds = episodic_value != nullptr
+    ? episodic_value->affect_timestamp_microseconds
+    : (archived_value != nullptr
+      ? archived_value->affect_timestamp_microseconds : 0ul);
   metadata[slot] = token;
   scratch->winner_record_identifiers[uniforms.retrieval_pass] = identifier;
   scratch->winner_kinds[uniforms.retrieval_pass] = kind;
@@ -6138,6 +6181,30 @@ kernel void segment_and_journal_episode(
     ),
     communication_salience
   );
+  const ulong affect_source_mask = ulong(affect->source_validity_mask);
+  const float current_affect_salience = max(
+    max(isfinite(affect->pain) ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f,
+        isfinite(affect->pleasure) ? clamp(affect->pleasure, 0.0f, 1.0f) : 0.0f),
+    isfinite(affect->relief) ? clamp(affect->relief, 0.0f, 1.0f) : 0.0f
+  );
+  const float previous_affect_salience = max(
+    max(accumulator->affect_snapshot[0], accumulator->affect_snapshot[1]),
+    accumulator->affect_snapshot[2]
+  );
+  if (affect->timestamp_microseconds == uniforms.target_timestamp_microseconds
+      && affect_source_mask != 0ul
+      && (accumulator->affect_source_validity_mask == 0u
+        || current_affect_salience >= previous_affect_salience)) {
+    accumulator->affect_snapshot[0] = affect->pain;
+    accumulator->affect_snapshot[1] = affect->pleasure;
+    accumulator->affect_snapshot[2] = affect->relief;
+    for (uint source = 0u; source < 5u; ++source) {
+      accumulator->affect_snapshot[source + 3u] = affect->source_evidence[source];
+    }
+    accumulator->affect_source_validity_mask = uint(affect_source_mask);
+    accumulator->affect_reserved = 0u;
+    accumulator->affect_timestamp_microseconds = affect->timestamp_microseconds;
+  }
   if (accepted_salience >= accumulator->latest_event_salience) {
     accumulator->event_kind = strongest_event_kind;
     accumulator->source_identifier = strongest_source;

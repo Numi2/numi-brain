@@ -113,21 +113,31 @@ The current consumers are deliberately bounded:
 - **Memory:** affect can become the embodied salient event (event kind 12) when
   its timestamp matches the accepted target timestamp and its source mask is
   nonzero. Passive decay alone does not create a new event. Its values, source
-  mask, and timestamp are also copied into the committed transition.
+  mask, and timestamp are copied into the committed transition and into the
+  open episodic accumulator. A journaled episode retains the eight-value
+  affect/source snapshot and its validity mask and physical timestamp through
+  active, warm, and archived records. Retrieval publishes all eight values to
+  workspace content and the mask and timestamp to workspace metadata.
 - **Decision:** the planner adds a small candidate value for pleasure or relief
   on homeostatic options and a small pain caution term based on candidate damage
   and effort. The existing risk estimate, admissibility test, risk budget, and
   stop path remain separate from this score.
 - **Learning:** the v12 committed-transition affect salience can add up to 0.5
   relative emphasis to general and body-transition losses when source evidence
-  is present. It does not alter the separate risk-transition weighting.
+  is present. Episodic replay also exposes validated affect values, source mask,
+  and timestamp to MLX. Neither path alters the separate risk-transition
+  weighting.
 
 Committed transition ABI v12 is 1,152 bytes. Its affect payload contains eight
 floats—pain, pleasure, relief, and five source-evidence values—followed by a
 source-validity mask, a reserved zero field, and the accepted timestamp. The
 existing eight factored-reinforcement values remain distinct: factor 0 records
 the signed change in total homeostatic potential, and factor 4 remains the
-separate pain reinforcement field.
+separate pain reinforcement field. Core `EpisodicRecord` format 2 and Metal
+episodic-record format 3 store the same affect payload with a source mask and
+timestamp. The Metal memory-record layout, workspace metadata, active-episode
+accumulator, archive-page payload, and MLX replay batch are independently
+versioned; older episode and archive layouts fail closed.
 
 ## Limits
 
@@ -143,9 +153,20 @@ separate synthetic 416-receptor Metal test checks per-source aggregation and
 rejects recovery when one receptor is invalid. A synthetic regression confirms
 that a fresh critical-physiology event still selects the protective reflex
 stop when stored pleasure is maximal. These tests do not exercise a native
-NumanX feed or physical intervention. No paired native NumanX comparison with
-affect enabled versus a matched control has been produced, and this evidence
-does not establish behavioral benefit, physiological calibration, or physical
+NumanX feed or physical intervention. A native enabled/disabled pair was
+attempted on 2026-09-20, but both arms stopped after 103 accepted roots when
+step 104 was rejected at the Human support-contact certification gate. The
+frozen 10,002-root horizon was not reached, so no complete behavior comparison
+or benefit result exists. Isolated diagnostic replays identify the same
+`NM_STATUS_CONTACT_FAILURE` on support row 12 in both arms, with normal impulse
+`-0.000127762556`; the row maps to the left calcaneus foot capsule. No earlier
+per-row impulse history was retained to establish when it became invalid or
+which change would safely correct it. The diagnostic disabled prefix also has
+one step-30 sensor-packet fingerprint mismatch despite matching channel-value
+and validity hashes, so it does not establish exact matched provenance. The
+retained failure review and protocol identities are in
+`evidence/affect-native-pair-20260920/README.md`. This software evidence does
+not establish behavioral benefit, physiological calibration, or physical
 safety.
 
 Gate C accepts `--affect-mode enabled|disabled`. The experiment CLI accepts an
@@ -192,12 +213,14 @@ The disabled arm must differ only in `isEnabled: false`; the enabled arm sets
 `isEnabled: true`. The study currently rejects watchdog and connectome capture
 overlays so the causal contrast stays limited to affect mode.
 
-Matched synthetic Metal regressions also verify that fresh pleasure can change
+Matched synthetic Metal regressions verify that fresh pleasure can change
 workspace selection, restorative option value, committed learner input, and
-the active episode's salient memory event. The memory assertion observes the
-committed accumulator before journaling by raising the test fixture's episode
-boundary threshold; it is a software-path check. Selected-configuration tests
-cover accepted recovery gains and evidence-age rejection, planner decay,
-checkpoint continuation and cross-configuration restore rejection, and
-rejected-evidence rollback. CPU affect tests pass 17/17; these remain software
-checks, not native NumanX behavioral or physiological qualification.
+the active episode's salient memory event. A forced accepted-root round trip
+also verifies affect through journal creation, warm compression, archive
+promotion, archive paging, and retrieval into workspace content and metadata.
+MLX replay tests accept v3 episode affect fields and reject the previous record
+and warm-layout versions. Selected-configuration tests cover accepted recovery
+gains and evidence-age rejection, planner decay, checkpoint continuation and
+cross-configuration restore rejection, and rejected-evidence rollback. These
+remain software checks, not native NumanX behavioral or physiological
+qualification.

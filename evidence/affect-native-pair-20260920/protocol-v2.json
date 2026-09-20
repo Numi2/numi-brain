@@ -1,0 +1,48 @@
+{
+  "artifactDirectory": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts",
+  "experiment": {
+    "formatVersion": 1,
+    "identifier": "numanx-affect-reach-hold-100us-1s-v2-recooked",
+    "sourceRevision": "numi-lab:04d5faf0926ec1e498c105b38ea1c16ea5d09f0c",
+    "expectedNativeModelFingerprint": 8400613219282466753,
+    "parameterVersionFingerprint": 7793889361771859883,
+    "taskFingerprint": 1,
+    "sceneFingerprint": 1,
+    "objectFingerprint": 1,
+    "embodimentFingerprint": 1,
+    "episodeIdentifier": 1,
+    "randomSeed": 1,
+    "timestepMicroseconds": 100,
+    "targetState": [
+      0,
+      0,
+      0.25,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "objective": {
+      "targetPositionMeters": [
+        0.25
+      ],
+      "durationMicroseconds": 1000000,
+      "holdDurationMicroseconds": 250000,
+      "maximumSampleGapMicroseconds": 1000,
+      "positionScaleMeters": 0.1,
+      "maximumHoldErrorMeters": 0.01,
+      "maximumHoldSecantSpeedMetersPerSecond": 0.05,
+      "maximumMeanSquaredExcitation": 0.5,
+      "effortWeight": 0.1
+    }
+  }
+}

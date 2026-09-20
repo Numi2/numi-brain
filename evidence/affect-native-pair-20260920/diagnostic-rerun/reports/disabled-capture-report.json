@@ -1,0 +1,52 @@
+{
+  "acceptedCount": 103,
+  "acceptedPrefixComparison": {
+    "acceptedSampleCount": 103,
+    "matchingAcceptedSampleCount": 102,
+    "mismatchControlSteps": [
+      30
+    ],
+    "originalFailureArtifactSHA256": "35605c84525dd602495b580ea03679cc4cd1c26baa885ebe1289917c7919b598",
+    "sampleSHA256MatchesOriginalForAllAcceptedSteps": false,
+    "step1": "9529702eeb2aa23cc3f28e426e793a08473f68488a0c4905c70121290d6bf01d",
+    "step103": "d487d9a77eae43668848c5d5a459838c04f1db9199edb04d771dabd43710a82c",
+    "step30Detail": {
+      "allChannelDescriptorsValuesAndValidityHashesEqual": true,
+      "newSampleSHA256": "252ee98a4913009d8411c7705505cb8691ad1588983822e6d2cd4c18e3f49868",
+      "newSensorPacketFingerprint": 13990843329145935236,
+      "oldSampleSHA256": "2f8a373289abf962195383660e87ffdfc98041f0a742799a2365922631fb1a23",
+      "oldSensorPacketFingerprint": 7627405345143549431
+    }
+  },
+  "affectEnabled": false,
+  "arm": "disabled",
+  "configPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/configs/disabled-capture-v2.json",
+  "configSHA256": "6c7ac40273163e1c1c8ede43600475d7975bfcb77dee7d8e3cf819fb51849408",
+  "executionCount": 104,
+  "exitCode": 65,
+  "failureArtifactPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/artifacts/disabled/4873c4f0c2a1c08f0cc0a4db523cba31d54d12bd60b0c1adf6fcb10ff0e84bbc.artifact",
+  "failureArtifactSHA256": "4873c4f0c2a1c08f0cc0a4db523cba31d54d12bd60b0c1adf6fcb10ff0e84bbc",
+  "human": {
+    "contactAccelerationRaw": "0,0,0,6092.99756",
+    "statusCode": 0
+  },
+  "logPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/logs/disabled-physical-diagnostics.log",
+  "logSHA256": "9fceb5c26e642b9dadd238bd7d6081e9ba7cfb79582216bb4952e7f5d2ee3253",
+  "matter": {
+    "contactCount": 0,
+    "diagnosticsRaw": "-1,-0.000127762556,0.00201139692,0.000509521575",
+    "failingSupportRowIndex": 12,
+    "fgmresIterations": 10,
+    "normalImpulseExactString": "-0.000127762556",
+    "reasonTag": -1.0,
+    "rigidResidualNorm": 0.000509521575,
+    "statusCode": 6,
+    "statusName": "NM_STATUS_CONTACT_FAILURE",
+    "supportResidualNorm": 0.00201139692,
+    "supportRowIndexing": "zero-based row in supportHistories[environment * supportContactCount + row]"
+  },
+  "rejectedControlStep": 104,
+  "rejectedSampleSHA256": "282a965d87db9222db37c623c4f262b5c64bbaab29565e82f08feb36fcc8d595",
+  "runIdentifier": "numanx-affect-v2-disabled-diag-20260920",
+  "runtimeError": "NumanX native runtime failed with status 7, stage 7"
+}

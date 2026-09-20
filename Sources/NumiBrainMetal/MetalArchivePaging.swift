@@ -3,7 +3,7 @@ import NumiBrainCore
 
 @frozen
 public struct MetalArchivePagePayload: Codable, Equatable, Sendable {
-  public static let currentFormatVersion: UInt32 = 1
+  public static let currentFormatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let pageIdentifier: UInt32

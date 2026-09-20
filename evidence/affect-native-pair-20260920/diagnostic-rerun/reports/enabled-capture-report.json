@@ -1,0 +1,44 @@
+{
+  "acceptedCount": 103,
+  "acceptedPrefixComparison": {
+    "acceptedSampleCount": 103,
+    "matchingAcceptedSampleCount": 103,
+    "mismatchControlSteps": [],
+    "originalFailureArtifactSHA256": "972d778c59d7273edcabcf8013fd60ffff0762e8de28a4cc3ec9035c77376c0f",
+    "sampleSHA256MatchesOriginalForAllAcceptedSteps": true,
+    "step1": "9529702eeb2aa23cc3f28e426e793a08473f68488a0c4905c70121290d6bf01d",
+    "step103": "d487d9a77eae43668848c5d5a459838c04f1db9199edb04d771dabd43710a82c",
+    "step30Detail": null
+  },
+  "affectEnabled": true,
+  "arm": "enabled",
+  "configPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/configs/enabled-capture-v2.json",
+  "configSHA256": "d2d97eb376ba77375281b8d3f6261b462dc686cff7d04fb51f75ab56133b67cc",
+  "executionCount": 104,
+  "exitCode": 65,
+  "failureArtifactPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/artifacts/enabled/c4deae102c444fef1759704d73c63988694069e431cbc77d1f2fd03338b1389b.artifact",
+  "failureArtifactSHA256": "c4deae102c444fef1759704d73c63988694069e431cbc77d1f2fd03338b1389b",
+  "human": {
+    "contactAccelerationRaw": "0,0,0,6092.99756",
+    "statusCode": 0
+  },
+  "logPath": "/Users/n/numi-brain-affect-native-diagnostic-replay-20260920/logs/enabled-physical-diagnostics.log",
+  "logSHA256": "78bcfc36600e1cc371cdad730128978f83892debd3fa3902740c6aaf77e9a516",
+  "matter": {
+    "contactCount": 0,
+    "diagnosticsRaw": "-1,-0.000127762556,0.00201139692,0.000509521575",
+    "failingSupportRowIndex": 12,
+    "fgmresIterations": 10,
+    "normalImpulseExactString": "-0.000127762556",
+    "reasonTag": -1.0,
+    "rigidResidualNorm": 0.000509521575,
+    "statusCode": 6,
+    "statusName": "NM_STATUS_CONTACT_FAILURE",
+    "supportResidualNorm": 0.00201139692,
+    "supportRowIndexing": "zero-based row in supportHistories[environment * supportContactCount + row]"
+  },
+  "rejectedControlStep": 104,
+  "rejectedSampleSHA256": "282a965d87db9222db37c623c4f262b5c64bbaab29565e82f08feb36fcc8d595",
+  "runIdentifier": "numanx-affect-v2-enabled-diag-20260920",
+  "runtimeError": "NumanX native runtime failed with status 7, stage 7"
+}

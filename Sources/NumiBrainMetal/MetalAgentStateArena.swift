@@ -144,7 +144,9 @@ where Section.RawValue == UInt16 {
 @frozen
 public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let alignment = 256
-  public static let workspaceMetadataStride = 96
+  public static let workspaceMetadataLayoutVersion: UInt64 = 2
+  public static let episodicAccumulatorLayoutVersion: UInt64 = 2
+  public static let workspaceMetadataStride = 112
   public static let bodyBeliefStride = 256
   public static let bodyBeliefLayoutVersion: UInt64 = 3
   public static let jointBeliefStride = 256
@@ -402,7 +404,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
       count: species.enabledModuleIdentifiers.count,
       stride: Self.regionalPlasticModulationStride
     )
-    try builder.append(.activeEpisodeAccumulator, count: 1, stride: 256)
+    try builder.append(.activeEpisodeAccumulator, count: 1, stride: 320)
     try builder.append(.prospectiveLifecycle, count: 1, stride: 512)
     let archivePageCount = max(
       (Int(species.capacities.archiveEpisodicCapacity)
@@ -508,6 +510,8 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
     Self.mix(Self.muscleBeliefLayoutVersion, into: &hash)
     Self.mix(Self.worldModelLayoutVersion, into: &hash)
     Self.mix(Self.cerebellarExpertLayoutVersion, into: &hash)
+    Self.mix(Self.workspaceMetadataLayoutVersion, into: &hash)
+    Self.mix(Self.episodicAccumulatorLayoutVersion, into: &hash)
     for section in builder.sections {
       Self.mix(UInt64(section.section.rawValue), into: &hash)
       Self.mix(UInt64(section.byteOffset), into: &hash)
@@ -551,11 +555,11 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
 
 @frozen
 public struct MetalAgentMemoryLayout: Codable, Equatable, Sendable {
-  public static let recordLayoutVersion: UInt32 = 18
+  public static let recordLayoutVersion: UInt32 = 19
   public static let proceduralSkillRecordVersion: UInt32 = 3
   public static let alignment = 256
   public static let activeEpisodeStride = 1_536
-  public static let compressedEpisodeMetadataStride = 128
+  public static let compressedEpisodeMetadataStride = 192
   public static let archiveIndexStride = 320
   public static let semanticConceptStride = 384
   public static let semanticRelationStride = 96

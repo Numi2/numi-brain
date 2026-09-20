@@ -195,6 +195,9 @@ struct NBWorkspaceMetadataRecord {
   uint flags;
   ulong provenance_source_generation;
   ulong last_score_update_timestamp_microseconds;
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBInternalActionRecord {
@@ -364,7 +367,7 @@ static_assert(sizeof(NBFastPlasticityStateRecord) == 32);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);
 static_assert(sizeof(NBReceptorEventStateRecord) == 32);
 static_assert(sizeof(NBEventQueueStateHeader) == 32);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 112);
 static_assert(sizeof(NBInternalActionRecord) == 64);
 static_assert(sizeof(NBAutonomicCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
