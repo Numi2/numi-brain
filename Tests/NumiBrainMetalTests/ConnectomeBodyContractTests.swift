@@ -113,6 +113,12 @@ final class ConnectomeBodyContractTests: XCTestCase {
     XCTAssertTrue(state.belief.jointEdges.isEmpty)
     XCTAssertTrue(state.belief.muscleEdges.isEmpty)
     XCTAssertEqual(state.belief.actuatorEffects.count, 4)
+    XCTAssertEqual(state.affect.pain, 0)
+    XCTAssertEqual(state.affect.pleasure, 0)
+    XCTAssertEqual(state.affect.relief, 0)
+    XCTAssertEqual(state.affect.sourceValidityMask, 0)
+    XCTAssertNil(state.affect.previousSampleTimestamp)
+    XCTAssertNil(state.affect.previousPainSampleTimestamp)
   }
 
   func testSameShapeForeignBodyCannotOwnConnectomeCandidate() throws {

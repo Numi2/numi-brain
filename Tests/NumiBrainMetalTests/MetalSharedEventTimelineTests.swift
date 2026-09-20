@@ -1047,6 +1047,19 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(affectUInt16(retryAffect, offset: 36) & 0x1f, 0x1f)
   }
 
+  func testFreshMetalAgentArenaStartsWithNeutralAffectState() throws {
+    let fixture = try makeFixture()
+    let initial = try fixture.runtime.agentStateRuntime.snapshotCommittedState()
+    let section = fixture.runtime.agentStateRuntime.arena.layout.section(.affectiveState)
+    let affect = initial.hotState.subdata(
+      in: section.byteOffset..<(section.byteOffset + section.byteCount)
+    )
+
+    XCTAssertEqual(section.elementCount, 1)
+    XCTAssertEqual(section.elementStride, 64)
+    XCTAssertEqual(affect, Data(repeating: 0, count: section.byteCount))
+  }
+
   func testAcceptedAffectCheckpointRoundTripPreservesHotState() throws {
     let typedTemplate = try makeNumanXInteropCompiledTemplate(
       interoceptorCount: 1,
