@@ -48,7 +48,7 @@ public struct BrainReachHoldProtocol: Codable, Equatable, Sendable {
 
   public func goal(controlStep: UInt32, committed: BrainTimestamp, target: BrainTimestamp) throws -> ActiveGoal {
     try validate()
-    return try ActiveGoal(identifier: 0x5248_0000_0000_0000 | UInt64(controlStep), origin: .externalTask,
+    return try ActiveGoal(identifier: 0x5248_0000_0000 | UInt64(controlStep), origin: .externalTask,
       targetState: BrainLatentVector(values: targetState, expectedCount: 16), priority: 10, deadline: target,
       successModel: BrainLatentVector(values: targetState, expectedCount: 16),
       failureModel: BrainLatentVector(values: targetState.map { -$0 }, expectedCount: 16),

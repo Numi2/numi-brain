@@ -25,6 +25,19 @@ final class BrainReachHoldProtocolTests: XCTestCase {
     XCTAssertEqual(goal.targetState.values[2], 0.25)
     XCTAssertEqual(goal.targetState.values[6], 0)
   }
+  func testCapturedGoalIdentifiersFitTheGPUExternalDirectiveField() throws {
+    let value = try contract()
+    let first = try value.goal(controlStep: 1,
+      committed: BrainTimestamp(microseconds: 100),
+      target: BrainTimestamp(microseconds: 200))
+    let last = try value.goal(controlStep: value.captureRootCount,
+      committed: BrainTimestamp(microseconds: 1_000_100),
+      target: BrainTimestamp(microseconds: 1_000_200))
+
+    XCTAssertNotEqual(first.identifier, last.identifier)
+    XCTAssertLessThanOrEqual(first.identifier, 0x007f_ffff_ffff_ffff)
+    XCTAssertLessThanOrEqual(last.identifier, 0x007f_ffff_ffff_ffff)
+  }
   func testDecodeCannotChangeScoredTargetWithoutChangingAppliedGoal() throws {
     var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(contract())) as? [String: Any])
     var objective = try XCTUnwrap(json["objective"] as? [String: Any])
