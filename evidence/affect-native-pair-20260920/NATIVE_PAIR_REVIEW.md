@@ -67,6 +67,45 @@ reports, and failure artifacts are retained in
 The prepared fixture describes three tiny pelvis samples and does not
 establish anatomical or sustained-behavior qualification.
 
+## Root-104 acceleration sideband
+
+A separate enabled-only replay used a diagnostic build to capture the winning
+Human acceleration DOF at the point where the existing status records the
+maximum. The tap is gated to control root 104 and writes a sideband record; it
+does not change solver arithmetic, thresholds, inputs, or controller behavior.
+The Metal shader, `libmetalrobo.dylib`, and bridge probe built successfully,
+and `git diff --check` passed in the isolated diagnostic checkout at
+`04d5faf0926ec1e498c105b38ea1c16ea5d09f0c`.
+
+The one replay exited 65 after 158.544 seconds with the same root-104 failure:
+103 accepted roots, then Matter `NM_STATUS_CONTACT_FAILURE` on support row 12
+with normal impulse `-0.000127762556`. The captured maximum was `6092.99756`
+m/s² at local/global velocity DOF 10, generalized coordinate 11. The prepared
+source manifest, whose rigid-payload hash matches the replay input, maps this
+to joint `Abs_t2`, q index 11, v index 10, between generated carrier body
+indices 5 and 6. These carriers are not biological source bodies; no more
+specific anatomical interpretation is supported.
+
+At that DOF, q-before was `0.000227169221`, generalized-force input was
+`122.309036`, bias was `0.0981776714`, root assistance was zero, and the
+pre-projection RHS was `122.210861`. Velocity changed from `0.00015751872` to
+`0.609457254` over the `0.0001` s step. The previous enabled/disabled
+certificate buffers were byte-identical; this new replay was enabled-only, so
+it neither identifies a causal affect difference nor supplies a safe contact
+correction. The unilateral impulse guard remains unchanged.
+
+The compact evidence is under `acceleration-diagnostic/`: `diagnostic-result.json`
+(SHA-256 `5dc04bca5180a51a87fd83eb6f63bdc86dfc7eba7c6fc4df928cb439324742c7`),
+`enabled-accel-replay.log` (SHA-256
+`9928c0dd54d14f753b09e72cc9c31f10f6d02465c042592e3e81e9887dc1f2ba`),
+`enabled-artifact-sha256.manifest` (SHA-256
+`b6fbc1df8f6319c827dfef5cb0b5f19c259ae7ea533ef7ec69d22821357d6778`), and
+`diagnostics-checkout-current-diff.patch.gz` (SHA-256 of compressed file
+`c0e5aa48daaaa5e981b95d4ff0005eab1ab9a24b6dc2b15d4f99c29554998823`; SHA-256
+of uncompressed diff `322f1a55ad8f163533836d52a46708012170d3a827c2c1e60fba9a2557eb4fc1`). The
+1,863 raw output artifacts (214,620,705 bytes) remain on the Mac mini at
+`/Users/n/numi-brain-affect-native-accel-diagnostic-20260920/`.
+
 ## Native products and workspace restoration
 
 The exact-source rebuilt products are preserved in `native-products/`:

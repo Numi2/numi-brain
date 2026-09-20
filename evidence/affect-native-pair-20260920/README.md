@@ -35,5 +35,13 @@ without importing the full per-step artifact store. The additional small
 diagnostic logs, configs, reports, and failure artifacts are preserved under
 `diagnostic-rerun/`.
 
+A follow-up enabled-only replay captured the Human degree of freedom that
+produced the step-104 acceleration spike. It again rejected the same native
+root and is not a paired behavior result. Its compact log, result, source diff,
+and SHA-256 manifest are retained in
+[`acceleration-diagnostic/`](acceleration-diagnostic/); the full 1,863-file
+artifact store remains on the Mac mini. The review describes the numeric and
+prepared-model mapping and the limits of this measurement.
+
 The pair must remain ineligible until both runs reach the frozen horizon and
 produce complete behavior evaluations. No behavioral benefit is claimed.
