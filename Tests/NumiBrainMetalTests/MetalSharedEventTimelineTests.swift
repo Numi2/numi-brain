@@ -429,7 +429,9 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       interoceptionFeatureSchemaFingerprint: schemaFingerprint
     )
     let fixture = try makeFixture(compiledSpeciesTemplate: typedTemplate)
-    let firstValues: [Float] = [0, 0, 0, 0, 1, 1]
+    // Temperature is signed in the receptor contract. A negative deviation
+    // contributes its magnitude as burden in both Metal and the CPU oracle.
+    let firstValues: [Float] = [1, 1, 0, -0.5, 0, 0]
     let first = try runAcceptedRoot(
       fixture: fixture,
       token: fixture.token,
@@ -448,7 +450,7 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       targetTimestamp: BrainTimestamp(microseconds: 12_000),
       randomCounterGeneration: 1
     )
-    let secondValues: [Float] = [1, 1, 0, 0, 0, 0]
+    let secondValues: [Float] = [1, 1, 0, 0.25, 0, 0]
     let second = try runAcceptedRoot(
       fixture: fixture,
       token: secondToken,
@@ -512,7 +514,9 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(affectFloat(second, 0), cpuSecond.pain, accuracy: 1.0e-5)
     XCTAssertEqual(affectFloat(second, 4), cpuSecond.pleasure, accuracy: 1.0e-5)
     XCTAssertEqual(affectFloat(second, 8), cpuSecond.relief, accuracy: 1.0e-5)
-    XCTAssertEqual(cpuSecond.pleasure, 0.84, accuracy: 1.0e-5)
+    XCTAssertEqual(affectFloat(first, 24), 0.5, accuracy: 1.0e-5)
+    XCTAssertEqual(affectFloat(second, 24), 0.25, accuracy: 1.0e-5)
+    XCTAssertEqual(cpuSecond.pleasure, 0.04, accuracy: 1.0e-5)
 
     let thirdToken = try BrainJointTransactionToken(
       environmentIdentifier: fixture.token.environmentIdentifier,
@@ -1020,6 +1024,11 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       cachedDecisionFingerprint: 0x6a7e_0001
     )
     let retryAffect = affectBytes(retry, fixture: fixture)
+    XCTAssertEqual(
+      retryAffect,
+      shadowAffect,
+      "retry must reproduce the completed pre-abort affect record byte-for-byte"
+    )
     let expected = try AffectiveState.neutral(at: BrainTimestamp(microseconds: 0))
       .advanced(
         to: fixture.token.targetTimestamp,
@@ -1036,6 +1045,19 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     XCTAssertEqual(affectFloat(retryAffect, offset: 4), expected.pleasure, accuracy: 1e-5)
     XCTAssertEqual(affectFloat(retryAffect, offset: 8), expected.relief, accuracy: 1e-5)
     XCTAssertEqual(affectUInt16(retryAffect, offset: 36) & 0x1f, 0x1f)
+  }
+
+  func testFreshMetalAgentArenaStartsWithNeutralAffectState() throws {
+    let fixture = try makeFixture()
+    let initial = try fixture.runtime.agentStateRuntime.snapshotCommittedState()
+    let section = fixture.runtime.agentStateRuntime.arena.layout.section(.affectiveState)
+    let affect = initial.hotState.subdata(
+      in: section.byteOffset..<(section.byteOffset + section.byteCount)
+    )
+
+    XCTAssertEqual(section.elementCount, 1)
+    XCTAssertEqual(section.elementStride, 64)
+    XCTAssertEqual(affect, Data(repeating: 0, count: section.byteCount))
   }
 
   func testAcceptedAffectCheckpointRoundTripPreservesHotState() throws {

@@ -1,0 +1,11 @@
+[  0%] Built target metalrobo_neuron_culture_shaders
+[  0%] Built target metalrobo_shaders
+[  3%] Built target metalrobo_visual_kernel_hashes
+[  3%] Built target numi_matter_shaders
+[ 10%] Built target numi_matter_runtime_objects
+[ 13%] Built target numi_matter_compiler_objects
+[ 13%] Building OBJCXX object CMakeFiles/metalrobo.dir/src/metal/NumanXRuntimeV1.mm.o
+[ 13%] Linking CXX shared library lib/libmetalrobo.dylib
+[100%] Built target metalrobo
+[100%] Linking OBJCXX executable bin/metalrobo_numanx_fullbody_bridge_probe
+[100%] Built target metalrobo_numanx_fullbody_bridge_probe

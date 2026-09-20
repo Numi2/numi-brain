@@ -24,6 +24,9 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
   public let episodeDamage: MLXArray
   public let episodeReinforcement: MLXArray
   public let episodeRetrievalKeys: MLXArray
+  public let episodeAffect: MLXArray
+  public let episodeAffectSourceValidityMask: MLXArray
+  public let episodeAffectTimestamp: MLXArray
   public let episodeReplayWeights: MLXArray
   public let episodeThreatWeights: MLXArray
   public let episodeRareEventWeights: MLXArray
@@ -137,11 +140,38 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
     let rawEpisodeDamage = episodeField(80, count: 1, dtype: .float32)
     let rawEpisodeReinforcement = episodeField(84, count: 1, dtype: .float32)
     let rawEpisodeRetrievalKeys = episodeField(88, count: 10, dtype: .float32)
+    let rawEpisodeAffect = episodeField(128, count: 8, dtype: .float32)
+    let episodeAffectSourceValidityMask = episodeField(160, count: 1, dtype: .uint32)
+    let episodeAffectReserved = episodeField(164, count: 1, dtype: .uint32)
+    let episodeAffectTimestamp = episodeField(168, count: 1, dtype: .uint64)
     let episodeFiniteMask = allFinite(rawEpisodeRetrievalKeys, count: 10)
       * isFinite(rawEpisodeSalience).asType(.float32)
       * isFinite(rawEpisodeUncertainty).asType(.float32)
       * isFinite(rawEpisodeDamage).asType(.float32)
       * isFinite(rawEpisodeReinforcement).asType(.float32)
+      * allFinite(rawEpisodeAffect, count: 8)
+    let noEpisodeAffect = (
+      (episodeAffectSourceValidityMask .== UInt32(0))
+        * (episodeAffectTimestamp .== UInt64(0))
+        * (episodeAffectReserved .== UInt32(0))
+        * (isFinite(rawEpisodeAffect).asType(.float32).sum(axis: 1, keepDims: true)
+          .== Float(8))
+        * ((rawEpisodeAffect .== Float(0))
+          .asType(.float32).sum(axis: 1, keepDims: true) .== Float(8))
+    ).asType(.float32)
+    let sourcedEpisodeAffect = (
+      (episodeAffectSourceValidityMask .!= UInt32(0))
+        * ((episodeAffectSourceValidityMask & UInt32(0xffff_ffc0)) .== UInt32(0))
+        * (episodeAffectTimestamp .> UInt64(0))
+        * (episodeAffectTimestamp .>= episodeStartTimestamps)
+        * (episodeAffectTimestamp .<= episodeEndTimestamps)
+        * (episodeAffectReserved .== UInt32(0))
+        * ((rawEpisodeAffect .>= Float(0)).asType(.float32)
+          .sum(axis: 1, keepDims: true) .== Float(8))
+        * ((rawEpisodeAffect .<= Float(1)).asType(.float32)
+          .sum(axis: 1, keepDims: true) .== Float(8))
+    ).asType(.float32)
+    let episodeAffectValidMask = noEpisodeAffect + sourcedEpisodeAffect
     let episodeValidMask = (
       (episodeIdentifiers .> UInt64(0))
         * (episodeFormats .== source.episodicRecordVersion)
@@ -153,7 +183,7 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
         * (rawEpisodeUncertainty .>= Float(0))
         * (rawEpisodeDamage .>= Float(0))
         * (rawEpisodeDamage .<= Float(1))
-    ).asType(.float32) * episodeFiniteMask
+    ).asType(.float32) * episodeFiniteMask * episodeAffectValidMask
 
     let skillIdentifiers = field(skills, 0, count: 1, dtype: .uint64)
     let skillFormats = field(skills, 64, count: 1, dtype: .uint32)
@@ -251,6 +281,9 @@ public struct MLXReplayLearningBatch: @unchecked Sendable {
     self.episodeDamage = finite(rawEpisodeDamage)
     self.episodeReinforcement = finite(rawEpisodeReinforcement)
     self.episodeRetrievalKeys = finite(rawEpisodeRetrievalKeys)
+    self.episodeAffect = finite(rawEpisodeAffect)
+    self.episodeAffectSourceValidityMask = episodeAffectSourceValidityMask
+    self.episodeAffectTimestamp = episodeAffectTimestamp
     self.episodeReplayWeights = weights(
       identifiers: episodeIdentifiers, recordKind: .episode
     ) * episodeValidMask

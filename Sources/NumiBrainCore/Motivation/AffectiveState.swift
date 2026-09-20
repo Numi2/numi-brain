@@ -215,6 +215,21 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
 public struct AffectiveState: Codable, Equatable, Hashable, Sendable {
   public static let formatVersion: UInt32 = 1
 
+  private enum CodingKeys: String, CodingKey {
+    case formatVersion
+    case timestamp
+    case pain
+    case pleasure
+    case relief
+    case sourceValidityMask
+    case sourceEvidence
+    case previousSourceValidityMask
+    case previousSampleTimestamp
+    case previousPainSampleTimestamp
+    case previousPainObservation
+    case configurationFingerprint
+  }
+
   public let timestamp: BrainTimestamp
   public let pain: Float
   public let pleasure: Float
@@ -288,6 +303,57 @@ public struct AffectiveState: Codable, Equatable, Hashable, Sendable {
     self.previousPainSampleTimestamp = previousPainSampleTimestamp
     self.previousPainObservation = previousPainObservation
     self.configurationFingerprint = configurationFingerprint
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let version = try container.decode(UInt32.self, forKey: .formatVersion)
+    guard version == Self.formatVersion else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .formatVersion,
+        in: container,
+        debugDescription: "unsupported affective-state format version \(version)"
+      )
+    }
+    try self.init(
+      timestamp: container.decode(BrainTimestamp.self, forKey: .timestamp),
+      pain: container.decode(Float.self, forKey: .pain),
+      pleasure: container.decode(Float.self, forKey: .pleasure),
+      relief: container.decode(Float.self, forKey: .relief),
+      sourceValidityMask: container.decode(UInt32.self, forKey: .sourceValidityMask),
+      sourceEvidence: container.decode([Float].self, forKey: .sourceEvidence),
+      previousSourceValidityMask: container.decode(
+        UInt32.self, forKey: .previousSourceValidityMask
+      ),
+      previousSampleTimestamp: container.decodeIfPresent(
+        BrainTimestamp.self, forKey: .previousSampleTimestamp
+      ),
+      previousPainSampleTimestamp: container.decodeIfPresent(
+        BrainTimestamp.self, forKey: .previousPainSampleTimestamp
+      ),
+      previousPainObservation: container.decodeIfPresent(
+        Float.self, forKey: .previousPainObservation
+      ),
+      configurationFingerprint: container.decode(UInt64.self, forKey: .configurationFingerprint)
+    )
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(Self.formatVersion, forKey: .formatVersion)
+    try container.encode(timestamp, forKey: .timestamp)
+    try container.encode(pain, forKey: .pain)
+    try container.encode(pleasure, forKey: .pleasure)
+    try container.encode(relief, forKey: .relief)
+    try container.encode(sourceValidityMask, forKey: .sourceValidityMask)
+    try container.encode(sourceEvidence, forKey: .sourceEvidence)
+    try container.encode(previousSourceValidityMask, forKey: .previousSourceValidityMask)
+    try container.encodeIfPresent(previousSampleTimestamp, forKey: .previousSampleTimestamp)
+    try container.encodeIfPresent(
+      previousPainSampleTimestamp, forKey: .previousPainSampleTimestamp
+    )
+    try container.encodeIfPresent(previousPainObservation, forKey: .previousPainObservation)
+    try container.encode(configurationFingerprint, forKey: .configurationFingerprint)
   }
 
   public static func neutral(

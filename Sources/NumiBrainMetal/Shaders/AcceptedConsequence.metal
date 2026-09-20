@@ -301,6 +301,9 @@ struct NBWorkspaceMetadataRecord {
   uint flags;
   ulong provenance_source_generation;
   ulong last_score_update_timestamp_microseconds;
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBControlHeader {
@@ -582,7 +585,7 @@ static_assert(sizeof(NBRegionalMaturationRecord) == 32);
 static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBSensoryFrameMetadata) == 32);
 static_assert(sizeof(NBAcceptedConsequenceUniforms) == 520);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 112);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBActiveSensingCommandRecord) == 16);
 static_assert(sizeof(NBActiveSensingEfficacyRecord) == 32);

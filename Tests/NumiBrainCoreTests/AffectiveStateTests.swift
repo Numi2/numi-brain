@@ -64,6 +64,21 @@ final class AffectiveStateTests: XCTestCase {
     )
   }
 
+  func testInvalidPhysiologyEvidenceIsRejectedAtTheBoundary() throws {
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, energy: -0.01))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, respiration: 1.01))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, temperature: .infinity))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, fatigue: .nan))
+    XCTAssertThrowsError(try physiology(interoceptionAt: 10, damage: -.infinity))
+    XCTAssertThrowsError(
+      try physiology(nociceptionAt: 10, nociception: -0.01)
+    )
+    XCTAssertThrowsError(
+      try physiology(painEventAt: 10, painEvent: .infinity)
+    )
+    XCTAssertThrowsError(try physiology(energy: 0.5))
+  }
+
   func testNeutralInitializationAndFirstObservationDoNotCreatePleasure() throws {
     let neutral = try AffectiveState.neutral(at: time(0))
     XCTAssertEqual(neutral.pain, 0)
@@ -87,6 +102,59 @@ final class AffectiveStateTests: XCTestCase {
     XCTAssertEqual(firstObservation.relief, 0)
     XCTAssertEqual(firstObservation.sourceValidityMask, 0x1f)
     XCTAssertEqual(firstObservation.previousSampleTimestamp, time(10))
+  }
+
+  func testAffectiveStateCodableCarriesItsVersionAndRejectsLegacyPayloads() throws {
+    let baseline = try AffectiveState.neutral(at: time(0)).advanced(
+      to: time(10),
+      sample: physiology(
+        interoceptionAt: 10,
+        nociceptionAt: 10,
+        energy: 1,
+        respiration: 0.8,
+        temperature: 0.6,
+        fatigue: 0.4,
+        damage: 0.2,
+        nociception: 0.7
+      )
+    )
+    let state = try baseline.advanced(
+      to: time(20),
+      sample: physiology(
+        interoceptionAt: 20,
+        nociceptionAt: 20,
+        energy: 0.4,
+        respiration: 0.3,
+        temperature: 0.2,
+        fatigue: 0.1,
+        damage: 0.05,
+        nociception: 0.2
+      )
+    )
+    let encoded = try JSONEncoder().encode(state)
+    var object = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    XCTAssertEqual(object["formatVersion"] as? Int, Int(AffectiveState.formatVersion))
+    XCTAssertEqual(try JSONDecoder().decode(AffectiveState.self, from: encoded), state)
+
+    object.removeValue(forKey: "formatVersion")
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(
+        AffectiveState.self,
+        from: JSONSerialization.data(withJSONObject: object)
+      ),
+      "pre-version affect state must fail closed"
+    )
+
+    object["formatVersion"] = Int(AffectiveState.formatVersion + 1)
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(
+        AffectiveState.self,
+        from: JSONSerialization.data(withJSONObject: object)
+      ),
+      "unknown affect state format must fail closed"
+    )
   }
 
   func testFreshRecoveryCreatesPleasureFromComparableBodilyEvidence() throws {

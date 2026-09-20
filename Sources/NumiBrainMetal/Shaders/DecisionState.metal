@@ -224,6 +224,9 @@ struct NBWorkspaceMetadataRecord {
   uint flags;
   ulong provenance_source_generation;
   ulong last_score_update_timestamp_microseconds;
+  uint affect_source_validity_mask;
+  uint affect_reserved;
+  ulong affect_timestamp_microseconds;
 };
 
 struct NBControlHeader {
@@ -577,7 +580,7 @@ static_assert(sizeof(NBDriveRecord) == 32);
 static_assert(sizeof(NBAffectiveStateRecord) == 64);
 static_assert(sizeof(NBNeuromodulatorRecord) == 16);
 static_assert(sizeof(NBRegionalPlasticModulationRecord) == 64);
-static_assert(sizeof(NBWorkspaceMetadataRecord) == 96);
+static_assert(sizeof(NBWorkspaceMetadataRecord) == 112);
 static_assert(sizeof(NBControlHeader) == 128);
 static_assert(sizeof(NBOptionCandidateRecord) == 128);
 static_assert(sizeof(NBPlanStepRecord) == 128);

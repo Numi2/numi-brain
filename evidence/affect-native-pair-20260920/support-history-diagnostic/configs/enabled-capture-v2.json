@@ -1,0 +1,47 @@
+{
+  "affectiveModelConfiguration": {
+    "isEnabled": true,
+    "maximumEvidenceAgeMicroseconds": 100000,
+    "painDecayMicroseconds": 2000000,
+    "pleasureDecayMicroseconds": 1000000,
+    "recoveryGain": 1,
+    "reliefDecayMicroseconds": 500000,
+    "reliefGain": 1,
+    "sourceWeights": [
+      0.24,
+      0.24,
+      0.16,
+      0.18,
+      0.18
+    ]
+  },
+  "artifactDirectory": "/Users/n/numi-brain-affect-native-support-history-20260920/artifacts/enabled",
+  "authoredMatterWorld": {
+    "humanSourceFingerprint": 17335541419463474766,
+    "packagePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared-100000ns.nmatterpack",
+    "preparedInitialStateFingerprint": 3278647622525070973,
+    "preparedInitialStatePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared.nhinit",
+    "sourceJointEqualitiesFingerprint": 1802585016997759325,
+    "sourceJointEqualitiesPath": "/Users/n/human-completion-20260907/input/myosim-fullbody-joint-equalities-source-compliance.nheq",
+    "sourceJointLimitsFingerprint": 6924888172320259545,
+    "sourceJointLimitsPath": "/Users/n/human-dynamic-limits-20260908/myosim-fullbody-joint-limits.nhlim",
+    "worldFingerprint": 4532306237278777817
+  },
+  "connectomeGraphPath": null,
+  "connectomeSpecificationPath": null,
+  "nativePaths": {
+    "contacts": "/Users/n/human-capsule-20260908/input/myosim-fullbody-support-primitives.nhcnt",
+    "library": "/Users/n/MetalRobo-human-activation-diagnostics-build-20260920/lib/libmetalrobo.dylib",
+    "matterMetallib": "/Users/n/MetalRobo-human-activation-diagnostics-build-20260920/matter/shaders/NumiMatter.metallib",
+    "metalRoboMetallib": "/Users/n/MetalRobo-human-activation-diagnostics-build-20260920/shaders/MetalRobo.metallib",
+    "muscle": "/Users/n/human-completion-20260907/input/myosim-fullbody-muscle-reference.nhmyo",
+    "rigid": "/Users/n/human-completion-20260907/input/myosim-fullbody-core-reference.nhrigid",
+    "visionProfile": "/Users/n/Numan-X-neuron-v1/assets/numanx-head-vision-profile.v1.json",
+    "visualPack": "/Users/n/NumiHumanCurrent/anterior-thorax-smoke/myosim-fullbody-articulated-markers-muscle-driven-selected-actuators-source-support-contact.mrvpack"
+  },
+  "protocolSHA256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707",
+  "publicationSHA256": "fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6",
+  "runIdentifier": "numanx-affect-v2-enabled-support-history-20260920",
+  "watchdog": null,
+  "watchdogLifecycle": null
+}

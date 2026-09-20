@@ -1,0 +1,98 @@
+{
+  "artifactDirectory": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts",
+  "protocolSHA256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707",
+  "enabledCapture": {
+    "artifactDirectory": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts",
+    "protocolSHA256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707",
+    "publicationSHA256": "fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6",
+    "nativePaths": {
+      "library": "/Users/n/MetalRobo-human-activation-build-20260913/lib/libmetalrobo.dylib",
+      "rigid": "/Users/n/human-completion-20260907/input/myosim-fullbody-core-reference.nhrigid",
+      "muscle": "/Users/n/human-completion-20260907/input/myosim-fullbody-muscle-reference.nhmyo",
+      "contacts": "/Users/n/human-capsule-20260908/input/myosim-fullbody-support-primitives.nhcnt",
+      "visualPack": "/Users/n/NumiHumanCurrent/anterior-thorax-smoke/myosim-fullbody-articulated-markers-muscle-driven-selected-actuators-source-support-contact.mrvpack",
+      "visionProfile": "/Users/n/Numan-X-neuron-v1/assets/numanx-head-vision-profile.v1.json",
+      "metalRoboMetallib": "/Users/n/MetalRobo-human-activation-build-20260913/shaders/MetalRobo.metallib",
+      "matterMetallib": "/Users/n/MetalRobo-human-activation-build-20260913/matter/shaders/NumiMatter.metallib"
+    },
+    "authoredMatterWorld": {
+      "packagePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared-100000ns.nmatterpack",
+      "humanSourceFingerprint": 17335541419463474766,
+      "worldFingerprint": 4532306237278777817,
+      "sourceJointEqualitiesPath": "/Users/n/human-completion-20260907/input/myosim-fullbody-joint-equalities-source-compliance.nheq",
+      "sourceJointEqualitiesFingerprint": 1802585016997759325,
+      "sourceJointLimitsPath": "/Users/n/human-dynamic-limits-20260908/myosim-fullbody-joint-limits.nhlim",
+      "sourceJointLimitsFingerprint": 6924888172320259545,
+      "preparedInitialStatePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared.nhinit",
+      "preparedInitialStateFingerprint": 3278647622525070973
+    },
+    "connectomeGraphPath": null,
+    "connectomeSpecificationPath": null,
+    "watchdog": null,
+    "watchdogLifecycle": null,
+    "affectiveModelConfiguration": {
+      "isEnabled": true,
+      "painDecayMicroseconds": 2000000,
+      "pleasureDecayMicroseconds": 1000000,
+      "reliefDecayMicroseconds": 500000,
+      "maximumEvidenceAgeMicroseconds": 100000,
+      "recoveryGain": 1,
+      "reliefGain": 1,
+      "sourceWeights": [
+        0.24,
+        0.24,
+        0.16,
+        0.18,
+        0.18
+      ]
+    },
+    "runIdentifier": "numanx-affect-v2-enabled-20260920"
+  },
+  "disabledCapture": {
+    "artifactDirectory": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts",
+    "protocolSHA256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707",
+    "publicationSHA256": "fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6",
+    "nativePaths": {
+      "library": "/Users/n/MetalRobo-human-activation-build-20260913/lib/libmetalrobo.dylib",
+      "rigid": "/Users/n/human-completion-20260907/input/myosim-fullbody-core-reference.nhrigid",
+      "muscle": "/Users/n/human-completion-20260907/input/myosim-fullbody-muscle-reference.nhmyo",
+      "contacts": "/Users/n/human-capsule-20260908/input/myosim-fullbody-support-primitives.nhcnt",
+      "visualPack": "/Users/n/NumiHumanCurrent/anterior-thorax-smoke/myosim-fullbody-articulated-markers-muscle-driven-selected-actuators-source-support-contact.mrvpack",
+      "visionProfile": "/Users/n/Numan-X-neuron-v1/assets/numanx-head-vision-profile.v1.json",
+      "metalRoboMetallib": "/Users/n/MetalRobo-human-activation-build-20260913/shaders/MetalRobo.metallib",
+      "matterMetallib": "/Users/n/MetalRobo-human-activation-build-20260913/matter/shaders/NumiMatter.metallib"
+    },
+    "authoredMatterWorld": {
+      "packagePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared-100000ns.nmatterpack",
+      "humanSourceFingerprint": 17335541419463474766,
+      "worldFingerprint": 4532306237278777817,
+      "sourceJointEqualitiesPath": "/Users/n/human-completion-20260907/input/myosim-fullbody-joint-equalities-source-compliance.nheq",
+      "sourceJointEqualitiesFingerprint": 1802585016997759325,
+      "sourceJointLimitsPath": "/Users/n/human-dynamic-limits-20260908/myosim-fullbody-joint-limits.nhlim",
+      "sourceJointLimitsFingerprint": 6924888172320259545,
+      "preparedInitialStatePath": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared.nhinit",
+      "preparedInitialStateFingerprint": 3278647622525070973
+    },
+    "connectomeGraphPath": null,
+    "connectomeSpecificationPath": null,
+    "watchdog": null,
+    "watchdogLifecycle": null,
+    "affectiveModelConfiguration": {
+      "isEnabled": false,
+      "painDecayMicroseconds": 2000000,
+      "pleasureDecayMicroseconds": 1000000,
+      "reliefDecayMicroseconds": 500000,
+      "maximumEvidenceAgeMicroseconds": 100000,
+      "recoveryGain": 1,
+      "reliefGain": 1,
+      "sourceWeights": [
+        0.24,
+        0.24,
+        0.16,
+        0.18,
+        0.18
+      ]
+    },
+    "runIdentifier": "numanx-affect-v2-disabled-20260920"
+  }
+}
