@@ -61,6 +61,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   typealias RuntimeCopyWorldInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_world_info_v1>?
   ) -> UInt8
+  typealias RuntimeCopyExactClock = @convention(c) (
+    UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_exact_clock_info_v1>?
+  ) -> UInt8
   typealias HandleVoid = @convention(c) (UnsafeMutableRawPointer?) -> Void
   typealias RuntimeCopyInfo = @convention(c) (
     UnsafeMutableRawPointer?, UnsafeMutablePointer<mrnx_runtime_info_v1>?
@@ -152,6 +155,7 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
   let runtimeCreateV7: RuntimeCreateV7?
   let runtimeCreateV8: RuntimeCreateV8?
   let runtimeCopyWorldInfo: RuntimeCopyWorldInfo?
+  let runtimeCopyExactClock: RuntimeCopyExactClock?
   let runtimeRetain: HandleVoid
   let runtimeDrop: HandleVoid
   let runtimeCopyInfo: RuntimeCopyInfo
@@ -228,6 +232,9 @@ private final class MetalNumanXBridgeV1Symbols: @unchecked Sendable {
       )
       runtimeCopyWorldInfo = try? Self.symbol(
         "mrnx_bridge_v1_runtime_copy_world_info", library: library
+      )
+      runtimeCopyExactClock = try? Self.symbol(
+        "mrnx_bridge_v1_runtime_copy_exact_clock", library: library
       )
       runtimeRetain = try Self.symbol("mrnx_bridge_v1_runtime_retain", library: library)
       runtimeDrop = try Self.symbol("mrnx_bridge_v1_runtime_drop", library: library)
@@ -1337,6 +1344,16 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     public let physicsFingerprint: UInt64
   }
 
+  /// Native exact-clock authority copied from the runtime. A non-nil value
+  /// means physical transaction words are clock ticks at this quantum; callers
+  /// must never reinterpret them through a microsecond-named legacy field.
+  public struct ExactClockInfo: Equatable, Sendable {
+    public let timestepNanoseconds: UInt64
+    public let clockQuantumNanoseconds: UInt64
+    public let publishedTimestampNanoseconds: UInt64
+    public let publicationEpoch: UInt64
+  }
+
   public struct Configuration: Sendable {
     public let rigidPayloadPath: String
     public let musclePayloadPath: String
@@ -1538,6 +1555,7 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
   private let runtime: UnsafeMutableRawPointer
   fileprivate let cultureEnabled: Bool
   public let info: Info
+  public let exactClockInfo: ExactClockInfo?
 
   /// Attach privileged source-bound metrics before the first physical attempt.
   /// Generic TaskPack lowering, source audits and behavior qualification are
@@ -1600,9 +1618,11 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
     if let world = configuration.authoredMatterWorld {
       if world.preparedInitialState != nil {
         if configuration.timestepNanoseconds != nil {
-          guard symbols.runtimeCreateV8 != nil else {
+          guard symbols.runtimeCreateV8 != nil,
+            symbols.runtimeCopyExactClock != nil
+          else {
             throw MetalNumanXBridgeV1Error.invalidABI(
-              "Native runtime lacks exact-clock prepared-state configuration v8"
+              "Native runtime lacks exact-clock v8 construction and clock authority"
             )
           }
         } else if symbols.runtimeCreateV7 == nil {
@@ -1793,10 +1813,37 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
         rawInfo.status, rawInfo.request_failure_stage
       )
     }
+    let exactClockInfo: ExactClockInfo?
+    if let timestepNanoseconds = configuration.timestepNanoseconds {
+      var rawClock = mrnx_exact_clock_info_v1()
+      rawClock.abi_version = UInt32(MRNX_EXACT_CLOCK_INFO_ABI_V1)
+      rawClock.struct_size = UInt32(MemoryLayout<mrnx_exact_clock_info_v1>.stride)
+      guard let copyExactClock = symbols.runtimeCopyExactClock,
+        copyExactClock(created, &rawClock) != 0,
+        rawClock.timestep_nanoseconds == timestepNanoseconds,
+        rawClock.clock_quantum_nanoseconds == 1,
+        rawClock.published_timestamp_nanoseconds == 0,
+        rawClock.publication_epoch == 0
+      else {
+        symbols.runtimeDrop(created)
+        throw MetalNumanXBridgeV1Error.invalidABI(
+          "Native exact-clock authority does not match the requested v8 clock"
+        )
+      }
+      exactClockInfo = ExactClockInfo(
+        timestepNanoseconds: rawClock.timestep_nanoseconds,
+        clockQuantumNanoseconds: rawClock.clock_quantum_nanoseconds,
+        publishedTimestampNanoseconds: rawClock.published_timestamp_nanoseconds,
+        publicationEpoch: rawClock.publication_epoch
+      )
+    } else {
+      exactClockInfo = nil
+    }
     self.symbols = symbols
     self.device = device
     runtime = created
     cultureEnabled = configuration.culturePackPath != nil
+    self.exactClockInfo = exactClockInfo
     info = Info(
       bodyCount: rawInfo.body_count,
       qCoordinateCount: rawInfo.q_coordinate_count,
@@ -1831,6 +1878,35 @@ public final class MetalNumanXBridgeV1Runtime: @unchecked Sendable {
       femAttachmentCount: raw.fem_attachment_count,
       worldFingerprint: raw.world_fingerprint,
       physicsFingerprint: raw.physics_fingerprint)
+  }
+
+  /// Copies the authoritative exact physical clock after a publication. Legacy
+  /// runtimes return `nil`; an exact runtime fails closed if its clock symbol or
+  /// immutable step/quantum changes.
+  public func currentExactClockInfo() throws -> ExactClockInfo? {
+    guard let admitted = exactClockInfo else { return nil }
+    guard let copy = symbols.runtimeCopyExactClock else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Native exact runtime lost clock introspection"
+      )
+    }
+    var raw = mrnx_exact_clock_info_v1()
+    raw.abi_version = UInt32(MRNX_EXACT_CLOCK_INFO_ABI_V1)
+    raw.struct_size = UInt32(MemoryLayout<mrnx_exact_clock_info_v1>.stride)
+    guard copy(runtime, &raw) != 0,
+      raw.timestep_nanoseconds == admitted.timestepNanoseconds,
+      raw.clock_quantum_nanoseconds == admitted.clockQuantumNanoseconds
+    else {
+      throw MetalNumanXBridgeV1Error.invalidABI(
+        "Native exact clock changed immutable authority"
+      )
+    }
+    return ExactClockInfo(
+      timestepNanoseconds: raw.timestep_nanoseconds,
+      clockQuantumNanoseconds: raw.clock_quantum_nanoseconds,
+      publishedTimestampNanoseconds: raw.published_timestamp_nanoseconds,
+      publicationEpoch: raw.publication_epoch
+    )
   }
 
   /// Returns current scalar diagnostics without waiting for Metal. The

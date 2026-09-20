@@ -45,6 +45,31 @@ static_assert(
     == NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT
 );
 static_assert(sizeof(NBJointCommitToken) == NB_JOINT_COMMIT_TOKEN_BYTE_COUNT);
+static_assert(
+    sizeof(NBJointTransactionTokenV2)
+    == NB_JOINT_TRANSACTION_TOKEN_V2_BYTE_COUNT
+);
+static_assert(
+    sizeof(NBJointSubstepTokenV2) == NB_JOINT_SUBSTEP_TOKEN_V2_BYTE_COUNT
+);
+static_assert(
+    sizeof(NBAcceptedPhysicsStateTokenV2)
+    == NB_ACCEPTED_PHYSICS_STATE_TOKEN_V2_BYTE_COUNT
+);
+static_assert(sizeof(NBJointCommitTokenV2) == NB_JOINT_COMMIT_TOKEN_V2_BYTE_COUNT);
+static_assert(offsetof(NBJointTransactionTokenV2, clock_domain) == 80);
+static_assert(
+    offsetof(NBJointTransactionTokenV2, clock_quantum_nanoseconds) == 84
+);
+static_assert(offsetof(NBJointSubstepTokenV2, clock_domain) == 56);
+static_assert(
+    offsetof(NBJointSubstepTokenV2, clock_quantum_nanoseconds) == 60
+);
+static_assert(offsetof(NBAcceptedPhysicsStateTokenV2, clock_domain) == 44);
+static_assert(
+    offsetof(NBAcceptedPhysicsStateTokenV2, clock_quantum_nanoseconds) == 48
+);
+static_assert(offsetof(NBJointCommitTokenV2, clock_domain) == 52);
 static_assert(sizeof(NBProtectiveCommand) == NB_PROTECTIVE_COMMAND_BYTE_COUNT);
 static_assert(
     sizeof(NBMotorChannelDescriptor) == NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT
@@ -156,6 +181,12 @@ void mix_float(uint64_t &hash, float value) {
   uint32_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
   mix_little_endian(hash, bits);
+}
+
+bool valid_physical_clock(uint32_t domain, uint64_t quantum_nanoseconds) {
+  return domain == NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS
+      && quantum_nanoseconds
+          == NB_EXACT_NANOSECOND_CLOCK_QUANTUM_NANOSECONDS;
 }
 
 int module_index(const NBModuleDescriptor *descriptors, uint32_t count, uint16_t module_id) {
@@ -287,6 +318,22 @@ size_t nb_brain_abi_accepted_physics_state_token_size(void) {
 
 size_t nb_brain_abi_joint_commit_token_size(void) {
   return sizeof(NBJointCommitToken);
+}
+
+size_t nb_brain_abi_joint_transaction_token_v2_size(void) {
+  return sizeof(NBJointTransactionTokenV2);
+}
+
+size_t nb_brain_abi_joint_substep_token_v2_size(void) {
+  return sizeof(NBJointSubstepTokenV2);
+}
+
+size_t nb_brain_abi_accepted_physics_state_token_v2_size(void) {
+  return sizeof(NBAcceptedPhysicsStateTokenV2);
+}
+
+size_t nb_brain_abi_joint_commit_token_v2_size(void) {
+  return sizeof(NBJointCommitTokenV2);
 }
 
 size_t nb_brain_abi_protective_command_size(void) {
@@ -1412,6 +1459,266 @@ uint32_t nb_brain_abi_validate_joint_commit(
   if (commit->commit_fingerprint == 0
       || commit->commit_fingerprint
           != nb_brain_abi_joint_commit_fingerprint(commit)) {
+    return NB_JOINT_TRANSACTION_FINGERPRINT;
+  }
+  return NB_JOINT_TRANSACTION_VALID;
+}
+
+uint64_t nb_brain_abi_joint_transaction_v2_fingerprint(
+    const NBJointTransactionTokenV2 *token
+) {
+  if (token == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_JOINT_TRANSACTION_V2_VERSION));
+  mix_little_endian(hash, token->format_version);
+  mix_little_endian(hash, token->environment_identifier);
+  mix_little_endian(hash, token->episode_identifier);
+  mix_little_endian(hash, token->control_step_identifier);
+  mix_little_endian(hash, token->parameter_version_fingerprint);
+  mix_little_endian(hash, token->base_brain_generation);
+  mix_little_endian(hash, token->base_physics_generation);
+  mix_little_endian(hash, token->committed_timestamp_ticks);
+  mix_little_endian(hash, token->target_timestamp_ticks);
+  mix_little_endian(hash, token->shadow_generation);
+  mix_little_endian(hash, token->random_counter_generation);
+  mix_little_endian(hash, token->clock_domain);
+  mix_little_endian(hash, token->clock_quantum_nanoseconds);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_joint_transaction_v2(
+    const NBJointTransactionTokenV2 *token
+) {
+  if (token == nullptr) {
+    return NB_JOINT_TRANSACTION_NULL;
+  }
+  if (token->format_version != NB_JOINT_TRANSACTION_V2_VERSION) {
+    return NB_JOINT_TRANSACTION_FORMAT;
+  }
+  if (token->parameter_version_fingerprint == 0) {
+    return NB_JOINT_TRANSACTION_IDENTITY;
+  }
+  if (token->target_timestamp_ticks <= token->committed_timestamp_ticks) {
+    return NB_JOINT_TRANSACTION_TIME_ORDER;
+  }
+  if (token->base_brain_generation == UINT64_MAX
+      || token->shadow_generation != token->base_brain_generation + 1) {
+    return NB_JOINT_TRANSACTION_GENERATION;
+  }
+  if (!valid_physical_clock(
+          token->clock_domain, token->clock_quantum_nanoseconds)) {
+    return NB_JOINT_TRANSACTION_CLOCK;
+  }
+  if (token->transaction_fingerprint == 0
+      || token->transaction_fingerprint
+          != nb_brain_abi_joint_transaction_v2_fingerprint(token)) {
+    return NB_JOINT_TRANSACTION_FINGERPRINT;
+  }
+  return NB_JOINT_TRANSACTION_VALID;
+}
+
+uint64_t nb_brain_abi_joint_substep_v2_fingerprint(
+    const NBJointSubstepTokenV2 *token
+) {
+  if (token == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_JOINT_TRANSACTION_V2_VERSION));
+  mix_little_endian(hash, token->transaction_fingerprint);
+  mix_little_endian(hash, token->substep_index);
+  mix_little_endian(hash, token->attempt_index);
+  mix_little_endian(hash, token->start_timestamp_ticks);
+  mix_little_endian(hash, token->duration_ticks);
+  mix_little_endian(hash, token->candidate_timestamp_ticks);
+  mix_little_endian(hash, token->shadow_generation);
+  mix_little_endian(hash, token->random_counter_generation);
+  mix_little_endian(hash, token->clock_domain);
+  mix_little_endian(hash, token->clock_quantum_nanoseconds);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_joint_substep_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBJointSubstepTokenV2 *substep
+) {
+  if (transaction == nullptr || substep == nullptr) {
+    return NB_JOINT_TRANSACTION_NULL;
+  }
+  const uint32_t root_validation =
+      nb_brain_abi_validate_joint_transaction_v2(transaction);
+  if (root_validation != NB_JOINT_TRANSACTION_VALID) {
+    return root_validation;
+  }
+  if (substep->transaction_fingerprint != transaction->transaction_fingerprint
+      || substep->shadow_generation != transaction->shadow_generation
+      || substep->random_counter_generation
+          != transaction->random_counter_generation) {
+    return NB_JOINT_TRANSACTION_RELATION;
+  }
+  if (substep->clock_domain != transaction->clock_domain
+      || substep->clock_quantum_nanoseconds
+          != transaction->clock_quantum_nanoseconds
+      || !valid_physical_clock(
+          substep->clock_domain, substep->clock_quantum_nanoseconds)) {
+    return NB_JOINT_TRANSACTION_CLOCK;
+  }
+  if (substep->duration_ticks == 0
+      || substep->start_timestamp_ticks < transaction->committed_timestamp_ticks
+      || substep->start_timestamp_ticks >= transaction->target_timestamp_ticks
+      || substep->duration_ticks > UINT64_MAX - substep->start_timestamp_ticks
+      || substep->candidate_timestamp_ticks
+          != substep->start_timestamp_ticks + substep->duration_ticks
+      || substep->candidate_timestamp_ticks > transaction->target_timestamp_ticks) {
+    return NB_JOINT_TRANSACTION_TIME_ORDER;
+  }
+  if (substep->substep_fingerprint == 0
+      || substep->substep_fingerprint
+          != nb_brain_abi_joint_substep_v2_fingerprint(substep)) {
+    return NB_JOINT_TRANSACTION_FINGERPRINT;
+  }
+  return NB_JOINT_TRANSACTION_VALID;
+}
+
+uint64_t nb_brain_abi_accepted_physics_state_v2_fingerprint(
+    const NBAcceptedPhysicsStateTokenV2 *token
+) {
+  if (token == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_JOINT_TRANSACTION_V2_VERSION));
+  mix_little_endian(hash, token->transaction_fingerprint);
+  mix_little_endian(hash, token->substep_fingerprint);
+  mix_little_endian(hash, token->physics_state_fingerprint);
+  mix_little_endian(hash, token->accepted_timestamp_ticks);
+  mix_little_endian(hash, token->physics_generation);
+  mix_little_endian(hash, token->environment_identifier);
+  mix_little_endian(hash, token->clock_domain);
+  mix_little_endian(hash, token->clock_quantum_nanoseconds);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_accepted_physics_state_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBJointSubstepTokenV2 *substep,
+    const NBAcceptedPhysicsStateTokenV2 *accepted
+) {
+  if (transaction == nullptr || substep == nullptr || accepted == nullptr) {
+    return NB_JOINT_TRANSACTION_NULL;
+  }
+  const uint32_t substep_validation =
+      nb_brain_abi_validate_joint_substep_v2(transaction, substep);
+  if (substep_validation != NB_JOINT_TRANSACTION_VALID) {
+    return substep_validation;
+  }
+  if (accepted->transaction_fingerprint != transaction->transaction_fingerprint
+      || accepted->substep_fingerprint != substep->substep_fingerprint
+      || accepted->environment_identifier != transaction->environment_identifier) {
+    return NB_JOINT_TRANSACTION_RELATION;
+  }
+  if (accepted->clock_domain != transaction->clock_domain
+      || accepted->clock_domain != substep->clock_domain
+      || accepted->clock_quantum_nanoseconds
+          != transaction->clock_quantum_nanoseconds
+      || accepted->clock_quantum_nanoseconds
+          != substep->clock_quantum_nanoseconds
+      || !valid_physical_clock(
+          accepted->clock_domain, accepted->clock_quantum_nanoseconds)) {
+    return NB_JOINT_TRANSACTION_CLOCK;
+  }
+  if (accepted->physics_state_fingerprint == 0) {
+    return NB_JOINT_TRANSACTION_IDENTITY;
+  }
+  if (accepted->accepted_timestamp_ticks != substep->candidate_timestamp_ticks) {
+    return NB_JOINT_TRANSACTION_TIME_ORDER;
+  }
+  const uint64_t increment = static_cast<uint64_t>(substep->substep_index) + 1;
+  if (increment > UINT64_MAX - transaction->base_physics_generation
+      || accepted->physics_generation
+          != transaction->base_physics_generation + increment) {
+    return NB_JOINT_TRANSACTION_GENERATION;
+  }
+  if (accepted->token_fingerprint == 0
+      || accepted->token_fingerprint
+          != nb_brain_abi_accepted_physics_state_v2_fingerprint(accepted)) {
+    return NB_JOINT_TRANSACTION_FINGERPRINT;
+  }
+  return NB_JOINT_TRANSACTION_VALID;
+}
+
+uint64_t nb_brain_abi_joint_commit_v2_fingerprint(
+    const NBJointCommitTokenV2 *token
+) {
+  if (token == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_JOINT_TRANSACTION_V2_VERSION));
+  mix_little_endian(hash, token->transaction_fingerprint);
+  mix_little_endian(hash, token->accepted_physics_token_fingerprint);
+  mix_little_endian(hash, token->brain_generation);
+  mix_little_endian(hash, token->physics_generation);
+  mix_little_endian(hash, token->committed_timestamp_ticks);
+  mix_little_endian(hash, token->parameter_version_fingerprint);
+  mix_little_endian(hash, token->environment_identifier);
+  mix_little_endian(hash, token->clock_domain);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_joint_commit_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBAcceptedPhysicsStateTokenV2 *accepted,
+    const NBJointCommitTokenV2 *commit
+) {
+  if (transaction == nullptr || accepted == nullptr || commit == nullptr) {
+    return NB_JOINT_TRANSACTION_NULL;
+  }
+  const uint32_t root_validation =
+      nb_brain_abi_validate_joint_transaction_v2(transaction);
+  if (root_validation != NB_JOINT_TRANSACTION_VALID) {
+    return root_validation;
+  }
+  if (accepted->token_fingerprint == 0
+      || accepted->token_fingerprint
+          != nb_brain_abi_accepted_physics_state_v2_fingerprint(accepted)) {
+    return NB_JOINT_TRANSACTION_FINGERPRINT;
+  }
+  if (accepted->physics_state_fingerprint == 0) {
+    return NB_JOINT_TRANSACTION_IDENTITY;
+  }
+  if (accepted->transaction_fingerprint != transaction->transaction_fingerprint
+      || accepted->environment_identifier != transaction->environment_identifier
+      || commit->transaction_fingerprint != transaction->transaction_fingerprint
+      || commit->accepted_physics_token_fingerprint
+          != accepted->token_fingerprint
+      || commit->parameter_version_fingerprint
+          != transaction->parameter_version_fingerprint
+      || commit->environment_identifier != transaction->environment_identifier) {
+    return NB_JOINT_TRANSACTION_RELATION;
+  }
+  if (accepted->clock_domain != transaction->clock_domain
+      || accepted->clock_quantum_nanoseconds
+          != transaction->clock_quantum_nanoseconds
+      || commit->clock_domain != transaction->clock_domain
+      || !valid_physical_clock(
+          accepted->clock_domain, accepted->clock_quantum_nanoseconds)) {
+    return NB_JOINT_TRANSACTION_CLOCK;
+  }
+  if (accepted->accepted_timestamp_ticks != transaction->target_timestamp_ticks
+      || commit->committed_timestamp_ticks != transaction->target_timestamp_ticks) {
+    return NB_JOINT_TRANSACTION_TIME_ORDER;
+  }
+  if (commit->brain_generation != transaction->shadow_generation
+      || commit->physics_generation != accepted->physics_generation
+      || accepted->physics_generation <= transaction->base_physics_generation) {
+    return NB_JOINT_TRANSACTION_GENERATION;
+  }
+  if (commit->commit_fingerprint == 0
+      || commit->commit_fingerprint
+          != nb_brain_abi_joint_commit_v2_fingerprint(commit)) {
     return NB_JOINT_TRANSACTION_FINGERPRINT;
   }
   return NB_JOINT_TRANSACTION_VALID;

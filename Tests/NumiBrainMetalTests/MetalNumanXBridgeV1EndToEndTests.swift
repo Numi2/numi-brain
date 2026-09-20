@@ -1668,6 +1668,12 @@ final class MetalNumanXBridgeV1EndToEndTests: XCTestCase {
     XCTAssertEqual(native.info.qCoordinateCount, 129)
     XCTAssertEqual(native.info.dofCount, 128)
     XCTAssertEqual(native.info.muscleCount, 416)
+    let admittedClock = try XCTUnwrap(native.exactClockInfo)
+    XCTAssertEqual(admittedClock.timestepNanoseconds, 12_500)
+    XCTAssertEqual(admittedClock.clockQuantumNanoseconds, 1)
+    XCTAssertEqual(admittedClock.publishedTimestampNanoseconds, 0)
+    XCTAssertEqual(admittedClock.publicationEpoch, 0)
+    XCTAssertEqual(try native.currentExactClockInfo(), admittedClock)
     XCTAssertEqual(
       try native.currentWorldInfo().worldFingerprint,
       world.worldFingerprint

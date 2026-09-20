@@ -172,6 +172,23 @@ fixture, and the attached one-tet FEM proves transaction execution rather than
 full tissue realism. Gates C through F therefore remain independent promotion
 work after the bounded Gate B qualification below.
 
+#### Exact-nanosecond successor boundary
+
+The qualification above remains the immutable legacy-microsecond lane. Exact
+v8 construction separately admits a `12,500 ns` runtime and copies its native
+clock authority without rounding. The additive v2 Core ABI now gives root,
+substep, accepted-state, and commit records distinct nanosecond types, explicit
+clock-domain/1 ns quantum fields, domain-separated fingerprints, and fail-closed
+mixed-family validation while leaving every v1 byte and hash unchanged.
+
+This is contract progress, not a second Gate A pass. Motor candidate/header and
+ready gates, persistent shader state, HumanMatter close records, sensor timing,
+aggregate publication, checkpoints, and evidence schemas are still v1-shaped.
+The staged request-v2 layout is therefore deliberately not routed to the GPU.
+Exact accepted-root evidence begins only when that full family is versioned and
+one root, consecutive roots, reject/retry, and no-publication negatives pass on
+the physical Mac mini.
+
 ### Gate B — complete causal sensorium
 
 The aggregate root publishes all seven listed channel families. A task-trained

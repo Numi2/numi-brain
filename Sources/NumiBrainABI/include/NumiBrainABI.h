@@ -43,6 +43,10 @@ enum {
   NB_JOINT_SUBSTEP_TOKEN_BYTE_COUNT = 72,
   NB_ACCEPTED_PHYSICS_STATE_TOKEN_BYTE_COUNT = 64,
   NB_JOINT_COMMIT_TOKEN_BYTE_COUNT = 64,
+  NB_JOINT_TRANSACTION_TOKEN_V2_BYTE_COUNT = 96,
+  NB_JOINT_SUBSTEP_TOKEN_V2_BYTE_COUNT = 72,
+  NB_ACCEPTED_PHYSICS_STATE_TOKEN_V2_BYTE_COUNT = 64,
+  NB_JOINT_COMMIT_TOKEN_V2_BYTE_COUNT = 64,
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 80,
@@ -53,6 +57,11 @@ enum {
   NB_NUMANX_SENSOR_PACKET_BYTE_COUNT = 72,
   NB_DISPATCH_PLAN_VERSION = 1,
   NB_JOINT_TRANSACTION_VERSION = 1,
+  NB_JOINT_TRANSACTION_V2_VERSION = 2,
+  NB_PHYSICAL_CLOCK_DOMAIN_LEGACY_MICROSECONDS = 1,
+  NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS = 2,
+  NB_LEGACY_MICROSECOND_CLOCK_QUANTUM_NANOSECONDS = 1000,
+  NB_EXACT_NANOSECOND_CLOCK_QUANTUM_NANOSECONDS = 1,
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 3,
@@ -434,6 +443,73 @@ typedef struct NBJointCommitToken {
   uint64_t commit_fingerprint;
 } NBJointCommitToken;
 
+/// Explicit-clock successor to `NBJointTransactionToken`. Timestamp words are
+/// neutral ticks. `clock_domain` and `clock_quantum_nanoseconds` occupy the
+/// positions that are reserved and required to be zero in the immutable v1
+/// layout, so v1 remains byte-for-byte and hash-for-hash unchanged.
+typedef struct NBJointTransactionTokenV2 {
+  uint32_t format_version;
+  uint32_t environment_identifier;
+  uint64_t episode_identifier;
+  uint64_t control_step_identifier;
+  uint64_t parameter_version_fingerprint;
+  uint64_t base_brain_generation;
+  uint64_t base_physics_generation;
+  uint64_t committed_timestamp_ticks;
+  uint64_t target_timestamp_ticks;
+  uint64_t shadow_generation;
+  uint64_t random_counter_generation;
+  uint32_t clock_domain;
+  uint32_t clock_quantum_nanoseconds;
+  uint64_t transaction_fingerprint;
+} NBJointTransactionTokenV2;
+
+/// Explicit-clock candidate physical substep. Its clock fields must match the
+/// owning v2 root exactly.
+typedef struct NBJointSubstepTokenV2 {
+  uint64_t transaction_fingerprint;
+  uint32_t substep_index;
+  uint32_t attempt_index;
+  uint64_t start_timestamp_ticks;
+  uint64_t duration_ticks;
+  uint64_t candidate_timestamp_ticks;
+  uint64_t shadow_generation;
+  uint64_t random_counter_generation;
+  uint32_t clock_domain;
+  uint32_t clock_quantum_nanoseconds;
+  uint64_t substep_fingerprint;
+} NBJointSubstepTokenV2;
+
+/// Explicit-clock NumanX acceptance proof. The 64-bit quantum field preserves
+/// the legacy record's binary size while binding the accepted tick to the root
+/// clock without narrowing during validation.
+typedef struct NBAcceptedPhysicsStateTokenV2 {
+  uint64_t transaction_fingerprint;
+  uint64_t substep_fingerprint;
+  uint64_t physics_state_fingerprint;
+  uint64_t accepted_timestamp_ticks;
+  uint64_t physics_generation;
+  uint32_t environment_identifier;
+  uint32_t clock_domain;
+  uint64_t clock_quantum_nanoseconds;
+  uint64_t token_fingerprint;
+} NBAcceptedPhysicsStateTokenV2;
+
+/// Explicit-clock atomic commit receipt. The quantum is transitively bound by
+/// both referenced fingerprints; `clock_domain` is repeated for fail-closed
+/// relation validation without expanding the legacy 64-byte shape.
+typedef struct NBJointCommitTokenV2 {
+  uint64_t transaction_fingerprint;
+  uint64_t accepted_physics_token_fingerprint;
+  uint64_t brain_generation;
+  uint64_t physics_generation;
+  uint64_t committed_timestamp_ticks;
+  uint64_t parameter_version_fingerprint;
+  uint32_t environment_identifier;
+  uint32_t clock_domain;
+  uint64_t commit_fingerprint;
+} NBJointCommitTokenV2;
+
 /// Species-neutral protective output derived from accepted fast regional
 /// state. A species motor adapter maps these bounded drives to muscles or
 /// actuators for the following physical candidate.
@@ -683,6 +759,7 @@ typedef enum NBJointTransactionValidation {
   NB_JOINT_TRANSACTION_FLAGS = 6,
   NB_JOINT_TRANSACTION_FINGERPRINT = 7,
   NB_JOINT_TRANSACTION_RELATION = 8,
+  NB_JOINT_TRANSACTION_CLOCK = 9,
 } NBJointTransactionValidation;
 
 typedef enum NBProtectiveCommandValidation {
@@ -778,6 +855,10 @@ size_t nb_brain_abi_joint_transaction_token_size(void);
 size_t nb_brain_abi_joint_substep_token_size(void);
 size_t nb_brain_abi_accepted_physics_state_token_size(void);
 size_t nb_brain_abi_joint_commit_token_size(void);
+size_t nb_brain_abi_joint_transaction_token_v2_size(void);
+size_t nb_brain_abi_joint_substep_token_v2_size(void);
+size_t nb_brain_abi_accepted_physics_state_token_v2_size(void);
+size_t nb_brain_abi_joint_commit_token_v2_size(void);
 size_t nb_brain_abi_protective_command_size(void);
 size_t nb_brain_abi_motor_channel_descriptor_size(void);
 size_t nb_brain_abi_motor_output_header_size(void);
@@ -953,6 +1034,43 @@ uint32_t nb_brain_abi_validate_joint_commit(
     const NBJointTransactionToken *transaction,
     const NBAcceptedPhysicsStateToken *accepted,
     const NBJointCommitToken *commit
+);
+
+uint64_t nb_brain_abi_joint_transaction_v2_fingerprint(
+    const NBJointTransactionTokenV2 *token
+);
+
+uint32_t nb_brain_abi_validate_joint_transaction_v2(
+    const NBJointTransactionTokenV2 *token
+);
+
+uint64_t nb_brain_abi_joint_substep_v2_fingerprint(
+    const NBJointSubstepTokenV2 *token
+);
+
+uint32_t nb_brain_abi_validate_joint_substep_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBJointSubstepTokenV2 *substep
+);
+
+uint64_t nb_brain_abi_accepted_physics_state_v2_fingerprint(
+    const NBAcceptedPhysicsStateTokenV2 *token
+);
+
+uint32_t nb_brain_abi_validate_accepted_physics_state_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBJointSubstepTokenV2 *substep,
+    const NBAcceptedPhysicsStateTokenV2 *accepted
+);
+
+uint64_t nb_brain_abi_joint_commit_v2_fingerprint(
+    const NBJointCommitTokenV2 *token
+);
+
+uint32_t nb_brain_abi_validate_joint_commit_v2(
+    const NBJointTransactionTokenV2 *transaction,
+    const NBAcceptedPhysicsStateTokenV2 *accepted,
+    const NBJointCommitTokenV2 *commit
 );
 
 uint64_t nb_brain_abi_protective_command_fingerprint(

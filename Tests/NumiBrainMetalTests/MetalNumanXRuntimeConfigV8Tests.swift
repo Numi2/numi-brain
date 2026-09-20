@@ -41,6 +41,31 @@ final class MetalNumanXRuntimeConfigV8Tests: XCTestCase {
     }
   }
 
+  func testExactClockAndPhysicalRootV2LayoutsMirrorNativeContract() {
+    XCTAssertEqual(UInt32(MRNX_EXACT_CLOCK_INFO_ABI_V1), 1)
+    XCTAssertEqual(MemoryLayout<mrnx_exact_clock_info_v1>.stride, 40)
+    XCTAssertEqual(
+      MemoryLayout<mrnx_exact_clock_info_v1>.offset(
+        of: \.published_timestamp_nanoseconds
+      ),
+      24
+    )
+    XCTAssertEqual(UInt32(MRNX_PHYSICAL_ROOT_REQUEST_ABI_V2), 2)
+    XCTAssertEqual(MemoryLayout<mrnx_physical_root_request_v2>.stride, 600)
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v2>.offset(of: \.candidate),
+      176
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v2>.offset(of: \.motor_header),
+      328
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v2>.offset(of: \.motor_ready),
+      568
+    )
+  }
+
   func testExactClockRejectsZeroAndInvalidNanoseconds() {
     for invalid in [UInt64(0), 1_000_000_001, UInt64.max] {
       XCTAssertThrowsError(

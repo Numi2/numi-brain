@@ -28,6 +28,8 @@
 #define MRNX_RUNTIME_CONFIG_ABI_V6 6u
 #define MRNX_RUNTIME_CONFIG_ABI_V7 7u
 #define MRNX_RUNTIME_CONFIG_ABI_V8 8u
+#define MRNX_PHYSICAL_ROOT_REQUEST_ABI_V2 2u
+#define MRNX_EXACT_CLOCK_INFO_ABI_V1 1u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
@@ -327,6 +329,17 @@ typedef struct mrnx_runtime_config_v8 {
     uint64_t timestep_nanoseconds;
 } mrnx_runtime_config_v8;
 
+// Read-only authority for an exact-clock runtime. Exact root records use this
+// quantum; callers must not infer a unit from legacy field names.
+typedef struct mrnx_exact_clock_info_v1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint64_t timestep_nanoseconds;
+    uint64_t clock_quantum_nanoseconds;
+    uint64_t published_timestamp_nanoseconds;
+    uint64_t publication_epoch;
+} mrnx_exact_clock_info_v1;
+
 
 
 // Immutable construction metadata. Legacy v1/v2 worlds are explicitly marked
@@ -529,6 +542,26 @@ typedef struct mrnx_physical_root_request_v1 {
   mrnx_event_point_v1 motor_ready;
 } mrnx_physical_root_request_v1;
 
+// Staged exact-clock request shape. Root and substep identity are explicit
+// v2 nanoseconds. The motor candidate/header/ready records below are still the
+// immutable v1 family, so this mixed shape is not a routable accepted-root
+// contract yet. Native and Swift entry points must reject it before GPU
+// submission until the complete motor, publication, HumanMatter, and retained-
+// state v2 family exists.
+typedef struct mrnx_physical_root_request_v2 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  NBJointTransactionTokenV2 root;
+  NBJointSubstepTokenV2 substep;
+  NBNumanXMotorCandidate candidate;
+  mrnx_metal_range_v1 motor_header;
+  mrnx_metal_range_v1 muscle_excitation;
+  mrnx_metal_range_v1 autonomic_command;
+  mrnx_metal_range_v1 active_sensing_command;
+  mrnx_metal_range_v1 motor_ready_gate;
+  mrnx_event_point_v1 motor_ready;
+} mrnx_physical_root_request_v2;
+
 _Static_assert(sizeof(mrnx_root_v1) == 96u, "mrnx root ABI");
 _Static_assert(sizeof(mrnx_metal_range_v1) == 48u, "mrnx range ABI");
 _Static_assert(sizeof(mrnx_event_point_v1) == 32u, "mrnx event ABI");
@@ -552,6 +585,8 @@ _Static_assert(offsetof(mrnx_runtime_config_v7, expected_initial_state_fingerpri
 _Static_assert(sizeof(mrnx_runtime_config_v8) == 280u, "mrnx config v8 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v8, runtime) == 8u, "mrnx config v8 nested runtime offset");
 _Static_assert(offsetof(mrnx_runtime_config_v8, timestep_nanoseconds) == 272u, "mrnx config v8 exact clock offset");
+_Static_assert(sizeof(mrnx_exact_clock_info_v1) == 40u,
+               "mrnx exact clock info ABI");
 _Static_assert(sizeof(mrnx_runtime_config_v6) == 240u, "mrnx config v6 ABI");
 _Static_assert(offsetof(mrnx_runtime_config_v6, joint_limit_payload_path) == 200u, "mrnx config v6 limits offset");
 _Static_assert(offsetof(mrnx_runtime_config_v6, costal_cartilage_payload_path) == 216u, "mrnx config v6 cartilage offset");
@@ -621,6 +656,10 @@ _Static_assert(sizeof(mrnx_aggregate_snapshot_v4) == 1944u,
 _Static_assert(offsetof(mrnx_aggregate_snapshot_v4, culture) == 1320u,
                "mrnx snapshot v4 culture offset");
 _Static_assert(sizeof(mrnx_physical_root_request_v1) == 600u, "mrnx request ABI");
+_Static_assert(sizeof(mrnx_physical_root_request_v2) == 600u,
+               "mrnx exact request ABI");
+_Static_assert(offsetof(mrnx_physical_root_request_v2, candidate) == 176u,
+               "mrnx exact request candidate offset");
 _Static_assert(offsetof(mrnx_physical_root_request_v1, motor_header) == 328u,
                "mrnx request motor offset");
 _Static_assert(offsetof(mrnx_physical_root_request_v1, motor_ready_gate) == 520u,
