@@ -75,6 +75,14 @@ static_assert(
     sizeof(NBMotorChannelDescriptor) == NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT
 );
 static_assert(sizeof(NBMotorOutputHeader) == NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT);
+static_assert(
+    sizeof(NBMotorOutputHeaderV2) == NB_MOTOR_OUTPUT_HEADER_V2_BYTE_COUNT
+);
+static_assert(alignof(NBMotorOutputHeaderV2) == 16);
+static_assert(
+    sizeof(NBNumanXMotorReadyGateGPUV2)
+    == NB_NUMANX_MOTOR_READY_GATE_V2_BYTE_COUNT
+);
 static_assert(sizeof(NBAutonomicCommand) == NB_AUTONOMIC_COMMAND_BYTE_COUNT);
 static_assert(offsetof(NBAutonomicCommand, command) == 0);
 static_assert(offsetof(NBAutonomicCommand, flags) == 12);
@@ -85,6 +93,10 @@ static_assert(offsetof(NBActiveSensingCommand, command) == 0);
 static_assert(offsetof(NBActiveSensingCommand, kind_and_flags) == 12);
 static_assert(
     sizeof(NBNumanXMotorCandidate) == NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT
+);
+static_assert(
+    sizeof(NBNumanXMotorCandidateV2)
+    == NB_NUMANX_MOTOR_CANDIDATE_V2_BYTE_COUNT
 );
 static_assert(
     sizeof(NBNumanXSensorChannel) == NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT
@@ -106,6 +118,9 @@ static_assert(offsetof(NBMotorOutputHeader, motor_inhibition) == 48);
 static_assert(offsetof(NBMotorOutputHeader, actuator_command_kind) == 56);
 static_assert(offsetof(NBMotorOutputHeader, output_minimum) == 64);
 static_assert(offsetof(NBMotorOutputHeader, output_fingerprint) == 72);
+static_assert(offsetof(NBMotorOutputHeaderV2, timestamp_nanoseconds) == 8);
+static_assert(offsetof(NBMotorOutputHeaderV2, clock_domain) == 60);
+static_assert(offsetof(NBMotorOutputHeaderV2, output_fingerprint) == 72);
 static_assert(offsetof(NBNumanXMotorCandidate, format_version) == 0);
 static_assert(offsetof(NBNumanXMotorCandidate, transaction_fingerprint) == 8);
 static_assert(offsetof(NBNumanXMotorCandidate, substep_fingerprint) == 16);
@@ -132,6 +147,12 @@ static_assert(
     offsetof(NBNumanXMotorCandidate, compiled_species_template_fingerprint) == 136
 );
 static_assert(offsetof(NBNumanXMotorCandidate, candidate_fingerprint) == 144);
+static_assert(offsetof(NBNumanXMotorCandidateV2, clock_domain) == 124);
+static_assert(
+    offsetof(NBNumanXMotorCandidateV2, candidate_fingerprint) == 144
+);
+static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, clockDomain) == 144);
+static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, gateFingerprint) == 152);
 static_assert(offsetof(NBNumanXSensorChannel, modality) == 0);
 static_assert(offsetof(NBNumanXSensorChannel, gpu_address) == 8);
 static_assert(
@@ -348,8 +369,20 @@ size_t nb_brain_abi_motor_output_header_size(void) {
   return sizeof(NBMotorOutputHeader);
 }
 
+size_t nb_brain_abi_motor_output_header_v2_size(void) {
+  return sizeof(NBMotorOutputHeaderV2);
+}
+
 size_t nb_brain_abi_numanx_motor_candidate_size(void) {
   return sizeof(NBNumanXMotorCandidate);
+}
+
+size_t nb_brain_abi_numanx_motor_candidate_v2_size(void) {
+  return sizeof(NBNumanXMotorCandidateV2);
+}
+
+size_t nb_brain_abi_numanx_motor_ready_gate_v2_size(void) {
+  return sizeof(NBNumanXMotorReadyGateGPUV2);
 }
 
 size_t nb_brain_abi_numanx_sensor_channel_size(void) {
@@ -2105,6 +2138,382 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
     return NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT;
   }
   return NB_NUMANX_MOTOR_CANDIDATE_VALID;
+}
+
+uint64_t nb_brain_abi_numanx_motor_candidate_v2_fingerprint(
+    const NBNumanXMotorCandidateV2 *candidate
+) {
+  if (candidate == nullptr) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(
+      hash,
+      static_cast<uint32_t>(NB_NUMANX_MOTOR_CANDIDATE_V2_VERSION)
+  );
+  mix_little_endian(hash, candidate->format_version);
+  mix_little_endian(hash, candidate->flags);
+  mix_little_endian(hash, candidate->transaction_fingerprint);
+  mix_little_endian(hash, candidate->substep_fingerprint);
+  mix_little_endian(hash, candidate->accepted_brain_timestamp_nanoseconds);
+  mix_little_endian(hash, candidate->brain_generation);
+  mix_little_endian(hash, candidate->motor_profile_fingerprint);
+  mix_little_endian(hash, candidate->motor_output_header_gpu_address);
+  mix_little_endian(hash, candidate->muscle_excitation_gpu_address);
+  mix_little_endian(hash, candidate->random_counter_generation);
+  mix_little_endian(hash, candidate->motor_output_header_byte_count);
+  mix_little_endian(hash, candidate->muscle_excitation_byte_count);
+  mix_little_endian(hash, candidate->muscle_count);
+  mix_little_endian(hash, candidate->environment_identifier);
+  mix_little_endian(hash, candidate->autonomic_command_gpu_address);
+  mix_little_endian(hash, candidate->autonomic_command_byte_count);
+  mix_little_endian(hash, candidate->autonomic_command_count);
+  mix_little_endian(hash, candidate->active_sensing_command_gpu_address);
+  mix_little_endian(hash, candidate->active_sensing_command_byte_count);
+  mix_little_endian(hash, candidate->active_sensing_command_count);
+  mix_little_endian(hash, candidate->actuator_command_kind);
+  mix_little_endian(hash, candidate->clock_domain);
+  mix_little_endian(hash, candidate->species_template_fingerprint);
+  mix_little_endian(hash, candidate->compiled_species_template_fingerprint);
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_numanx_motor_candidate_v2(
+    const NBJointTransactionTokenV2 *root,
+    const NBJointSubstepTokenV2 *substep,
+    const NBNumanXMotorCandidateV2 *candidate
+) {
+  if (root == nullptr || substep == nullptr || candidate == nullptr) {
+    return NB_NUMANX_MOTOR_CANDIDATE_NULL;
+  }
+  if (candidate->format_version != NB_NUMANX_MOTOR_CANDIDATE_V2_VERSION) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FORMAT;
+  }
+  constexpr uint32_t known_flags =
+      NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID
+      | NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW;
+  if ((candidate->flags & NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID) == 0
+      || (candidate->flags & ~known_flags) != 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FLAGS;
+  }
+  if (root->clock_domain != NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS
+      || root->clock_quantum_nanoseconds
+          != NB_EXACT_NANOSECOND_CLOCK_QUANTUM_NANOSECONDS
+      || substep->clock_domain != root->clock_domain
+      || substep->clock_quantum_nanoseconds
+          != root->clock_quantum_nanoseconds
+      || candidate->clock_domain != root->clock_domain) {
+    return NB_NUMANX_MOTOR_CANDIDATE_CLOCK;
+  }
+  if (nb_brain_abi_validate_joint_substep_v2(root, substep)
+      != NB_JOINT_TRANSACTION_VALID) {
+    return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
+  }
+  if (candidate->transaction_fingerprint != root->transaction_fingerprint
+      || candidate->substep_fingerprint != substep->substep_fingerprint
+      || candidate->accepted_brain_timestamp_nanoseconds
+          != substep->start_timestamp_ticks
+      || candidate->random_counter_generation
+          != substep->random_counter_generation
+      || candidate->environment_identifier != root->environment_identifier
+      || candidate->motor_profile_fingerprint == 0
+      || candidate->species_template_fingerprint == 0
+      || candidate->compiled_species_template_fingerprint == 0
+      || candidate->actuator_command_kind < 1
+      || candidate->actuator_command_kind > 7) {
+    return NB_NUMANX_MOTOR_CANDIDATE_IDENTITY;
+  }
+  const bool decision_shadow =
+      (candidate->flags & NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW) != 0;
+  if (decision_shadow && substep->substep_index != 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_GENERATION;
+  }
+  const uint64_t expected_generation = decision_shadow
+      ? root->shadow_generation
+      : (substep->substep_index == 0
+          ? root->base_brain_generation
+          : root->shadow_generation);
+  if (candidate->brain_generation != expected_generation) {
+    return NB_NUMANX_MOTOR_CANDIDATE_GENERATION;
+  }
+  if (candidate->motor_output_header_gpu_address == 0
+      || candidate->muscle_excitation_gpu_address == 0
+      || candidate->autonomic_command_gpu_address == 0
+      || candidate->active_sensing_command_gpu_address == 0
+      || candidate->motor_output_header_gpu_address % 16 != 0
+      || candidate->muscle_excitation_gpu_address % 4 != 0
+      || candidate->autonomic_command_gpu_address % 4 != 0
+      || candidate->active_sensing_command_gpu_address % 4 != 0) {
+    return NB_NUMANX_MOTOR_CANDIDATE_ADDRESS;
+  }
+  const uint64_t expected_excitation_bytes =
+      static_cast<uint64_t>(candidate->muscle_count) * sizeof(float);
+  const uint64_t expected_autonomic_bytes =
+      static_cast<uint64_t>(candidate->autonomic_command_count)
+        * sizeof(NBAutonomicCommand);
+  const uint64_t expected_active_sensing_bytes =
+      static_cast<uint64_t>(candidate->active_sensing_command_count)
+        * sizeof(NBActiveSensingCommand);
+  if (candidate->motor_output_header_byte_count
+          != NB_MOTOR_OUTPUT_HEADER_V2_BYTE_COUNT
+      || candidate->muscle_count == 0
+      || expected_excitation_bytes > UINT32_MAX
+      || candidate->muscle_excitation_byte_count != expected_excitation_bytes
+      || candidate->autonomic_command_count == 0
+      || expected_autonomic_bytes > UINT32_MAX
+      || candidate->autonomic_command_byte_count != expected_autonomic_bytes
+      || candidate->active_sensing_command_count == 0
+      || expected_active_sensing_bytes > UINT32_MAX
+      || candidate->active_sensing_command_byte_count
+          != expected_active_sensing_bytes) {
+    return NB_NUMANX_MOTOR_CANDIDATE_SIZE;
+  }
+  if (candidate->candidate_fingerprint == 0
+      || candidate->candidate_fingerprint
+          != nb_brain_abi_numanx_motor_candidate_v2_fingerprint(candidate)) {
+    return NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT;
+  }
+  return NB_NUMANX_MOTOR_CANDIDATE_VALID;
+}
+
+uint64_t nb_brain_abi_motor_output_v2_fingerprint(
+    const NBMotorOutputHeaderV2 *header,
+    const float *muscle_excitations
+) {
+  if (header == nullptr || muscle_excitations == nullptr
+      || header->muscle_count == 0) {
+    return 0;
+  }
+  uint64_t hash = kFNVOffset;
+  mix_little_endian(hash, static_cast<uint32_t>(NB_MOTOR_OUTPUT_V2_VERSION));
+  mix_little_endian(hash, header->format_version);
+  mix_little_endian(hash, header->flags);
+  mix_little_endian(hash, header->timestamp_nanoseconds);
+  mix_little_endian(hash, header->brain_generation);
+  mix_little_endian(hash, header->profile_fingerprint);
+  mix_little_endian(hash, header->protective_command_fingerprint);
+  mix_little_endian(hash, header->muscle_count);
+  mix_little_endian(hash, header->environment_identifier);
+  mix_float(hash, header->motor_inhibition);
+  mix_float(hash, header->autonomic_arousal);
+  mix_little_endian(hash, header->actuator_command_kind);
+  mix_little_endian(hash, header->clock_domain);
+  mix_float(hash, header->output_minimum);
+  mix_float(hash, header->output_maximum);
+  for (uint32_t index = 0; index < header->muscle_count; ++index) {
+    mix_float(hash, muscle_excitations[index]);
+  }
+  return hash;
+}
+
+uint32_t nb_brain_abi_validate_motor_output_v2(
+    const NBNumanXMotorCandidateV2 *candidate,
+    const NBMotorOutputHeaderV2 *header,
+    const float *muscle_excitations
+) {
+  if (candidate == nullptr || header == nullptr
+      || muscle_excitations == nullptr) {
+    return NB_MOTOR_OUTPUT_NULL;
+  }
+  constexpr uint32_t known_candidate_flags =
+      NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID
+      | NB_NUMANX_MOTOR_CANDIDATE_FLAG_DECISION_SHADOW;
+  if (candidate->clock_domain
+      != NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS) {
+    return NB_MOTOR_OUTPUT_CLOCK;
+  }
+  if (candidate->format_version != NB_NUMANX_MOTOR_CANDIDATE_V2_VERSION
+      || (candidate->flags & NB_NUMANX_MOTOR_CANDIDATE_FLAG_VALID) == 0
+      || (candidate->flags & ~known_candidate_flags) != 0
+      || candidate->candidate_fingerprint == 0
+      || candidate->candidate_fingerprint
+          != nb_brain_abi_numanx_motor_candidate_v2_fingerprint(candidate)
+      || candidate->motor_output_header_gpu_address == 0
+      || candidate->motor_output_header_gpu_address % 16 != 0
+      || candidate->motor_output_header_byte_count
+          != NB_MOTOR_OUTPUT_HEADER_V2_BYTE_COUNT
+      || candidate->muscle_count == 0) {
+    return NB_MOTOR_OUTPUT_RELATION;
+  }
+  if (header->format_version != NB_MOTOR_OUTPUT_V2_VERSION) {
+    return NB_MOTOR_OUTPUT_FORMAT;
+  }
+  constexpr uint32_t known_flags =
+      NB_MOTOR_OUTPUT_FLAG_VALID | NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL;
+  if ((header->flags & NB_MOTOR_OUTPUT_FLAG_VALID) == 0
+      || (header->flags & ~known_flags) != 0) {
+    return NB_MOTOR_OUTPUT_FLAGS;
+  }
+  if (header->muscle_count == 0 || header->profile_fingerprint == 0
+      || header->protective_command_fingerprint == 0
+      || header->muscle_count != candidate->muscle_count) {
+    return NB_MOTOR_OUTPUT_COUNT;
+  }
+  if (header->timestamp_nanoseconds
+          != candidate->accepted_brain_timestamp_nanoseconds
+      || header->brain_generation != candidate->brain_generation) {
+    return NB_MOTOR_OUTPUT_GENERATION;
+  }
+  if (header->clock_domain != NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS
+      || header->clock_domain != candidate->clock_domain) {
+    return NB_MOTOR_OUTPUT_CLOCK;
+  }
+  if (!std::isfinite(header->motor_inhibition)
+      || !std::isfinite(header->autonomic_arousal)
+      || !std::isfinite(header->output_minimum)
+      || !std::isfinite(header->output_maximum)) {
+    return NB_MOTOR_OUTPUT_NONFINITE;
+  }
+  if (header->motor_inhibition < 0.0F || header->motor_inhibition > 1.0F
+      || header->autonomic_arousal < 0.0F
+      || header->autonomic_arousal > 1.0F
+      || header->output_minimum >= header->output_maximum) {
+    return NB_MOTOR_OUTPUT_RANGE;
+  }
+  if (header->actuator_command_kind < 1
+      || header->actuator_command_kind > 7
+      || header->actuator_command_kind != candidate->actuator_command_kind) {
+    return NB_MOTOR_OUTPUT_COMMAND_KIND;
+  }
+  const bool emergency =
+      (header->flags & NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP) != 0;
+  if (emergency != (header->motor_inhibition == 1.0F)
+      || header->profile_fingerprint != candidate->motor_profile_fingerprint
+      || header->environment_identifier != candidate->environment_identifier) {
+    return NB_MOTOR_OUTPUT_RELATION;
+  }
+  for (uint32_t index = 0; index < header->muscle_count; ++index) {
+    const float command = muscle_excitations[index];
+    if (!std::isfinite(command)) {
+      return NB_MOTOR_OUTPUT_NONFINITE;
+    }
+    if (command < header->output_minimum || command > header->output_maximum) {
+      return NB_MOTOR_OUTPUT_RANGE;
+    }
+  }
+  if (header->output_fingerprint == 0
+      || header->output_fingerprint
+          != nb_brain_abi_motor_output_v2_fingerprint(
+              header, muscle_excitations)) {
+    return NB_MOTOR_OUTPUT_FINGERPRINT;
+  }
+  return NB_MOTOR_OUTPUT_VALID;
+}
+
+uint64_t nb_brain_abi_numanx_motor_ready_gate_v2_fingerprint(
+    const NBNumanXMotorReadyGateGPUV2 *gate
+) {
+  if (gate == nullptr) {
+    return 0;
+  }
+  const auto *bytes = reinterpret_cast<const uint8_t *>(gate);
+  uint64_t hash = kFNVOffset;
+  for (size_t index = 0;
+       index < offsetof(NBNumanXMotorReadyGateGPUV2, gateFingerprint);
+       ++index) {
+    mix_byte(hash, bytes[index]);
+  }
+  return hash == 0 ? kFNVOffset : hash;
+}
+
+uint32_t nb_brain_abi_validate_numanx_motor_ready_gate_v2(
+    const NBJointTransactionTokenV2 *root,
+    const NBJointSubstepTokenV2 *substep,
+    const NBNumanXMotorCandidateV2 *candidate,
+    const NBMotorOutputHeaderV2 *header,
+    const NBNumanXMotorReadyGateGPUV2 *gate
+) {
+  if (root == nullptr || substep == nullptr || candidate == nullptr
+      || header == nullptr || gate == nullptr) {
+    return NB_NUMANX_MOTOR_READY_NULL;
+  }
+  const uint32_t candidate_validation =
+      nb_brain_abi_validate_numanx_motor_candidate_v2(
+          root, substep, candidate);
+  if (candidate_validation == NB_NUMANX_MOTOR_CANDIDATE_CLOCK) {
+    return NB_NUMANX_MOTOR_READY_CLOCK;
+  }
+  if (candidate_validation != NB_NUMANX_MOTOR_CANDIDATE_VALID) {
+    return NB_NUMANX_MOTOR_READY_IDENTITY;
+  }
+  if (gate->abiVersion != NB_NUMANX_MOTOR_READY_ABI_VERSION_V2
+      || gate->structBytes != NB_NUMANX_MOTOR_READY_GATE_V2_BYTE_COUNT) {
+    return NB_NUMANX_MOTOR_READY_FORMAT;
+  }
+  if (gate->status != NB_NUMANX_READY_GATE_SUCCESS) {
+    return NB_NUMANX_MOTOR_READY_STATUS;
+  }
+  if (gate->environment != candidate->environment_identifier
+      || gate->substepIndex != substep->substep_index
+      || gate->attemptIndex != substep->attempt_index
+      || gate->muscleCount != candidate->muscle_count
+      || gate->actuatorCommandKind != candidate->actuator_command_kind
+      || gate->controlStep != root->control_step_identifier
+      || gate->transactionFingerprint != root->transaction_fingerprint
+      || gate->substepFingerprint != substep->substep_fingerprint
+      || gate->candidateFingerprint != candidate->candidate_fingerprint
+      || gate->motorOutputFingerprint == 0
+      || gate->motorOutputFingerprint != header->output_fingerprint
+      || gate->motorProfileFingerprint != candidate->motor_profile_fingerprint
+      || gate->speciesTemplateFingerprint
+          != candidate->species_template_fingerprint
+      || gate->compiledSpeciesTemplateFingerprint
+          != candidate->compiled_species_template_fingerprint
+      || gate->brainProgramFingerprint == 0
+      || gate->fastProgramFingerprint == 0
+      || gate->decisionGateFingerprint == 0) {
+    return NB_NUMANX_MOTOR_READY_IDENTITY;
+  }
+  constexpr uint32_t known_output_flags =
+      NB_MOTOR_OUTPUT_FLAG_VALID | NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_SOURCE_INHIBITION
+      | NB_MOTOR_OUTPUT_FLAG_LOCALIZED_WITHDRAWAL;
+  if (header->format_version != NB_MOTOR_OUTPUT_V2_VERSION
+      || (header->flags & NB_MOTOR_OUTPUT_FLAG_VALID) == 0
+      || (header->flags & ~known_output_flags) != 0
+      || header->timestamp_nanoseconds
+          != candidate->accepted_brain_timestamp_nanoseconds
+      || header->brain_generation != candidate->brain_generation
+      || header->profile_fingerprint != candidate->motor_profile_fingerprint
+      || header->muscle_count != candidate->muscle_count
+      || header->environment_identifier != candidate->environment_identifier
+      || header->actuator_command_kind != candidate->actuator_command_kind
+      || header->clock_domain != candidate->clock_domain
+      || header->protective_command_fingerprint == 0
+      || !std::isfinite(header->motor_inhibition)
+      || !std::isfinite(header->autonomic_arousal)
+      || !std::isfinite(header->output_minimum)
+      || !std::isfinite(header->output_maximum)
+      || header->motor_inhibition < 0.0F
+      || header->motor_inhibition > 1.0F
+      || header->autonomic_arousal < 0.0F
+      || header->autonomic_arousal > 1.0F
+      || header->output_minimum >= header->output_maximum
+      || (((header->flags & NB_MOTOR_OUTPUT_FLAG_EMERGENCY_STOP) != 0)
+          != (header->motor_inhibition == 1.0F))) {
+    return NB_NUMANX_MOTOR_READY_IDENTITY;
+  }
+  if (gate->brainGeneration != candidate->brain_generation
+      || gate->acceptedBrainTimestampNanoseconds
+          != candidate->accepted_brain_timestamp_nanoseconds
+      || gate->randomCounterGeneration
+          != candidate->random_counter_generation) {
+    return NB_NUMANX_MOTOR_READY_GENERATION;
+  }
+  if (gate->clockDomain != NB_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS
+      || gate->clockDomain != candidate->clock_domain
+      || gate->clockQuantumNanoseconds
+          != NB_EXACT_NANOSECOND_CLOCK_QUANTUM_NANOSECONDS) {
+    return NB_NUMANX_MOTOR_READY_CLOCK;
+  }
+  if (gate->gateFingerprint == 0
+      || gate->gateFingerprint
+          != nb_brain_abi_numanx_motor_ready_gate_v2_fingerprint(gate)) {
+    return NB_NUMANX_MOTOR_READY_FINGERPRINT;
+  }
+  return NB_NUMANX_MOTOR_READY_VALID;
 }
 
 uint64_t nb_brain_abi_numanx_sensor_packet_fingerprint(

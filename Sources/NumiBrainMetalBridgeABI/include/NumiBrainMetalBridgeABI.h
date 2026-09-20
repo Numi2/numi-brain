@@ -29,6 +29,7 @@
 #define MRNX_RUNTIME_CONFIG_ABI_V7 7u
 #define MRNX_RUNTIME_CONFIG_ABI_V8 8u
 #define MRNX_PHYSICAL_ROOT_REQUEST_ABI_V2 2u
+#define MRNX_PHYSICAL_ROOT_REQUEST_ABI_V3 3u
 #define MRNX_EXACT_CLOCK_INFO_ABI_V1 1u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
@@ -44,6 +45,10 @@ typedef enum mrnx_element_type_v1 {
   MRNX_ELEMENT_RAW_BYTES_V1 = 0u,
   MRNX_ELEMENT_FLOAT32_V1 = 1u,
   MRNX_ELEMENT_UINT32_V1 = 2u,
+  /// Exact-clock request-v3 resource declarations. These prevent a legacy
+  /// raw-byte lease from claiming a v2 Brain motor header or ready gate.
+  MRNX_ELEMENT_BRAIN_MOTOR_OUTPUT_HEADER_V2 = 3u,
+  MRNX_ELEMENT_BRAIN_MOTOR_READY_GATE_V2 = 4u,
 } mrnx_element_type_v1;
 
 typedef enum mrnx_completion_status_v1 {
@@ -542,17 +547,15 @@ typedef struct mrnx_physical_root_request_v1 {
   mrnx_event_point_v1 motor_ready;
 } mrnx_physical_root_request_v1;
 
-// Staged exact-clock request shape. Root and substep identity are explicit
-// v2 nanoseconds. The motor candidate/header/ready records below are still the
-// immutable v1 family, so this mixed shape is not a routable accepted-root
-// contract yet. Native and Swift entry points must reject it before GPU
-// submission until the complete motor, publication, HumanMatter, and retained-
-// state v2 family exists.
+// Historical native request-v2 mirror. The native owner published this shape
+// with the complete v1 microsecond root/substep/motor family. Its ABI version
+// is therefore not an exact-clock signal. Swift must not route this ambiguous
+// legacy extension, and its bytes and field meanings may not be repurposed.
 typedef struct mrnx_physical_root_request_v2 {
   uint32_t abi_version;
   uint32_t struct_size;
-  NBJointTransactionTokenV2 root;
-  NBJointSubstepTokenV2 substep;
+  NBJointTransactionToken root;
+  NBJointSubstepToken substep;
   NBNumanXMotorCandidate candidate;
   mrnx_metal_range_v1 motor_header;
   mrnx_metal_range_v1 muscle_excitation;
@@ -561,6 +564,26 @@ typedef struct mrnx_physical_root_request_v2 {
   mrnx_metal_range_v1 motor_ready_gate;
   mrnx_event_point_v1 motor_ready;
 } mrnx_physical_root_request_v2;
+
+// Complete exact-clock inbound motor authority. Every time-bearing record is
+// a distinct v2 nanosecond family, and motor_header/motor_ready_gate must use
+// the typed v2 element declarations above. This request shape is intentionally
+// separate from historical request-v2. Swift loading/routing remains disabled
+// until exact outbound sensors, HumanMatter close, accepted publication, and
+// persistent state have equally explicit v2 contracts.
+typedef struct mrnx_physical_root_request_v3 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  NBJointTransactionTokenV2 root;
+  NBJointSubstepTokenV2 substep;
+  NBNumanXMotorCandidateV2 candidate;
+  mrnx_metal_range_v1 motor_header;
+  mrnx_metal_range_v1 muscle_excitation;
+  mrnx_metal_range_v1 autonomic_command;
+  mrnx_metal_range_v1 active_sensing_command;
+  mrnx_metal_range_v1 motor_ready_gate;
+  mrnx_event_point_v1 motor_ready;
+} mrnx_physical_root_request_v3;
 
 _Static_assert(sizeof(mrnx_root_v1) == 96u, "mrnx root ABI");
 _Static_assert(sizeof(mrnx_metal_range_v1) == 48u, "mrnx range ABI");
@@ -657,9 +680,19 @@ _Static_assert(offsetof(mrnx_aggregate_snapshot_v4, culture) == 1320u,
                "mrnx snapshot v4 culture offset");
 _Static_assert(sizeof(mrnx_physical_root_request_v1) == 600u, "mrnx request ABI");
 _Static_assert(sizeof(mrnx_physical_root_request_v2) == 600u,
-               "mrnx exact request ABI");
+               "mrnx historical request-v2 ABI");
 _Static_assert(offsetof(mrnx_physical_root_request_v2, candidate) == 176u,
-               "mrnx exact request candidate offset");
+               "mrnx historical request-v2 candidate offset");
+_Static_assert(sizeof(mrnx_physical_root_request_v3) == 600u,
+               "mrnx exact request-v3 ABI");
+_Static_assert(offsetof(mrnx_physical_root_request_v3, candidate) == 176u,
+               "mrnx exact request-v3 candidate offset");
+_Static_assert(offsetof(mrnx_physical_root_request_v3, motor_header) == 328u,
+               "mrnx exact request-v3 motor header offset");
+_Static_assert(offsetof(mrnx_physical_root_request_v3, motor_ready_gate) == 520u,
+               "mrnx exact request-v3 gate offset");
+_Static_assert(offsetof(mrnx_physical_root_request_v3, motor_ready) == 568u,
+               "mrnx exact request-v3 event offset");
 _Static_assert(offsetof(mrnx_physical_root_request_v1, motor_header) == 328u,
                "mrnx request motor offset");
 _Static_assert(offsetof(mrnx_physical_root_request_v1, motor_ready_gate) == 520u,

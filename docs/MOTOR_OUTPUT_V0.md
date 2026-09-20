@@ -1,7 +1,7 @@
 # Protective motor-output boundary
 
 The compiled profile remains format v1. The output header is format v3
-(80 bytes), and the transaction-local NumanX motor candidate is format v6
+(80 bytes), and the transaction-local NumanX motor candidate is format v7
 (152 bytes).
 
 This document defines the first executable mapping from accepted fast neural
@@ -103,6 +103,27 @@ of persistent checkpoints or parameter identity. The packet is valid only while
 the owning `MetalTissueRuntime` and residency set remain alive, and only for its
 named physical candidate. Retry produces a new substep fingerprint while
 preserving the same accepted neural output until simulated time advances.
+
+### Exact-nanosecond successor contract
+
+The additive exact-clock family consists of `NBMotorOutputHeaderV2` (format 4,
+80 bytes, 16-byte alignment), `NBNumanXMotorCandidateV2` (format 8, 152 bytes),
+and `NBNumanXMotorReadyGateGPUV2` (ABI 2, 160 bytes, 16-byte alignment). Each
+record carries or is transitively bound to clock domain 2; the ready gate also
+requires a one-nanosecond quantum. Field-wise candidate/output fingerprints and
+the ready gate's first-152-byte digest use separate version domains. A v1
+record, mixed clock family, non-unit exact quantum, weak header alignment, or
+header/candidate metadata mismatch therefore fails validation even if a caller
+recomputes its digest.
+
+The historical native `mrnx_physical_root_request_v2` is an all-v1 layout whose
+timestamp words were assigned ambiguous exact-clock meaning by the native
+owner. It is mirrored for ABI history only and is not routable from Swift.
+`mrnx_physical_root_request_v3` is the first all-exact inbound shape: v2 root,
+substep, and motor candidate plus typed v2 motor-header and ready-gate resource
+descriptors. No v3 begin symbol is loaded or called yet. Exact outbound sensor,
+HumanMatter close, accepted-publication, and persistent-state families must
+exist before this inbound contract can become accepted-root execution.
 
 `MetalTissueRuntime.borrowNumanXMotorBuffers(for:)` converts the live,
 unaccepted `FastSystemResult` into a lifetime-safe lease over the exact header

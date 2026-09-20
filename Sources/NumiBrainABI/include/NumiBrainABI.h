@@ -50,9 +50,11 @@ enum {
   NB_PROTECTIVE_COMMAND_BYTE_COUNT = 64,
   NB_MOTOR_CHANNEL_DESCRIPTOR_BYTE_COUNT = 32,
   NB_MOTOR_OUTPUT_HEADER_BYTE_COUNT = 80,
+  NB_MOTOR_OUTPUT_HEADER_V2_BYTE_COUNT = 80,
   NB_AUTONOMIC_COMMAND_BYTE_COUNT = 16,
   NB_ACTIVE_SENSING_COMMAND_BYTE_COUNT = 16,
   NB_NUMANX_MOTOR_CANDIDATE_BYTE_COUNT = 152,
+  NB_NUMANX_MOTOR_CANDIDATE_V2_BYTE_COUNT = 152,
   NB_NUMANX_SENSOR_CHANNEL_BYTE_COUNT = 56,
   NB_NUMANX_SENSOR_PACKET_BYTE_COUNT = 72,
   NB_DISPATCH_PLAN_VERSION = 1,
@@ -65,7 +67,9 @@ enum {
   NB_PROTECTIVE_COMMAND_VERSION = 1,
   NB_MOTOR_PROFILE_VERSION = 1,
   NB_MOTOR_OUTPUT_VERSION = 3,
+  NB_MOTOR_OUTPUT_V2_VERSION = 4,
   NB_NUMANX_MOTOR_CANDIDATE_VERSION = 7,
+  NB_NUMANX_MOTOR_CANDIDATE_V2_VERSION = 8,
   NB_NUMANX_SENSOR_PACKET_VERSION = 2,
   NB_REGIONAL_ROUTE_HISTORY_CAPACITY = 512,
   NB_REGIONAL_MAX_ROUTE_DELAY_MICROSECONDS = 5000,
@@ -563,6 +567,34 @@ typedef struct NBMotorOutputHeader {
   uint64_t output_fingerprint;
 } NBMotorOutputHeader;
 
+/// Exact-nanosecond motor-output header. Version 4 and `clock_domain` replace
+/// the corresponding v1 reserved word while preserving the 80-byte lease
+/// shape. This record belongs only to v2 joint transactions; the immutable
+/// version-3 microsecond header remains the sole v1 motor-output family.
+#if defined(__clang__) || defined(__GNUC__)
+#define NB_MOTOR_OUTPUT_ALIGN16 __attribute__((aligned(16)))
+#else
+#define NB_MOTOR_OUTPUT_ALIGN16
+#endif
+typedef struct NB_MOTOR_OUTPUT_ALIGN16 NBMotorOutputHeaderV2 {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t timestamp_nanoseconds;
+  uint64_t brain_generation;
+  uint64_t profile_fingerprint;
+  uint64_t protective_command_fingerprint;
+  uint32_t muscle_count;
+  uint32_t environment_identifier;
+  float motor_inhibition;
+  float autonomic_arousal;
+  uint32_t actuator_command_kind;
+  uint32_t clock_domain;
+  float output_minimum;
+  float output_maximum;
+  uint64_t output_fingerprint;
+} NBMotorOutputHeaderV2;
+#undef NB_MOTOR_OUTPUT_ALIGN16
+
 /// One GPU-resident autonomic actuator command. The channel meaning is owned
 /// by the immutable species physiology template associated with the root.
 typedef struct NBAutonomicCommand {
@@ -616,6 +648,38 @@ typedef struct NBNumanXMotorCandidate {
   uint64_t compiled_species_template_fingerprint;
   uint64_t candidate_fingerprint;
 } NBNumanXMotorCandidate;
+
+/// Exact-nanosecond transaction-local NumanX motor handoff. Version 8 and
+/// `clock_domain` replace the corresponding v1 reserved word while preserving
+/// the 152-byte lease shape. Every timestamp and fingerprint belongs to the
+/// explicit v2 joint-transaction family.
+typedef struct NBNumanXMotorCandidateV2 {
+  uint32_t format_version;
+  uint32_t flags;
+  uint64_t transaction_fingerprint;
+  uint64_t substep_fingerprint;
+  uint64_t accepted_brain_timestamp_nanoseconds;
+  uint64_t brain_generation;
+  uint64_t motor_profile_fingerprint;
+  uint64_t motor_output_header_gpu_address;
+  uint64_t muscle_excitation_gpu_address;
+  uint64_t random_counter_generation;
+  uint32_t motor_output_header_byte_count;
+  uint32_t muscle_excitation_byte_count;
+  uint32_t muscle_count;
+  uint32_t environment_identifier;
+  uint64_t autonomic_command_gpu_address;
+  uint32_t autonomic_command_byte_count;
+  uint32_t autonomic_command_count;
+  uint64_t active_sensing_command_gpu_address;
+  uint32_t active_sensing_command_byte_count;
+  uint32_t active_sensing_command_count;
+  uint32_t actuator_command_kind;
+  uint32_t clock_domain;
+  uint64_t species_template_fingerprint;
+  uint64_t compiled_species_template_fingerprint;
+  uint64_t candidate_fingerprint;
+} NBNumanXMotorCandidateV2;
 
 /// One causal, GPU-resident receptor view exported by NumanX. Channels are
 /// canonical ascending by modality. The buffer contains raw receptor features
@@ -797,6 +861,7 @@ typedef enum NBMotorOutputValidation {
   NB_MOTOR_OUTPUT_RELATION = 8,
   NB_MOTOR_OUTPUT_COMMAND_KIND = 9,
   NB_MOTOR_OUTPUT_FINGERPRINT = 10,
+  NB_MOTOR_OUTPUT_CLOCK = 11,
 } NBMotorOutputValidation;
 
 typedef enum NBNumanXMotorCandidateValidation {
@@ -809,6 +874,7 @@ typedef enum NBNumanXMotorCandidateValidation {
   NB_NUMANX_MOTOR_CANDIDATE_ADDRESS = 6,
   NB_NUMANX_MOTOR_CANDIDATE_SIZE = 7,
   NB_NUMANX_MOTOR_CANDIDATE_FINGERPRINT = 8,
+  NB_NUMANX_MOTOR_CANDIDATE_CLOCK = 9,
 } NBNumanXMotorCandidateValidation;
 
 typedef enum NBNumanXSensorPacketValidation {
@@ -862,7 +928,10 @@ size_t nb_brain_abi_joint_commit_token_v2_size(void);
 size_t nb_brain_abi_protective_command_size(void);
 size_t nb_brain_abi_motor_channel_descriptor_size(void);
 size_t nb_brain_abi_motor_output_header_size(void);
+size_t nb_brain_abi_motor_output_header_v2_size(void);
 size_t nb_brain_abi_numanx_motor_candidate_size(void);
+size_t nb_brain_abi_numanx_motor_candidate_v2_size(void);
+size_t nb_brain_abi_numanx_motor_ready_gate_v2_size(void);
 size_t nb_brain_abi_numanx_sensor_channel_size(void);
 size_t nb_brain_abi_numanx_sensor_packet_size(void);
 
@@ -1101,6 +1170,17 @@ uint32_t nb_brain_abi_validate_motor_output(
     const float *muscle_excitations
 );
 
+uint64_t nb_brain_abi_motor_output_v2_fingerprint(
+    const NBMotorOutputHeaderV2 *header,
+    const float *muscle_excitations
+);
+
+uint32_t nb_brain_abi_validate_motor_output_v2(
+    const NBNumanXMotorCandidateV2 *candidate,
+    const NBMotorOutputHeaderV2 *header,
+    const float *muscle_excitations
+);
+
 uint64_t nb_brain_abi_numanx_motor_candidate_fingerprint(
     const NBNumanXMotorCandidate *candidate
 );
@@ -1109,6 +1189,28 @@ uint32_t nb_brain_abi_validate_numanx_motor_candidate(
     const NBJointTransactionToken *root,
     const NBJointSubstepToken *substep,
     const NBNumanXMotorCandidate *candidate
+);
+
+uint64_t nb_brain_abi_numanx_motor_candidate_v2_fingerprint(
+    const NBNumanXMotorCandidateV2 *candidate
+);
+
+uint32_t nb_brain_abi_validate_numanx_motor_candidate_v2(
+    const NBJointTransactionTokenV2 *root,
+    const NBJointSubstepTokenV2 *substep,
+    const NBNumanXMotorCandidateV2 *candidate
+);
+
+uint64_t nb_brain_abi_numanx_motor_ready_gate_v2_fingerprint(
+    const NBNumanXMotorReadyGateGPUV2 *gate
+);
+
+uint32_t nb_brain_abi_validate_numanx_motor_ready_gate_v2(
+    const NBJointTransactionTokenV2 *root,
+    const NBJointSubstepTokenV2 *substep,
+    const NBNumanXMotorCandidateV2 *candidate,
+    const NBMotorOutputHeaderV2 *header,
+    const NBNumanXMotorReadyGateGPUV2 *gate
 );
 
 uint64_t nb_brain_abi_numanx_sensor_packet_fingerprint(

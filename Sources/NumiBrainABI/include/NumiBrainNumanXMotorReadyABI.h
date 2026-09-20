@@ -10,8 +10,10 @@ extern "C" {
 
 enum {
   NB_NUMANX_MOTOR_READY_ABI_VERSION = 1,
+  NB_NUMANX_MOTOR_READY_ABI_VERSION_V2 = 2,
   NB_NUMANX_DECISION_READY_GATE_BYTE_COUNT = 160,
   NB_NUMANX_MOTOR_READY_GATE_BYTE_COUNT = 160,
+  NB_NUMANX_MOTOR_READY_GATE_V2_BYTE_COUNT = 160,
   NB_NUMANX_DECISION_READY_MAX_RANGES = 12,
 };
 
@@ -20,6 +22,17 @@ typedef enum NBNumanXReadyGateStatus {
   NB_NUMANX_READY_GATE_SUCCESS = 1,
   NB_NUMANX_READY_GATE_FAILURE = 2,
 } NBNumanXReadyGateStatus;
+
+typedef enum NBNumanXMotorReadyValidation {
+  NB_NUMANX_MOTOR_READY_VALID = 0,
+  NB_NUMANX_MOTOR_READY_NULL = 1,
+  NB_NUMANX_MOTOR_READY_FORMAT = 2,
+  NB_NUMANX_MOTOR_READY_STATUS = 3,
+  NB_NUMANX_MOTOR_READY_IDENTITY = 4,
+  NB_NUMANX_MOTOR_READY_GENERATION = 5,
+  NB_NUMANX_MOTOR_READY_CLOCK = 6,
+  NB_NUMANX_MOTOR_READY_FINGERPRINT = 7,
+} NBNumanXMotorReadyValidation;
 
 #if defined(__clang__) || defined(__GNUC__)
 #define NB_NUMANX_READY_ALIGN16 __attribute__((aligned(16)))
@@ -92,6 +105,38 @@ typedef struct NB_NUMANX_READY_ALIGN16 NBNumanXMotorReadyGateGPU {
   uint64_t gateFingerprint;
 } NBNumanXMotorReadyGateGPU;
 
+/// Exact-nanosecond successor to `NBNumanXMotorReadyGateGPU`. Version 2 and
+/// the explicit clock domain/quantum replace the v1 reserved word without
+/// changing the 160-byte lease shape. This is a distinct hash family; v1
+/// ready records remain byte-for-byte and hash-for-hash unchanged.
+typedef struct NB_NUMANX_READY_ALIGN16 NBNumanXMotorReadyGateGPUV2 {
+  uint32_t abiVersion;
+  uint32_t structBytes;
+  uint32_t status;
+  uint32_t environment;
+  uint32_t substepIndex;
+  uint32_t attemptIndex;
+  uint32_t muscleCount;
+  uint32_t actuatorCommandKind;
+  uint64_t controlStep;
+  uint64_t transactionFingerprint;
+  uint64_t substepFingerprint;
+  uint64_t candidateFingerprint;
+  uint64_t motorOutputFingerprint;
+  uint64_t motorProfileFingerprint;
+  uint64_t brainGeneration;
+  uint64_t acceptedBrainTimestampNanoseconds;
+  uint64_t randomCounterGeneration;
+  uint64_t speciesTemplateFingerprint;
+  uint64_t compiledSpeciesTemplateFingerprint;
+  uint64_t brainProgramFingerprint;
+  uint64_t fastProgramFingerprint;
+  uint64_t decisionGateFingerprint;
+  uint32_t clockDomain;
+  uint32_t clockQuantumNanoseconds;
+  uint64_t gateFingerprint;
+} NBNumanXMotorReadyGateGPUV2;
+
 #if defined(__cplusplus)
 static_assert(sizeof(NBNumanXDecisionReadyGateGPU) == 160);
 static_assert(alignof(NBNumanXDecisionReadyGateGPU) == 16);
@@ -99,6 +144,10 @@ static_assert(offsetof(NBNumanXDecisionReadyGateGPU, gateFingerprint) == 152);
 static_assert(sizeof(NBNumanXMotorReadyGateGPU) == 160);
 static_assert(alignof(NBNumanXMotorReadyGateGPU) == 16);
 static_assert(offsetof(NBNumanXMotorReadyGateGPU, gateFingerprint) == 152);
+static_assert(sizeof(NBNumanXMotorReadyGateGPUV2) == 160);
+static_assert(alignof(NBNumanXMotorReadyGateGPUV2) == 16);
+static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, clockDomain) == 144);
+static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, gateFingerprint) == 152);
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 _Static_assert(sizeof(NBNumanXDecisionReadyGateGPU) == 160,
                "decision-ready gate ABI");
@@ -112,6 +161,14 @@ _Static_assert(_Alignof(NBNumanXMotorReadyGateGPU) == 16,
                "motor-ready gate alignment");
 _Static_assert(offsetof(NBNumanXMotorReadyGateGPU, gateFingerprint) == 152,
                "motor-ready fingerprint offset");
+_Static_assert(sizeof(NBNumanXMotorReadyGateGPUV2) == 160,
+               "exact motor-ready gate ABI");
+_Static_assert(_Alignof(NBNumanXMotorReadyGateGPUV2) == 16,
+               "exact motor-ready gate alignment");
+_Static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, clockDomain) == 144,
+               "exact motor-ready clock offset");
+_Static_assert(offsetof(NBNumanXMotorReadyGateGPUV2, gateFingerprint) == 152,
+               "exact motor-ready fingerprint offset");
 #endif
 
 #undef NB_NUMANX_READY_ALIGN16

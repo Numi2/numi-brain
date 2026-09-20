@@ -41,7 +41,7 @@ final class MetalNumanXRuntimeConfigV8Tests: XCTestCase {
     }
   }
 
-  func testExactClockAndPhysicalRootV2LayoutsMirrorNativeContract() {
+  func testExactClockAndPhysicalRootRequestLayoutsMirrorNativeContract() {
     XCTAssertEqual(UInt32(MRNX_EXACT_CLOCK_INFO_ABI_V1), 1)
     XCTAssertEqual(MemoryLayout<mrnx_exact_clock_info_v1>.stride, 40)
     XCTAssertEqual(
@@ -52,6 +52,15 @@ final class MetalNumanXRuntimeConfigV8Tests: XCTestCase {
     )
     XCTAssertEqual(UInt32(MRNX_PHYSICAL_ROOT_REQUEST_ABI_V2), 2)
     XCTAssertEqual(MemoryLayout<mrnx_physical_root_request_v2>.stride, 600)
+    var historicalV2 = mrnx_physical_root_request_v2()
+    historicalV2.root.committed_timestamp_microseconds = 12
+    historicalV2.substep.start_timestamp_microseconds = 12
+    historicalV2.candidate.accepted_brain_timestamp_microseconds = 12
+    XCTAssertEqual(historicalV2.root.committed_timestamp_microseconds, 12)
+    XCTAssertEqual(historicalV2.substep.start_timestamp_microseconds, 12)
+    XCTAssertEqual(
+      historicalV2.candidate.accepted_brain_timestamp_microseconds, 12
+    )
     XCTAssertEqual(
       MemoryLayout<mrnx_physical_root_request_v2>.offset(of: \.candidate),
       176
@@ -63,6 +72,31 @@ final class MetalNumanXRuntimeConfigV8Tests: XCTestCase {
     XCTAssertEqual(
       MemoryLayout<mrnx_physical_root_request_v2>.offset(of: \.motor_ready),
       568
+    )
+
+    XCTAssertEqual(UInt32(MRNX_PHYSICAL_ROOT_REQUEST_ABI_V3), 3)
+    XCTAssertEqual(MemoryLayout<mrnx_physical_root_request_v3>.stride, 600)
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v3>.offset(of: \.candidate),
+      176
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v3>.offset(of: \.motor_header),
+      328
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v3>.offset(of: \.motor_ready_gate),
+      520
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_physical_root_request_v3>.offset(of: \.motor_ready),
+      568
+    )
+    XCTAssertEqual(
+      UInt32(MRNX_ELEMENT_BRAIN_MOTOR_OUTPUT_HEADER_V2.rawValue), 3
+    )
+    XCTAssertEqual(
+      UInt32(MRNX_ELEMENT_BRAIN_MOTOR_READY_GATE_V2.rawValue), 4
     )
   }
 
