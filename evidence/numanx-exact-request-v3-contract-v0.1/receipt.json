@@ -12,8 +12,9 @@
     "metal_api_validation": true
   },
   "brain": {
-    "commit": "5d9398bdeb4304224398f9b2df9f321cf549da12",
-    "tree": "662589d4c76489835e8dc872543e9626734fb2c6",
+    "commit": "53d90bc57066c8d46185e9cfdc31543af7ba8eba",
+    "tree": "c03acbd625af8f9a9cd1ee5fd41577023e174ec2",
+    "contract_commit": "5d9398bdeb4304224398f9b2df9f321cf549da12",
     "branch": "main",
     "tracked_source_status": "clean"
   },
@@ -40,9 +41,10 @@
     }
   },
   "qualification": {
-    "fresh_brain_full_test_graph_build": "passed",
+    "fresh_brain_full_test_graph_build_at_contract_commit": "passed",
+    "brain_incremental_build_at_followup_commit": "passed",
     "brain_exact_and_layout_tests_with_metal_validation": "15_of_15_passed",
-    "brain_focused_compatibility_tests": "33_of_33_passed",
+    "brain_focused_compatibility_tests_with_metal_validation": "33_of_33_passed",
     "native_warnings_as_errors_build": "passed",
     "native_fixed_vector_cpu_contract": "1_of_1_passed",
     "native_asset_backed_exact_admission": "1_of_1_passed",
@@ -53,11 +55,13 @@
     "substep": "3888e4c70de4dbb9",
     "candidate": "68b006408eb2cc51"
   },
-  "known_open_evidence": {
+  "resolved_evidence": {
     "baseline_commit": "a2783fcf2b78a2e64eca08da9ee9683794344d71",
+    "fix_commit": "53d90bc57066c8d46185e9cfdc31543af7ba8eba",
     "test": "MetalJointTransactionTests.testCorrectedDurationHistoryCoverageFailsBeforeOverwrite",
     "condition": "Metal API validation enabled",
-    "result": "zero_grid_dispatch_assertion",
+    "baseline_result": "zero_grid_dispatch_assertion",
+    "followup_result": "passed_with_intended_typed_coverage_error",
     "introduced_by_exact_request_v3": false
   },
   "sha256": {
@@ -69,13 +73,15 @@
     "metalrobo_numanx_fullbody_bridge_probe": "904cc23b92db6979b536b6bba43354ed0f2e9e7e36d8f4c1906a07ec1236e3cf",
     "brain-qualification.log": "59019874fc71d1d45bde713a87dd32d0f405be670ff9d27926cc6783c3652b70",
     "native-qualification.log": "cc326efc5b6a86397755f6fc59dc8e1b0a503db4b22baa2bb889bacbd00c7620",
-    "baseline-metal-validation-zero-grid.log": "6dfaba7bf7b7a3fcfec75f7c06b8aea61bd4250d5d2a4057943c2a1540d7e010"
+    "baseline-metal-validation-zero-grid.log": "6dfaba7bf7b7a3fcfec75f7c06b8aea61bd4250d5d2a4057943c2a1540d7e010",
+    "metal-validation-followup.log": "d35ebf6a24cd4487476f0cd8827e9a737e773d3dc3fff879da8ad2ecd1ed0b7b"
   },
   "claims": {
     "exact_inbound_motor_contract": true,
     "historical_request_v2_preserved": true,
     "physical_request_v3_admission": true,
     "no_touch_fail_closed_boundary": true,
+    "zero_channel_gpu_dispatch_guard": true,
     "exact_gpu_root_submitted": false,
     "exact_outbound_sensor_contract": false,
     "exact_human_matter_close": false,

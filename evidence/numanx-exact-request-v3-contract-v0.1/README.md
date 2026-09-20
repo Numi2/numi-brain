@@ -2,8 +2,9 @@
 
 Status: `inbound_contract_passed_execution_blocked`
 
-NumiBrain commit `5d9398bdeb4304224398f9b2df9f321cf549da12` on
-`main` and Numi Human native integration commit
+NumiBrain contract commit `5d9398bdeb4304224398f9b2df9f321cf549da12`
+and Metal-validation follow-up `53d90bc57066c8d46185e9cfdc31543af7ba8eba`
+on `main`, together with Numi Human native integration commit
 `e7ad0ac14c14f8552509225076e21f0373d7da98` agree on an additive,
 domain-separated exact-nanosecond inbound motor contract.
 
@@ -23,13 +24,15 @@ then stopped at the deliberate outbound-unavailable boundary (stage 900)
 before resource import, event import, GPU command construction or submission,
 callback, event signal, accepted publication, or persistent-state advance.
 
-Brain qualification passed 15 exact-domain/layout tests with Metal API
-validation enabled and 33 focused exact/v1 compatibility tests in the normal
-runtime configuration. A broader pre-existing Metal API validation issue was
-also retained: `MetalJointTransactionTests.testCorrectedDurationHistoryCoverageFailsBeforeOverwrite`
-dispatches a zero-sized grid and aborts at baseline commit `a2783fc`. It is not
-caused by this contract, but it remains an open Metal-validation hygiene issue;
-see `baseline-metal-validation-zero-grid.log`.
+Brain qualification passed 15 exact-domain/layout tests and then all 33 focused
+exact/v1 compatibility tests with Metal API validation enabled. That broad run
+first exposed a pre-existing zero-sized fast-autonomic dispatch in
+`MetalJointTransactionTests.testCorrectedDurationHistoryCoverageFailsBeforeOverwrite`;
+the same assertion reproduces at baseline commit `a2783fc`. Follow-up
+`53d90bc` skips the optional kernel when no autonomic channels are bound and
+strengthens the test to require its intended relay-history coverage error. The
+33-test physical-M4 rerun passes with Metal validation. Both the retained
+baseline failure and passing follow-up are included.
 
 This evidence qualifies the inbound ABI and fail-closed physical admission
 boundary only. It does **not** qualify exact outbound sensors, HumanMatter
