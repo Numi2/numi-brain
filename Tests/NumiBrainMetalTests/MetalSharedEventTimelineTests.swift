@@ -310,7 +310,11 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       touchFeatureDimension: 1,
       includeTouchNociceptionBinding: true
     )
-    let fixture = try makeFixture(compiledSpeciesTemplate: compiled)
+    let affectConfiguration = try AffectiveModelConfiguration(reliefGain: 2)
+    let fixture = try makeFixture(
+      compiledSpeciesTemplate: compiled,
+      affectiveModelConfiguration: affectConfiguration
+    )
     let first = try runAcceptedRoot(
       fixture: fixture,
       token: fixture.token,
@@ -365,12 +369,14 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     }
 
     let cpuPain = try AffectiveState.neutral(
-      at: BrainTimestamp(microseconds: 10_000)
+      at: BrainTimestamp(microseconds: 10_000),
+      configuration: affectConfiguration
     ).advanced(
       to: BrainTimestamp(microseconds: 11_000),
       sample: cpuSample(
         from: first, targetTimestamp: 11_000, nociceptionTimestamp: 10_750
-      )
+      ),
+      configuration: affectConfiguration
     )
     XCTAssertEqual(float(first, 0), cpuPain.pain, accuracy: 1.0e-5)
     XCTAssertEqual(float(first, 4), cpuPain.pleasure, accuracy: 1.0e-5)
@@ -399,8 +405,11 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       to: BrainTimestamp(microseconds: 12_000),
       sample: cpuSample(
         from: second, targetTimestamp: 12_000, nociceptionTimestamp: 11_750
-      )
+      ),
+      configuration: affectConfiguration
     )
+    XCTAssertEqual(cpuRelief.relief, 1)
+    XCTAssertEqual(cpuRelief.pleasure, 1)
     XCTAssertEqual(float(second, 0), cpuRelief.pain, accuracy: 1.0e-5)
     XCTAssertEqual(float(second, 4), cpuRelief.pleasure, accuracy: 1.0e-5)
     XCTAssertEqual(float(second, 8), cpuRelief.relief, accuracy: 1.0e-5)
@@ -707,6 +716,82 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     )
   }
 
+  func testAcceptedAffectStateIsIndependentAcrossAgentRuntimes() throws {
+    let template = try makeNumanXInteropCompiledTemplate(
+      touchReceptorCount: 1,
+      touchFeatureDimension: 1,
+      includeTouchNociceptionBinding: true,
+      interoceptorCount: 1,
+      interoceptionFeatureDimension: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    )
+    let firstAgent = try makeFixture(
+      compiledSpeciesTemplate: template,
+      affectiveModelConfiguration: .reference
+    )
+    let secondAgent = try makeFixture(
+      compiledSpeciesTemplate: template,
+      affectiveModelConfiguration: .reference
+    )
+
+    let firstAgentResult = try runAcceptedRoot(
+      fixture: firstAgent,
+      token: firstAgent.token,
+      touchNociceptionValue: 1,
+      interoceptionValues: [0, 1, 0, 0, 0, 0.8],
+      cachedDecisionFingerprint: 0xaffe_0510
+    )
+    let firstAgentAcceptedBytes = firstAgentResult.hotState
+    let secondAgentResult = try runAcceptedRoot(
+      fixture: secondAgent,
+      token: secondAgent.token,
+      touchNociceptionValue: 0,
+      interoceptionValues: [1, 1, 0, 0, 0, 0],
+      cachedDecisionFingerprint: 0xaffe_0511
+    )
+
+    let firstSection = firstAgent.runtime.agentStateRuntime.arena.layout
+      .section(.affectiveState)
+    let secondSection = secondAgent.runtime.agentStateRuntime.arena.layout
+      .section(.affectiveState)
+    func affectRecord(
+      _ hotState: Data,
+      sectionOffset: Int,
+      sectionByteCount: Int
+    ) -> Data {
+      hotState.subdata(
+        in: sectionOffset..<(sectionOffset + sectionByteCount)
+      )
+    }
+    let firstRecord = affectRecord(
+      firstAgentAcceptedBytes,
+      sectionOffset: firstSection.byteOffset,
+      sectionByteCount: firstSection.byteCount
+    )
+    let secondRecord = affectRecord(
+      secondAgentResult.hotState,
+      sectionOffset: secondSection.byteOffset,
+      sectionByteCount: secondSection.byteCount
+    )
+    func pain(_ record: Data) -> Float {
+      record.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: 0, as: Float.self)
+      }
+    }
+
+    XCTAssertGreaterThan(pain(firstRecord), 0.75)
+    XCTAssertLessThan(pain(secondRecord), 0.1)
+    XCTAssertGreaterThan(pain(firstRecord) - pain(secondRecord), 0.5)
+    XCTAssertNotEqual(firstRecord, secondRecord)
+    XCTAssertEqual(
+      try firstAgent.runtime.agentStateRuntime.snapshotCommittedState().hotState,
+      firstAgentAcceptedBytes,
+      "accepting another agent's root must not mutate this agent's affect state"
+    )
+  }
+
   func testDisabledAffectModeNeutralizesMetalAffectRecord() throws {
     let typedTemplate = try makeNumanXInteropCompiledTemplate(
       interoceptorCount: 1,
@@ -748,6 +833,42 @@ final class MetalSharedEventTimelineTests: XCTestCase {
       },
       0
     )
+  }
+
+  func testTypedDamageSaturatesMetalPainAgainstCPUOracle() throws {
+    let template = try makeNumanXInteropCompiledTemplate(
+      interoceptorCount: 1,
+      interoceptionFeatureDimension: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.fingerprint
+    )
+    let fixture = try makeFixture(compiledSpeciesTemplate: template)
+    let result = try runAcceptedRoot(
+      fixture: fixture,
+      token: fixture.token,
+      touchNociceptionValue: nil,
+      interoceptionValues: [1, 1, 0, 0, 0, 1],
+      cachedDecisionFingerprint: 0xaffe_0310
+    )
+    let expected = try AffectiveState.neutral(
+      at: BrainTimestamp(microseconds: 10_000)
+    ).advanced(
+      to: BrainTimestamp(microseconds: 11_000),
+      sample: try AffectivePhysiologySample(
+        interoceptionTimestamp: BrainTimestamp(microseconds: 10_000),
+        energyDeficit: 0,
+        respiratoryDeficit: 0,
+        temperatureDeviation: 0,
+        fatigue: 0,
+        tissueDamage: 1
+      )
+    )
+    let affect = affectBytes(result, fixture: fixture)
+    XCTAssertEqual(expected.pain, 1)
+    XCTAssertEqual(affectFloat(affect, offset: 0), expected.pain, accuracy: 1e-5)
+    XCTAssertEqual(affectFloat(affect, offset: 4), expected.pleasure, accuracy: 1e-5)
+    XCTAssertEqual(affectFloat(affect, offset: 8), expected.relief, accuracy: 1e-5)
   }
 
   func testTypedNumanXFullBodyAggregates416ReceptorsAndRejectsIncompleteCoverage()

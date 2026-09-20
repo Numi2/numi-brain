@@ -4,6 +4,45 @@ import XCTest
 @testable import NumiBrainCore
 
 final class NumanXGateCArtifactTests: XCTestCase {
+  func testAffectPairEligibilityRequiresBothBehaviorResultsAndAllMatchedEvidence()
+    throws
+  {
+    func eligibility(
+      matchedRuntime: Bool = true,
+      matchedWorld: Bool = true,
+      matchedInitialState: Bool = true,
+      affectProvenance: Bool = true,
+      bootstrapProvenance: Bool = true,
+      bootstrapSensors: Bool = true,
+      acceptedNativeEvidence: Bool = true,
+      enabledBehavior: Bool = true,
+      disabledBehavior: Bool = true
+    ) -> BrainPolicyNumanXAffectPairEligibility {
+      BrainPolicyNumanXAffectPairEligibility(
+        matchedNativeRuntimeIdentity: matchedRuntime,
+        matchedNativeWorldIdentity: matchedWorld,
+        matchedPreparedInitialStateFingerprint: matchedInitialState,
+        affectConfigurationProvenanceMatches: affectProvenance,
+        matchedSyntheticBootstrapProvenance: bootstrapProvenance,
+        matchedBootstrapSensorSample: bootstrapSensors,
+        hasAcceptedNativeAggregateEvidence: acceptedNativeEvidence,
+        enabledBehaviorResultAvailable: enabledBehavior,
+        disabledBehaviorResultAvailable: disabledBehavior
+      )
+    }
+
+    XCTAssertTrue(eligibility().isEligible)
+    XCTAssertFalse(eligibility(enabledBehavior: false).isEligible)
+    XCTAssertFalse(eligibility(disabledBehavior: false).isEligible)
+    XCTAssertFalse(eligibility(matchedRuntime: false).isEligible)
+    XCTAssertFalse(eligibility(matchedWorld: false).isEligible)
+    XCTAssertFalse(eligibility(matchedInitialState: false).isEligible)
+    XCTAssertFalse(eligibility(affectProvenance: false).isEligible)
+    XCTAssertFalse(eligibility(bootstrapProvenance: false).isEligible)
+    XCTAssertFalse(eligibility(bootstrapSensors: false).isEligible)
+    XCTAssertFalse(eligibility(acceptedNativeEvidence: false).isEligible)
+  }
+
   func testProductionFullBodyTransportShapeIsExact() throws {
     let compiled = try NumanXFullBodyTransportTemplate.compile()
     XCTAssertEqual(compiled.species.motor.actuatorCount, 416)

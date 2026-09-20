@@ -151,6 +151,7 @@ private struct AffectStudyArtifact: Codable {
   let matchedNativeRuntimeIdentity: Bool
   let matchedNativeWorldIdentity: Bool
   let hasAcceptedNativeAggregateEvidence: Bool
+  let hasBehaviorResultForBothArms: Bool
   let affectConfigurationProvenanceMatchesInputs: Bool
   let behaviorComparisonEligible: Bool
   let enabledBehavior: ReachHoldResult?
@@ -461,10 +462,21 @@ private func affectStudy(_ input: AffectStudyInput, directory: URL) throws -> St
     && disabledFirstNativeAggregate != nil
   let matchedBootstrapProvenance = enabledBootstrapSource == .syntheticBootstrap
     && disabledBootstrapSource == .syntheticBootstrap
-  let behaviorComparisonEligible = matchedRuntime && matchedWorld
-    && matchedInitialState && affectProvenanceMatches
-    && matchedBootstrapProvenance && matchedBootstrapSample
-    && hasAcceptedNativeAggregate
+  let hasBehaviorResultForBothArms = enabledEvaluation.artifact.result != nil
+    && disabledEvaluation.artifact.result != nil
+  let eligibility = BrainPolicyNumanXAffectPairEligibility(
+    matchedNativeRuntimeIdentity: matchedRuntime,
+    matchedNativeWorldIdentity: matchedWorld,
+    matchedPreparedInitialStateFingerprint: matchedInitialState,
+    affectConfigurationProvenanceMatches: affectProvenanceMatches,
+    matchedSyntheticBootstrapProvenance: matchedBootstrapProvenance,
+    matchedBootstrapSensorSample: matchedBootstrapSample,
+    hasAcceptedNativeAggregateEvidence: hasAcceptedNativeAggregate,
+    enabledBehaviorResultAvailable:
+      enabledEvaluation.artifact.result != nil,
+    disabledBehaviorResultAvailable:
+      disabledEvaluation.artifact.result != nil
+  )
   let artifact = AffectStudyArtifact(
     formatVersion: 1,
     promotable: false,
@@ -490,8 +502,9 @@ private func affectStudy(_ input: AffectStudyInput, directory: URL) throws -> St
     matchedNativeRuntimeIdentity: matchedRuntime,
     matchedNativeWorldIdentity: matchedWorld,
     hasAcceptedNativeAggregateEvidence: hasAcceptedNativeAggregate,
+    hasBehaviorResultForBothArms: hasBehaviorResultForBothArms,
     affectConfigurationProvenanceMatchesInputs: affectProvenanceMatches,
-    behaviorComparisonEligible: behaviorComparisonEligible,
+    behaviorComparisonEligible: eligibility.isEligible,
     enabledBehavior: enabledEvaluation.artifact.result,
     disabledBehavior: disabledEvaluation.artifact.result
   )

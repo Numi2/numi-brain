@@ -162,7 +162,13 @@ initial-state fingerprint, match retained native world and physics identities,
 and contain accepted native aggregate sensor samples in both arms. The paired
 artifact retains those identities, bootstrap provenance, matching bootstrap
 sensor status, first native aggregate sample hashes, affect fingerprints,
-run/evaluation hashes, and behavior metrics. Format-5 capture-run artifacts
+run/evaluation hashes, and behavior metrics. Eligibility also requires both
+evaluations to produce a behavior result; a rejected root leaves that arm's
+result absent and prevents the pair from being marked comparable. The first
+native aggregate sample is retained for each arm but is not required to match:
+it follows the first treated root and may contain a real behavioral effect.
+The matched baseline is the authored world, prepared initial-state fingerprint,
+and byte-verified bootstrap sensor sample. Format-5 capture-run artifacts
 retain native world identity and prepared-state fingerprints; format 4 (affect
 configuration) and historical format-2/3 artifacts remain readable.
 `behaviorComparisonEligible` remains a
