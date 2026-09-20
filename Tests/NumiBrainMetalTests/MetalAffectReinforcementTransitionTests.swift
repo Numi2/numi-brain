@@ -18,14 +18,15 @@ final class MetalAffectReinforcementTransitionTests: XCTestCase {
     let fixture = try makeFixture()
     let start = UInt64(10_000)
     try seedDrivesForIsolatedTransition(fixture, timestamp: start)
-    let stepDurations: [UInt64] = [1_000, 50_000_000, 50_000_000, 1_000]
+    let stepDurations: [UInt64] = [
+      1_000, 50_000_000, 50_000_000, 1_000, 50_000_000,
+    ]
     let healthy: Physiology = .init(tissueDamage: 0, nociception: 0)
     let injured: Physiology = .init(tissueDamage: 0.8, nociception: 0.8)
 
-    // The first accepted root creates injury. The following root observes it,
-    // the third observes recovery, and the fourth observes reinjury. Cognitive
-    // homeostasis is updated from the committed observation, so each accepted
-    // physical state enters the reinforcement record on the following root.
+    // The first accepted root creates injury. Later roots read the prior
+    // committed physiology while accepting alternating recovery and reinjury
+    // states, so each physical change enters reinforcement on the next root.
     let acceptedInjury = try runAcceptedRoot(
       fixture,
       step: 0,
@@ -56,6 +57,14 @@ final class MetalAffectReinforcementTransitionTests: XCTestCase {
       committedTimestamp: recoveryTransition.endTimestamp,
       duration: stepDurations[3],
       committedPhysiology: injured,
+      acceptedPhysiology: healthy
+    )
+    let secondRecoveryTransition = try runAcceptedRoot(
+      fixture,
+      step: 4,
+      committedTimestamp: reinjuryTransition.endTimestamp,
+      duration: stepDurations[4],
+      committedPhysiology: healthy,
       acceptedPhysiology: injured
     )
     XCTAssertLessThan(
@@ -70,8 +79,23 @@ final class MetalAffectReinforcementTransitionTests: XCTestCase {
       reinjuryTransition.factoredReinforcement[0], -0.05,
       "reinjury must reverse the homeostatic factor back below zero"
     )
+    XCTAssertGreaterThan(
+      secondRecoveryTransition.factoredReinforcement[0], 0.05,
+      "the second recovery should retain its signed homeostatic contribution"
+    )
+    XCTAssertLessThanOrEqual(
+      injuryTransition.factoredReinforcement[0]
+        + recoveryTransition.factoredReinforcement[0]
+        + reinjuryTransition.factoredReinforcement[0]
+        + secondRecoveryTransition.factoredReinforcement[0],
+      1.0e-5,
+      "two injury/recovery cycles must not accumulate positive homeostatic balance"
+    )
 
-    for transition in [injuryTransition, recoveryTransition, reinjuryTransition] {
+    for transition in [
+      injuryTransition, recoveryTransition, reinjuryTransition,
+      secondRecoveryTransition,
+    ] {
       let homeostatic = transition.factoredReinforcement[0]
       let painCost = transition.factoredReinforcement[4]
       XCTAssertLessThan(
@@ -93,11 +117,15 @@ final class MetalAffectReinforcementTransitionTests: XCTestCase {
       "relief on the accepted recovery should retain positive pleasure"
     )
     XCTAssertGreaterThan(
-      recoveryTransition.affect[0], 0.75,
-      "the accepted reinjury should raise affective pain again"
+      reinjuryTransition.affect[1], 0.75,
+      "the second accepted recovery should also produce bounded relief pleasure"
+    )
+    XCTAssertGreaterThan(
+      secondRecoveryTransition.affect[0], 0.75,
+      "the second accepted reinjury should raise affective pain again"
     )
     XCTAssertEqual(
-      reinjuryTransition.endTimestamp,
+      secondRecoveryTransition.endTimestamp,
       start + stepDurations.reduce(0, +)
     )
   }

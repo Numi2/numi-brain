@@ -20,10 +20,40 @@ final class MetalAffectInterventionTests: XCTestCase {
       damage: 0
     )
     XCTAssertNotEqual(pair.control.workspaceKind, 9)
-    XCTAssertEqual(pair.pleasure.workspaceKind, 9)
-    XCTAssertEqual(pair.pleasure.workspaceSourceModule, 70)
-    XCTAssertEqual(pair.pleasure.workspacePleasure, 1, accuracy: 1.0e-5)
-    XCTAssertEqual(pair.pleasure.workspaceSelectionScore, 1, accuracy: 1.0e-5)
+    XCTAssertEqual(pair.treated.workspaceKind, 9)
+    XCTAssertEqual(pair.treated.workspaceSourceModule, 70)
+    XCTAssertEqual(pair.treated.workspacePleasure, 1, accuracy: 1.0e-5)
+    XCTAssertEqual(pair.treated.workspaceSelectionScore, 1, accuracy: 1.0e-5)
+  }
+
+  func testFreshPainWinsMatchedWorkspaceAttentionSelection() throws {
+    let pair = try runMatchedPair(
+      committed: BrainTimestamp(microseconds: 100_000),
+      target: BrainTimestamp(microseconds: 101_000),
+      damage: 0,
+      affectValues: [1, 0, 0],
+      sourceMask: 1 << 5
+    )
+
+    XCTAssertNotEqual(pair.control.workspaceKind, 9)
+    XCTAssertEqual(pair.treated.workspaceKind, 9)
+    XCTAssertEqual(pair.treated.workspacePain, 1, accuracy: 1.0e-5)
+    XCTAssertEqual(pair.treated.workspaceSelectionScore, 1, accuracy: 1.0e-5)
+  }
+
+  func testFreshReliefWinsMatchedWorkspaceAttentionSelection() throws {
+    let pair = try runMatchedPair(
+      committed: BrainTimestamp(microseconds: 100_000),
+      target: BrainTimestamp(microseconds: 101_000),
+      damage: 0,
+      affectValues: [0, 0, 1],
+      sourceMask: 1 << 5
+    )
+
+    XCTAssertNotEqual(pair.control.workspaceKind, 9)
+    XCTAssertEqual(pair.treated.workspaceKind, 9)
+    XCTAssertEqual(pair.treated.workspaceRelief, 1, accuracy: 1.0e-5)
+    XCTAssertEqual(pair.treated.workspaceSelectionScore, 1, accuracy: 1.0e-5)
   }
 
   func testSelectedEvidenceAgeControlsMatchedWorkspaceAttentionFreshness() throws {
@@ -46,10 +76,10 @@ final class MetalAffectInterventionTests: XCTestCase {
       affectTimestamp: evidenceTimestamp
     )
 
-    XCTAssertNotEqual(reference.pleasure.workspaceKind, 9)
-    XCTAssertEqual(extendedEvidenceAge.pleasure.workspaceKind, 9)
+    XCTAssertNotEqual(reference.treated.workspaceKind, 9)
+    XCTAssertEqual(extendedEvidenceAge.treated.workspaceKind, 9)
     XCTAssertEqual(
-      extendedEvidenceAge.pleasure.workspaceSelectionScore,
+      extendedEvidenceAge.treated.workspaceSelectionScore,
       1,
       accuracy: 1.0e-5
     )
@@ -63,14 +93,43 @@ final class MetalAffectInterventionTests: XCTestCase {
     )
     XCTAssertGreaterThan(pair.control.restorationPlanIdentifier, 0)
     XCTAssertEqual(
-      pair.pleasure.restorationPlanIdentifier,
+      pair.treated.restorationPlanIdentifier,
       pair.control.restorationPlanIdentifier,
       "the same restoration candidate must be compared in both conditions"
     )
     XCTAssertGreaterThan(
-      pair.pleasure.restorationPlanObjective,
+      pair.treated.restorationPlanObjective,
       pair.control.restorationPlanObjective,
       "pleasure should raise the objective for an option with restorative value"
+    )
+  }
+
+  func testMaximumPleasureDoesNotAdmitAHighRiskOption() throws {
+    let pair = try runMatchedPair(
+      committed: BrainTimestamp(microseconds: 10_000),
+      target: BrainTimestamp(microseconds: 60_000),
+      damage: 1,
+      highRiskTouchEvent: true
+    )
+
+    XCTAssertGreaterThan(pair.control.restorationPlanDamageCVaR, 0.35)
+    XCTAssertEqual(pair.control.restorationPlanAdmissibility, 0)
+    XCTAssertGreaterThan(pair.treated.statePleasure, 0.99)
+    XCTAssertEqual(
+      pair.treated.restorationPlanIdentifier,
+      pair.control.restorationPlanIdentifier,
+      "the same restorative option must be compared in both conditions"
+    )
+    XCTAssertEqual(
+      pair.treated.restorationPlanDamageCVaR,
+      pair.control.restorationPlanDamageCVaR,
+      accuracy: 1.0e-5,
+      "the affect intervention must not alter candidate risk"
+    )
+    XCTAssertEqual(
+      pair.treated.restorationPlanAdmissibility,
+      pair.control.restorationPlanAdmissibility,
+      "maximum pleasure must not change the separate risk-budget gate"
     )
   }
 
@@ -99,8 +158,8 @@ final class MetalAffectInterventionTests: XCTestCase {
       shortDecay.control.restorationPlanIdentifier
     )
     XCTAssertEqual(
-      reference.pleasure.restorationPlanIdentifier,
-      shortDecay.pleasure.restorationPlanIdentifier
+      reference.treated.restorationPlanIdentifier,
+      shortDecay.treated.restorationPlanIdentifier
     )
     XCTAssertEqual(
       reference.control.restorationPlanObjective,
@@ -109,10 +168,10 @@ final class MetalAffectInterventionTests: XCTestCase {
       "decay configuration should not change the neutral matched control"
     )
     let referencePleasureModulation =
-      reference.pleasure.restorationPlanObjective
+      reference.treated.restorationPlanObjective
       - reference.control.restorationPlanObjective
     let shortPleasureModulation =
-      shortDecay.pleasure.restorationPlanObjective
+      shortDecay.treated.restorationPlanObjective
       - shortDecay.control.restorationPlanObjective
     XCTAssertGreaterThan(referencePleasureModulation, 0)
     XCTAssertGreaterThan(
@@ -221,6 +280,64 @@ final class MetalAffectInterventionTests: XCTestCase {
     XCTAssertEqual(
       pleasureRecord.factoredReinforcementCount,
       BrainExecutableModelContract.CommittedTransition.Count.factoredReinforcement
+    )
+  }
+
+  func testAcceptedTissuePainRaisesMatchedMemorySalience() throws {
+    let device = try requireMetal4Device()
+    let typedTemplate = try makeNumanXInteropCompiledTemplate(
+      interoceptorCount: 1,
+      interoceptionFeatureDimension:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint,
+      workspaceCapacity: 2
+    )
+    let segmentation = try EpisodicSegmentationDynamics(
+      boundaryThreshold: 100,
+      sensorySurpriseWeight: 1,
+      contextChangeWeight: 0.5,
+      goalTransitionWeight: 0.75,
+      optionTerminationWeight: 0.75,
+      eventSalienceWeight: 1,
+      locationTransitionWeight: 0.5,
+      surpriseSampleCount: 64
+    )
+    let control = try makeFixture(
+      device: device, template: typedTemplate,
+      episodicSegmentation: segmentation
+    )
+    let injured = try makeFixture(
+      device: device, template: typedTemplate,
+      episodicSegmentation: segmentation
+    )
+    let committed = BrainTimestamp(microseconds: 10_000)
+    let target = BrainTimestamp(microseconds: 11_000)
+
+    let controlRecord = try commitAndReadTransition(
+      control,
+      committed: committed,
+      target: target,
+      acceptedInteroceptionValues: [1, 1, 0, 0, 0, 0]
+    )
+    let painRecord = try commitAndReadTransition(
+      injured,
+      committed: committed,
+      target: target,
+      acceptedInteroceptionValues: [1, 1, 0, 0, 0, 1]
+    )
+
+    XCTAssertEqual(controlRecord.affect[0], 0, accuracy: 1.0e-5)
+    XCTAssertGreaterThan(painRecord.affect[0], 0.99)
+    XCTAssertEqual(painRecord.affectTimestamp, target.rawValue)
+    XCTAssertEqual(painRecord.affectSourceMask, 0x1f)
+    XCTAssertGreaterThan(painRecord.memoryAffect[0], controlRecord.memoryAffect[0])
+    XCTAssertEqual(painRecord.memoryAffect[0], painRecord.affect[0], accuracy: 1.0e-5)
+    XCTAssertEqual(painRecord.memoryAffectTimestamp, target.rawValue)
+    XCTAssertEqual(painRecord.memoryEventKind, 12)
+    XCTAssertGreaterThan(
+      painRecord.memoryEventSalience,
+      controlRecord.memoryEventSalience
     )
   }
 
@@ -467,15 +584,36 @@ final class MetalAffectInterventionTests: XCTestCase {
     target: BrainTimestamp,
     damage: Float,
     affectiveModelConfiguration: AffectiveModelConfiguration = .reference,
-    affectTimestamp: BrainTimestamp? = nil
-  ) throws -> (control: DecisionObservation, pleasure: DecisionObservation) {
+    affectTimestamp: BrainTimestamp? = nil,
+    affectValues: [Float] = [0, 1, 0],
+    sourceMask: UInt16 = 1,
+    highRiskTouchEvent: Bool = false
+  ) throws -> (control: DecisionObservation, treated: DecisionObservation) {
     let device = try requireMetal4Device()
+    let injuryRiskRule = try highRiskTouchEvent
+      ? ReceptorEventRule(
+        identifier: 0x9000_0001,
+        modality: .touch,
+        receptorStart: 0,
+        receptorCount: 1,
+        featureIndex: 0,
+        comparison: .greaterThan,
+        threshold: 0,
+        magnitudeScale: 1.5,
+        eventKind: .injuryRisk,
+        usesAbsoluteThreshold: true
+      )
+      : nil
     let typedTemplate = try makeNumanXInteropCompiledTemplate(
+      touchReceptorCount: highRiskTouchEvent ? 1 : 0,
+      touchFeatureDimension: highRiskTouchEvent ? 1 : 0,
+      includeTouchNociceptionBinding: highRiskTouchEvent,
       interoceptorCount: 1,
       interoceptionFeatureDimension:
         InteroceptiveFeatureSchema.NumanXFullBodyV1.featureDimension,
       interoceptionFeatureSchemaFingerprint:
         InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint,
+      extraEventRules: injuryRiskRule.map { [$0] } ?? [],
       workspaceCapacity: 2
     )
     let checkpointSource = try makeFixture(
@@ -492,24 +630,24 @@ final class MetalAffectInterventionTests: XCTestCase {
     )
     let affectOffset = checkpointSource.runtime.agentStateRuntime.arena.layout
       .section(.affectiveState).byteOffset
-    let pleasureCheckpoint = try checkpoint(
+    let treatedCheckpoint = try checkpoint(
       copying: base,
       affectOffset: affectOffset,
-      withAffect: [0, 1, 0],
-      sourceMask: 1,
+      withAffect: affectValues,
+      sourceMask: sourceMask,
       timestamp: affectTimestamp ?? committed
     )
-    var normalizedPleasureState = pleasureCheckpoint.hotState
+    var normalizedTreatedState = treatedCheckpoint.hotState
     let affectSection = checkpointSource.runtime.agentStateRuntime.arena.layout
       .section(.affectiveState)
-    normalizedPleasureState.replaceSubrange(
+    normalizedTreatedState.replaceSubrange(
       affectSection.byteOffset..<(affectSection.byteOffset + affectSection.elementStride),
       with: base.hotState.subdata(
         in: affectSection.byteOffset..<(affectSection.byteOffset + affectSection.elementStride)
       )
     )
     XCTAssertEqual(
-      normalizedPleasureState,
+      normalizedTreatedState,
       base.hotState,
       "the intervention pair must differ only in the affect record"
     )
@@ -528,23 +666,34 @@ final class MetalAffectInterventionTests: XCTestCase {
       base, physicalCheckpointFingerprint: physicalCheckpointFingerprint
     )
     try treated.runtime.loadCheckpoint(
-      pleasureCheckpoint,
+      treatedCheckpoint,
       physicalCheckpointFingerprint: physicalCheckpointFingerprint
     )
 
     return (
-      try runDecision(control, committed: committed, target: target, damage: damage),
-      try runDecision(treated, committed: committed, target: target, damage: damage)
+      try runDecision(
+        control, committed: committed, target: target, damage: damage,
+        highRiskTouchEvent: highRiskTouchEvent
+      ),
+      try runDecision(
+        treated, committed: committed, target: target, damage: damage,
+        highRiskTouchEvent: highRiskTouchEvent
+      )
     )
   }
 
   private struct DecisionObservation {
     let workspaceKind: UInt32
     let workspaceSourceModule: UInt32
+    let workspacePain: Float
     let workspacePleasure: Float
+    let workspaceRelief: Float
+    let statePleasure: Float
     let workspaceSelectionScore: Float
     let restorationPlanIdentifier: UInt64
     let restorationPlanObjective: Float
+    let restorationPlanDamageCVaR: Float
+    let restorationPlanAdmissibility: Float
   }
 
   private struct CommittedAffectObservation {
@@ -624,7 +773,8 @@ final class MetalAffectInterventionTests: XCTestCase {
     _ fixture: Fixture,
     committed: BrainTimestamp,
     target: BrainTimestamp,
-    damage: Float
+    damage: Float,
+    highRiskTouchEvent: Bool
   ) throws -> DecisionObservation {
     let token = try BrainJointTransactionToken(
       environmentIdentifier: environmentIdentifier,
@@ -646,7 +796,13 @@ final class MetalAffectInterventionTests: XCTestCase {
     defer { try? fixture.runtime.abort(transaction: transaction) }
     _ = try fixture.runtime.inferAndDecide(
       transaction: transaction,
-      numanXSensors: makeSensors(fixture, token: token, damage: damage),
+      numanXSensors: makeSensors(
+        fixture,
+        token: token,
+        damage: damage,
+        interoceptionValues: nil,
+        emitInjuryRiskTouchEvent: highRiskTouchEvent
+      ),
       regionalRecurrentInput: fixture.recurrentView
     )
 
@@ -661,15 +817,25 @@ final class MetalAffectInterventionTests: XCTestCase {
       species: fixture.compiled.species
     )
     let plans = activeControl.section(.planSteps)
-    let restorationPlanOffset = plans.byteOffset + 3 * plans.elementStride
+    let candidates = activeControl.section(.optionCandidates)
+    let planningHorizon = plans.elementCount / candidates.elementCount
+    let restorationPlanIndex = 3 * planningHorizon + planningHorizon - 1
+    let restorationPlanOffset =
+      plans.byteOffset + restorationPlanIndex * plans.elementStride
+    let affectState = hotLayout.section(.affectiveState)
 
     return DecisionObservation(
       workspaceKind: readUInt32(bytes, at: workspaceMetadata.byteOffset + 56) & 0xffff,
       workspaceSourceModule: readUInt32(bytes, at: workspaceMetadata.byteOffset + 56) >> 16,
+      workspacePain: readFloat(bytes, at: workspaceContent.byteOffset),
       workspacePleasure: readFloat(bytes, at: workspaceContent.byteOffset + MemoryLayout<Float>.stride),
+      workspaceRelief: readFloat(bytes, at: workspaceContent.byteOffset + 2 * MemoryLayout<Float>.stride),
+      statePleasure: readFloat(bytes, at: affectState.byteOffset + MemoryLayout<Float>.stride),
       workspaceSelectionScore: readFloat(bytes, at: workspaceMetadata.byteOffset + 68),
       restorationPlanIdentifier: readUInt64(bytes, at: restorationPlanOffset),
-      restorationPlanObjective: readFloat(bytes, at: restorationPlanOffset + 16)
+      restorationPlanObjective: readFloat(bytes, at: restorationPlanOffset + 16),
+      restorationPlanDamageCVaR: readFloat(bytes, at: restorationPlanOffset + 20),
+      restorationPlanAdmissibility: readFloat(bytes, at: restorationPlanOffset + 44)
     )
   }
 
@@ -678,7 +844,8 @@ final class MetalAffectInterventionTests: XCTestCase {
     token: BrainJointTransactionToken,
     damage: Float,
     acceptedPhysicsState: AcceptedPhysicsStateToken? = nil,
-    interoceptionValues: [Float]? = nil
+    interoceptionValues: [Float]? = nil,
+    emitInjuryRiskTouchEvent: Bool = false
   ) throws -> NumanXSensorPacketLease {
     let deliveryTimestamp = acceptedPhysicsState?.acceptedTimestamp
       ?? token.committedTimestamp
@@ -702,6 +869,8 @@ final class MetalAffectInterventionTests: XCTestCase {
                 = physiology[feature]
             }
           }
+        } else if topology.modality == .touch && emitInjuryRiskTouchEvent {
+          scalars[0] = 1
         }
         return try MetalRawSensorBufferLease(
           buffer: buffer,
@@ -726,7 +895,8 @@ final class MetalAffectInterventionTests: XCTestCase {
     _ fixture: Fixture,
     committed: BrainTimestamp,
     target: BrainTimestamp,
-    controlStepIdentifier: UInt64 = 1
+    controlStepIdentifier: UInt64 = 1,
+    acceptedInteroceptionValues: [Float] = [1, 1, 0, 0, 0, 0]
   ) throws -> CommittedAffectObservation {
     let token = try BrainJointTransactionToken(
       environmentIdentifier: environmentIdentifier,
@@ -773,7 +943,7 @@ final class MetalAffectInterventionTests: XCTestCase {
       token: token,
       damage: 0,
       acceptedPhysicsState: accepted,
-      interoceptionValues: [1, 1, 0, 0, 0, 0]
+      interoceptionValues: acceptedInteroceptionValues
     )
     let gateBuffer = try XCTUnwrap(
       fixture.device.makeBuffer(
