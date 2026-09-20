@@ -1,0 +1,20 @@
+{
+  "schema": "numi.human.numanx-head-vision-profile.v1",
+  "visual_pack_content_hash": "sha256:8ce5c9cead9fb7155577c44f692fa55373d4dc52c6d897297d074f3c3695ca9b",
+  "camera": {
+    "parent_body_index": 23,
+    "width": 64,
+    "height": 48,
+    "minimum_depth_metres": 0.05,
+    "maximum_depth_metres": 20.0,
+    "depth_quantum_metres": 0.001,
+    "local_position_metres": [0.0, 0.0, 0.0],
+    "local_orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+    "intrinsics_fx_fy_cx_cy": [50.0, 50.0, 31.5, 23.5]
+  },
+  "provenance": {
+    "head_body": "myosim-fullbody-core-reference.nhrigid body 23",
+    "purpose": "simulation-only NumanX bridge qualification",
+    "calibration": "synthetic-unqualified"
+  }
+}

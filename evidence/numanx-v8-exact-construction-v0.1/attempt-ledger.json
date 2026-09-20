@@ -1,0 +1,35 @@
+{
+  "schema": "numi.brain.numanx-v8-exact-construction-attempts.v1",
+  "attempts": [
+    {
+      "name": "retained-package-with-mixed-source-assets",
+      "status": "failed",
+      "promoted": false,
+      "diagnostic": "authored Matter world targets a different Human source"
+    },
+    {
+      "name": "coherent-source-with-stale-visual-pack",
+      "status": "failed",
+      "promoted": false,
+      "diagnostic": "vision profile identity does not match the source visual pack"
+    },
+    {
+      "name": "exact-authoring-with-certificate-log-in-state-slot",
+      "status": "failed",
+      "promoted": false,
+      "diagnostic": "initial-state ABI mismatch"
+    },
+    {
+      "name": "source-coherent-source-equivalent-build",
+      "status": "passed",
+      "promoted": false,
+      "diagnostic": "native source checkout was dirty and therefore did not provide an exact commit provenance"
+    },
+    {
+      "name": "source-coherent-clean-b1a9bdd-build",
+      "status": "passed",
+      "promoted": true,
+      "diagnostic": "exact construction admission passed with Metal validation"
+    }
+  ]
+}

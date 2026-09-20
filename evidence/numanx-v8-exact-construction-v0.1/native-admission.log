@@ -1,0 +1,18 @@
+[0/1] Planning build
+Test Suite 'Selected tests' started at 2026-09-20 04:01:01.359.
+Test Suite 'NumiBrainPackageTests.xctest' started at 2026-09-20 04:01:01.364.
+Test Suite 'MetalNumanXBridgeV1EndToEndTests' started at 2026-09-20 04:01:01.364.
+Test Case '-[NumiBrainMetalTests.MetalNumanXBridgeV1EndToEndTests testExactNanosecondPreparedStateNativeAdmission]' started.
+2026-09-20 04:01:01.394 xctest[37618:9906420] Metal API Validation Enabled
+mrnx authored world=4996224330531811756 expected=4996224330531811756 physics=4996224330531811756 env=1 rate=0 flags=265 nv=160 nq=161 attachments=12 proxies=0 dt=1.24999997e-05 expected_dt=1.24999997e-05 gravity=0,0,-9.81000042 human=0,0,-9.81000042
+Test Case '-[NumiBrainMetalTests.MetalNumanXBridgeV1EndToEndTests testExactNanosecondPreparedStateNativeAdmission]' passed (0.120 seconds).
+Test Suite 'MetalNumanXBridgeV1EndToEndTests' passed at 2026-09-20 04:01:01.484.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.120 (0.120) seconds
+Test Suite 'NumiBrainPackageTests.xctest' passed at 2026-09-20 04:01:01.484.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.120 (0.120) seconds
+Test Suite 'Selected tests' passed at 2026-09-20 04:01:01.484.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.120 (0.125) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
