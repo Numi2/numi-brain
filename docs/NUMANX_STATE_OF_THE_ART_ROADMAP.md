@@ -180,6 +180,8 @@ clock authority without rounding. The additive v2 Core ABI now gives root,
 substep, accepted-state, and commit records distinct nanosecond types, explicit
 clock-domain/1 ns quantum fields, domain-separated fingerprints, and fail-closed
 mixed-family validation while leaving every v1 byte and hash unchanged.
+The physical M4 construction and clock-introspection receipt is retained at
+`evidence/numanx-exact-domain-construction-v0.1/receipt.json`.
 
 This is contract progress, not a second Gate A pass. Motor candidate/header and
 ready gates, persistent shader state, HumanMatter close records, sensor timing,

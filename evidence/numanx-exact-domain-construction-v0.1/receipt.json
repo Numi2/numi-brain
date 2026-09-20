@@ -1,0 +1,77 @@
+{
+  "schema": "numi.brain.numanx-exact-domain-construction.v1",
+  "status": "passed",
+  "scope": "construction and exact-clock introspection only",
+  "host": {
+    "model": "Mac mini",
+    "model_identifier": "Mac16,11",
+    "chip": "Apple M4 Pro",
+    "memory_gib": 24,
+    "macos": "26.6",
+    "build": "25G72",
+    "metal_api_validation": true
+  },
+  "brain": {
+    "commit": "a2783fcf2b78a2e64eca08da9ee9683794344d71",
+    "tree": "ff34aeaddc16cd06922c87e5dd2413006d75ef90",
+    "tracked_source_status": "clean"
+  },
+  "native": {
+    "commit": "b1a9bdd3b27afa6daedff37c276a5b0b2b600c54",
+    "tree": "3fb6dd1d7ea381f910a68073fc923aaeabba5e33",
+    "source_status": "clean"
+  },
+  "qualification": {
+    "fresh_full_test_graph_build": "passed",
+    "focused_native_admission": "passed",
+    "test": "MetalNumanXBridgeV1EndToEndTests/testExactNanosecondPreparedStateNativeAdmission"
+  },
+  "clock": {
+    "timestep_nanoseconds": 12500,
+    "clock_quantum_nanoseconds": 1,
+    "initial_published_timestamp_nanoseconds": 0,
+    "initial_publication_epoch": 0
+  },
+  "runtime": {
+    "body_count": 157,
+    "q_coordinate_count": 129,
+    "dof_count": 128,
+    "muscle_count": 416
+  },
+  "identities": {
+    "human_source_fingerprint": "f0943712c830fe4e",
+    "composed_human_source_fingerprint": "d49b4ba3d53a89d1",
+    "matter_world_fingerprint": "4556278eb78331ac",
+    "initial_state_fingerprint": "76888b70766d5feb",
+    "joint_equality_fingerprint": "19041185bf97c95d",
+    "joint_limit_fingerprint": "601a251a6473fdd9"
+  },
+  "sha256": {
+    "libmetalrobo.dylib": "a201ad6e1b9496f53e0fe1869f646fdf522ec906a1eca8d06eaa92a1949dc1eb",
+    "MetalRobo.metallib": "e0156b2dbcacea0a39653dee75722b9ade4e04e822e0184d10592f3bd6b8a093",
+    "NumiMatter.metallib": "6397674c0463683e182c41dc110944847c82a0832848ead4310bbe3e305033fc",
+    "prepared-12500ns.nmatterpack": "1997b7550e973c8b55f7b2fd5efb1ddfde19bc00999cffe679dad51a3430c19f",
+    "prepared.nhinit": "b7b63ed803b7737b3a6c52657b7ad45a8c1010edcac1ddac10117aa49c4e69b6",
+    "prepared.json": "ab44827d9ef14134731d31596501e9369bbd51d869d8b326944b01253c4fbe35",
+    "rigid.nhrigid": "6328f7e84663c611c5498624d1386b00b2d5b0e162c4cc2967c7b1dc49ab0c44",
+    "muscle.nhmyo": "9a988f19a6fd8e533cd0f2bf3192cb8535fb008ccd394ffbf1a4432d3db76a05",
+    "support.nhcnt": "c7712daf79cd8a589a6d23942a4df84a7da928e5911455ce19078f9b24daaaf4",
+    "equalities.nheq": "12db05fddb492e77e7fd461fad566d3e1e75390f2cb6f77f26568254a6cb4477",
+    "limits.nhlim": "c583611fcedc326a32c6f69504a65e675c8e0adc987c6db622ca0d95a02438d3",
+    "visual.mrvpack": "805efabec1b7a45a279787dc00d60e5dbe79002e7a00afd02a5158720f3f0823",
+    "vision-profile.json": "027f51cde138760cf3db29a18758d3139a237957849718628034f4767d8b3a22",
+    "native-qualification.log": "01cba827167dd33b1f7c6bb3749b9eb7cbbd5ca7e2010934cfefcd52a16f709d"
+  },
+  "claims": {
+    "exact_native_construction": true,
+    "exact_clock_introspection": true,
+    "brain_v2_root_executed": false,
+    "brain_accepted_root": false,
+    "exact_persistent_continuation": false,
+    "support_history_continuity": false,
+    "equilibrium": false,
+    "standing": false,
+    "performance": false,
+    "production": false
+  }
+}
