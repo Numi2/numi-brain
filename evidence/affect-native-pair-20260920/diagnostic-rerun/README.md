@@ -30,6 +30,18 @@ all seven channel descriptor/value/validity hashes match, but the
 arms therefore do not establish exact matched provenance. Their rejected
 step-104 sample hashes do match.
 
+The retained original and diagnostic step-30 sample artifacts have the same
+transaction fingerprint, accepted-physics-token fingerprint, timestamps,
+species and sensory-profile identities, and all seven canonical channel
+descriptors and content hashes. `sensorPacketFingerprint` is the only differing
+sample field. The ABI function `nb_brain_abi_numanx_sensor_packet_fingerprint`
+also hashes each channel's GPU value and validity addresses, which the canonical
+sample artifact does not retain. This makes allocation identity the likely
+source of the mismatch. Because the old and new addresses were not captured,
+that cause remains unconfirmed. The sample-hash mismatch remains a strict
+protocol mismatch; it is not evidence that the sensory values or validity
+changed.
+
 The per-arm configs, logs, reports, and failure artifacts are retained below.
 The complete one-second horizon was not reached, so this diagnostic pair does
 not establish a behavioral result or benefit.
