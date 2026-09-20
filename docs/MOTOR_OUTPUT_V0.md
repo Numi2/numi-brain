@@ -122,8 +122,11 @@ owner. It is mirrored for ABI history only and is not routable from Swift.
 `mrnx_physical_root_request_v3` is the first all-exact inbound shape: v2 root,
 substep, and motor candidate plus typed v2 motor-header and ready-gate resource
 descriptors. No v3 begin symbol is loaded or called yet. Exact outbound sensor,
-HumanMatter close, accepted-publication, and persistent-state families must
-exist before this inbound contract can become accepted-root execution.
+HumanMatter close, and accepted-publication layouts now have an independent
+Brain-side mirror and validator described in
+[`NUMANX_EXACT_OUTBOUND_V2.md`](NUMANX_EXACT_OUTBOUND_V2.md). Persistent-state
+handling and executable owner integration remain closed, so no v3 begin symbol
+is loaded or called and the native stage-900 no-touch boundary remains intact.
 
 `MetalTissueRuntime.borrowNumanXMotorBuffers(for:)` converts the live,
 unaccepted `FastSystemResult` into a lifetime-safe lease over the exact header

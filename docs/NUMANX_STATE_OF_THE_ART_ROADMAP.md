@@ -183,13 +183,16 @@ mixed-family validation while leaving every v1 byte and hash unchanged.
 The physical M4 construction and clock-introspection receipt is retained at
 `evidence/numanx-exact-domain-construction-v0.1/receipt.json`.
 
-This is contract progress, not a second Gate A pass. Motor candidate/header and
-ready gates, persistent shader state, HumanMatter close records, sensor timing,
-aggregate publication, checkpoints, and evidence schemas are still v1-shaped.
-The staged request-v2 layout is therefore deliberately not routed to the GPU.
-Exact accepted-root evidence begins only when that full family is versioned and
-one root, consecutive roots, reject/retry, and no-publication negatives pass on
-the physical Mac mini.
+This is contract progress, not a second Gate A pass. The all-exact request-v3
+producer and independently implemented outbound-v2 HumanMatter, sensor, and
+publication ABI are specified in
+[`NUMANX_EXACT_OUTBOUND_V2.md`](NUMANX_EXACT_OUTBOUND_V2.md), with fixed hash
+domains, cross-owner goldens, and fail-closed CPU validation. Persistent shader
+state, checkpoints, executable owner integration, and evidence schemas remain
+incomplete. Request-v3 is therefore deliberately held at native failure stage
+900 without physical or publication touch. Exact accepted-root evidence begins
+only when the complete family executes and one root, consecutive roots,
+reject/retry, and no-publication negatives pass on the physical Mac mini.
 
 ### Gate B — complete causal sensorium
 

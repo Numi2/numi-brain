@@ -32,6 +32,29 @@
 #define MRNX_PHYSICAL_ROOT_REQUEST_ABI_V3 3u
 #define MRNX_EXACT_CLOCK_INFO_ABI_V1 1u
 #define MRNX_AGGREGATE_SNAPSHOT_ABI_V4 4u
+#define MRNX_AGGREGATE_SNAPSHOT_ABI_V5 5u
+#define MRNX_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS 2u
+#define MRNX_EXACT_CLOCK_QUANTUM_NANOSECONDS 1u
+#define MRNX_CANDIDATE_CHANNEL_ABI_V2 2u
+#define MRNX_CANDIDATE_TIMING_ABI_V2 2u
+#define MRNX_EXACT_INBOUND_AUTHORITY_ABI_V2 2u
+#define MRNX_EXACT_SENSOR_PACKET_ABI_V2 2u
+#define MRNX_PUBLICATION_ABI_V2 2u
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_INBOUND_AUTHORITY_V2 0x4e584941u
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_SENSOR_CHANNEL_V2 0x4e584348u
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_SENSOR_CHANNEL_SET_V2 0x4e584353u
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_SENSOR_TIMING_V2 0x4e58544du
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_SENSOR_PACKET_V2 0x4e585350u
+#define MRNX_FINGERPRINT_DOMAIN_EXACT_PUBLICATION_V2 0x4e585050u
+#define MR_NUMANX_HUMAN_MATTER_EXACT_ADAPTER_ABI_VERSION 3u
+#define MR_NUMANX_ACCEPTED_STATE_PROOF_V2_BYTES 160u
+#define MR_NUMANX_ACCEPTED_PHYSICS_TOKEN_V2_BYTES 64u
+#define MR_NUMANX_ACCEPTED_PHYSICS_TOKEN_VERSION_V2 2u
+#define MR_NUMANX_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS 2u
+#define MR_NUMANX_EXACT_CLOCK_QUANTUM_NANOSECONDS 1u
+#define MR_NUMANX_FINGERPRINT_DOMAIN_PHYSICS_STATE_V2 0x4e585053u
+#define MR_NUMANX_FINGERPRINT_DOMAIN_ACCEPTED_STATE_PROOF_V2 0x4e584150u
+#define MR_NUMANX_FINGERPRINT_DOMAIN_ACCEPTED_PHYSICS_TOKEN_V2 0x4e584154u
 #define MRNX_CULTURE_ACCEPTED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_PREPARED_VIEW_ABI_V1 1u
 #define MRNX_CULTURE_ACCEPTED_BUFFER_COUNT_V1 11u
@@ -172,6 +195,17 @@ typedef struct mrnx_candidate_timing_v1 {
   uint64_t timing_fingerprint;
 } mrnx_candidate_timing_v1;
 
+// Additive exact outbound-v2 mirrors. NumiBrain owns the independently
+// implemented validators and canonical hashes; these aliases expose the
+// native wire spelling without introducing a second Brain-side layout.
+typedef NBNumanXExactSensorChannelV2 mrnx_candidate_channel_v2;
+typedef NBNumanXExactSensorTimingV2 mrnx_candidate_timing_v2;
+typedef NBNumanXExactInboundAuthorityV2 mrnx_exact_inbound_authority_v2;
+typedef NBNumanXExactSensorPacketV2 mrnx_exact_sensor_packet_v2;
+typedef NBNumanXAcceptedStateProofV2 MRNumanXAcceptedStateProofGPUV2;
+typedef NBNumanXExactAcceptedPhysicsTokenV2
+    MRNumanXAcceptedPhysicsStateTokenGPUV2;
+
 typedef struct mrnx_wire_lease_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -215,6 +249,8 @@ typedef struct mrnx_publication_v1 {
   uint64_t joint_commit_fingerprint;
   uint64_t brain_generation;
 } mrnx_publication_v1;
+
+typedef NBNumanXExactPublicationV2 mrnx_publication_v2;
 
 typedef struct mrnx_runtime_config_v1 {
   uint32_t abi_version;
@@ -533,6 +569,26 @@ typedef struct mrnx_aggregate_snapshot_v4 {
   mrnx_culture_accepted_view_v1 culture;
 } mrnx_aggregate_snapshot_v4;
 
+// Exact outbound snapshot remains a declarative ABI only. The Brain bridge
+// does not load or route a v5 publication symbol while native request-v3 is
+// held at its terminal stage-900 no-touch boundary.
+typedef struct mrnx_aggregate_snapshot_v5 {
+  uint32_t abi_version;
+  uint32_t struct_size;
+  uint64_t publication_epoch;
+  uint64_t brain_generation;
+  uint64_t physics_generation;
+  uint64_t sensor_generation;
+  mrnx_root_v1 root;
+  mrnx_candidate_view_v1 sensor;
+  mrnx_candidate_timing_v2 timing;
+  mrnx_exact_inbound_authority_v2 inbound_authority;
+  mrnx_exact_sensor_packet_v2 sensor_packet;
+  mrnx_publication_v2 publication;
+  mrnx_candidate_channel_v2 channels[MRNX_MAX_SENSOR_CHANNELS_V2];
+  mrnx_culture_accepted_view_v1 culture;
+} mrnx_aggregate_snapshot_v5;
+
 typedef struct mrnx_physical_root_request_v1 {
   uint32_t abi_version;
   uint32_t struct_size;
@@ -594,6 +650,26 @@ _Static_assert(sizeof(mrnx_candidate_timing_v1) == 40u,
                "mrnx timing ABI");
 _Static_assert(offsetof(mrnx_candidate_timing_v1, timing_fingerprint) == 32u,
                "mrnx timing fingerprint offset");
+_Static_assert(sizeof(mrnx_candidate_timing_v2) == 56u,
+               "mrnx exact timing ABI");
+_Static_assert(sizeof(mrnx_candidate_channel_v2) == 144u,
+               "mrnx exact channel ABI");
+_Static_assert(sizeof(mrnx_exact_inbound_authority_v2) == 112u,
+               "mrnx exact inbound authority ABI");
+_Static_assert(offsetof(mrnx_exact_inbound_authority_v2,
+                        accepted_brain_timestamp_nanoseconds) == 16u,
+               "mrnx exact inbound timestamp offset");
+_Static_assert(offsetof(mrnx_exact_inbound_authority_v2,
+                        inbound_authority_fingerprint) == 104u,
+               "mrnx exact inbound authority fingerprint offset");
+_Static_assert(sizeof(MRNumanXAcceptedStateProofGPUV2) == 160u,
+               "mrnx exact accepted proof ABI");
+_Static_assert(sizeof(MRNumanXAcceptedPhysicsStateTokenGPUV2) == 64u,
+               "mrnx exact accepted token ABI");
+_Static_assert(sizeof(mrnx_exact_sensor_packet_v2) == 128u,
+               "mrnx exact sensor packet ABI");
+_Static_assert(sizeof(mrnx_publication_v2) == 72u,
+               "mrnx exact publication ABI");
 _Static_assert(sizeof(mrnx_wire_lease_v1) == 184u, "mrnx wire ABI");
 _Static_assert(sizeof(mrnx_proposal_view_v1) == 280u, "mrnx proposal ABI");
 _Static_assert(sizeof(mrnx_applied_view_v1) == 240u, "mrnx applied ABI");
@@ -678,6 +754,20 @@ _Static_assert(sizeof(mrnx_aggregate_snapshot_v4) == 1944u,
                "mrnx snapshot v4 ABI");
 _Static_assert(offsetof(mrnx_aggregate_snapshot_v4, culture) == 1320u,
                "mrnx snapshot v4 culture offset");
+_Static_assert(sizeof(mrnx_aggregate_snapshot_v5) == 2392u,
+               "mrnx snapshot v5 ABI");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, timing) == 248u,
+               "mrnx snapshot v5 timing offset");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, inbound_authority) == 304u,
+               "mrnx snapshot v5 inbound authority offset");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, sensor_packet) == 416u,
+               "mrnx snapshot v5 sensor packet offset");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, publication) == 544u,
+               "mrnx snapshot v5 publication offset");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, channels) == 616u,
+               "mrnx snapshot v5 channels offset");
+_Static_assert(offsetof(mrnx_aggregate_snapshot_v5, culture) == 1768u,
+               "mrnx snapshot v5 culture offset");
 _Static_assert(sizeof(mrnx_physical_root_request_v1) == 600u, "mrnx request ABI");
 _Static_assert(sizeof(mrnx_physical_root_request_v2) == 600u,
                "mrnx historical request-v2 ABI");

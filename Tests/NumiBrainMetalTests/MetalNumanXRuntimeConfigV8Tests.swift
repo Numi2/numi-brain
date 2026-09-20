@@ -98,6 +98,50 @@ final class MetalNumanXRuntimeConfigV8Tests: XCTestCase {
     XCTAssertEqual(
       UInt32(MRNX_ELEMENT_BRAIN_MOTOR_READY_GATE_V2.rawValue), 4
     )
+
+    XCTAssertEqual(UInt32(MRNX_AGGREGATE_SNAPSHOT_ABI_V5), 5)
+    XCTAssertEqual(UInt32(MRNX_PHYSICAL_CLOCK_DOMAIN_EXACT_NANOSECONDS), 2)
+    XCTAssertEqual(UInt32(MRNX_EXACT_CLOCK_QUANTUM_NANOSECONDS), 1)
+    XCTAssertEqual(
+      UInt32(MRNX_FINGERPRINT_DOMAIN_EXACT_INBOUND_AUTHORITY_V2),
+      0x4e58_4941
+    )
+    XCTAssertEqual(
+      UInt32(MR_NUMANX_FINGERPRINT_DOMAIN_ACCEPTED_PHYSICS_TOKEN_V2),
+      0x4e58_4154
+    )
+    XCTAssertEqual(MemoryLayout<mrnx_exact_inbound_authority_v2>.stride, 112)
+    XCTAssertEqual(MemoryLayout<MRNumanXAcceptedStateProofGPUV2>.stride, 160)
+    XCTAssertEqual(
+      MemoryLayout<MRNumanXAcceptedPhysicsStateTokenGPUV2>.stride, 64
+    )
+    XCTAssertEqual(MemoryLayout<mrnx_candidate_timing_v2>.stride, 56)
+    XCTAssertEqual(MemoryLayout<mrnx_candidate_channel_v2>.stride, 144)
+    XCTAssertEqual(MemoryLayout<mrnx_exact_sensor_packet_v2>.stride, 128)
+    XCTAssertEqual(MemoryLayout<mrnx_publication_v2>.stride, 72)
+    XCTAssertEqual(MemoryLayout<mrnx_aggregate_snapshot_v5>.stride, 2_392)
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(of: \.timing), 248
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(
+        of: \.inbound_authority
+      ),
+      304
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(of: \.sensor_packet),
+      416
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(of: \.publication), 544
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(of: \.channels), 616
+    )
+    XCTAssertEqual(
+      MemoryLayout<mrnx_aggregate_snapshot_v5>.offset(of: \.culture), 1_768
+    )
   }
 
   func testExactClockRejectsZeroAndInvalidNanoseconds() {

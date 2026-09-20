@@ -1229,4 +1229,6 @@ uint32_t nb_brain_abi_validate_numanx_sensor_packet(
 }
 #endif
 
+#include "NumiBrainNumanXExactOutboundABI.h"
+
 #endif
