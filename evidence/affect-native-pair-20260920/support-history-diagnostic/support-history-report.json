@@ -1,0 +1,313 @@
+{
+  "arms": {
+    "disabled": {
+      "acceptedExecutionCount": 103,
+      "acceptedSupportRow12HistoryRoots98To103": [
+        {
+          "available": true,
+          "controlStep": 98,
+          "normalImpulse": "0.0363973826",
+          "physicsGeneration": 98,
+          "root": 98,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 9900,
+          "transactionFingerprint": "9e8ed67dccaf61cb"
+        },
+        {
+          "available": true,
+          "controlStep": 99,
+          "normalImpulse": "0.040729858",
+          "physicsGeneration": 99,
+          "root": 99,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10000,
+          "transactionFingerprint": "b4e3e52489691cab"
+        },
+        {
+          "available": true,
+          "controlStep": 100,
+          "normalImpulse": "0.0402381532",
+          "physicsGeneration": 100,
+          "root": 100,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10100,
+          "transactionFingerprint": "12bf9853372fdf1d"
+        },
+        {
+          "available": true,
+          "controlStep": 101,
+          "normalImpulse": "0.0375341512",
+          "physicsGeneration": 101,
+          "root": 101,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10200,
+          "transactionFingerprint": "dc831ee31e17106e"
+        },
+        {
+          "available": true,
+          "controlStep": 102,
+          "normalImpulse": "0.0313873626",
+          "physicsGeneration": 102,
+          "root": 102,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10300,
+          "transactionFingerprint": "2b848ba5e00f9d72"
+        },
+        {
+          "available": true,
+          "controlStep": 103,
+          "normalImpulse": "0.0159574524",
+          "physicsGeneration": 103,
+          "root": 103,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10400,
+          "transactionFingerprint": "553fc2fe676d4928"
+        }
+      ],
+      "affectEnabled": false,
+      "arm": "disabled",
+      "config": {
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/configs/disabled-capture-v2.json",
+        "sha256": "180683ca073f4d0262676cc5fcfd45fc178aada59c99c9b62ea357122e45322b"
+      },
+      "executionCount": 104,
+      "exitCode": 65,
+      "exitCodeFileSHA256": "979b894f2d91bf199766571d58024f020d1a44a417da5f48e1fa1cdf554a14f5",
+      "failureArtifact": {
+        "configurationSHA256": "180683ca073f4d0262676cc5fcfd45fc178aada59c99c9b62ea357122e45322b",
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/artifacts/disabled-failure.artifact",
+        "sha256": "8d1f94b0e6691d4a1eab364f53a7c14835e6d1b35f92b801fff99aed52476c8d"
+      },
+      "log": {
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/logs/disabled-replay.log",
+        "sha256": "e4b239dc701b69ac0fca93cdb3e4148b89c1463e99b3bff75a352018d0516e96"
+      },
+      "matterFailure": {
+        "candidateNormalImpulse": "-0.000127762556",
+        "rigidResidualNorm": 0.000509521575,
+        "statusCode": 6,
+        "statusName": "NM_STATUS_CONTACT_FAILURE",
+        "supportResidualNorm": 0.00201139692,
+        "supportRowIndexZeroBased": 12
+      },
+      "rejectedControlStep": 104,
+      "runIdentifier": "numanx-affect-v2-disabled-support-history-20260920",
+      "runtimeError": "NumanX native runtime failed with status 7, stage 7"
+    },
+    "enabled": {
+      "acceptedExecutionCount": 103,
+      "acceptedSupportRow12HistoryRoots98To103": [
+        {
+          "available": true,
+          "controlStep": 98,
+          "normalImpulse": "0.0363973826",
+          "physicsGeneration": 98,
+          "root": 98,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 9900,
+          "transactionFingerprint": "9e8ed67dccaf61cb"
+        },
+        {
+          "available": true,
+          "controlStep": 99,
+          "normalImpulse": "0.040729858",
+          "physicsGeneration": 99,
+          "root": 99,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10000,
+          "transactionFingerprint": "b4e3e52489691cab"
+        },
+        {
+          "available": true,
+          "controlStep": 100,
+          "normalImpulse": "0.0402381532",
+          "physicsGeneration": 100,
+          "root": 100,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10100,
+          "transactionFingerprint": "12bf9853372fdf1d"
+        },
+        {
+          "available": true,
+          "controlStep": 101,
+          "normalImpulse": "0.0375341512",
+          "physicsGeneration": 101,
+          "root": 101,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10200,
+          "transactionFingerprint": "dc831ee31e17106e"
+        },
+        {
+          "available": true,
+          "controlStep": 102,
+          "normalImpulse": "0.0313873626",
+          "physicsGeneration": 102,
+          "root": 102,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10300,
+          "transactionFingerprint": "2b848ba5e00f9d72"
+        },
+        {
+          "available": true,
+          "controlStep": 103,
+          "normalImpulse": "0.0159574524",
+          "physicsGeneration": 103,
+          "root": 103,
+          "supportHistoryCount": 18,
+          "supportRow": 12,
+          "timestampMicroseconds": 10400,
+          "transactionFingerprint": "553fc2fe676d4928"
+        }
+      ],
+      "affectEnabled": true,
+      "arm": "enabled",
+      "config": {
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/configs/enabled-capture-v2.json",
+        "sha256": "3ac358aa97790a0ce8ffda5ad42c313921f92b9705aa4a1958c4494f6f6b9605"
+      },
+      "executionCount": 104,
+      "exitCode": 65,
+      "exitCodeFileSHA256": "979b894f2d91bf199766571d58024f020d1a44a417da5f48e1fa1cdf554a14f5",
+      "failureArtifact": {
+        "configurationSHA256": "3ac358aa97790a0ce8ffda5ad42c313921f92b9705aa4a1958c4494f6f6b9605",
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/artifacts/enabled-failure.artifact",
+        "sha256": "177d1bdf3fda7d515ff69410d8c2ca925e5f27d79077d68491110720d6609194"
+      },
+      "log": {
+        "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/logs/enabled-replay.log",
+        "sha256": "8a9224e0326e8103faea8782fee6dd63db87ea421d06c4f06150edfb99cc3adb"
+      },
+      "matterFailure": {
+        "candidateNormalImpulse": "-0.000127762556",
+        "rigidResidualNorm": 0.000509521575,
+        "statusCode": 6,
+        "statusName": "NM_STATUS_CONTACT_FAILURE",
+        "supportResidualNorm": 0.00201139692,
+        "supportRowIndexZeroBased": 12
+      },
+      "rejectedControlStep": 104,
+      "runIdentifier": "numanx-affect-v2-enabled-support-history-20260920",
+      "runtimeError": "NumanX native runtime failed with status 7, stage 7"
+    }
+  },
+  "crossArm": {
+    "acceptedRootsObserved": [
+      98,
+      99,
+      100,
+      101,
+      102,
+      103
+    ],
+    "acceptedTraceExactlyEqual": true,
+    "step104RejectedSampleHashMatchesAcrossArms": true,
+    "step104RejectedSampleSHA256": "282a965d87db9222db37c623c4f262b5c64bbaab29565e82f08feb36fcc8d595",
+    "step30SampleMismatch": {
+      "allSevenCanonicalChannelDescriptorsValuesAndValidityHashesEqual": true,
+      "cause": "unknown; GPU allocation identity is plausible but unconfirmed because old and new buffer addresses were not captured",
+      "disabledSensorPacketFingerprintDecimal": "7627405345143549431",
+      "enabledSensorPacketFingerprintDecimal": "13990843329145935236",
+      "mismatchField": "sensorPacketFingerprint",
+      "qualification": "strict sample identity mismatch retained; exact matched provenance is not established",
+      "transactionFingerprintDecimal": "6264196391978025970"
+    },
+    "supportHistoryRow": 12
+  },
+  "date": "2026-09-20",
+  "interpretation": {
+    "behavior": "Frozen 10002-root horizon not reached; behavior evaluation incomplete and no pain/pleasure benefit result is established.",
+    "failure": "Both arms reject step 104 after 103 accepted roots with the same Matter contact failure, support row, negative candidate impulse, and reported residuals.",
+    "scope": "Diagnostic logging snapshots accepted support history after publication. It does not change inputs, solve arithmetic, or controller behavior.",
+    "supportTrace": "Accepted row-12 impulses decline from 0.0363973826 at root 98 to 0.0159574524 at root 103. This is a bounded observation before rejection; it does not establish a solver/contact correction or physical calibration."
+  },
+  "nativeBuild": {
+    "buildLog": {
+      "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/logs/diagnostic-build.log",
+      "sha256": "6dece1b1c652cb1d89497ef2e80b9c1049b35df909269f32781f46851dcf3fac"
+    },
+    "cli": {
+      "path": "/Users/n/numi-brain-affect-20260920/.build/arm64-apple-macosx/debug/numi-brain-experiment",
+      "sha256": "1dc5834dbe2c3a353b9f4d54a724d60468c8a2e7c0a656c15494abdab656e92b"
+    },
+    "productSHA256": {
+      "MetalRobo.metallib": "01c06a45eed3172dbbf71a51950549259db47adbfddd944f4376f4a2de0003ce",
+      "NumiMatter.metallib": "2b3f9055a63dc189f6badb550c34b4aae1df187257f6edecfaf4252503f04546",
+      "libmetalrobo.dylib": "81f4020ad2dac86ced974fd91ca80021ec086ef838c79141dd3a7ab73ec15ebc"
+    },
+    "sourceCheckout": "/Users/n/MetalRobo-human-activation-diagnostics-20260920",
+    "sourcePinnedCommit": "04d5faf0926ec1e498c105b38ea1c16ea5d09f0c",
+    "sourceWorkingDiffArchive": {
+      "archiveSHA256": "bc912308e10c92413dbf564f7aa376d932a946db8095dec2b683c4e263355420",
+      "compression": "gzip",
+      "path": "evidence/affect-native-pair-20260920/support-history-diagnostic/diagnostic-source.patch.gz",
+      "uncompressedSHA256": "cf6c8ab5cc771c42290f1e8134390945976b01ee589d43618a90d9ce2600fb7e"
+    },
+    "sourceWorkingDiffSHA256": "cf6c8ab5cc771c42290f1e8134390945976b01ee589d43618a90d9ce2600fb7e"
+  },
+  "preparedInputsSHA256": {
+    "contacts": {
+      "path": "/Users/n/human-capsule-20260908/input/myosim-fullbody-support-primitives.nhcnt",
+      "sha256": "c7712daf79cd8a589a6d23942a4df84a7da928e5911455ce19078f9b24daaaf4"
+    },
+    "matterPackage": {
+      "path": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared-100000ns.nmatterpack",
+      "sha256": "b830c33de03b6b746876aa6f7a4eab8bb9e64fe6acba3e5768b5f9ce59c2a5b7"
+    },
+    "muscle": {
+      "path": "/Users/n/human-completion-20260907/input/myosim-fullbody-muscle-reference.nhmyo",
+      "sha256": "9a988f19a6fd8e533cd0f2bf3192cb8535fb008ccd394ffbf1a4432d3db76a05"
+    },
+    "preparedInitialState": {
+      "path": "/Users/n/human-activation-fixture-force-100us-recooked-20260920/prepared.nhinit",
+      "sha256": "4ee4d4f6eeeece4adf3c97f1ef86ddaab0e8dc362e704dc9e629930d06350652"
+    },
+    "protocolArtifact": {
+      "path": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts/ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707.artifact",
+      "sha256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707"
+    },
+    "publicationArtifact": {
+      "path": "/Users/n/numi-brain-affect-native-pair-20260920/artifacts/fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6.artifact",
+      "sha256": "fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6"
+    },
+    "rigid": {
+      "path": "/Users/n/human-completion-20260907/input/myosim-fullbody-core-reference.nhrigid",
+      "sha256": "6328f7e84663c611c5498624d1386b00b2d5b0e162c4cc2967c7b1dc49ab0c44"
+    },
+    "sourceJointEqualities": {
+      "path": "/Users/n/human-completion-20260907/input/myosim-fullbody-joint-equalities-source-compliance.nheq",
+      "sha256": "12db05fddb492e77e7fd461fad566d3e1e75390f2cb6f77f26568254a6cb4477"
+    },
+    "sourceJointLimits": {
+      "path": "/Users/n/human-dynamic-limits-20260908/myosim-fullbody-joint-limits.nhlim",
+      "sha256": "c583611fcedc326a32c6f69504a65e675c8e0adc987c6db622ca0d95a02438d3"
+    },
+    "visionProfile": {
+      "path": "/Users/n/Numan-X-neuron-v1/assets/numanx-head-vision-profile.v1.json",
+      "sha256": "166220533c6c78695f6e55412f2e832eaaa4ec94ddf791b476111dc323c652a6"
+    },
+    "visualPack": {
+      "path": "/Users/n/NumiHumanCurrent/anterior-thorax-smoke/myosim-fullbody-articulated-markers-muscle-driven-selected-actuators-source-support-contact.mrvpack",
+      "sha256": "b8ab7cd8deead1e2af3137a727eaad74cd7e4238d77d9116d774bbf304936e37"
+    }
+  },
+  "protocol": {
+    "frozenHorizonAcceptedRoots": 10002,
+    "pairConfigComparison": "Enabled and disabled configs differ only in affectiveModelConfiguration.isEnabled, artifactDirectory, and runIdentifier. After excluding those fields, both match each other and the previous diagnostic pair configs.",
+    "publicationSHA256": "fba2ead02f37baf4e6e8311e20af0c4e7de5d2634979dfb7e8204df78adce7f6",
+    "sha256": "ccc397bdb04786c05765da6beb02d47ccceacad4f0dfd1624afc767291be5707"
+  },
+  "purpose": "Read-only accepted support-history diagnostics for the frozen affect-enabled/disabled native replay pair; no solver arithmetic or controller behavior change.",
+  "schema": "numi.brain.affect.native-support-history-diagnostic.v1",
+  "status": "partial"
+}

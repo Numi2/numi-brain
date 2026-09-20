@@ -13,6 +13,8 @@ demonstrated. See [NATIVE_PAIR_REVIEW.md](NATIVE_PAIR_REVIEW.md) for the full
 failure analysis and [diagnostic-rerun/README.md](diagnostic-rerun/README.md)
 for the retained diagnostic replays.
 
+A separate follow-up retained accepted row-12 support impulses at roots 98–103. The traces are identical across affect-enabled and disabled runs; after a root-99 peak, the final value is below root 98 before both reject step 104. The pair remains partial, and this bounded trace supplies neither a safe correction nor a behavior/benefit result; see [support-history diagnostic](support-history-diagnostic/README.md).
+
 The protocol and capture inputs are retained here:
 
 - `protocol-v2.json`, SHA-256 `3af89a431c40159dcd4cf6b325e41c10467ccf3a22089df07974498729a265ea`
