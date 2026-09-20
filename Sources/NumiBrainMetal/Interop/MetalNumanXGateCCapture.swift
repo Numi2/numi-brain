@@ -127,7 +127,8 @@ public enum MetalNumanXGateCCapture {
     transaction: BrainJointTransactionToken,
     sensors: NumanXSensorPacketLease,
     coordinates: BrainPolicyNumanXDatasetCoordinates,
-    artifactDirectory: URL
+    artifactDirectory: URL,
+    source: BrainPolicyNumanXRootSampleArtifact.Source
   ) throws -> MetalNumanXCapturedRootSample {
     let packet = sensors.packet
     guard packet.transactionFingerprint == transaction.fingerprint,
@@ -212,7 +213,8 @@ public enum MetalNumanXGateCCapture {
       speciesTemplateFingerprint: packet.speciesTemplateFingerprint,
       sensoryProfileFingerprint: packet.sensoryProfileFingerprint,
       sensorPacketFingerprint: packet.fingerprint,
-      channels: channels
+      channels: channels,
+      source: source
     )
     return try MetalNumanXCapturedRootSample(
       artifact: artifact,

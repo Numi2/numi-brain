@@ -102,6 +102,10 @@ public struct AffectivePhysiologySample: Codable, Equatable, Hashable, Sendable 
 /// Bounded, fingerprinted gains and physical-time decay constants for affect.
 @frozen
 public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendable {
+  /// Controls affect derivation and affect-based cognitive modulation only.
+  /// Sensory pathways, reflexes, emergency stops, and independently factored
+  /// pain costs remain active when affect is disabled.
+  public let isEnabled: Bool
   public let painDecayMicroseconds: UInt64
   public let pleasureDecayMicroseconds: UInt64
   public let reliefDecayMicroseconds: UInt64
@@ -111,6 +115,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
   public let sourceWeights: [Float]
 
   public init(
+    isEnabled: Bool = true,
     painDecayMicroseconds: UInt64 = 2_000_000,
     pleasureDecayMicroseconds: UInt64 = 1_000_000,
     reliefDecayMicroseconds: UInt64 = 500_000,
@@ -131,6 +136,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
         "affective model configuration must have bounded gains and five normalized source weights"
       )
     }
+    self.isEnabled = isEnabled
     self.painDecayMicroseconds = painDecayMicroseconds
     self.pleasureDecayMicroseconds = pleasureDecayMicroseconds
     self.reliefDecayMicroseconds = reliefDecayMicroseconds
@@ -144,6 +150,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
     let container = try decoder.container(keyedBy: CodingKeys.self)
     do {
       try self.init(
+        isEnabled: container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true,
         painDecayMicroseconds: container.decode(UInt64.self, forKey: .painDecayMicroseconds),
         pleasureDecayMicroseconds: container.decode(UInt64.self, forKey: .pleasureDecayMicroseconds),
         reliefDecayMicroseconds: container.decode(UInt64.self, forKey: .reliefDecayMicroseconds),
@@ -166,6 +173,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
   }
 
   private enum CodingKeys: String, CodingKey {
+    case isEnabled
     case painDecayMicroseconds
     case pleasureDecayMicroseconds
     case reliefDecayMicroseconds
@@ -176,6 +184,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
   }
 
   public static let reference = try! AffectiveModelConfiguration()
+  public static let disabled = try! AffectiveModelConfiguration(isEnabled: false)
 
   public var fingerprint: UInt64 {
     var hash: UInt64 = 14_695_981_039_346_656_037
@@ -194,6 +203,7 @@ public struct AffectiveModelConfiguration: Codable, Equatable, Hashable, Sendabl
     mix(maximumEvidenceAgeMicroseconds, into: &hash)
     mix(UInt64(recoveryGain.bitPattern), into: &hash)
     mix(UInt64(reliefGain.bitPattern), into: &hash)
+    mix(isEnabled ? 1 : 0, into: &hash)
     for weight in sourceWeights { mix(UInt64(weight.bitPattern), into: &hash) }
     return hash
   }
@@ -311,6 +321,9 @@ public struct AffectiveState: Codable, Equatable, Hashable, Sendable {
       throw BrainRuntimeError.transaction(
         "affective update must advance physical time with the same configuration"
       )
+    }
+    guard configuration.isEnabled else {
+      return try AffectiveState.neutral(at: timestamp, configuration: configuration)
     }
     let elapsedSeconds = Float(timestamp.rawValue - self.timestamp.rawValue) / 1_000_000
     let painRetention = Foundation.exp(

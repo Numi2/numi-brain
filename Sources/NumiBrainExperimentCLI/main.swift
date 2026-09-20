@@ -4,6 +4,7 @@ import Metal
 import NumiBrainCore
 import NumiBrainQualification
 import NumiBrainMLX
+import NumiBrainValidation
 @_spi(NumanXInterop) import NumiBrainMetal
 import Darwin
 
@@ -20,11 +21,81 @@ private struct WatchdogLifecycleInput: Codable {
   let readyPath: String
   let completionPath: String
 }
+private struct AuthoredMatterWorldInput: Codable, Equatable {
+  let packagePath: String
+  let humanSourceFingerprint: UInt64
+  let worldFingerprint: UInt64
+  let sourceJointEqualitiesPath: String?
+  let sourceJointEqualitiesFingerprint: UInt64?
+  let sourceJointLimitsPath: String?
+  let sourceJointLimitsFingerprint: UInt64?
+  let preparedInitialStatePath: String?
+  let preparedInitialStateFingerprint: UInt64?
+
+  var hasPreparedInitialState: Bool {
+    preparedInitialStatePath != nil && preparedInitialStateFingerprint != nil
+  }
+
+  func bridgeValue() throws -> MetalNumanXBridgeV1Runtime.AuthoredMatterWorld {
+    let equalities: MetalNumanXBridgeV1Runtime.SourceJointEqualities?
+    if let path = sourceJointEqualitiesPath,
+      let fingerprint = sourceJointEqualitiesFingerprint {
+      equalities = try .init(payloadPath: path, fingerprint: fingerprint)
+    } else {
+      guard sourceJointEqualitiesPath == nil,
+        sourceJointEqualitiesFingerprint == nil
+      else {
+        throw BrainRuntimeError.transaction(
+          "authored-world joint equalities require both path and fingerprint"
+        )
+      }
+      equalities = nil
+    }
+    let limits: MetalNumanXBridgeV1Runtime.SourceJointLimits?
+    if let path = sourceJointLimitsPath,
+      let fingerprint = sourceJointLimitsFingerprint {
+      limits = try .init(payloadPath: path, fingerprint: fingerprint)
+    } else {
+      guard sourceJointLimitsPath == nil,
+        sourceJointLimitsFingerprint == nil
+      else {
+        throw BrainRuntimeError.transaction(
+          "authored-world joint limits require both path and fingerprint"
+        )
+      }
+      limits = nil
+    }
+    let initialState: MetalNumanXBridgeV1Runtime.PreparedInitialState?
+    if let path = preparedInitialStatePath,
+      let fingerprint = preparedInitialStateFingerprint {
+      initialState = try .init(payloadPath: path, fingerprint: fingerprint)
+    } else {
+      guard preparedInitialStatePath == nil,
+        preparedInitialStateFingerprint == nil
+      else {
+        throw BrainRuntimeError.transaction(
+          "prepared initial state requires both path and fingerprint"
+        )
+      }
+      initialState = nil
+    }
+    return try .init(
+      packagePath: packagePath,
+      humanSourceFingerprint: humanSourceFingerprint,
+      worldFingerprint: worldFingerprint,
+      sourceJointEqualities: equalities,
+      sourceJointLimits: limits,
+      preparedInitialState: initialState
+    )
+  }
+}
 private struct CaptureInput: Codable {
   let artifactDirectory: String; let protocolSHA256: String; let publicationSHA256: String
   let runIdentifier: String; let nativePaths: [String: String]
+  let authoredMatterWorld: AuthoredMatterWorldInput?
   let connectomeGraphPath: String?
   let connectomeSpecificationPath: String?
+  let affectiveModelConfiguration: AffectiveModelConfiguration?
   let watchdog: WatchdogOwnerFileConfiguration?
   let watchdogLifecycle: WatchdogLifecycleInput?
 }
@@ -51,6 +122,40 @@ private struct DecoderStudyInput: Codable {
   let settings: ConnectomeDecoderStudySettings
   let negativeCapture: CaptureInput; let positiveCapture: CaptureInput
 }
+private struct AffectStudyInput: Codable {
+  let artifactDirectory: String
+  let protocolSHA256: String
+  let enabledCapture: CaptureInput
+  let disabledCapture: CaptureInput
+}
+private struct AffectStudyArtifact: Codable {
+  let formatVersion: UInt32
+  let promotable: Bool
+  let protocolSHA256: String
+  let enabledRunSHA256: String
+  let disabledRunSHA256: String
+  let enabledCaptureConfigurationSHA256: String
+  let disabledCaptureConfigurationSHA256: String
+  let enabledEvaluationSHA256: String
+  let disabledEvaluationSHA256: String
+  let enabledAffectConfigurationFingerprint: UInt64
+  let disabledAffectConfigurationFingerprint: UInt64
+  let enabledBootstrapSampleSHA256: String
+  let disabledBootstrapSampleSHA256: String
+  let enabledBootstrapSampleSource: BrainPolicyNumanXRootSampleArtifact.Source?
+  let disabledBootstrapSampleSource: BrainPolicyNumanXRootSampleArtifact.Source?
+  let matchedBootstrapSensorSample: Bool
+  let enabledFirstAcceptedNativeAggregateSampleSHA256: String?
+  let disabledFirstAcceptedNativeAggregateSampleSHA256: String?
+  let matchedPreparedInitialStateFingerprint: Bool
+  let matchedNativeRuntimeIdentity: Bool
+  let matchedNativeWorldIdentity: Bool
+  let hasAcceptedNativeAggregateEvidence: Bool
+  let affectConfigurationProvenanceMatchesInputs: Bool
+  let behaviorComparisonEligible: Bool
+  let enabledBehavior: ReachHoldResult?
+  let disabledBehavior: ReachHoldResult?
+}
 private struct CommandResult: Encodable {
   let promotable = false
   let scope = "native-muscle-control-experiment"
@@ -58,6 +163,7 @@ private struct CommandResult: Encodable {
   let artifactSHA256: String
   let kind: String
   var parameterVersionFingerprint: UInt64? = nil
+  var affectiveModelConfiguration: AffectiveModelConfiguration? = nil
 }
 private struct FailureRecord: Encodable {
   let promotable = false
@@ -84,10 +190,17 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL, c
   let protocolValue = try BrainReachHoldExperiment.read(BrainReachHoldProtocol.self, hash: input.protocolSHA256, directory: directory)
   try protocolValue.validate()
   let weights = try publication(input.publicationSHA256, directory)
+  let sharedNativePathKeys: Set<String> = [
+    "library", "rigid", "muscle", "contacts", "visualPack", "visionProfile",
+    "metalRoboMetallib", "matterMetallib",
+  ]
+  let expectedNativePathKeys = input.authoredMatterWorld == nil
+    ? sharedNativePathKeys.union(["material"]) : sharedNativePathKeys
+  let nativePathsAreValid = Set(input.nativePaths.keys) == expectedNativePathKeys
+    && input.nativePaths.values.allSatisfy({ !$0.isEmpty })
   guard weights.version.fingerprint == protocolValue.parameterVersionFingerprint,
     !input.runIdentifier.isEmpty, input.runIdentifier.utf8.count <= 256,
-    Set(input.nativePaths.keys) == Set(["library", "rigid", "muscle", "contacts", "visualPack", "visionProfile", "metalRoboMetallib", "matterMetallib", "material"]),
-    input.nativePaths.values.allSatisfy({ !$0.isEmpty }),
+    nativePathsAreValid,
     (input.watchdog == nil) == (input.watchdogLifecycle == nil),
     let device = MTLCreateSystemDefaultDevice() else {
     throw BrainRuntimeError.transaction("experiment configuration, model identity, watchdog lifecycle or Metal device is invalid")
@@ -123,15 +236,19 @@ private func capture(_ input: CaptureInput, configSHA: String, directory: URL, c
       return value
     }()
     let paths = input.nativePaths
+    let authoredMatterWorld = try input.authoredMatterWorld?.bridgeValue()
     let runner = try MetalNumanXGateCRootRunner(libraryPath: paths["library"]!,
       bridgeConfiguration: MetalNumanXBridgeV1Runtime.Configuration(rigidPayloadPath: paths["rigid"]!,
         musclePayloadPath: paths["muscle"]!, supportContactPayloadPath: paths["contacts"]!,
         visualPackPath: paths["visualPack"]!, visionProfilePath: paths["visionProfile"]!,
         metalRoboMetallibPath: paths["metalRoboMetallib"]!, matterMetallibPath: paths["matterMetallib"]!,
-        matterMaterialPath: paths["material"]!, timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2),
+        matterMaterialPath: paths["material"] ?? "", timestepMicroseconds: UInt64(protocolValue.timestepMicroseconds), transactionSlotCount: 2,
+        authoredMatterWorld: authoredMatterWorld),
       publication: weights.unverifiedPublication, artifactDirectory: directory,
       episodeIdentifier: protocolValue.episodeIdentifier, randomSeed: protocolValue.randomSeed,
-      enableProductionUncertaintyGate: !connectomeResearch, connectome: connectome, device: device)
+      enableProductionUncertaintyGate: !connectomeResearch, connectome: connectome,
+      affectiveModelConfiguration: input.affectiveModelConfiguration ?? .reference,
+      device: device)
     guard runner.nativeInfo.modelSourceFingerprint == protocolValue.expectedNativeModelFingerprint else {
       throw BrainRuntimeError.transaction("native model differs from frozen experiment")
     }
@@ -202,7 +319,9 @@ private func decoderStudy(_ input: DecoderStudyInput, directory: URL) throws -> 
     let configured = CaptureInput(artifactDirectory: base.artifactDirectory,
       protocolSHA256: base.protocolSHA256, publicationSHA256: base.publicationSHA256,
       runIdentifier: base.runIdentifier, nativePaths: base.nativePaths,
+      authoredMatterWorld: base.authoredMatterWorld,
       connectomeGraphPath: base.connectomeGraphPath, connectomeSpecificationPath: specURL.path,
+      affectiveModelConfiguration: base.affectiveModelConfiguration,
       watchdog: base.watchdog, watchdogLifecycle: base.watchdogLifecycle)
     let configHash = try BrainReachHoldExperiment.retain(configured, directory: directory)
     let runHash = try capture(configured, configSHA: configHash, directory: directory, connectomeResearch: true)
@@ -216,12 +335,175 @@ private func decoderStudy(_ input: DecoderStudyInput, directory: URL) throws -> 
   return try BrainReachHoldExperiment.retain(proposal, directory: directory)
 }
 
+/// Runs two fresh native captures from one frozen experiment, changing only
+/// whether derived affect is enabled. The synthetic bootstrap's sensor
+/// channels must match before the pair is considered behavior-comparable.
+private func affectStudy(_ input: AffectStudyInput, directory: URL) throws -> String {
+  let enabled = input.enabledCapture
+  let disabled = input.disabledCapture
+  guard enabled.artifactDirectory == input.artifactDirectory,
+    disabled.artifactDirectory == input.artifactDirectory,
+    enabled.protocolSHA256 == input.protocolSHA256,
+    disabled.protocolSHA256 == input.protocolSHA256,
+    enabled.publicationSHA256 == disabled.publicationSHA256,
+    enabled.nativePaths == disabled.nativePaths,
+    enabled.authoredMatterWorld == disabled.authoredMatterWorld,
+    enabled.authoredMatterWorld?.hasPreparedInitialState == true,
+    enabled.connectomeGraphPath == nil, disabled.connectomeGraphPath == nil,
+    enabled.connectomeSpecificationPath == nil,
+    disabled.connectomeSpecificationPath == nil,
+    enabled.watchdog == nil, disabled.watchdog == nil,
+    enabled.watchdogLifecycle == nil, disabled.watchdogLifecycle == nil,
+    !enabled.runIdentifier.isEmpty, !disabled.runIdentifier.isEmpty,
+    enabled.runIdentifier != disabled.runIdentifier,
+    let enabledConfiguration = enabled.affectiveModelConfiguration,
+    let disabledConfiguration = disabled.affectiveModelConfiguration,
+    enabledConfiguration.isEnabled, !disabledConfiguration.isEnabled,
+    try AffectiveModelConfiguration(
+      isEnabled: true,
+      painDecayMicroseconds: disabledConfiguration.painDecayMicroseconds,
+      pleasureDecayMicroseconds: disabledConfiguration.pleasureDecayMicroseconds,
+      reliefDecayMicroseconds: disabledConfiguration.reliefDecayMicroseconds,
+      maximumEvidenceAgeMicroseconds: disabledConfiguration.maximumEvidenceAgeMicroseconds,
+      recoveryGain: disabledConfiguration.recoveryGain,
+      reliefGain: disabledConfiguration.reliefGain,
+      sourceWeights: disabledConfiguration.sourceWeights
+    ) == enabledConfiguration
+  else {
+    throw BrainRuntimeError.transaction(
+      "affect study requires one frozen protocol, publication and native asset set; only affect mode may differ"
+    )
+  }
+
+  let enabledConfigSHA = try BrainReachHoldExperiment.retain(enabled, directory: directory)
+  let enabledRunSHA = try capture(enabled, configSHA: enabledConfigSHA, directory: directory)
+  let disabledConfigSHA = try BrainReachHoldExperiment.retain(disabled, directory: directory)
+  let disabledRunSHA = try capture(disabled, configSHA: disabledConfigSHA, directory: directory)
+  let enabledEvaluation = try BrainReachHoldExperiment.evaluate(
+    protocolSHA256: input.protocolSHA256,
+    runSHA256: enabledRunSHA,
+    directory: directory
+  )
+  let disabledEvaluation = try BrainReachHoldExperiment.evaluate(
+    protocolSHA256: input.protocolSHA256,
+    runSHA256: disabledRunSHA,
+    directory: directory
+  )
+  let enabledRun = try BrainReachHoldExperiment.read(
+    BrainPolicyNumanXCaptureRunArtifact.self,
+    hash: enabledRunSHA,
+    directory: directory
+  )
+  let disabledRun = try BrainReachHoldExperiment.read(
+    BrainPolicyNumanXCaptureRunArtifact.self,
+    hash: disabledRunSHA,
+    directory: directory
+  )
+  func samples(
+    in run: BrainPolicyNumanXCaptureRunArtifact
+  ) throws -> [BrainPolicyNumanXRootSampleArtifact] {
+    try run.roots.map { root in
+      let sample = try BrainReachHoldExperiment.read(
+        BrainPolicyNumanXRootSampleArtifact.self,
+        hash: root.sampleSHA256,
+        directory: directory
+      )
+      guard sample.controlStep == root.controlStep else {
+        throw BrainRuntimeError.transaction(
+          "affect study root sample identity does not match its run"
+        )
+      }
+      return sample
+    }
+  }
+  let enabledSamples = try samples(in: enabledRun)
+  let disabledSamples = try samples(in: disabledRun)
+  guard let enabledBootstrapSample = enabledRun.roots.first?.sampleSHA256,
+    let disabledBootstrapSample = disabledRun.roots.first?.sampleSHA256
+  else {
+    throw BrainRuntimeError.transaction("affect study captures have no initial sensor sample")
+  }
+  let matchedRuntime = enabledRun.nativeModelSourceFingerprint
+      == disabledRun.nativeModelSourceFingerprint
+    && enabledRun.deviceRegistryID == disabledRun.deviceRegistryID
+    && enabledRun.acceptedStateProofProgramFingerprint
+      == disabledRun.acceptedStateProofProgramFingerprint
+    && enabledRun.compiledSpeciesTemplateFingerprint
+      == disabledRun.compiledSpeciesTemplateFingerprint
+    && enabledRun.parameterVersionFingerprint == disabledRun.parameterVersionFingerprint
+    && enabledRun.timestepMicroseconds == disabledRun.timestepMicroseconds
+    && enabledRun.roots.count == disabledRun.roots.count
+  let matchedWorld = enabledRun.nativeWorldIdentity != nil
+    && enabledRun.nativeWorldIdentity == disabledRun.nativeWorldIdentity
+  let enabledInitialStateFingerprint = enabledRun.nativeWorldIdentity?
+    .preparedInitialStateFingerprint
+  let disabledInitialStateFingerprint = disabledRun.nativeWorldIdentity?
+    .preparedInitialStateFingerprint
+  let matchedInitialState = enabledRun.nativeWorldIdentity?.authoredPackage == true
+    && enabledInitialStateFingerprint != nil
+    && enabledInitialStateFingerprint == disabledInitialStateFingerprint
+    && enabledInitialStateFingerprint
+      == enabled.authoredMatterWorld?.preparedInitialStateFingerprint
+  let affectProvenanceMatches = enabledRun.affectiveModelConfiguration
+      == enabledConfiguration
+    && disabledRun.affectiveModelConfiguration == disabledConfiguration
+  let enabledBootstrapSource = enabledSamples.first?.source
+  let disabledBootstrapSource = disabledSamples.first?.source
+  let matchedBootstrapSample = enabledSamples.first?.channels
+    == disabledSamples.first?.channels
+  let enabledFirstNativeAggregate = enabledRun.roots.enumerated().first {
+    enabledSamples[$0.offset].source == .acceptedNativeAggregate
+  }?.element.sampleSHA256
+  let disabledFirstNativeAggregate = disabledRun.roots.enumerated().first {
+    disabledSamples[$0.offset].source == .acceptedNativeAggregate
+  }?.element.sampleSHA256
+  let hasAcceptedNativeAggregate = enabledFirstNativeAggregate != nil
+    && disabledFirstNativeAggregate != nil
+  let matchedBootstrapProvenance = enabledBootstrapSource == .syntheticBootstrap
+    && disabledBootstrapSource == .syntheticBootstrap
+  let behaviorComparisonEligible = matchedRuntime && matchedWorld
+    && matchedInitialState && affectProvenanceMatches
+    && matchedBootstrapProvenance && matchedBootstrapSample
+    && hasAcceptedNativeAggregate
+  let artifact = AffectStudyArtifact(
+    formatVersion: 1,
+    promotable: false,
+    protocolSHA256: input.protocolSHA256,
+    enabledRunSHA256: enabledRunSHA,
+    disabledRunSHA256: disabledRunSHA,
+    enabledCaptureConfigurationSHA256: enabledConfigSHA,
+    disabledCaptureConfigurationSHA256: disabledConfigSHA,
+    enabledEvaluationSHA256: enabledEvaluation.artifactSHA256,
+    disabledEvaluationSHA256: disabledEvaluation.artifactSHA256,
+    enabledAffectConfigurationFingerprint: enabledConfiguration.fingerprint,
+    disabledAffectConfigurationFingerprint: disabledConfiguration.fingerprint,
+    enabledBootstrapSampleSHA256: enabledBootstrapSample,
+    disabledBootstrapSampleSHA256: disabledBootstrapSample,
+    enabledBootstrapSampleSource: enabledBootstrapSource,
+    disabledBootstrapSampleSource: disabledBootstrapSource,
+    matchedBootstrapSensorSample: matchedBootstrapSample,
+    enabledFirstAcceptedNativeAggregateSampleSHA256:
+      enabledFirstNativeAggregate,
+    disabledFirstAcceptedNativeAggregateSampleSHA256:
+      disabledFirstNativeAggregate,
+    matchedPreparedInitialStateFingerprint: matchedInitialState,
+    matchedNativeRuntimeIdentity: matchedRuntime,
+    matchedNativeWorldIdentity: matchedWorld,
+    hasAcceptedNativeAggregateEvidence: hasAcceptedNativeAggregate,
+    affectConfigurationProvenanceMatchesInputs: affectProvenanceMatches,
+    behaviorComparisonEligible: behaviorComparisonEligible,
+    enabledBehavior: enabledEvaluation.artifact.result,
+    disabledBehavior: disabledEvaluation.artifact.result
+  )
+  return try BrainReachHoldExperiment.retain(artifact, directory: directory)
+}
+
 let args = Array(CommandLine.arguments.dropFirst())
 do {
   guard args.count == 3, args[1] == "--config",
     ["seed", "freeze-settings", "freeze-protocol", "probe", "capture", "capture-connectome", "evaluate", "calibrate",
-     "freeze-connectome-settings", "probe-connectome", "evaluate-connectome", "calibrate-connectome", "study-connectome"].contains(args[0]) else {
-    print("numi-brain-experiment COMMAND --config FILE\nLegacy: seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate\nConnectome: capture-connectome|freeze-connectome-settings|probe-connectome|evaluate-connectome|calibrate-connectome|study-connectome\nResearch-only; see docs/CONNECTOME_DECODER_LEARNING.md.")
+     "freeze-connectome-settings", "probe-connectome", "evaluate-connectome", "calibrate-connectome", "study-connectome", "study-affect"].contains(args[0]) else {
+    print("numi-brain-experiment COMMAND --config FILE\nLegacy: seed|freeze-settings|freeze-protocol|probe|capture|evaluate|calibrate\nConnectome: capture-connectome|freeze-connectome-settings|probe-connectome|evaluate-connectome|calibrate-connectome|study-connectome\nAffect: study-affect (fresh enabled/disabled captures with matched prepared state)\nResearch-only; see docs/CONNECTOME_DECODER_LEARNING.md and docs/AFFECTIVE_STATE.md.")
     exit(64)
   }
   let bytes = try QualificationFileDirectory.readFile(URL(fileURLWithPath: args[2]), maximumBytes: 1_048_576)
@@ -262,7 +544,8 @@ do {
     result = CommandResult(configurationSHA256: configHash,
       artifactSHA256: try capture(input, configSHA: configHash, directory: store,
         connectomeResearch: args[0] == "capture-connectome"),
-      kind: args[0] == "capture-connectome" ? "unqualified-connectome-native-run" : "retained-native-run")
+      kind: args[0] == "capture-connectome" ? "unqualified-connectome-native-run" : "retained-native-run",
+      affectiveModelConfiguration: input.affectiveModelConfiguration ?? .reference)
   case "evaluate", "evaluate-connectome":
     let input = try read(EvaluationInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
@@ -310,6 +593,11 @@ do {
     let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
     result = CommandResult(configurationSHA256: configHash,
       artifactSHA256: try decoderStudy(input, directory: store), kind: "unevaluated-connectome-decoder-proposal")
+  case "study-affect":
+    let input = try read(AffectStudyInput.self, bytes: bytes), store = try directory(input.artifactDirectory)
+    let configHash = try BrainPolicyEvidenceArtifact.write(bytes, to: store)
+    result = CommandResult(configurationSHA256: configHash,
+      artifactSHA256: try affectStudy(input, directory: store), kind: "native-affect-paired-behavior-study")
   default:
     throw ConnectomeError.invalid("unsupported experiment command")
   }

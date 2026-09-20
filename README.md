@@ -261,6 +261,7 @@ Start with:
 - [NumanX roadmap](docs/NUMANX_STATE_OF_THE_ART_ROADMAP.md)
 - [Gate C requirements](docs/NUMANX_GATE_C_REQUIREMENTS.md)
 - [Source-bound Human muscle control](docs/HUMAN_MUSCLE_LOCOMOTOR.md)
+- [Pain, pleasure, and matched affect controls](docs/AFFECTIVE_STATE.md)
 - [tissue model and scientific limits](docs/TISSUE_MODEL_V0.md)
 - [joint transaction contract](docs/JOINT_TRANSACTION_V0.md)
 - [implementation status](STATUS.md)

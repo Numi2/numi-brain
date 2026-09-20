@@ -302,10 +302,60 @@ public struct BrainPolicyNumanXMotorActionArtifact:
 /// transitively names every root input and terminal execution artifact while
 /// preserving exact native model, runtime, and device identities.
 @frozen
+public struct BrainPolicyNumanXNativeWorldIdentity:
+  Codable, Equatable, Sendable
+{
+  public let authoredPackage: Bool
+  public let objectCount: UInt32
+  public let femNodeCount: UInt32
+  public let femAttachmentCount: UInt32
+  public let worldFingerprint: UInt64
+  public let physicsFingerprint: UInt64
+  /// The bridge-validated NHINIT1 source fingerprint. Nil means the native
+  /// run did not bind an explicit, matched construction state.
+  public let preparedInitialStateFingerprint: UInt64?
+
+  public init(
+    authoredPackage: Bool,
+    objectCount: UInt32,
+    femNodeCount: UInt32,
+    femAttachmentCount: UInt32,
+    worldFingerprint: UInt64,
+    physicsFingerprint: UInt64,
+    preparedInitialStateFingerprint: UInt64? = nil
+  ) throws {
+    guard worldFingerprint > 0, physicsFingerprint > 0,
+      preparedInitialStateFingerprint.map({ authoredPackage && $0 > 0 }) ?? true
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "NumanX native world identity is invalid"
+      )
+    }
+    self.authoredPackage = authoredPackage
+    self.objectCount = objectCount
+    self.femNodeCount = femNodeCount
+    self.femAttachmentCount = femAttachmentCount
+    self.worldFingerprint = worldFingerprint
+    self.physicsFingerprint = physicsFingerprint
+    self.preparedInitialStateFingerprint = preparedInitialStateFingerprint
+  }
+
+  public func validate() throws {
+    guard worldFingerprint > 0, physicsFingerprint > 0,
+      preparedInitialStateFingerprint.map({ authoredPackage && $0 > 0 }) ?? true
+    else {
+      throw BrainRuntimeError.invalidParameterVersion(
+        "NumanX native world identity is invalid"
+      )
+    }
+  }
+}
+
+@frozen
 public struct BrainPolicyNumanXCaptureRunArtifact:
   Codable, Equatable, Sendable
 {
-  public static let formatVersion: UInt32 = 2
+  public static let formatVersion: UInt32 = 5
 
   public let formatVersion: UInt32
   public let runIdentifier: String
@@ -330,6 +380,12 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
   public let roots: [BrainPolicyNumanXCaptureRootReference]
   /// Format 3 research captures retain the actual neural graph and decoder.
   public let connectome: ConnectomeCaptureIdentity?
+  /// Format 4/5 captures retain the exact affect configuration used by the
+  /// runtime. Nil is reserved for historical format 2/3 captures.
+  public let affectiveModelConfiguration: AffectiveModelConfiguration?
+  /// Format 5 captures retain immutable native world/physics identity and,
+  /// when supplied, the bridge-validated prepared initial-state fingerprint.
+  public let nativeWorldIdentity: BrainPolicyNumanXNativeWorldIdentity?
 
   public init(
     runIdentifier: String,
@@ -346,9 +402,12 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
     learningBatchArtifactSHA256: String,
     learningBatchFingerprint: UInt64,
     roots: [BrainPolicyNumanXCaptureRootReference],
-    connectome: ConnectomeCaptureIdentity? = nil
+    connectome: ConnectomeCaptureIdentity? = nil,
+    affectiveModelConfiguration: AffectiveModelConfiguration? = nil,
+    nativeWorldIdentity: BrainPolicyNumanXNativeWorldIdentity? = nil
   ) throws {
     try connectome?.validate()
+    try nativeWorldIdentity?.validate()
     let canonicalRoots = roots.sorted { $0.controlStep < $1.controlStep }
     guard !runIdentifier.isEmpty, !sourceRevision.isEmpty,
       !datasetSourceIdentifier.isEmpty, !datasetSourceRevision.isEmpty,
@@ -359,6 +418,7 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
       timestepMicroseconds == nil || timestepMicroseconds! > 0,
       declaredMaximumInferenceLatencyMicroseconds == nil
         || declaredMaximumInferenceLatencyMicroseconds! > 0,
+      nativeWorldIdentity == nil || affectiveModelConfiguration != nil,
       !canonicalRoots.isEmpty,
       BrainPolicyEvidenceArtifact.isSHA256(learningBatchArtifactSHA256),
       learningBatchFingerprint > 0,
@@ -370,7 +430,8 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
         "NumanX capture run artifact is invalid"
       )
     }
-    self.formatVersion = connectome == nil ? Self.formatVersion : 3
+    self.formatVersion = nativeWorldIdentity != nil ? Self.formatVersion
+      : (affectiveModelConfiguration != nil ? 4 : (connectome == nil ? 2 : 3))
     self.runIdentifier = runIdentifier
     self.sourceRevision = sourceRevision
     self.datasetSourceIdentifier = datasetSourceIdentifier
@@ -390,6 +451,8 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
     self.promotable = false
     self.roots = canonicalRoots
     self.connectome = connectome
+    self.affectiveModelConfiguration = affectiveModelConfiguration
+    self.nativeWorldIdentity = nativeWorldIdentity
   }
 
   public func encoded() throws -> Data {
@@ -409,7 +472,10 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
   }
 
   public func validate() throws {
-    guard formatVersion == (connectome == nil ? Self.formatVersion : 3), !promotable,
+    let expectedFormatVersion: UInt32 = nativeWorldIdentity != nil
+      ? Self.formatVersion
+      : (affectiveModelConfiguration != nil ? 4 : (connectome == nil ? 2 : 3))
+    guard formatVersion == expectedFormatVersion, !promotable,
       try Self(
         runIdentifier: runIdentifier,
         sourceRevision: sourceRevision,
@@ -426,7 +492,9 @@ public struct BrainPolicyNumanXCaptureRunArtifact:
           declaredMaximumInferenceLatencyMicroseconds,
         learningBatchArtifactSHA256: learningBatchArtifactSHA256,
         learningBatchFingerprint: learningBatchFingerprint,
-        roots: roots, connectome: connectome
+        roots: roots, connectome: connectome,
+        affectiveModelConfiguration: affectiveModelConfiguration,
+        nativeWorldIdentity: nativeWorldIdentity
       ) == self
     else {
       throw BrainRuntimeError.invalidParameterVersion(
@@ -643,7 +711,12 @@ public struct BrainPolicyNumanXSensorChannelArtifact:
 public struct BrainPolicyNumanXRootSampleArtifact:
   Codable, Equatable, Sendable
 {
-  public static let formatVersion: UInt32 = 1
+  public enum Source: String, Codable, Equatable, Sendable {
+    case syntheticBootstrap
+    case acceptedNativeAggregate
+  }
+
+  public static let formatVersion: UInt32 = 2
 
   public let formatVersion: UInt32
   public let coordinates: BrainPolicyNumanXDatasetCoordinates
@@ -658,6 +731,8 @@ public struct BrainPolicyNumanXRootSampleArtifact:
   public let sensoryProfileFingerprint: UInt64
   public let sensorPacketFingerprint: UInt64
   public let channels: [BrainPolicyNumanXSensorChannelArtifact]
+  /// Nil is retained only when decoding historical format-1 samples.
+  public let source: Source?
 
   public init(
     coordinates: BrainPolicyNumanXDatasetCoordinates,
@@ -671,7 +746,8 @@ public struct BrainPolicyNumanXRootSampleArtifact:
     speciesTemplateFingerprint: UInt64,
     sensoryProfileFingerprint: UInt64,
     sensorPacketFingerprint: UInt64,
-    channels: [BrainPolicyNumanXSensorChannelArtifact]
+    channels: [BrainPolicyNumanXSensorChannelArtifact],
+    source: Source
   ) throws {
     let canonicalChannels = channels.sorted {
       $0.modality.rawValue < $1.modality.rawValue
@@ -706,6 +782,7 @@ public struct BrainPolicyNumanXRootSampleArtifact:
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
     self.sensorPacketFingerprint = sensorPacketFingerprint
     self.channels = canonicalChannels
+    self.source = source
   }
 
   public func encoded() throws -> Data {
@@ -732,21 +809,23 @@ public struct BrainPolicyNumanXRootSampleArtifact:
   }
 
   public func validate() throws {
-    guard formatVersion == Self.formatVersion,
-      try Self(
-        coordinates: coordinates,
-        transactionFingerprint: transactionFingerprint,
-        controlStep: controlStep,
-        committedTimestampMicroseconds: committedTimestampMicroseconds,
-        targetTimestampMicroseconds: targetTimestampMicroseconds,
-        basePhysicsGeneration: basePhysicsGeneration,
-        acceptedPhysicsTokenFingerprint: acceptedPhysicsTokenFingerprint,
-        physicsGeneration: physicsGeneration,
-        speciesTemplateFingerprint: speciesTemplateFingerprint,
-        sensoryProfileFingerprint: sensoryProfileFingerprint,
-        sensorPacketFingerprint: sensorPacketFingerprint,
-        channels: channels
-      ) == self
+    let canonicalChannels = channels.sorted {
+      $0.modality.rawValue < $1.modality.rawValue
+    }
+    let (nextPhysicsGeneration, physicsGenerationOverflow) =
+      basePhysicsGeneration.addingReportingOverflow(1)
+    let physicsGenerationIsCanonical = acceptedPhysicsTokenFingerprint == 0
+      ? physicsGeneration == basePhysicsGeneration
+      : !physicsGenerationOverflow && physicsGeneration == nextPhysicsGeneration
+    guard formatVersion == (source == nil ? 1 : Self.formatVersion),
+      transactionFingerprint > 0,
+      targetTimestampMicroseconds > committedTimestampMicroseconds,
+      speciesTemplateFingerprint > 0, sensoryProfileFingerprint > 0,
+      sensorPacketFingerprint > 0, !canonicalChannels.isEmpty,
+      canonicalChannels.count <= 8,
+      canonicalChannels == channels,
+      Set(canonicalChannels.map(\.modality)).count == canonicalChannels.count,
+      physicsGenerationIsCanonical
     else {
       throw BrainRuntimeError.invalidParameterVersion(
         "NumanX root sample artifact is not canonical"

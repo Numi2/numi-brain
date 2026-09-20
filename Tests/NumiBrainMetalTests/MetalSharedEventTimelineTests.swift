@@ -707,6 +707,49 @@ final class MetalSharedEventTimelineTests: XCTestCase {
     )
   }
 
+  func testDisabledAffectModeNeutralizesMetalAffectRecord() throws {
+    let typedTemplate = try makeNumanXInteropCompiledTemplate(
+      interoceptorCount: 1,
+      interoceptionFeatureDimension: InteroceptiveFeatureSchema
+        .NumanXFullBodyV1.featureDimension,
+      interoceptionFeatureSchemaFingerprint:
+        InteroceptiveFeatureSchema.NumanXFullBodyV1.fingerprint
+    )
+    let enabledFixture = try makeFixture(compiledSpeciesTemplate: typedTemplate)
+    let disabledFixture = try makeFixture(
+      compiledSpeciesTemplate: typedTemplate,
+      affectiveModelConfiguration: .disabled
+    )
+    XCTAssertNotEqual(
+      enabledFixture.runtime.agentStateRuntime.arena.layout.fingerprint,
+      disabledFixture.runtime.agentStateRuntime.arena.layout.fingerprint
+    )
+    let result = try runAcceptedRoot(
+      fixture: disabledFixture,
+      token: disabledFixture.token,
+      touchNociceptionValue: 1,
+      interoceptionValues: [0, 1, 0, 0, 0, 1],
+      cachedDecisionFingerprint: 0xaffe_0504
+    )
+    let section = disabledFixture.runtime.agentStateRuntime.arena.layout.section(
+      .affectiveState
+    )
+    func float(_ offset: Int) -> Float {
+      result.hotState.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: section.byteOffset + offset, as: Float.self)
+      }
+    }
+    XCTAssertEqual(float(0), 0)
+    XCTAssertEqual(float(4), 0)
+    XCTAssertEqual(float(8), 0)
+    XCTAssertEqual(
+      result.hotState.withUnsafeBytes {
+        $0.loadUnaligned(fromByteOffset: section.byteOffset + 36, as: UInt16.self)
+      },
+      0
+    )
+  }
+
   func testTypedNumanXFullBodyAggregates416ReceptorsAndRejectsIncompleteCoverage()
     throws
   {

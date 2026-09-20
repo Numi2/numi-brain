@@ -330,6 +330,8 @@ final class AffectiveStateTests: XCTestCase {
     let reference = AffectiveModelConfiguration.reference
     XCTAssertEqual(try AffectiveModelConfiguration(), reference)
     XCTAssertGreaterThan(reference.fingerprint, 0)
+    XCTAssertNotEqual(reference.fingerprint, AffectiveModelConfiguration.disabled.fingerprint)
+    XCTAssertFalse(AffectiveModelConfiguration.disabled.isEnabled)
     XCTAssertEqual(
       try JSONDecoder().decode(
         AffectiveModelConfiguration.self,
@@ -342,6 +344,11 @@ final class AffectiveStateTests: XCTestCase {
     XCTAssertNotEqual(changed.fingerprint, reference.fingerprint)
     XCTAssertThrowsError(try AffectiveModelConfiguration(painDecayMicroseconds: 0))
     XCTAssertThrowsError(try AffectiveModelConfiguration(recoveryGain: 4.1))
+    XCTAssertThrowsError(try AffectiveModelConfiguration(reliefGain: 4.1))
+    XCTAssertThrowsError(try AffectiveModelConfiguration(recoveryGain: -0.01))
+    XCTAssertThrowsError(try AffectiveModelConfiguration(reliefGain: -0.01))
+    XCTAssertNoThrow(try AffectiveModelConfiguration(recoveryGain: 0, reliefGain: 0))
+    XCTAssertNoThrow(try AffectiveModelConfiguration(recoveryGain: 4, reliefGain: 4))
     XCTAssertThrowsError(try AffectiveModelConfiguration(sourceWeights: [1, 0, 0, 0]))
     XCTAssertThrowsError(try AffectiveModelConfiguration(sourceWeights: [0.2, 0.2, 0.2, 0.2, 0.1]))
     let invalidDecodedConfiguration = Data(
@@ -354,11 +361,182 @@ final class AffectiveStateTests: XCTestCase {
       )
     )
 
+    let legacyConfiguration = Data(
+      #"{"painDecayMicroseconds":2000000,"pleasureDecayMicroseconds":1000000,"reliefDecayMicroseconds":500000,"maximumEvidenceAgeMicroseconds":100000,"recoveryGain":1,"reliefGain":1,"sourceWeights":[0.24,0.24,0.16,0.18,0.18]}"#.utf8
+    )
+    XCTAssertTrue(
+      try JSONDecoder().decode(AffectiveModelConfiguration.self, from: legacyConfiguration)
+        .isEnabled
+    )
+
     let bound = try AffectiveState.neutral(at: time(0), configuration: changed)
     XCTAssertEqual(bound.configurationFingerprint, changed.fingerprint)
     XCTAssertThrowsError(
       try bound.advanced(to: time(1), sample: physiology(), configuration: reference)
     )
+  }
+
+  func testDisabledAffectRemainsNeutralForPainAndRecoveryEvidence() throws {
+    let configuration = AffectiveModelConfiguration.disabled
+    let baseline = try AffectiveState.neutral(at: time(0), configuration: configuration)
+      .advanced(
+        to: time(10),
+        sample: physiology(
+          interoceptionAt: 10,
+          nociceptionAt: 10,
+          painEventAt: 10,
+          energy: 1,
+          respiration: 1,
+          temperature: 1,
+          fatigue: 1,
+          damage: 1,
+          nociception: 1,
+          painEvent: 1
+        ),
+        configuration: configuration
+      )
+    let update = try baseline.advanced(
+      to: time(20),
+      sample: physiology(
+        interoceptionAt: 20,
+        nociceptionAt: 20,
+        painEventAt: 20,
+        energy: 0,
+        respiration: 0,
+        temperature: 0,
+        fatigue: 0,
+        damage: 0,
+        nociception: 0,
+        painEvent: 0
+      ),
+      configuration: configuration
+    )
+
+    XCTAssertEqual(update.pain, 0)
+    XCTAssertEqual(update.pleasure, 0)
+    XCTAssertEqual(update.relief, 0)
+    XCTAssertEqual(update.sourceValidityMask, 0)
+    XCTAssertEqual(update.sourceEvidence, Array(repeating: 0, count: 5))
+    XCTAssertEqual(update.configurationFingerprint, configuration.fingerprint)
+  }
+
+  func testPainPleasureAndReliefOutputsSaturateAtUnitUpperBound() throws {
+    let configuration = try AffectiveModelConfiguration(
+      recoveryGain: 2,
+      reliefGain: 2
+    )
+
+    // Pain has no configurable gain: maximal fresh nociception, tissue damage,
+    // and a pain event each provide a bounded unit signal directly.
+    let painful = try AffectiveState.neutral(at: time(0), configuration: configuration)
+      .advanced(
+        to: time(10),
+        sample: physiology(
+          interoceptionAt: 10,
+          nociceptionAt: 10,
+          painEventAt: 10,
+          damage: 1,
+          nociception: 1,
+          painEvent: 1
+        ),
+        configuration: configuration
+      )
+    XCTAssertEqual(painful.pain, 1)
+    XCTAssertEqual(painful.pleasure, 0)
+    XCTAssertEqual(painful.relief, 0)
+
+    // A single unit of fresh homeostatic recovery is amplified by a gain > 1;
+    // the reported pleasure remains in the unit interval.
+    let depleted = try AffectiveState.neutral(at: time(0), configuration: configuration)
+      .advanced(
+        to: time(10),
+        sample: physiology(
+          interoceptionAt: 10,
+          energy: 1,
+          respiration: 1,
+          temperature: 1,
+          fatigue: 1,
+          damage: 1
+        ),
+        configuration: configuration
+      )
+    let recovered = try depleted.advanced(
+      to: time(20),
+      sample: physiology(
+        interoceptionAt: 20,
+        energy: 0,
+        respiration: 0,
+        temperature: 0,
+        fatigue: 0,
+        damage: 0
+      ),
+      configuration: configuration
+    )
+    XCTAssertEqual(recovered.pleasure, 1)
+    XCTAssertEqual(recovered.relief, 0)
+
+    // A full reduction in fresh nociception is amplified by reliefGain > 1.
+    // The same bounded signal feeds pleasure, which is clamped independently.
+    let severePain = try AffectiveState.neutral(at: time(0), configuration: configuration)
+      .advanced(
+        to: time(10),
+        sample: physiology(nociceptionAt: 10, nociception: 1),
+        configuration: configuration
+      )
+    let relieved = try severePain.advanced(
+      to: time(20),
+      sample: physiology(
+        nociceptionAt: 20,
+        painEventAt: 20,
+        nociception: 0,
+        painEvent: 1
+      ),
+      configuration: configuration
+    )
+    XCTAssertEqual(relieved.pain, 1)
+    XCTAssertEqual(relieved.pleasure, 1)
+    XCTAssertEqual(relieved.relief, 1)
+  }
+
+  func testZeroRecoveryAndReliefGainsPreserveZeroLowerBound() throws {
+    let configuration = try AffectiveModelConfiguration(
+      recoveryGain: 0,
+      reliefGain: 0
+    )
+    let depletedAndPainful = try AffectiveState.neutral(
+      at: time(0), configuration: configuration
+    ).advanced(
+      to: time(10),
+      sample: physiology(
+        interoceptionAt: 10,
+        nociceptionAt: 10,
+        energy: 1,
+        respiration: 1,
+        temperature: 1,
+        fatigue: 1,
+        damage: 1,
+        nociception: 1
+      ),
+      configuration: configuration
+    )
+    let recoveredAndRelieved = try depletedAndPainful.advanced(
+      to: time(20),
+      sample: physiology(
+        interoceptionAt: 20,
+        nociceptionAt: 20,
+        energy: 0,
+        respiration: 0,
+        temperature: 0,
+        fatigue: 0,
+        damage: 0,
+        nociception: 0
+      ),
+      configuration: configuration
+    )
+
+    XCTAssertGreaterThan(recoveredAndRelieved.pain, 0.99)
+    XCTAssertEqual(recoveredAndRelieved.pleasure, 0)
+    XCTAssertEqual(recoveredAndRelieved.relief, 0)
   }
 
   func testCausalFingerprintIncludesAffectBaselinesUsedByFutureUpdates() throws {

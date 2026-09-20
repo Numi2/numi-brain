@@ -88,6 +88,15 @@ be finite values in `[0, 1]` that sum to 1. The selected evidence-age bound,
 decays, gains, and weights are fingerprinted into the arena layout, so a
 checkpoint cannot be restored under a different affect configuration.
 
+`AffectiveModelConfiguration.disabled` is the matched control mode. It commits
+zero pain, pleasure, relief, and affect source evidence on accepted roots, so
+attention, planning, memory salience, and learning receive no affect signal.
+It does not disable raw sensation, existing pain/injury-cost factors, reflexes,
+or emergency-stop paths. The enabled bit participates in the configuration
+fingerprint and the affective layout version; checkpoints cannot cross the
+enabled/disabled boundary. Historical serialized configurations without the
+bit decode as enabled.
+
 ## Transaction and consumers
 
 The 64-byte affect record lives in each agent's hot state. The Metal update runs
@@ -139,6 +148,44 @@ affect enabled versus a matched control has been produced, and this evidence
 does not establish behavioral benefit, physiological calibration, or physical
 safety.
 
+Gate C accepts `--affect-mode enabled|disabled`. The experiment CLI accepts an
+explicit `affectiveModelConfiguration` inside each `CaptureInput`; older
+single-capture input without that field defaults to the reference enabled
+configuration. `numi-brain-experiment study-affect` accepts one frozen protocol,
+publication, native path set, and distinct run identifiers, with nested
+`enabledCapture` and `disabledCapture` inputs. It requires matching settings
+apart from the enabled bit, then captures and evaluates both fresh runs. The
+first root uses a synthetic bootstrap sensor packet, now explicitly tagged
+as such; its hash is not treated as native initial-sensor evidence. Eligible
+pairs must use the same authored Matter package and bridge-validated prepared
+initial-state fingerprint, match retained native world and physics identities,
+and contain accepted native aggregate sensor samples in both arms. The paired
+artifact retains those identities, bootstrap provenance, matching bootstrap
+sensor status, first native aggregate sample hashes, affect fingerprints,
+run/evaluation hashes, and behavior metrics. Format-5 capture-run artifacts
+retain native world identity and prepared-state fingerprints; format 4 (affect
+configuration) and historical format-2/3 artifacts remain readable.
+`behaviorComparisonEligible` remains a
+software evidence gate, not evidence that a native pair has run or that affect
+improves behavior.
+
+The study config contains `artifactDirectory`, `protocolSHA256`,
+`enabledCapture`, and `disabledCapture`. Each capture repeats the same
+`artifactDirectory`, `protocolSHA256`, `publicationSHA256`, and native assets.
+For a material-backed world, `nativePaths` contains `library`, `rigid`, `muscle`,
+`contacts`, `visualPack`, `visionProfile`, `metalRoboMetallib`,
+`matterMetallib`, and `material`. A comparison-eligible study instead supplies
+the same `authoredMatterWorld` object to both captures, including package,
+Human/world fingerprints, source joint-equality and joint-limit payloads and
+fingerprints, plus an NHINIT1 prepared initial-state path and fingerprint. Its
+`nativePaths` map omits `material`. Use distinct `runIdentifier` values and
+otherwise identical capture settings. Each explicit affect configuration
+contains `isEnabled`, the three decay constants,
+`maximumEvidenceAgeMicroseconds`, the two gains, and all five `sourceWeights`.
+The disabled arm must differ only in `isEnabled: false`; the enabled arm sets
+`isEnabled: true`. The study currently rejects watchdog and connectome capture
+overlays so the causal contrast stays limited to affect mode.
+
 Matched synthetic Metal regressions also verify that fresh pleasure can change
 workspace selection, restorative option value, committed learner input, and
 the active episode's salient memory event. The memory assertion observes the
@@ -146,5 +193,5 @@ committed accumulator before journaling by raising the test fixture's episode
 boundary threshold; it is a software-path check. Selected-configuration tests
 cover accepted recovery gains and evidence-age rejection, planner decay,
 checkpoint continuation and cross-configuration restore rejection, and
-rejected-evidence rollback. CPU affect tests pass 14/14; these remain software
+rejected-evidence rollback. CPU affect tests pass 17/17; these remain software
 checks, not native NumanX behavioral or physiological qualification.

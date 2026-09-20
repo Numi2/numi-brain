@@ -58,10 +58,21 @@ final class NumanXGateCArtifactTests: XCTestCase {
       speciesTemplateFingerprint: 9,
       sensoryProfileFingerprint: 10,
       sensorPacketFingerprint: 11,
-      channels: [channel]
+      channels: [channel],
+      source: .syntheticBootstrap
     )
     let encoded = try artifact.encoded()
     XCTAssertEqual(try BrainPolicyNumanXRootSampleArtifact.decode(encoded), artifact)
+    var legacyObject = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    legacyObject["formatVersion"] = 1
+    legacyObject.removeValue(forKey: "source")
+    let legacy = try BrainPolicyNumanXRootSampleArtifact.decode(
+      JSONSerialization.data(withJSONObject: legacyObject, options: [.sortedKeys])
+    )
+    XCTAssertEqual(legacy.formatVersion, 1)
+    XCTAssertNil(legacy.source)
     XCTAssertEqual(
       try artifact.sampleSHA256,
       BrainPolicyEvidenceArtifact.sha256(encoded)
@@ -92,7 +103,8 @@ final class NumanXGateCArtifactTests: XCTestCase {
       speciesTemplateFingerprint: 9,
       sensoryProfileFingerprint: 10,
       sensorPacketFingerprint: 11,
-      channels: [channel]
+      channels: [channel],
+      source: .syntheticBootstrap
     ))
   }
 
@@ -175,7 +187,9 @@ final class NumanXGateCArtifactTests: XCTestCase {
     )
     func run(
       timestep: UInt32?,
-      latencyBudget: UInt64? = nil
+      latencyBudget: UInt64? = nil,
+      affectiveModelConfiguration: AffectiveModelConfiguration? = nil,
+      nativeWorldIdentity: BrainPolicyNumanXNativeWorldIdentity? = nil
     ) throws -> BrainPolicyNumanXCaptureRunArtifact {
       try BrainPolicyNumanXCaptureRunArtifact(
         runIdentifier: "timestep-test",
@@ -191,18 +205,54 @@ final class NumanXGateCArtifactTests: XCTestCase {
         declaredMaximumInferenceLatencyMicroseconds: latencyBudget,
         learningBatchArtifactSHA256: String(repeating: "c", count: 64),
         learningBatchFingerprint: 6,
-        roots: [root]
+        roots: [root],
+        affectiveModelConfiguration: affectiveModelConfiguration,
+        nativeWorldIdentity: nativeWorldIdentity
       )
     }
     let legacy = try run(timestep: nil)
     let retained = try run(timestep: 100)
     let predeclared = try run(timestep: 100, latencyBudget: 20_000)
+    let affectEnabled = try run(
+      timestep: 100,
+      affectiveModelConfiguration: .reference
+    )
+    let worldBoundAffect = try run(
+      timestep: 100,
+      affectiveModelConfiguration: .reference,
+      nativeWorldIdentity: try BrainPolicyNumanXNativeWorldIdentity(
+        authoredPackage: true,
+        objectCount: 12,
+        femNodeCount: 32,
+        femAttachmentCount: 4,
+        worldFingerprint: 0x1001,
+        physicsFingerprint: 0x2002,
+        preparedInitialStateFingerprint: 0x3003
+      )
+    )
     XCTAssertNil(legacy.timestepMicroseconds)
     XCTAssertEqual(retained.timestepMicroseconds, 100)
     XCTAssertEqual(
       predeclared.declaredMaximumInferenceLatencyMicroseconds,
       20_000
     )
+    XCTAssertEqual(legacy.formatVersion, 2)
+    XCTAssertEqual(affectEnabled.formatVersion, 4)
+    XCTAssertEqual(affectEnabled.affectiveModelConfiguration, .reference)
+    XCTAssertEqual(worldBoundAffect.formatVersion, 5)
+    XCTAssertEqual(
+      worldBoundAffect.nativeWorldIdentity?.preparedInitialStateFingerprint,
+      0x3003
+    )
+    XCTAssertThrowsError(try BrainPolicyNumanXNativeWorldIdentity(
+      authoredPackage: true,
+      objectCount: 1,
+      femNodeCount: 0,
+      femAttachmentCount: 0,
+      worldFingerprint: 1,
+      physicsFingerprint: 1,
+      preparedInitialStateFingerprint: 0
+    ))
     XCTAssertFalse(String(decoding: try legacy.encoded(), as: UTF8.self)
       .contains("timestepMicroseconds"))
     XCTAssertTrue(String(decoding: try retained.encoded(), as: UTF8.self)
@@ -216,6 +266,14 @@ final class NumanXGateCArtifactTests: XCTestCase {
     XCTAssertEqual(
       try BrainPolicyNumanXCaptureRunArtifact.decode(retained.encoded()),
       retained
+    )
+    XCTAssertEqual(
+      try BrainPolicyNumanXCaptureRunArtifact.decode(affectEnabled.encoded()),
+      affectEnabled
+    )
+    XCTAssertEqual(
+      try BrainPolicyNumanXCaptureRunArtifact.decode(worldBoundAffect.encoded()),
+      worldBoundAffect
     )
     XCTAssertThrowsError(try run(timestep: 0))
     XCTAssertThrowsError(try run(timestep: 100, latencyBudget: 0))

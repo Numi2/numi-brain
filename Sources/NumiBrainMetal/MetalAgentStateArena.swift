@@ -149,7 +149,7 @@ public struct MetalAgentStateLayout: Codable, Equatable, Sendable {
   public static let bodyBeliefLayoutVersion: UInt64 = 3
   public static let jointBeliefStride = 256
   public static let jointBeliefLayoutVersion: UInt64 = 1
-  public static let affectiveStateLayoutVersion: UInt64 = 1
+  public static let affectiveStateLayoutVersion: UInt64 = 2
   public static let affectiveStateStride = 64
   public static let worldModelLayoutVersion: UInt64 = 2
   public static let cerebellarExpertLayoutVersion: UInt64 = 2

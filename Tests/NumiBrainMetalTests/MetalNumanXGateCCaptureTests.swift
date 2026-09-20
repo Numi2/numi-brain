@@ -104,13 +104,15 @@ final class MetalNumanXGateCCaptureTests: XCTestCase {
       transaction: transaction,
       sensors: sensors,
       coordinates: coordinates,
-      artifactDirectory: directory
+      artifactDirectory: directory,
+      source: .syntheticBootstrap
     )
     let replay = try MetalNumanXGateCCapture.writeSettledRootSample(
       transaction: transaction,
       sensors: sensors,
       coordinates: coordinates,
-      artifactDirectory: directory
+      artifactDirectory: directory,
+      source: .syntheticBootstrap
     )
     XCTAssertEqual(first.sampleSHA256, replay.sampleSHA256)
     let manifestURL = try BrainPolicyEvidenceArtifact.url(
@@ -123,6 +125,8 @@ final class MetalNumanXGateCCaptureTests: XCTestCase {
     XCTAssertEqual(manifest.channels.count, 7)
     XCTAssertEqual(manifest.transactionFingerprint, transaction.fingerprint)
     XCTAssertEqual(manifest.coordinates, coordinates)
+    XCTAssertEqual(manifest.source, .syntheticBootstrap)
+    XCTAssertEqual(manifest.formatVersion, 2)
     for channel in manifest.channels {
       XCTAssertTrue(FileManager.default.fileExists(atPath:
         try BrainPolicyEvidenceArtifact.url(
@@ -146,7 +150,8 @@ final class MetalNumanXGateCCaptureTests: XCTestCase {
       transaction: transaction,
       sensors: sensors,
       coordinates: coordinates,
-      artifactDirectory: directory
+      artifactDirectory: directory,
+      source: .syntheticBootstrap
     )
     XCTAssertNotEqual(mutated.sampleSHA256, first.sampleSHA256)
   }

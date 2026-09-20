@@ -44,6 +44,7 @@ private struct CaptureSummary: Codable {
   let dofCount: UInt32
   let muscleCount: UInt32
   let matterWorld: MetalNumanXBridgeV1Runtime.WorldInfo?
+  let affectiveModelConfiguration: AffectiveModelConfiguration
   let roots: [CaptureRootSummary]
   let learnerConfigurationSHA256: String?
   let headPostureLearningArtifactSHA256: String?
@@ -363,6 +364,10 @@ private func usage(_ message: String? = nil) -> Never {
     and exact motor/root artifacts, disables synthetic bootstrap observations,
     and cannot inherit Gate C qualification or train an unrelated policy.
 
+    capture accepts --affect-mode enabled|disabled (default enabled). The
+    disabled arm zeros affect state and affect-based modulation while keeping
+    sensory input, reflexes, emergency stops, and separate pain costs active.
+
     The capture output is retained authoritative root data, but is always
     marked non-promotable. Gate C promotion requires separately frozen,
     disjoint partitions and complete metric evidence.
@@ -447,6 +452,16 @@ private func positiveFloat(_ key: String, in options: [String: String]) -> Float
     usage("\(key) must be a positive finite Float")
   }
   return parsed
+}
+
+private func affectiveModelConfiguration(
+  in options: [String: String]
+) -> AffectiveModelConfiguration {
+  switch options["--affect-mode"] ?? "enabled" {
+  case "enabled": .reference
+  case "disabled": .disabled
+  default: usage("--affect-mode must be enabled or disabled")
+  }
 }
 
 private func finiteFloat(_ key: String, in options: [String: String]) -> Float {
@@ -1254,6 +1269,7 @@ if arguments[1] == "evaluate-support" {
         episodeIdentifier: episode,
         randomSeed: seed,
         enableProductionUncertaintyGate: true,
+        affectiveModelConfiguration: affectiveModelConfiguration(in: options),
         device: device
       )
       var roots: [MetalNumanXGateCRootRunner.RootResult] = []
@@ -1556,6 +1572,7 @@ do {
       declaredMaximumInferenceLatencyMicroseconds,
     enableProductionUncertaintyGate: uncertaintyMode != nil,
     muscleLocomotor: muscleLocomotor,
+    affectiveModelConfiguration: affectiveModelConfiguration(in: options),
     device: device
   )
   let datasetIdentifier = required("--dataset-id", in: options)
@@ -1897,6 +1914,7 @@ do {
     dofCount: runner.nativeInfo.dofCount,
     muscleCount: runner.nativeInfo.muscleCount,
     matterWorld: runner.nativeWorldInfo,
+    affectiveModelConfiguration: runner.affectiveModelConfiguration,
     roots: results.map {
       CaptureRootSummary(
         controlStep: $0.execution.controlStep,

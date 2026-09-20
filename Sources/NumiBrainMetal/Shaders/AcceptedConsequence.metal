@@ -166,6 +166,7 @@ struct NBAcceptedConsequenceUniforms {
   float affective_source_weight_2;
   float affective_source_weight_3;
   float affective_source_weight_4;
+  uint affective_enabled;
 };
 
 struct NBAffectiveStateRecord {
@@ -1774,6 +1775,21 @@ kernel void update_accepted_affective_state(
   );
   const ulong now = uniforms.target_timestamp_microseconds;
   if (now <= state->timestamp_microseconds) return;
+  if (uniforms.affective_enabled == 0u) {
+    state->pain = 0.0f;
+    state->pleasure = 0.0f;
+    state->relief = 0.0f;
+    state->source_validity_mask = 0u;
+    state->previous_validity_mask = 0u;
+    for (uint source = 0u; source < 5u; ++source) {
+      state->source_evidence[source] = 0.0f;
+    }
+    state->last_interoception_timestamp_microseconds = 0ul;
+    state->last_pain_timestamp_microseconds = 0ul;
+    state->prior_pain_observation = 0.0f;
+    state->timestamp_microseconds = now;
+    return;
+  }
   const ulong elapsed = now - state->timestamp_microseconds;
   const float pain_retention = exp(-float(elapsed)
     / float(uniforms.affective_pain_decay_microseconds));

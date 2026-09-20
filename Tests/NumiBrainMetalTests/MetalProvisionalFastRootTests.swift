@@ -1372,7 +1372,8 @@ final class MetalProvisionalFastRootTests: XCTestCase {
         objectFingerprint: 4,
         embodimentFingerprint: 5
       ),
-      artifactDirectory: captureDirectory
+      artifactDirectory: captureDirectory,
+      source: .syntheticBootstrap
     )
     let proposal = try makeProposalFixture(fixture, accept: true)
     let ackEvent = try XCTUnwrap(fixture.complete.device.makeSharedEvent())

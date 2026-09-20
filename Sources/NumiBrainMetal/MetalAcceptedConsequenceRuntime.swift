@@ -119,6 +119,7 @@ private struct AcceptedConsequenceUniforms {
   var affectiveSourceWeight2: Float = 0
   var affectiveSourceWeight3: Float = 0
   var affectiveSourceWeight4: Float = 0
+  var affectiveEnabled: UInt32 = 0
 }
 
 private struct AcceptedActuatorDescriptor {
@@ -1470,7 +1471,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       affectiveSourceWeight1: arena.affectiveModelConfiguration.sourceWeights[1],
       affectiveSourceWeight2: arena.affectiveModelConfiguration.sourceWeights[2],
       affectiveSourceWeight3: arena.affectiveModelConfiguration.sourceWeights[3],
-      affectiveSourceWeight4: arena.affectiveModelConfiguration.sourceWeights[4]
+      affectiveSourceWeight4: arena.affectiveModelConfiguration.sourceWeights[4],
+      affectiveEnabled: arena.affectiveModelConfiguration.isEnabled ? 1 : 0
     )
   }
 

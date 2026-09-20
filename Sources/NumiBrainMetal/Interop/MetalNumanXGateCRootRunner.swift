@@ -118,11 +118,13 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
   public let episodeIdentifier: UInt64
   public let nativeInfo: MetalNumanXBridgeV1Runtime.Info
   public let nativeWorldInfo: MetalNumanXBridgeV1Runtime.WorldInfo?
+  public let nativeWorldIdentity: BrainPolicyNumanXNativeWorldIdentity?
   public let parameterVersionFingerprint: UInt64
   public let declaredMaximumInferenceLatencyMicroseconds: UInt64?
   public let physicalCompletionTimeoutSeconds: TimeInterval
   public let muscleLocomotorProgramFingerprint: UInt64?
   public let connectomeCaptureIdentity: ConnectomeCaptureIdentity?
+  public let affectiveModelConfiguration: AffectiveModelConfiguration
 
   private let device: any MTLDevice
   private let brain: MetalNumiBrainRuntime
@@ -148,6 +150,7 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     enableProductionUncertaintyGate: Bool = false,
     connectome: MetalConnectomeConfiguration? = nil,
     muscleLocomotor: MuscleLocomotorProgram? = nil,
+    affectiveModelConfiguration: AffectiveModelConfiguration = .reference,
     device: any MTLDevice
   ) throws {
     guard episodeIdentifier > 0, randomSeed > 0,
@@ -225,7 +228,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         schedulerEnvironmentIdentifier: 0,
         maximumEncodedSubsteps: 1,
         connectome: connectome,
-        muscleLocomotor: muscleLocomotor
+        muscleLocomotor: muscleLocomotor,
+        affectiveModelConfiguration: affectiveModelConfiguration
       ),
       publication: publication,
       numanXUncertaintyGate: enableProductionUncertaintyGate
@@ -244,8 +248,22 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
     self.brain = brain
     self.native = native
     self.nativeInfo = native.info
-    self.nativeWorldInfo = bridgeConfiguration.authoredMatterWorld != nil
+    let worldInfo = bridgeConfiguration.authoredMatterWorld != nil
       ? try native.currentWorldInfo() : try? native.currentWorldInfo()
+    self.nativeWorldInfo = worldInfo
+    self.nativeWorldIdentity = try worldInfo.map { info in
+      try BrainPolicyNumanXNativeWorldIdentity(
+        authoredPackage: info.authoredPackage,
+        objectCount: info.objectCount,
+        femNodeCount: info.femNodeCount,
+        femAttachmentCount: info.femAttachmentCount,
+        worldFingerprint: info.worldFingerprint,
+        physicsFingerprint: info.physicsFingerprint,
+        preparedInitialStateFingerprint: bridgeConfiguration
+          .authoredMatterWorld?.preparedInitialState?.fingerprint
+      )
+    }
+    self.affectiveModelConfiguration = affectiveModelConfiguration
     self.parameterVersionFingerprint = brain.parameterVersionFingerprint
     self.declaredMaximumInferenceLatencyMicroseconds =
       declaredMaximumInferenceLatencyMicroseconds
@@ -329,7 +347,9 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
           externalGoalArtifactSHA256: $0.externalGoalArtifactSHA256
         )
       },
-      connectome: connectomeCaptureIdentity
+      connectome: connectomeCaptureIdentity,
+      affectiveModelConfiguration: affectiveModelConfiguration,
+      nativeWorldIdentity: nativeWorldIdentity
     )
     return try artifact.write(to: artifactDirectory)
   }
@@ -472,7 +492,8 @@ public final class MetalNumanXGateCRootRunner: @unchecked Sendable {
         transaction: transaction.token,
         sensors: sensors,
         coordinates: coordinates,
-        artifactDirectory: artifactDirectory
+        artifactDirectory: artifactDirectory,
+        source: aggregate == nil ? .syntheticBootstrap : .acceptedNativeAggregate
       )
       let decision = try brain.submitInferAndDecide(
         transaction,
