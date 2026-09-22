@@ -1214,6 +1214,40 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   private var interactiveJointRoot: InteractiveJointRoot?
+  private var borrowedMotorCandidate: BorrowedMotorCandidate?
+  private var borrowedEncodingFailed = false
+  private var borrowedAcceptedStatePending = false
+  private var borrowedCopyPipeline: (any MTLComputePipelineState)?
+
+  struct BorrowedMotorCandidate {
+    let transactionFingerprint: UInt64
+    let fastSystems: FastSystemResult
+    let candidate: NumanXMotorCandidate
+    let buffers: NumanXMotorBufferLease
+    let evaluation: MetalNumanXMotorReadyEvaluation
+  }
+
+  private func borrowedEncoder(_ encoder: any MTLComputeCommandEncoder,
+    extraAllocations: [any MTLAllocation] = []) throws -> MetalBrainCommandEncoder {
+    guard encoder.device.registryID == device.registryID else {
+      throw TissueError.transaction("borrowed tissue encoder belongs to a foreign device")
+    }
+    if borrowedCopyPipeline == nil {
+      guard let url = Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
+        ?? Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
+        throw TissueError.metal("borrowed brain transport shader is missing")
+      }
+      let options = MTLCompileOptions()
+      options.languageVersion = .version4_0
+      let library = try device.makeLibrary(source: String(contentsOf: url, encoding: .utf8), options: options)
+      guard let function = library.makeFunction(name: "borrowed_brain_copy_bytes") else {
+        throw TissueError.metal("borrowed brain transport kernel is missing")
+      }
+      borrowedCopyPipeline = try device.makeComputePipelineState(function: function)
+    }
+    return .borrowed(encoder, allocations: residencySet.allAllocations + extraAllocations,
+      copyPipeline: borrowedCopyPipeline)
+  }
 
   public init(
     initialState: TissueGrid,
@@ -3939,6 +3973,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       firstGPUStartSeconds: nil,
       lastGPUEndSeconds: nil
     )
+    borrowedMotorCandidate = nil
+    borrowedEncodingFailed = false
+    borrowedAcceptedStatePending = false
     descendingSomaticTransactionFingerprint = nil
     stagedFastCPGTransactionFingerprint = nil
     stagedFastCPGOscillatorCount = 0
@@ -4051,29 +4088,42 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
     cognitiveEventQueueBytes: Int,
     initialMotorStateIndex: Int
-  ) {
-    encoder.copy(
+  ) throws {
+    try encodeAsyncDescendingSomaticCommand(.metal4(encoder), lease: lease,
+      cognitiveEventQueueBytes: cognitiveEventQueueBytes, initialMotorStateIndex: initialMotorStateIndex)
+  }
+
+  private func encodeAsyncDescendingSomaticCommand(
+    _ encoder: MetalBrainCommandEncoder,
+    lease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    cognitiveEventQueueBytes: Int,
+    initialMotorStateIndex: Int
+  ) throws {
+    let fastAutonomicArgumentTable = MetalBrainArgumentTable(self.fastAutonomicArgumentTable)
+    let protectiveMotorArgumentTable = MetalBrainArgumentTable(self.protectiveMotorArgumentTable)
+    let receptorInterruptArgumentTable = MetalBrainArgumentTable(self.receptorInterruptArgumentTable)
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.descendingBaselineSourceOffset,
       destinationBuffer: descendingSomaticBuffer,
       destinationOffset: 0,
       size: protectiveMuscleExcitationByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.maturationSourceOffset,
       destinationBuffer: stagedRegionalMaturationBuffer,
       destinationOffset: 0,
       size: developmentalMaturationByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.plasticModulationSourceOffset,
       destinationBuffer: stagedRegionalPlasticModulationBuffer,
       destinationOffset: 0,
       size: regionalPlasticModulationByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: defaultFastPlasticityBuffer,
       sourceOffset: 0,
       destinationBuffer: stagedFastPlasticityBuffer,
@@ -4082,7 +4132,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         + fastPlasticityByteCount
     )
     if lease.decision.fastPlasticityByteCount > 0 {
-      encoder.copy(
+      try encoder.copy(
         sourceBuffer: lease.buffer,
         sourceOffset: lease.fastPlasticitySourceOffset,
         destinationBuffer: stagedFastPlasticityBuffer,
@@ -4091,7 +4141,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     }
     if lease.decision.cpgStateByteCount > 0 {
-      encoder.copy(
+      try encoder.copy(
         sourceBuffer: lease.buffer,
         sourceOffset: lease.cpgStateSourceOffset,
         destinationBuffer: stagedFastCPGStateBuffer,
@@ -4100,7 +4150,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     }
     if lease.decision.reflexStateByteCount > 0 {
-      encoder.copy(
+      try encoder.copy(
         sourceBuffer: lease.buffer,
         sourceOffset: lease.reflexStateSourceOffset,
         destinationBuffer: stagedFastReflexStateBuffer,
@@ -4108,35 +4158,35 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         size: lease.decision.reflexStateByteCount
       )
     }
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.fastCerebellarStateSourceOffset,
       destinationBuffer: baselineFastCerebellarStateBuffer,
       destinationOffset: 0,
       size: fastCerebellarStateByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.fastCerebellarStateSourceOffset,
       destinationBuffer: stagedFastCerebellarStateBuffer,
       destinationOffset: 0,
       size: fastCerebellarStateByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.motorCommandSourceOffset,
       destinationBuffer: stagedMotorCommandBuffer,
       destinationOffset: 0,
       size: stagedMotorCommandByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.autonomicSourceOffset,
       destinationBuffer: baselineFastAutonomicCommandBuffer,
       destinationOffset: 0,
       size: boundFastAutonomicChannelCount * Self.autonomicCommandStride
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.fastAutonomicStateSourceOffset,
       destinationBuffer: baselineFastAutonomicStateBuffer,
@@ -4144,7 +4194,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: lease.decision.fastAutonomicStateByteCount
     )
     if boundActiveSensingChannelCount > 0 {
-      encoder.copy(
+      try encoder.copy(
         sourceBuffer: lease.buffer,
         sourceOffset: lease.activeSensingSourceOffset,
         destinationBuffer: stagedActiveSensingCommandBuffer,
@@ -4152,32 +4202,28 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         size: boundActiveSensingChannelCount * Self.activeSensingCommandStride
       )
     }
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.receptorEventQueueSourceOffset,
       destinationBuffer: stagedCognitiveEventQueueBuffer,
       destinationOffset: 0,
       size: cognitiveEventQueueBytes
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: lease.buffer,
       sourceOffset: lease.fastAutonomicStateSourceOffset,
       destinationBuffer: stagedFastAutonomicStateBuffer,
       destinationOffset: 0,
       size: lease.decision.fastAutonomicStateByteCount
     )
-    encoder.copy(
+    try encoder.copy(
       sourceBuffer: protectiveCommandBuffers[committedSchedulerClockIndex],
       sourceOffset: 0,
       destinationBuffer: protectiveCommandBuffers[initialMotorStateIndex],
       destinationOffset: 0,
       size: ProtectiveMotorCommand.byteCount
     )
-    encoder.barrier(
-      afterEncoderStages: .blit,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     receptorInterruptArgumentTable.setAddress(
       receptorEventTransductionUniformBuffer.gpuAddress, index: 0
     )
@@ -4194,17 +4240,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     receptorInterruptArgumentTable.setAddress(
       stagedCognitiveEventQueueBuffer.gpuAddress, index: 5
     )
-    encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
-    encoder.setArgumentTable(receptorInterruptArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: receptorInterruptTransductionPipeline, argumentTable: receptorInterruptArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     fastAutonomicArgumentTable.setAddress(
       fastAutonomicUniformBuffer.gpuAddress, index: 0
     )
@@ -4232,9 +4272,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     fastAutonomicArgumentTable.setAddress(
       fastAutonomicChannelDescriptorBuffer.gpuAddress, index: 8
     )
-    encoder.setComputePipelineState(fastAutonomicPipeline)
-    encoder.setArgumentTable(fastAutonomicArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: fastAutonomicPipeline, argumentTable: fastAutonomicArgumentTable,
       threadsPerGrid: MTLSize(
         width: boundFastAutonomicChannelCount, height: 1, depth: 1
       ),
@@ -4304,9 +4342,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     protectiveMotorArgumentTable.setAddress(
       somaticSynergyDecoderBuffer.gpuAddress, index: 19
     )
-    encoder.setComputePipelineState(protectiveMotorPipeline)
-    encoder.setArgumentTable(protectiveMotorArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: protectiveMotorPipeline, argumentTable: protectiveMotorArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
@@ -4763,6 +4799,277 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
   }
 
+  /// Appends the normal decision-to-protection and neural tissue candidate to
+  /// the physical owner's encoder. The caller retains the owner command buffer,
+  /// abandons it on any encoding error, and publishes only after native acceptance.
+  /// Repeated invocation while this candidate is open reuses its exact command.
+  func encodeBorrowedNumanXMotorCandidate(
+    encoder nativeEncoder: any MTLComputeCommandEncoder,
+    commandLease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    decisionEvaluation: MetalNumanXDecisionReadyEvaluation,
+    transaction: BrainJointTransactionToken,
+    candidateDurationMicroseconds: UInt64
+  ) throws -> BorrowedMotorCandidate {
+    guard !borrowedEncodingFailed,
+      decisionEvaluation.transaction == transaction,
+      (decisionEvaluation.sourceBuffer as AnyObject) === (commandLease.buffer as AnyObject) else {
+      throw TissueError.transaction("failed borrowed motor encoding requires root abort")
+    }
+    if let previous = borrowedMotorCandidate,
+      interactiveJointRoot?.candidate?.substep == previous.fastSystems.substep {
+      guard previous.transactionFingerprint == transaction.fingerprint,
+        candidateDurationMicroseconds == previous.fastSystems.substep.durationMicroseconds else {
+        throw TissueError.transaction("a physical retry cannot replace its pending motor candidate")
+      }
+      return previous
+    }
+    guard commandLease.buffer.device.registryID == nativeEncoder.device.registryID else {
+      throw TissueError.transaction("borrowed decision is on a foreign device")
+    }
+    let qualificationInterruptEvents: [BrainInterruptEvent] = []
+    let cognitiveEventQueueBytes = try validateAsyncDescendingSomaticCommand(
+      commandLease,
+      for: transaction
+    )
+    guard var root = interactiveJointRoot else {
+      throw TissueError.transaction("begin interactive joint control first")
+    }
+    guard root.candidate == nil,
+      root.transaction.acceptedSubstepCount == 0
+    else {
+      throw TissueError.transaction(
+        "async NumanX motor handoff requires the sole root physical substep"
+      )
+    }
+    let nominalDuration = try schedulerTimestamp(
+      milliseconds: parameters.timestepMilliseconds
+    ).rawValue
+    guard candidateDurationMicroseconds > 0,
+      candidateDurationMicroseconds <= nominalDuration
+    else {
+      throw TissueError.transaction(
+        "async motor candidate duration exceeds the nominal tissue step"
+      )
+    }
+    var prospectiveTransaction = root.transaction
+    let substep = try prospectiveTransaction.beginPhysicsSubstep(
+      durationMicroseconds: candidateDurationMicroseconds
+    )
+    guard substep.substepIndex == 0,
+      substep.candidateTimestamp <= prospectiveTransaction.token.targetTimestamp,
+      substep.startTimestamp == root.acceptedTimestamp
+    else {
+      throw TissueError.transaction("async motor candidate has invalid physical time")
+    }
+    let (nextHistoryStep, historyOverflow) = root.historyStep.addingReportingOverflow(1)
+    guard !historyOverflow else {
+      throw TissueError.transaction("interactive tissue history step overflows UInt64")
+    }
+    let historyWriteSlot = Int(
+      nextHistoryStep % UInt64(TissueDelayField.historyCapacity)
+    )
+    let currentOwner = (root.historyOwnerMask >> UInt32(historyWriteSlot)) & 1
+    let historyWritePlane = currentOwner ^ 1
+    var prospectiveTimestamps = root.relayHistoryTimestamps
+    prospectiveTimestamps[historyWriteSlot] = substep.candidateTimestamp.rawValue
+    try validateRelayHistoryCoverage(
+      at: substep.candidateTimestamp,
+      timestamps: prospectiveTimestamps
+    )
+    let destination = destinationIndex(rootShadowIndex: root.rootShadowIndex)
+    let initialMotorStateIndex = 1 - committedSchedulerClockIndex
+    let timestepMilliseconds = Float(Double(candidateDurationMicroseconds) / 1_000)
+    let tissueUniforms = TissueUniforms.encode(
+      width: width,
+      height: height,
+      timeMilliseconds: Float(Double(root.acceptedTimestamp.rawValue) / 1_000),
+      parameters: parameters,
+      stimulus: stimulus,
+      historyStep: UInt32(root.historyStep % UInt64(TissueDelayField.historyCapacity)),
+      historyOwnerMask: root.historyOwnerMask,
+      historyWriteSlot: UInt32(historyWriteSlot),
+      historyWritePlane: historyWritePlane,
+      eventCount: eventSchedule.eventCount,
+      randomContext: randomContext,
+      acceptedStep: root.historyStep,
+      timestepMilliseconds: timestepMilliseconds,
+      currentTimestamp: root.acceptedTimestamp,
+      candidateTimestamp: substep.candidateTimestamp
+    )
+    try writeCognitiveEventTransductionUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      maximumEventCount: commandLease.decision.receptorEventMaximumCount,
+      hostEvents: qualificationInterruptEvents
+    )
+    writeFastCPGUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      oscillatorCount: commandLease.decision.cpgStateCount,
+      synergyCount: commandLease.decision.cpgSynergyCount,
+      consumeInterruptEvents: true,
+      resetReflexRootActivation: true
+    )
+    writeFastAutonomicUniforms(
+      timestamp: commandLease.decision.decisionTimestamp,
+      baselineTimestamp: commandLease.decision.decisionTimestamp,
+      oscillatorCount: commandLease.decision.cpgStateCount,
+      consumeInterruptEvents: true
+    )
+    writeProtectiveCommandUniforms(
+      brainGeneration: transaction.shadowGeneration,
+      timestamp: root.acceptedTimestamp
+    )
+    guard let uniformAttempt = Int(exactly: substep.attemptIndex),
+      uniformAttempt < maxEncodedSubsteps
+    else {
+      throw TissueError.transaction(
+        "async NumanX retry exceeds the retained tissue uniform capacity"
+      )
+    }
+    let (uniformByteOffset, uniformOffsetOverflow) =
+      uniformAttempt.multipliedReportingOverflow(by: TissueUniforms.byteCount)
+    guard !uniformOffsetOverflow,
+      uniformByteOffset <= uniformBuffer.length,
+      TissueUniforms.byteCount <= uniformBuffer.length - uniformByteOffset
+    else {
+      throw TissueError.transaction("async NumanX uniform range overflowed")
+    }
+    writeUniforms(tissueUniforms, attempt: uniformAttempt)
+    let uniformGPUAddress = uniformBuffer.gpuAddress + UInt64(uniformByteOffset)
+
+    // This async path is causally downstream of the current decision shadow,
+    // including on the first root. Its motor identity therefore starts at the
+    // exact physical substep timestamp and carries the shadow generation; the
+    // legacy synchronous path retains its base-generation first-candidate ABI.
+    let protectiveTimestamp = root.acceptedTimestamp
+    let protectiveCommandGeneration = transaction.shadowGeneration
+    let protectiveMotorGeneration = transaction.shadowGeneration
+    let fastSystems = FastSystemResult(
+      substep: substep,
+      speciesTemplateFingerprint: boundFastReflexSpeciesFingerprint ?? 0,
+      compiledSpeciesTemplateFingerprint:
+        boundCompiledSpeciesTemplateFingerprint ?? 0,
+      protectiveCommand: ProtectiveCommandBufferView(
+        gpuAddress: protectiveCommandBuffers[initialMotorStateIndex].gpuAddress,
+        byteCount: ProtectiveMotorCommand.byteCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveCommandGeneration
+      ),
+      protectiveMotorOutput: ProtectiveMotorOutputBufferView(
+        headerGPUAddress:
+          protectiveMotorOutputHeaderBuffers[initialMotorStateIndex].gpuAddress,
+        muscleExcitationGPUAddress:
+          protectiveMuscleExcitationBuffers[initialMotorStateIndex].gpuAddress,
+        headerByteCount: ProtectiveMotorOutput.headerByteCount,
+        muscleExcitationByteCount: protectiveMuscleExcitationByteCount,
+        muscleCount: protectiveMotorProfile.channels.count,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration,
+        profileFingerprint: protectiveMotorProfile.fingerprint,
+        actuatorCommandKind: boundActuatorCommandKind
+      ),
+      fastAutonomicOutput: FastAutonomicOutputBufferView(
+        gpuAddress: stagedFastAutonomicOutputBuffer.gpuAddress,
+        byteCount: boundFastAutonomicChannelCount * Self.autonomicCommandStride,
+        channelCount: boundFastAutonomicChannelCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration
+      ),
+      activeSensingOutput: ActiveSensingOutputBufferView(
+        gpuAddress: stagedActiveSensingCommandBuffer.gpuAddress,
+        byteCount: boundActiveSensingChannelCount * Self.activeSensingCommandStride,
+        channelCount: boundActiveSensingChannelCount,
+        timestamp: protectiveTimestamp,
+        brainGeneration: protectiveMotorGeneration
+      ),
+      gpuStartSeconds: 0,
+      gpuEndSeconds: 0
+    )
+    let buffers = NumanXMotorBufferLease(
+      output: fastSystems.protectiveMotorOutput,
+      commandBuffer: protectiveCommandBuffers[initialMotorStateIndex],
+      headerBuffer: protectiveMotorOutputHeaderBuffers[initialMotorStateIndex],
+      excitationBuffer: protectiveMuscleExcitationBuffers[initialMotorStateIndex],
+      descendingBuffer: descendingSomaticBuffer,
+      autonomicBuffer: stagedFastAutonomicOutputBuffer,
+      activeSensingBuffer: stagedActiveSensingCommandBuffer
+    )
+    let candidate = try NumanXMotorCandidate(
+      transaction: transaction,
+      fastSystems: fastSystems,
+      usesDecisionShadow: true
+    )
+    let motorEvaluation = try numanXMotorReadyRuntime.makeMotorEvaluation(
+      device: device, candidate: candidate, substep: substep, transaction: transaction,
+      decisionEvaluation: decisionEvaluation,
+      readyPoint: MetalSharedEventPoint(event: decisionEvaluation.lease.readyPoint.event, value: 2),
+      brainProgramFingerprint: decisionEvaluation.expected.brainProgramFingerprint,
+      fastProgramFingerprint: numanXFastProgramFingerprint)
+    let encoder = try borrowedEncoder(nativeEncoder,
+      extraAllocations: [commandLease.buffer] + motorEvaluation.residencyAllocations)
+    borrowedEncodingFailed = true
+    encoder.barrier()
+    let eventArgumentTable = MetalBrainArgumentTable(self.eventArgumentTable)
+    let argumentTable = MetalBrainArgumentTable(self.argumentTable)
+    try encodeAsyncDescendingSomaticCommand(
+      encoder,
+      lease: commandLease,
+      cognitiveEventQueueBytes: cognitiveEventQueueBytes,
+      initialMotorStateIndex: initialMotorStateIndex
+    )
+    encoder.barrier()
+    eventArgumentTable.setAddress(uniformGPUAddress, index: 0)
+    eventArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
+    eventArgumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 2)
+    try encoder.dispatch(pipeline: eventCompactionPipeline, argumentTable: eventArgumentTable,
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+    encoder.barrier()
+    argumentTable.setAddress(stateBuffers[root.rootShadowIndex].gpuAddress, index: 0)
+    argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
+    argumentTable.setAddress(uniformGPUAddress, index: 2)
+    argumentTable.setAddress(structureBuffer.gpuAddress, index: 3)
+    argumentTable.setAddress(delayBuffer.gpuAddress, index: 4)
+    argumentTable.setAddress(relayHistoryBuffer.gpuAddress, index: 5)
+    argumentTable.setAddress(relayScratchBuffer.gpuAddress, index: 6)
+    argumentTable.setAddress(projectionOffsetBuffer.gpuAddress, index: 7)
+    argumentTable.setAddress(projectionEdgeBuffer.gpuAddress, index: 8)
+    argumentTable.setAddress(eventBuffer.gpuAddress, index: 9)
+    argumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 10)
+    argumentTable.setAddress(relayHistoryTimestampBuffer.gpuAddress, index: 11)
+    try encoder.dispatch(pipeline: tissuePipeline, argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(width: width, height: height, depth: 1),
+      threadsPerThreadgroup: threadgroupSize()
+    )
+    encoder.barrier()
+    try numanXMotorReadyRuntime.encodeMotor(encoder: encoder, evaluation: motorEvaluation,
+      buffers: buffers, descendingSomaticBuffer: descendingSomaticBuffer,
+      descendingAutonomicBuffer: baselineFastAutonomicCommandBuffer)
+    encoder.barrier()
+    root.transaction = prospectiveTransaction
+    root.candidate = InteractiveCandidate(
+      substep: substep,
+      destinationIndex: destination,
+      historyWriteSlot: historyWriteSlot,
+      historyWritePlane: historyWritePlane,
+      motorStateIndex: initialMotorStateIndex
+    )
+    interactiveJointRoot = root
+    descendingSomaticTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGTransactionFingerprint = transaction.fingerprint
+    stagedFastCPGOscillatorCount = commandLease.decision.cpgStateCount
+    stagedFastCPGSynergyCount = commandLease.decision.cpgSynergyCount
+    stagedCognitiveEventTransactionFingerprint = transaction.fingerprint
+    stagedCognitiveEventMaximumCount =
+      commandLease.decision.receptorEventMaximumCount
+
+    let result = BorrowedMotorCandidate(transactionFingerprint: transaction.fingerprint,
+      fastSystems: fastSystems, candidate: candidate, buffers: buffers, evaluation: motorEvaluation)
+    borrowedMotorCandidate = result
+    borrowedEncodingFailed = false
+    return result
+  }
+
   /// Submits the first fast physical candidate directly behind an asynchronous
   /// cognitive decision. This path contains no semaphore wait: it waits on the
   /// decision event in the Brain-owned queue, validates the exact decision gate,
@@ -5011,7 +5318,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to encode async NumanX motor candidate")
     }
     encoder.label = "NumiBrain async decision to NumanX motor candidate"
-    encodeAsyncDescendingSomaticCommand(
+    try encodeAsyncDescendingSomaticCommand(
       encoder,
       lease: commandLease,
       cognitiveEventQueueBytes: cognitiveEventQueueBytes,
@@ -5435,6 +5742,124 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
   }
 
+  /// Encode the actual accepted native consequence on the same physical owner
+  /// timeline. No committed neural buffer is published here. The caller must
+  /// report successful completion before finalizing this root.
+  func encodeBorrowedAcceptedPhysicsSubstep(
+    encoder nativeEncoder: any MTLComputeCommandEncoder,
+    accepted: AcceptedPhysicsStateToken,
+    for substep: BrainJointSubstepToken,
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
+  ) throws {
+    guard !borrowedEncodingFailed, !borrowedAcceptedStatePending else {
+      throw TissueError.transaction("borrowed fast acceptance is failed or still pending completion")
+    }
+    guard var root = interactiveJointRoot, let candidate = root.candidate,
+      candidate.substep == substep
+    else {
+      throw TissueError.transaction("stale or missing interactive neural candidate")
+    }
+    try validateLocalizedMuscleLoadObservations(localizedMuscleLoadObservations)
+    var transaction = root.transaction
+    try transaction.acceptPhysicsSubstep(
+      accepted,
+      for: substep,
+      receptorEvents: receptorEvents,
+      localizedMuscleLoadObservations: localizedMuscleLoadObservations
+    )
+    let acceptedEvents = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.receptorEvents)
+    let acceptedLocalizedObservations = transaction.resolutions.lazy
+      .filter(\.isAccepted)
+      .flatMap(\.localizedMuscleLoadObservations)
+    try writeProtectiveSourceInhibitionMask(
+      observations: Array(acceptedLocalizedObservations),
+      targetTimestamp: accepted.acceptedTimestamp
+    )
+    let schedulerWindow = try prepareSchedulerWindow(
+      startTime: transaction.token.committedTimestamp,
+      targetTime: accepted.acceptedTimestamp,
+      events: Array(acceptedEvents)
+    )
+    guard committedRegionalStateIndex == schedulerWindow.inputClockIndex else {
+      throw TissueError.transaction("interactive regional and scheduler generations diverged")
+    }
+    writeFastCPGUniforms(
+      timestamp: accepted.acceptedTimestamp,
+      consumeInterruptEvents: true
+    )
+    writeFastAutonomicUniforms(
+      timestamp: accepted.acceptedTimestamp,
+      baselineTimestamp: transaction.token.committedTimestamp,
+      consumeInterruptEvents: true
+    )
+    let encoder = try borrowedEncoder(nativeEncoder)
+    borrowedEncodingFailed = true
+    encoder.barrier()
+    // Preserve the command that NumanX actually accepted before the
+    // post-consequence scheduler overwrites this ping-pong motor generation
+    // with the command for the next candidate.
+    try encoder.copy(
+      sourceBuffer: protectiveMuscleExcitationBuffers[candidate.motorStateIndex],
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedSomaticOutputBuffer,
+      destinationOffset: 0,
+      size: protectiveMuscleExcitationByteCount
+    )
+    try encoder.copy(
+      sourceBuffer: stagedFastAutonomicOutputBuffer,
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedAutonomicOutputBuffer,
+      destinationOffset: 0,
+      size: fastAutonomicCommandByteCount
+    )
+    try encoder.copy(
+      sourceBuffer: stagedActiveSensingCommandBuffer,
+      sourceOffset: 0,
+      destinationBuffer: stagedAcceptedActiveSensingOutputBuffer,
+      destinationOffset: 0,
+      size: activeSensingCommandByteCount
+    )
+    encoder.barrier()
+    try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    root.transaction = transaction
+    root.rootShadowIndex = candidate.destinationIndex
+    root.historyOwnerMask = settingHistoryOwner(
+      mask: root.historyOwnerMask,
+      slot: candidate.historyWriteSlot,
+      owner: candidate.historyWritePlane
+    )
+    root.historyStep += 1
+    root.relayHistoryTimestamps[candidate.historyWriteSlot] =
+      accepted.acceptedTimestamp.rawValue
+    root.acceptedTimestamp = accepted.acceptedTimestamp
+    root.candidate = nil
+    root.fastSchedulerWindow = schedulerWindow
+    hasCommittedSchedulerResult = false
+    interactiveJointRoot = root
+    borrowedAcceptedStatePending = true
+    borrowedEncodingFailed = false
+  }
+
+  /// Called only after successful completion of the owner command that encoded
+  /// the accepted fast prefix. These are the owner's measured Metal timestamps.
+  func recordBorrowedAcceptedCompletion(transaction: BrainJointTransactionToken,
+    gpuStartSeconds: Double, gpuEndSeconds: Double) throws {
+    guard !borrowedEncodingFailed, borrowedAcceptedStatePending,
+      var root = interactiveJointRoot, root.transaction.token == transaction,
+      root.candidate == nil, root.acceptedTimestamp == transaction.targetTimestamp,
+      gpuStartSeconds.isFinite, gpuEndSeconds.isFinite,
+      gpuStartSeconds > 0, gpuEndSeconds >= gpuStartSeconds else {
+      throw TissueError.transaction("borrowed accepted completion is stale, failed, or unmeasured")
+    }
+    root.firstGPUStartSeconds = root.firstGPUStartSeconds ?? gpuStartSeconds
+    root.lastGPUEndSeconds = gpuEndSeconds
+    interactiveJointRoot = root
+    borrowedAcceptedStatePending = false
+  }
+
   public func acceptPhysicsSubstep(
     _ accepted: AcceptedPhysicsStateToken,
     for substep: BrainJointSubstepToken,
@@ -5511,7 +5936,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
-      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+      try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     }
     root.transaction = transaction
     root.rootShadowIndex = candidate.destinationIndex
@@ -5661,7 +6086,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
-    encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     encoder.barrier(
       afterEncoderStages: .dispatch,
       beforeEncoderStages: .blit,
@@ -6383,6 +6808,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   public func finishInteractiveJointControl(
     schedulerEvents: [BrainInterruptEvent] = []
   ) throws -> Submission {
+    guard !borrowedEncodingFailed, !borrowedAcceptedStatePending else {
+      throw TissueError.transaction("borrowed fast encoding must complete successfully before finalization")
+    }
     guard let root = interactiveJointRoot else {
       throw TissueError.transaction("there is no interactive joint root to finish")
     }
@@ -6461,7 +6889,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
       let feedback = try submit(label: "NumiBrain interactive joint root finalization") {
         encoder in
-        encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+        try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
       }
       finalGPUStart = finalGPUStart ?? feedback.gpuStartTime
       finalGPUEnd = feedback.gpuEndTime
@@ -6509,6 +6937,9 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("there is no interactive joint root to abort")
     }
     try root.transaction.abort()
+    borrowedMotorCandidate = nil
+    borrowedEncodingFailed = false
+    borrowedAcceptedStatePending = false
     if root.fastSchedulerWindow != nil {
       hasCommittedSchedulerResult = false
     }
@@ -6537,6 +6968,40 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         "accepted fast motor state is not prepared for this joint root"
       )
     }
+    return makeAcceptedFastMotorStateLease(for: transaction, stateIndex: pendingRegionalStateIndex)
+  }
+
+  /// Borrows only the unpublished shadow produced earlier in the owner's same
+  /// consequence encoder, so cognition can follow it without another timeline.
+  func borrowBorrowedAcceptedFastMotorState(for transaction: BrainJointTransactionToken) throws
+    -> AcceptedFastMotorStateLease {
+    guard !borrowedEncodingFailed, borrowedAcceptedStatePending,
+      let root = interactiveJointRoot, root.transaction.token == transaction,
+      root.acceptedTimestamp == transaction.targetTimestamp,
+      let window = root.fastSchedulerWindow, window.targetTime == transaction.targetTimestamp,
+      stagedFastCPGTransactionFingerprint == transaction.fingerprint else {
+      throw TissueError.transaction("borrowed accepted fast shadow is unavailable for this root")
+    }
+    return makeAcceptedFastMotorStateLease(for: transaction, stateIndex: window.outputClockIndex)
+  }
+
+  func borrowedAcceptedRegionalRecurrentBufferView(for transaction: BrainJointTransactionToken) throws
+    -> MetalRegionalRecurrentBufferView {
+    guard !borrowedEncodingFailed, borrowedAcceptedStatePending,
+      let root = interactiveJointRoot, root.transaction.token == transaction,
+      let window = root.fastSchedulerWindow, window.targetTime == transaction.targetTimestamp else {
+      throw TissueError.transaction("borrowed accepted recurrence is unavailable for this root")
+    }
+    return try MetalRegionalRecurrentBufferView(
+      gpuAddress: regionalTokenStateBuffers[window.outputClockIndex].gpuAddress,
+      scalarCount: regionalTokenProgram.scalarCount,
+      regionalProgramFingerprint: regionalTokenProgram.fingerprint)
+  }
+
+  var borrowedResidencyAllocations: [any MTLAllocation] { residencySet.allAllocations }
+
+  private func makeAcceptedFastMotorStateLease(for transaction: BrainJointTransactionToken,
+    stateIndex: Int) -> AcceptedFastMotorStateLease {
     return AcceptedFastMotorStateLease(
       transactionFingerprint: transaction.fingerprint,
       acceptedTimestamp: transaction.targetTimestamp,
@@ -6547,7 +7012,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       reflexStateByteCount: boundFastReflexRuleCount * Self.fastReflexStateStride,
       reflexStateBuffer: stagedFastReflexStateBuffer,
       protectiveCommandByteCount: ProtectiveMotorCommand.byteCount,
-      protectiveCommandBuffer: protectiveCommandBuffers[pendingRegionalStateIndex],
+      protectiveCommandBuffer: protectiveCommandBuffers[stateIndex],
       fastCerebellarStateCount: protectiveMotorProfile.channels.count,
       fastCerebellarStateByteCount: fastCerebellarStateByteCount,
       fastCerebellarStateBuffer: stagedFastCerebellarStateBuffer,
@@ -6570,7 +7035,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       bodySchemaCount: Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0),
       bodySchemaByteCount: Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0)
         * MemoryLayout<BodySchemaRecord>.stride,
-      bodySchemaBuffer: bodySchemaStateBuffers[pendingRegionalStateIndex],
+      bodySchemaBuffer: bodySchemaStateBuffers[stateIndex],
       actuatorCommandKind: boundActuatorCommandKind
     )
   }
@@ -6895,7 +7360,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         beforeEncoderStages: .dispatch,
         visibilityOptions: .device
       )
-      encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+      try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
     }
     pendingRootShadowIndex = finalRootShadowIndex
     pendingRootShadowOwnerMask = finalHistoryOwnerMask
@@ -8343,7 +8808,29 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private func encodeRootFinalization(
     _ encoder: any MTL4ComputeCommandEncoder,
     schedulerWindow: PreparedSchedulerWindow
-  ) {
+  ) throws {
+    try encodeRootFinalization(.metal4(encoder), schedulerWindow: schedulerWindow)
+  }
+
+  private func encodeRootFinalization(
+    _ encoder: MetalBrainCommandEncoder,
+    schedulerWindow: PreparedSchedulerWindow
+  ) throws {
+    let bodyLoadFieldArgumentTable = MetalBrainArgumentTable(self.bodyLoadFieldArgumentTable)
+    let bodySchemaArgumentTable = MetalBrainArgumentTable(self.bodySchemaArgumentTable)
+    let fastAutonomicArgumentTable = MetalBrainArgumentTable(self.fastAutonomicArgumentTable)
+    let fastCerebellarArgumentTable = MetalBrainArgumentTable(self.fastCerebellarArgumentTable)
+    let protectiveArgumentTable = MetalBrainArgumentTable(self.protectiveArgumentTable)
+    let protectiveMotorArgumentTable = MetalBrainArgumentTable(self.protectiveMotorArgumentTable)
+    let receptorInterruptArgumentTable = MetalBrainArgumentTable(self.receptorInterruptArgumentTable)
+    let regionalArgumentTable = MetalBrainArgumentTable(self.regionalArgumentTable)
+    let schedulerArgumentTable = MetalBrainArgumentTable(self.schedulerArgumentTable)
+    regionalArgumentTable.setAddress(try sharedParameterBank.gpuAddress(.route, minimumScalarCount: 8), index: 26)
+    regionalArgumentTable.setAddress(try sharedParameterBank.gpuAddress(.regionalDense,
+      minimumScalarCount: regionalTokenProgram.denseParameterCount), index: 27)
+    regionalArgumentTable.setAddress(try sharedParameterBank.gpuAddress(.plasticity,
+      minimumScalarCount: sharedParameterBank.scalarCount(.plasticity)), index: 30)
+    fastCerebellarArgumentTable.setAddress(try sharedParameterBank.gpuAddress(.cerebellar, minimumScalarCount: 8), index: 7)
     receptorInterruptArgumentTable.setAddress(
       receptorEventTransductionUniformBuffer.gpuAddress,
       index: 0
@@ -8365,17 +8852,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       stagedCognitiveEventQueueBuffer.gpuAddress,
       index: 5
     )
-    encoder.setComputePipelineState(receptorInterruptTransductionPipeline)
-    encoder.setArgumentTable(receptorInterruptArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: receptorInterruptTransductionPipeline, argumentTable: receptorInterruptArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
     schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
     schedulerArgumentTable.setAddress(
@@ -8406,17 +8887,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       : defaultRegionalPlasticModulationBuffer
     schedulerArgumentTable.setAddress(maturationBuffer.gpuAddress, index: 9)
     schedulerArgumentTable.setAddress(plasticModulationBuffer.gpuAddress, index: 10)
-    encoder.setComputePipelineState(schedulerPipeline)
-    encoder.setArgumentTable(schedulerArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: schedulerPipeline, argumentTable: schedulerArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     regionalArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
     regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
     regionalArgumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 2)
@@ -8498,17 +8973,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ? stagedFastPlasticityBuffer
       : defaultFastPlasticityBuffer
     regionalArgumentTable.setAddress(fastPlasticityBuffer.gpuAddress, index: 29)
-    encoder.setComputePipelineState(regionalPipeline)
-    encoder.setArgumentTable(regionalArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: regionalPipeline, argumentTable: regionalArgumentTable,
       threadsPerGrid: regionalThreadgroupSize(),
       threadsPerThreadgroup: regionalThreadgroupSize()
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     protectiveArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 0)
     protectiveArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 1)
     protectiveArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 2)
@@ -8521,17 +8990,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 5
     )
-    encoder.setComputePipelineState(protectivePipeline)
-    encoder.setArgumentTable(protectiveArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: protectivePipeline, argumentTable: protectiveArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
     bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
     bodyLoadFieldArgumentTable.setAddress(
@@ -8542,17 +9005,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 3
     )
-    encoder.setComputePipelineState(bodyLoadFieldPipeline)
-    encoder.setArgumentTable(bodyLoadFieldArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: bodyLoadFieldPipeline, argumentTable: bodyLoadFieldArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     fastCerebellarArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
     fastCerebellarArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
     fastCerebellarArgumentTable.setAddress(stagedMotorCommandBuffer.gpuAddress, index: 2)
@@ -8566,9 +9023,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       index: 5
     )
     fastCerebellarArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 6)
-    encoder.setComputePipelineState(fastCerebellarPipeline)
-    encoder.setArgumentTable(fastCerebellarArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: fastCerebellarPipeline, argumentTable: fastCerebellarArgumentTable,
       threadsPerGrid: MTLSize(
         width: protectiveMotorProfile.channels.count,
         height: 1,
@@ -8576,11 +9031,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     bodySchemaArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 0)
     bodySchemaArgumentTable.setAddress(
       bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
@@ -8594,9 +9045,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       bodySchemaStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 3
     )
-    encoder.setComputePipelineState(bodySchemaPipeline)
-    encoder.setArgumentTable(bodySchemaArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: bodySchemaPipeline, argumentTable: bodySchemaArgumentTable,
       threadsPerGrid: MTLSize(
         width: max(Int(numanXMuscleAttachmentCatalog?.bodyCount ?? 0), 1),
         height: 1,
@@ -8604,11 +9053,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       ),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     protectiveMotorArgumentTable.setAddress(
       protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 0
@@ -8667,17 +9112,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       somaticSynergyDecoderBuffer.gpuAddress,
       index: 19
     )
-    encoder.setComputePipelineState(protectiveMotorPipeline)
-    encoder.setArgumentTable(protectiveMotorArgumentTable)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: protectiveMotorPipeline, argumentTable: protectiveMotorArgumentTable,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    encoder.barrier()
     if boundFastAutonomicChannelCount > 0 {
       fastAutonomicArgumentTable.setAddress(
         fastAutonomicUniformBuffer.gpuAddress,
@@ -8715,9 +9154,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         fastAutonomicChannelDescriptorBuffer.gpuAddress,
         index: 8
       )
-      encoder.setComputePipelineState(fastAutonomicPipeline)
-      encoder.setArgumentTable(fastAutonomicArgumentTable)
-      encoder.dispatchThreads(
+      try encoder.dispatch(pipeline: fastAutonomicPipeline, argumentTable: fastAutonomicArgumentTable,
         threadsPerGrid: MTLSize(
           width: boundFastAutonomicChannelCount,
           height: 1,
@@ -9036,7 +9473,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private func submit(
     label: String,
     additionalResidencySet: (any MTLResidencySet)? = nil,
-    encode: (any MTL4ComputeCommandEncoder) -> Void
+    encode: (any MTL4ComputeCommandEncoder) throws -> Void
   ) throws -> FeedbackSnapshot {
     commandAllocator.reset()
     commandBuffer.beginCommandBuffer(allocator: commandAllocator)
@@ -9049,7 +9486,12 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to create a Metal 4 compute command encoder")
     }
     encoder.label = label
-    encode(encoder)
+    do { try encode(encoder) }
+    catch {
+      encoder.endEncoding()
+      commandBuffer.endCommandBuffer()
+      throw error
+    }
     encoder.endEncoding()
     commandBuffer.endCommandBuffer()
 

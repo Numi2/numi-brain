@@ -1109,6 +1109,24 @@ final class MetalNumanXMotorReadyRuntime {
     )
   }
 
+  func encodeDecision(
+    encoder: MetalBrainCommandEncoder,
+    evaluation: MetalNumanXDecisionReadyEvaluation
+  ) throws {
+    let decisionArguments = MetalBrainArgumentTable(self.decisionArguments)
+    decisionArguments.setAddress(evaluation.dispatchBuffer.gpuAddress, index: 0)
+    decisionArguments.setAddress(evaluation.sourceBuffer.gpuAddress, index: 1)
+    decisionArguments.setAddress(evaluation.gateBuffer.gpuAddress, index: 2)
+    decisionArguments.setAddress(evaluation.controlHeaderGPUAddress, index: 3)
+    decisionArguments.setAddress(
+      evaluation.uncertaintyPolicyBuffer.gpuAddress, index: 4
+    )
+    try encoder.dispatch(pipeline: decisionPipeline, argumentTable: decisionArguments,
+      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+    )
+  }
+
   func encodeMotor(
     encoder: any MTL4ComputeCommandEncoder,
     evaluation: MetalNumanXMotorReadyEvaluation,
@@ -1116,6 +1134,18 @@ final class MetalNumanXMotorReadyRuntime {
     descendingSomaticBuffer: any MTLBuffer,
     descendingAutonomicBuffer: any MTLBuffer
   ) throws {
+    try encodeMotor(encoder: .metal4(encoder), evaluation: evaluation, buffers: buffers,
+      descendingSomaticBuffer: descendingSomaticBuffer, descendingAutonomicBuffer: descendingAutonomicBuffer)
+  }
+
+  func encodeMotor(
+    encoder: MetalBrainCommandEncoder,
+    evaluation: MetalNumanXMotorReadyEvaluation,
+    buffers: MetalTissueRuntime.NumanXMotorBufferLease,
+    descendingSomaticBuffer: any MTLBuffer,
+    descendingAutonomicBuffer: any MTLBuffer
+  ) throws {
+    let motorArguments = MetalBrainArgumentTable(self.motorArguments)
     try validateMotorBindings(
       evaluation: evaluation,
       buffers: buffers,
@@ -1147,9 +1177,7 @@ final class MetalNumanXMotorReadyRuntime {
       evaluation.decisionEvaluation.uncertaintyPolicyBuffer.gpuAddress,
       index: 13
     )
-    encoder.setComputePipelineState(motorPipeline)
-    encoder.setArgumentTable(motorArguments)
-    encoder.dispatchThreads(
+    try encoder.dispatch(pipeline: motorPipeline, argumentTable: motorArguments,
       threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )

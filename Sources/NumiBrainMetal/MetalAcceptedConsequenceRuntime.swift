@@ -246,7 +246,7 @@ private struct AcceptedConsequenceImmutableBuffers {
 
 private struct AcceptedConsequenceProgramResources {
   let pipelines: [any MTLComputePipelineState]
-  let argumentTable: any MTL4ArgumentTable
+  let argumentTable: MetalBrainArgumentTable
   let uniformBuffer: any MTLBuffer
   let unconditionalAcceptanceGate: any MTLBuffer
   let plasticityParameterCount: UInt32
@@ -835,7 +835,7 @@ private func makeAcceptedConsequenceProgramResources(
   descriptor.label = "NumiBrain accepted-consequence arguments"
   descriptor.maxBufferBindCount = 14
   descriptor.initializeBindings = true
-  guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
+  guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
     let uniformBuffer = device.makeBuffer(
       length: MemoryLayout<AcceptedConsequenceUniforms>.stride,
       options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -928,7 +928,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let controlLayout: MetalActiveControlLayout
   private let observationRanges: [SensoryModality: ObservationRange]
   private let pipelines: [any MTLComputePipelineState]
-  private let argumentTable: any MTL4ArgumentTable
+  private let argumentTable: MetalBrainArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let actuatorDescriptorBuffer: any MTLBuffer
   private let bodyReceptorBindingBuffer: any MTLBuffer
@@ -1085,6 +1085,24 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
     try encode(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encode(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encode(
       encoder: encoder,
       transaction: transaction,
       acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp,
@@ -1100,6 +1118,26 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
 
   func encode(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encode(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: acceptedFastMotorState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encode(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     deltaMicroseconds: UInt64,
@@ -1132,6 +1170,30 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     acceptanceGateGPUAddress: UInt64,
     acceptanceGateResultGPUAddress: UInt64
   ) throws {
+    try encodeAuthoritativeGate(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      acceptedTimestamp: acceptedTimestamp,
+      acceptedTransactionFingerprint: acceptedTransactionFingerprint,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: acceptedFastMotorState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  func encodeAuthoritativeGate(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedTimestamp: BrainTimestamp,
+    acceptedTransactionFingerprint: UInt64,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil,
+    acceptanceGateGPUAddress: UInt64,
+    acceptanceGateResultGPUAddress: UInt64
+  ) throws {
     try encode(
       encoder: encoder,
       transaction: transaction,
@@ -1148,6 +1210,32 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
 
   private func encode(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedTimestamp: BrainTimestamp,
+    acceptedTransactionFingerprint: UInt64,
+    physicsStateFingerprint: UInt64,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?,
+    acceptanceGateGPUAddress: UInt64?,
+    acceptanceGateResultGPUAddress: UInt64?
+  ) throws {
+    try encode(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      acceptedTimestamp: acceptedTimestamp,
+      acceptedTransactionFingerprint: acceptedTransactionFingerprint,
+      physicsStateFingerprint: physicsStateFingerprint,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptedFastMotorState: acceptedFastMotorState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  private func encode(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     acceptedTimestamp: BrainTimestamp,
     acceptedTransactionFingerprint: UInt64,
@@ -1207,14 +1295,14 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       index: 8
     )
     if species.body.muscleCount > 0 {
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: pipelines[11],
         count: Int(species.body.muscleCount)
       )
       barrier(encoder)
     }
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[0],
       count: max(
@@ -1227,17 +1315,17 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     if species.body.jointCount > 0 {
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: pipelines[10],
         count: Int(species.body.jointCount)
       )
       barrier(encoder)
     }
-    dispatch(encoder, pipeline: pipelines[12], count: 1)
+    try dispatch(encoder, pipeline: pipelines[12], count: 1)
     barrier(encoder)
     if species.body.muscleCount > 0 {
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: pipelines[13],
         count: Int(species.body.muscleCount)
@@ -1251,56 +1339,56 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         acceptedFastMotorState.bodySchemaBuffer.gpuAddress,
         index: 7
       )
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: pipelines[7],
         count: acceptedFastMotorState.bodySchemaCount
       )
       barrier(encoder)
     }
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[8],
       count: Int(species.body.bodyCount)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[9],
       count: sensorimotorWorldDimension
     )
     barrier(encoder)
-    dispatch(encoder, pipeline: pipelines[14], count: 1)
+    try dispatch(encoder, pipeline: pipelines[14], count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[1],
       count: min(arena.layout.section(.worldModel).elementCount, 128)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[2],
       count: Int(species.motor.activeSensingActionDimension)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[3],
       count: 1
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[4],
       count: Int(species.capacities.activeCerebellarExpertCapacity)
     )
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: pipelines[5],
       count: Int(species.capacities.fastPlasticityCapacity)
     )
-    dispatch(encoder, pipeline: pipelines[6], count: 1)
+    try dispatch(encoder, pipeline: pipelines[6], count: 1)
   }
 
   private func makeUniforms(
@@ -1480,17 +1568,16 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     _ encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
     count: Int
-  ) {
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: max(count, 1), height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+  ) throws {
+    try dispatch(.metal4(encoder), pipeline: pipeline, count: count)
+  }
+
+  private func dispatch(
+    _ encoder: MetalBrainCommandEncoder,
+    pipeline: any MTLComputePipelineState,
+    count: Int
+  ) throws {
+    try encoder.dispatch(pipeline: pipeline, argumentTable: argumentTable, count: max(count, 1))
   }
 
   private func barrier(_ encoder: any MTL4ComputeCommandEncoder) {
@@ -1499,5 +1586,9 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+  }
+
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 }

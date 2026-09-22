@@ -165,7 +165,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
   private let adaptationPipeline: any MTLComputePipelineState
   private let transductionPipeline: any MTLComputePipelineState
   private let eventPipeline: any MTLComputePipelineState
-  private let argumentTable: any MTL4ArgumentTable
+  private let argumentTable: MetalBrainArgumentTable
   private let descriptorBuffer: any MTLBuffer
   private let ruleBuffer: any MTLBuffer
   private let uniformBuffer: any MTLBuffer
@@ -312,7 +312,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       ruleRecords.count * MemoryLayout<ReceptorEventRuleRecord>.stride,
       MemoryLayout<ReceptorEventRuleRecord>.stride
     )
-    guard let argumentTable = try? device.makeArgumentTable(descriptor: argumentDescriptor),
+    guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: argumentDescriptor)),
       let descriptorBuffer = device.makeBuffer(
         length: descriptorByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -393,6 +393,34 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
 
   public func encode(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    rawSensorViews: [MetalRawSensorBufferView],
+    environmentIdentifier: UInt32,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    randomCounterGeneration: UInt64,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt32,
+    allowsMatchingAcceptedFrameReuse: Bool = false,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws -> Result {
+    return try encode(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      rawSensorViews: rawSensorViews,
+      environmentIdentifier: environmentIdentifier,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      randomCounterGeneration: randomCounterGeneration,
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      allowsMatchingAcceptedFrameReuse: allowsMatchingAcceptedFrameReuse,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encode(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     rawSensorViews: [MetalRawSensorBufferView],
     environmentIdentifier: UInt32,
@@ -502,19 +530,19 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       acceptanceGateGPUAddress ?? unconditionalAcceptanceGateBuffer.gpuAddress,
       index: 20
     )
-    dispatch(
+    try dispatch(
       encoder: encoder,
       pipeline: beginPipeline,
       count: max(descriptors.count, 1)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder: encoder,
       pipeline: adaptationPipeline,
       count: max(totalReceptors, 1)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder: encoder,
       pipeline: transductionPipeline,
       count: max(totalObservationScalars, 1)
@@ -523,7 +551,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       barrier(encoder)
       argumentTable.setAddress(ruleBuffer.gpuAddress, index: 2)
       argumentTable.setAddress(uniformBuffer.gpuAddress, index: 21)
-      dispatch(
+      try dispatch(
         encoder: encoder,
         pipeline: eventPipeline,
         count: profile.eventRules.count
@@ -546,17 +574,16 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
     count: Int
-  ) {
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: count, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+  ) throws {
+    try dispatch(encoder: .metal4(encoder), pipeline: pipeline, count: count)
+  }
+
+  private func dispatch(
+    encoder: MetalBrainCommandEncoder,
+    pipeline: any MTLComputePipelineState,
+    count: Int
+  ) throws {
+    try encoder.dispatch(pipeline: pipeline, argumentTable: argumentTable, count: max(count, 1))
   }
 
   private func barrier(_ encoder: any MTL4ComputeCommandEncoder) {
@@ -565,5 +592,9 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+  }
+
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 }

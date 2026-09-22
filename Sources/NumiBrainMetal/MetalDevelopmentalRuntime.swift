@@ -287,7 +287,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
   private let evidencePipeline: any MTLComputePipelineState
   private let advancePipeline: any MTLComputePipelineState
   private let maturationPipeline: any MTLComputePipelineState
-  private let argumentTable: any MTL4ArgumentTable
+  private let argumentTable: MetalBrainArgumentTable
   private let stageBuffer: any MTLBuffer
   private let capabilityCodeBuffer: any MTLBuffer
   private let moduleIdentifierBuffer: any MTLBuffer
@@ -398,7 +398,7 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       MemoryLayout<UInt64>.stride
     )
     let moduleBytes = species.enabledModuleIdentifiers.count * MemoryLayout<UInt32>.stride
-    guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
+    guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
       let stageBuffer = device.makeBuffer(
         length: stageBytes,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -481,6 +481,18 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp
   ) throws {
+    try encodeCurrentStage(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      timestamp: timestamp
+    )
+  }
+
+  func encodeCurrentStage(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp
+  ) throws {
     try bind(
       transaction: transaction,
       targetTimestamp: timestamp,
@@ -489,9 +501,9 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       evidence: nil,
       gateIntents: nil
     )
-    dispatch(encoder, pipeline: initializePipeline, count: 1)
+    try dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: maturationPipeline,
       count: species.enabledModuleIdentifiers.count
@@ -500,6 +512,26 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
 
   public func encodeAcceptedProgress(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    deltaMicroseconds: UInt64,
+    evidence: MetalDevelopmentalEvidenceBufferLease?,
+    acceptanceGateGPUAddress: UInt64? = nil,
+    acceptanceGateResultGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeAcceptedProgress(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      acceptedPhysicsState: acceptedPhysicsState,
+      deltaMicroseconds: deltaMicroseconds,
+      evidence: evidence,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  func encodeAcceptedProgress(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     acceptedPhysicsState: AcceptedPhysicsStateToken,
     deltaMicroseconds: UInt64,
@@ -528,19 +560,19 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
-    dispatch(encoder, pipeline: initializePipeline, count: 1)
+    try dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
     if let evidence {
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: evidencePipeline,
         count: evidence.view.evidenceCount
       )
       barrier(encoder)
     }
-    dispatch(encoder, pipeline: advancePipeline, count: 1)
+    try dispatch(encoder, pipeline: advancePipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: maturationPipeline,
       count: species.enabledModuleIdentifiers.count
@@ -575,19 +607,19 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
       acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
     )
-    dispatch(encoder, pipeline: initializePipeline, count: 1)
+    try dispatch(encoder, pipeline: initializePipeline, count: 1)
     barrier(encoder)
     if let intents {
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: evidencePipeline,
         count: intents.view.intentCount
       )
       barrier(encoder)
     }
-    dispatch(encoder, pipeline: advancePipeline, count: 1)
+    try dispatch(encoder, pipeline: advancePipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: maturationPipeline,
       count: species.enabledModuleIdentifiers.count
@@ -666,17 +698,16 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
     _ encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
     count: Int
-  ) {
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: max(count, 1), height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+  ) throws {
+    try dispatch(.metal4(encoder), pipeline: pipeline, count: count)
+  }
+
+  private func dispatch(
+    _ encoder: MetalBrainCommandEncoder,
+    pipeline: any MTLComputePipelineState,
+    count: Int
+  ) throws {
+    try encoder.dispatch(pipeline: pipeline, argumentTable: argumentTable, count: max(count, 1))
   }
 
   private func barrier(_ encoder: any MTL4ComputeCommandEncoder) {
@@ -685,5 +716,9 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+  }
+
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 }

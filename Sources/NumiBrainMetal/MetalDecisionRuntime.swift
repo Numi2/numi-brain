@@ -235,7 +235,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   private let motorPipeline: any MTLComputePipelineState
   private let cerebellarPredictionPipeline: any MTLComputePipelineState
   private let motorGoalPipeline: any MTLComputePipelineState
-  private let argumentTable: any MTL4ArgumentTable
+  private let argumentTable: MetalBrainArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let communicationDescriptorBuffer: any MTLBuffer
   private let cpgOscillatorDescriptorBuffer: any MTLBuffer
@@ -628,7 +628,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     self.motorPipeline = pipelines[8]
     self.cerebellarPredictionPipeline = pipelines[9]
     self.motorGoalPipeline = pipelines[10]
-    self.argumentTable = argumentTable
+    self.argumentTable = MetalBrainArgumentTable(argumentTable)
     self.uniformBuffer = uniformBuffer
     self.communicationDescriptorBuffer = communicationDescriptorBuffer
     self.cpgOscillatorDescriptorBuffer = cpgOscillatorDescriptorBuffer
@@ -700,6 +700,20 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal?,
     activeSensingCommandScale: Float,
+    connectomeMotor: MetalDescendingMotorView? = nil
+  ) throws -> OutputView {
+    try encode(encoder: .metal4(encoder), transaction: transaction,
+      timestamp: timestamp, rawSensorViews: rawSensorViews, externalGoal: externalGoal,
+      activeSensingCommandScale: activeSensingCommandScale, connectomeMotor: connectomeMotor)
+  }
+
+  func encode(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp,
+    rawSensorViews: [MetalRawSensorBufferView],
+    externalGoal: ActiveGoal? = nil,
+    activeSensingCommandScale: Float = 1,
     connectomeMotor: MetalDescendingMotorView? = nil
   ) throws -> OutputView {
     let hot = try arena.hotStateView(transaction: transaction)
@@ -835,43 +849,43 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(policyObservationMetadataBuffer.gpuAddress, index: 24)
     argumentTable.setAddress(connectomeMotor?.logits.gpuAddress ?? policyObservationFallbackBuffer.gpuAddress, index: 25)
-    dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
+    try dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
     barrier(encoder)
-    dispatch(encoder, pipeline: goalPipeline, count: 1)
+    try dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
-    dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
+    try dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: proposalPipeline,
       count: Int(species.capacities.activeOptionCandidateCapacity)
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: planningPipeline,
       count: Int(species.capacities.activeOptionCandidateCapacity)
     )
     barrier(encoder)
-    dispatch(encoder, pipeline: selectionPipeline, count: 1)
+    try dispatch(encoder, pipeline: selectionPipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: internalActionPipeline,
       count: InternalActionKind.allCases.count
     )
     barrier(encoder)
-    dispatch(encoder, pipeline: motorGoalPipeline, count: 1)
+    try dispatch(encoder, pipeline: motorGoalPipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: cerebellarPipeline,
       count: 1
     )
     barrier(encoder)
-    dispatch(encoder, pipeline: cpgPipeline, count: 1)
+    try dispatch(encoder, pipeline: cpgPipeline, count: 1)
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: motorPipeline,
       count: max(
@@ -886,7 +900,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       )
     )
     barrier(encoder)
-    dispatch(
+    try dispatch(
       encoder,
       pipeline: cerebellarPredictionPipeline,
       count: Int(species.capacities.activeCerebellarExpertCapacity)
@@ -1092,27 +1106,14 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
   }
 
   private func dispatch(
-    _ encoder: any MTL4ComputeCommandEncoder,
+    _ encoder: MetalBrainCommandEncoder,
     pipeline: any MTLComputePipelineState,
     count: Int
-  ) {
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: count, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+  ) throws {
+    try encoder.dispatch(pipeline: pipeline, argumentTable: argumentTable, count: count)
   }
 
-  private func barrier(_ encoder: any MTL4ComputeCommandEncoder) {
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 }

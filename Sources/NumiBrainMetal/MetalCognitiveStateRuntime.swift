@@ -147,8 +147,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let workspaceMergePipeline: any MTLComputePipelineState
   private let socialContextPipeline: any MTLComputePipelineState
   private let curiosityPipeline: any MTLComputePipelineState
-  private let argumentTable: any MTL4ArgumentTable
-  private let worldModelArgumentTables: [any MTL4ArgumentTable]
+  private let argumentTable: MetalBrainArgumentTable
+  private let worldModelArgumentTables: [MetalBrainArgumentTable]
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let plasticityRegionRangeBuffer: any MTLBuffer
@@ -342,12 +342,12 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     else {
       throw TissueError.metal("cognitive sensory ranges do not match the arena")
     }
-    guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
-      let firstWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
-      let secondWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
-      let thirdWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
-      let fourthWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
-      let fifthWorldTable = try? device.makeArgumentTable(descriptor: worldDescriptor),
+    guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
+      let firstWorldTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: worldDescriptor)),
+      let secondWorldTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: worldDescriptor)),
+      let thirdWorldTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: worldDescriptor)),
+      let fourthWorldTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: worldDescriptor)),
+      let fifthWorldTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: worldDescriptor)),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<CognitiveUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -499,6 +499,24 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     regionalRecurrentInput: MetalRegionalRecurrentBufferView,
     acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
+    try encodeAcceptedRegionalRecurrentIngest(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      regionalRecurrentInput: regionalRecurrentInput,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeAcceptedRegionalRecurrentIngest(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
     guard transaction.layoutFingerprint == layoutFingerprint,
       deltaMicroseconds > 0,
       regionalRecurrentInput.scalarCount == regionalProgram.scalarCount,
@@ -538,6 +556,24 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   /// generation so the cached decision cannot be resampled after physics.
   public func encodeAcceptedBeliefAssimilation(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeAcceptedBeliefAssimilation(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeAcceptedBeliefAssimilation(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
@@ -601,6 +637,24 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
 
   public func encodeAcceptedCognitiveStep(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    targetTimestamp: BrainTimestamp,
+    deltaMicroseconds: UInt64,
+    receptorEventCapacity: Int,
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil
+  ) throws {
+    try encodeAcceptedCognitiveStep(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      targetTimestamp: targetTimestamp,
+      deltaMicroseconds: deltaMicroseconds,
+      receptorEventCapacity: receptorEventCapacity,
+      regionalRecurrentInput: regionalRecurrentInput
+    )
+  }
+
+  func encodeAcceptedCognitiveStep(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
@@ -845,21 +899,19 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
     threadCount: Int,
-    argumentTable selectedArgumentTable: (any MTL4ArgumentTable)? = nil
+    argumentTable selectedArgumentTable: MetalBrainArgumentTable? = nil
   ) throws {
-    guard threadCount > 0 else {
-      throw TissueError.metal("cognitive-state dispatch cannot be empty")
-    }
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(selectedArgumentTable ?? argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: threadCount, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+    try dispatch(encoder: .metal4(encoder), pipeline: pipeline, threadCount: threadCount, argumentTable: selectedArgumentTable)
+  }
+
+  private func dispatch(
+    encoder: MetalBrainCommandEncoder,
+    pipeline: any MTLComputePipelineState,
+    threadCount: Int,
+    argumentTable selectedArgumentTable: MetalBrainArgumentTable? = nil
+  ) throws {
+    guard threadCount > 0 else { throw TissueError.metal("cognitive-state dispatch cannot be empty") }
+    try encoder.dispatch(pipeline: pipeline, argumentTable: selectedArgumentTable ?? argumentTable, count: threadCount)
   }
 
   private func barrier(_ encoder: any MTL4ComputeCommandEncoder) {
@@ -868,5 +920,9 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+  }
+
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 }

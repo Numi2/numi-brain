@@ -394,7 +394,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let prospectiveLifecyclePipeline: any MTLComputePipelineState
   private let committedTransitionPipeline: any MTLComputePipelineState
   private let counterfactualLearningPipeline: any MTLComputePipelineState
-  private let argumentTable: any MTL4ArgumentTable
+  private let argumentTable: MetalBrainArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
   private let reconsolidationUniformBuffer: any MTLBuffer
@@ -511,7 +511,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     descriptor.label = "NumiBrain memory-state arguments"
     descriptor.maxBufferBindCount = 18
     descriptor.initializeBindings = true
-    guard let argumentTable = try? device.makeArgumentTable(descriptor: descriptor),
+    guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
       let uniformBuffer = device.makeBuffer(
         length: MemoryLayout<MemoryUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -659,6 +659,28 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     teacherState: MetalTeacherStateBufferLease?,
     acceptanceGateGPUAddress: UInt64? = nil
   ) throws {
+    try encodeCommittedTransition(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      previousTimestamp: previousTimestamp,
+      acceptedPhysicsState: acceptedPhysicsState,
+      teacherState: teacherState,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeCommittedTransition(
+    encoder: MetalBrainCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    previousTimestamp: BrainTimestamp,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    teacherState: MetalTeacherStateBufferLease?,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
     try encodeCommittedTransitionImpl(
       encoder: encoder,
       transaction: transaction,
@@ -703,6 +725,34 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
 
   private func encodeCommittedTransitionImpl(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    previousTimestamp: BrainTimestamp,
+    acceptedTimestamp: BrainTimestamp,
+    physicsStateFingerprint: UInt64,
+    teacherState: MetalTeacherStateBufferLease?,
+    rawSensorViews: [MetalRawSensorBufferView]?,
+    acceptanceGateGPUAddress: UInt64?,
+    acceptanceGateResultGPUAddress: UInt64?
+  ) throws {
+    try encodeCommittedTransitionImpl(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      previousTimestamp: previousTimestamp,
+      acceptedTimestamp: acceptedTimestamp,
+      physicsStateFingerprint: physicsStateFingerprint,
+      teacherState: teacherState,
+      rawSensorViews: rawSensorViews,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress,
+      acceptanceGateResultGPUAddress: acceptanceGateResultGPUAddress
+    )
+  }
+
+  private func encodeCommittedTransitionImpl(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
@@ -934,12 +984,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       }
       argumentTable.setAddress(address, index: 10 + index)
     }
-    encoder.setComputePipelineState(committedTransitionPipeline)
-    encoder.setArgumentTable(argumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    try encoder.dispatch(pipeline: committedTransitionPipeline, argumentTable: argumentTable, count: 1)
   }
 
   /// Journals a bounded risk-balanced subset of the accepted decision's
@@ -947,6 +992,26 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   /// so no imagined sample can be retrieved or consolidated as lived memory.
   public func encodeCommittedCounterfactuals(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    sourceBeliefTimestamp: BrainTimestamp,
+    acceptedTimestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeCommittedCounterfactuals(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      sourceBeliefTimestamp: sourceBeliefTimestamp,
+      acceptedTimestamp: acceptedTimestamp,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeCommittedCounterfactuals(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
@@ -1009,12 +1074,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 3)
     argumentTable.setAddress(counterfactualLearningUniformBuffer.gpuAddress, index: 4)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    encoder.setComputePipelineState(counterfactualLearningPipeline)
-    encoder.setArgumentTable(argumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    try encoder.dispatch(pipeline: counterfactualLearningPipeline, argumentTable: argumentTable, count: 1)
   }
 
   /// Advances prospective intentions only inside an accepted root shadow.
@@ -1022,6 +1082,20 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   /// satisfied, failed, re-pended, or expired through the memory journal.
   public func encodeProspectiveLifecycle(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeProspectiveLifecycle(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      timestamp: timestamp,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeProspectiveLifecycle(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp,
     acceptanceGateGPUAddress: UInt64? = nil
@@ -1086,12 +1160,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(prospectiveLifecycleUniformBuffer.gpuAddress, index: 3)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    encoder.setComputePipelineState(prospectiveLifecyclePipeline)
-    encoder.setArgumentTable(argumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    try encoder.dispatch(pipeline: prospectiveLifecyclePipeline, argumentTable: argumentTable, count: 1)
   }
 
   /// Reconsolidates only records that were actually retrieved into this root's
@@ -1100,6 +1169,20 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   /// contradict, or rewrite a memory.
   public func encodeAcceptedReconsolidation(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeAcceptedReconsolidation(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      timestamp: timestamp,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeAcceptedReconsolidation(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp,
     acceptanceGateGPUAddress: UInt64? = nil
@@ -1218,15 +1301,27 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(reconsolidationUniformBuffer.gpuAddress, index: 3)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    encoder.setComputePipelineState(reconsolidationPipeline)
-    encoder.setArgumentTable(argumentTable)
-    dispatch(encoder, pipeline: reconsolidationPipeline, count: maximumResults)
+    try dispatch(encoder, pipeline: reconsolidationPipeline, count: maximumResults)
   }
 
   /// Emits semantic, procedural, and replay mutations only from already
   /// committed episodes. Rest/development/safety gating remains on the GPU.
   public func encodeRestConsolidation(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeRestConsolidation(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      timestamp: timestamp,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeRestConsolidation(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp,
     acceptanceGateGPUAddress: UInt64? = nil
@@ -1320,16 +1415,23 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(consolidationUniformBuffer.gpuAddress, index: 3)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    encoder.setComputePipelineState(consolidationPipeline)
-    encoder.setArgumentTable(argumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    try encoder.dispatch(pipeline: consolidationPipeline, argumentTable: argumentTable, count: 1)
   }
 
   public func encodeRetrieval(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    timestamp: BrainTimestamp
+  ) throws {
+    try encodeRetrieval(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      timestamp: timestamp
+    )
+  }
+
+  func encodeRetrieval(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     timestamp: BrainTimestamp
   ) throws {
@@ -1464,43 +1566,59 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(retrievalUniformBuffers[0].gpuAddress, index: 2)
-    encoder.setComputePipelineState(retrievalBeginPipeline)
-    encoder.setArgumentTable(argumentTable)
-    dispatch(encoder, pipeline: retrievalBeginPipeline, count: maximumResults)
+    try dispatch(encoder, pipeline: retrievalBeginPipeline, count: maximumResults)
     barrier(encoder)
     for pass in 0..<maximumResults {
       argumentTable.setAddress(retrievalUniformBuffers[pass].gpuAddress, index: 2)
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: archiveShortlistClearPipeline,
         count: 32
       )
       barrier(encoder)
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: archiveShortlistScorePipeline,
         count: archiveSearchCandidateCount
       )
       barrier(encoder)
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: retrievalScorePipeline,
         count: candidateCount
       )
       barrier(encoder)
-      dispatch(
+      try dispatch(
         encoder,
         pipeline: archiveRerankPipeline,
         count: 32
       )
       barrier(encoder)
-      dispatch(encoder, pipeline: retrievalPublishPipeline, count: 1)
+      try dispatch(encoder, pipeline: retrievalPublishPipeline, count: 1)
       barrier(encoder)
     }
   }
 
   public func encodeEpisodicSegmentation(
     encoder: any MTL4ComputeCommandEncoder,
+    transaction: MetalAgentStateTransactionToken,
+    episodeIdentifier: UInt64,
+    controlStepIdentifier: UInt64,
+    timestamp: BrainTimestamp,
+    acceptanceGateGPUAddress: UInt64? = nil
+  ) throws {
+    try encodeEpisodicSegmentation(
+      encoder: .metal4(encoder),
+      transaction: transaction,
+      episodeIdentifier: episodeIdentifier,
+      controlStepIdentifier: controlStepIdentifier,
+      timestamp: timestamp,
+      acceptanceGateGPUAddress: acceptanceGateGPUAddress
+    )
+  }
+
+  func encodeEpisodicSegmentation(
+    encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
     episodeIdentifier: UInt64,
     controlStepIdentifier: UInt64,
@@ -1629,29 +1747,23 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 3)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    encoder.setComputePipelineState(segmentPipeline)
-    encoder.setArgumentTable(argumentTable)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
-    )
+    try encoder.dispatch(pipeline: segmentPipeline, argumentTable: argumentTable, count: 1)
   }
 
   private func dispatch(
     _ encoder: any MTL4ComputeCommandEncoder,
     pipeline: any MTLComputePipelineState,
     count: Int
-  ) {
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(argumentTable)
-    let width = min(
-      max(pipeline.threadExecutionWidth, 1),
-      pipeline.maxTotalThreadsPerThreadgroup
-    )
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: max(count, 1), height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1)
-    )
+  ) throws {
+    try dispatch(.metal4(encoder), pipeline: pipeline, count: count)
+  }
+
+  private func dispatch(
+    _ encoder: MetalBrainCommandEncoder,
+    pipeline: any MTLComputePipelineState,
+    count: Int
+  ) throws {
+    try encoder.dispatch(pipeline: pipeline, argumentTable: argumentTable, count: max(count, 1))
   }
 
   private func bindAcceptanceGate(_ gpuAddress: UInt64?) {
@@ -1667,6 +1779,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       beforeEncoderStages: .dispatch,
       visibilityOptions: .device
     )
+  }
+
+  private func barrier(_ encoder: MetalBrainCommandEncoder) {
+    encoder.barrier()
   }
 
 }

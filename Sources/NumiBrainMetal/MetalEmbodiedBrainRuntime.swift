@@ -220,6 +220,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   private let commandBuffer: any MTL4CommandBuffer
   private let residencySet: any MTLResidencySet
   private let lock = NSLock()
+  private var borrowedFastImportPipeline: (any MTLComputePipelineState)?
 
   private enum AsyncSubmissionKind {
     case decision
@@ -964,6 +965,71 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Encodes the ordinary cognitive and decision chain on the native owner's
+  /// command buffer. The returned lease must still pass the Tissue protective
+  /// motor mapper. The owner retains all receptor buffers through completion.
+  func encodeBorrowedDecision(
+    transaction: MetalJointAgentStateTransaction,
+    encoder: any MTLComputeCommandEncoder,
+    rawSensors: [MetalRawSensorBufferLease],
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    additionalAllocations: [any MTLAllocation] = []
+  ) throws -> NumanXSomaticBufferLease {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil, transaction.status == .open,
+      transaction.jointToken.parameterVersionFingerprint == parameterVersionFingerprint,
+      encoder.device.registryID == device.registryID,
+      connectomeController == nil, let muscleLocomotorController else {
+      throw TissueError.transaction("borrowed Human decision requires its open muscle-control owner")
+    }
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("borrowed decision interval exceeds sensory ABI")
+    }
+    var allocations = residencySet.allAllocations + additionalAllocations
+    for sensor in rawSensors {
+      allocations.append(sensor.buffer)
+      if let validity = sensor.validityBuffer { allocations.append(validity) }
+    }
+    let commands = MetalBrainCommandEncoder.borrowed(encoder, allocations: allocations)
+    commands.barrier()
+    try developmentalRuntime.encodeCurrentStage(encoder: commands,
+      transaction: transaction.agentStateToken,
+      timestamp: transaction.jointToken.committedTimestamp)
+    commands.barrier()
+    let sensory = try sensoryRuntime.encode(encoder: commands,
+      transaction: transaction.agentStateToken, rawSensorViews: rawSensors.map(\.view),
+      environmentIdentifier: transaction.jointToken.environmentIdentifier,
+      episodeIdentifier: transaction.jointToken.episodeIdentifier,
+      controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+      randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+      targetTimestamp: transaction.jointToken.committedTimestamp,
+      deltaMicroseconds: UInt32(duration), allowsMatchingAcceptedFrameReuse: true)
+    commands.barrier()
+    try cognitiveRuntime.encodeAcceptedCognitiveStep(encoder: commands,
+      transaction: transaction.agentStateToken,
+      targetTimestamp: transaction.jointToken.committedTimestamp,
+      deltaMicroseconds: duration, receptorEventCapacity: sensory.eventCapacity,
+      regionalRecurrentInput: regionalRecurrentInput)
+    commands.barrier()
+    try memoryRuntime.encodeRetrieval(encoder: commands,
+      transaction: transaction.agentStateToken,
+      timestamp: transaction.jointToken.committedTimestamp)
+    commands.barrier()
+    let logits = try transaction.encodeMuscleLocomotor(muscleLocomotorController,
+      encoder: encoder, rawSensors: rawSensors)
+    let output = try decisionRuntime.encode(encoder: commands,
+      transaction: transaction.agentStateToken,
+      timestamp: transaction.jointToken.committedTimestamp,
+      rawSensorViews: rawSensors.map(\.view), connectomeMotor: logits)
+    commands.barrier()
+    let decision = try makeDecisionBufferView(transaction: transaction,
+      sensory: sensory, decision: output, feedback: nil)
+    return try borrowNumanXSomaticBuffer(for: decision, transaction: transaction)
+  }
+
   /// Encodes one cognitive decision and places it on a caller-owned shared GPU
   /// timeline without waiting for Metal feedback on the host. The returned
   /// ticket retains the complete shadow state and every zero-copy sensor lease.
@@ -1490,6 +1556,134 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       developmentalEvidence: developmentalEvidence,
       teacherState: teacherState
     )
+  }
+
+  /// Encodes accepted consequences on a second command lent by the SAME native
+  /// owner queue after its physical result is accepted. Only caller-owned Brain
+  /// shadow state is changed; publication follows successful owner completion.
+  func encodeBorrowedAcceptedConsequence(
+    transaction: MetalJointAgentStateTransaction,
+    encoder: any MTLComputeCommandEncoder,
+    acceptedPhysicsState: AcceptedPhysicsStateToken,
+    rawSensors: [MetalRawSensorBufferLease],
+    acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
+    acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease,
+    additionalAllocations: [any MTLAllocation] = []
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeAsyncSubmission == nil, transaction.status == .open,
+      encoder.device.registryID == device.registryID,
+      acceptedPhysicsState.transactionFingerprint == transaction.jointToken.fingerprint,
+      acceptedPhysicsState.acceptedTimestamp == transaction.jointToken.targetTimestamp,
+      acceptedPhysicsState.environmentIdentifier == transaction.jointToken.environmentIdentifier else {
+      throw TissueError.transaction("borrowed consequence does not match the accepted native root")
+    }
+    let duration = transaction.jointToken.targetTimestamp.rawValue
+      - transaction.jointToken.committedTimestamp.rawValue
+    guard duration > 0, duration <= UInt64(UInt32.max) else {
+      throw TissueError.transaction("borrowed consequence interval exceeds sensory ABI")
+    }
+    var allocations = residencySet.allAllocations + additionalAllocations
+    for sensor in rawSensors {
+      allocations.append(sensor.buffer)
+      if let validity = sensor.validityBuffer { allocations.append(validity) }
+    }
+    let commands = try borrowedConsequenceEncoder(encoder, allocations: allocations)
+    commands.barrier()
+    try encodeAcceptedFastMotorImport(acceptedFastMotorState, transaction: transaction, encoder: commands)
+    let developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil
+    let teacherState: MetalTeacherStateBufferLease? = nil
+    commands.barrier()
+      let sensory = try sensoryRuntime.encode(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        rawSensorViews: rawSensors.map(\.view),
+        environmentIdentifier: transaction.jointToken.environmentIdentifier,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        randomCounterGeneration: transaction.cachedRandomCounterGeneration,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: UInt32(duration)
+      )
+      commands.barrier()
+      try cognitiveRuntime.encodeAcceptedRegionalRecurrentIngest(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: duration,
+        regionalRecurrentInput: acceptedRegionalRecurrentInput
+      )
+      commands.barrier()
+      try acceptedConsequenceRuntime.encode(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        acceptedPhysicsState: acceptedPhysicsState,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity,
+        acceptedFastMotorState: acceptedFastMotorState
+      )
+      commands.barrier()
+      try cognitiveRuntime.encodeAcceptedBeliefAssimilation(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        targetTimestamp: acceptedPhysicsState.acceptedTimestamp,
+        deltaMicroseconds: duration,
+        receptorEventCapacity: sensory.eventCapacity
+      )
+      commands.barrier()
+      try developmentalRuntime.encodeAcceptedProgress(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        acceptedPhysicsState: acceptedPhysicsState,
+        deltaMicroseconds: duration,
+        evidence: developmentalEvidence
+      )
+      commands.barrier()
+      try memoryRuntime.encodeAcceptedReconsolidation(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      commands.barrier()
+      try memoryRuntime.encodeProspectiveLifecycle(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      commands.barrier()
+      try memoryRuntime.encodeRestConsolidation(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      commands.barrier()
+      try memoryRuntime.encodeEpisodicSegmentation(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        timestamp: acceptedPhysicsState.acceptedTimestamp
+      )
+      commands.barrier()
+      try memoryRuntime.encodeCommittedTransition(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        previousTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedPhysicsState: acceptedPhysicsState,
+        teacherState: teacherState
+      )
+      commands.barrier()
+      try memoryRuntime.encodeCommittedCounterfactuals(
+        encoder: commands,
+        transaction: transaction.agentStateToken,
+        episodeIdentifier: transaction.jointToken.episodeIdentifier,
+        controlStepIdentifier: transaction.jointToken.controlStepIdentifier,
+        sourceBeliefTimestamp: transaction.jointToken.committedTimestamp,
+        acceptedTimestamp: acceptedPhysicsState.acceptedTimestamp
+      )
   }
 
   public func finalizeAcceptedControl(
@@ -2622,12 +2816,57 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   /// same shadow generation. That generation receives accepted sensory
   /// consequences and memory journals; a later abort discards every copy with
   /// the rest of the mind.
-  func importAcceptedFastMotorState(
-    _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
-    transaction: MetalJointAgentStateTransaction
-  ) throws {
+  func encodeBorrowedDecisionReady(transaction: MetalJointAgentStateTransaction,
+    lease: NumanXSomaticBufferLease, encoder: any MTLComputeCommandEncoder) throws
+    -> MetalNumanXDecisionReadyEvaluation {
     lock.lock()
     defer { lock.unlock() }
+    guard transaction.status == .open,
+      lease.decision.transactionFingerprint == transaction.jointToken.fingerprint,
+      encoder.device.registryID == deviceRegistryID,
+      let event = device.makeSharedEvent() else {
+      throw TissueError.transaction("borrowed decision gate has no exact open owner")
+    }
+    // Same-encoder dispatch ordering supplies execution dependency. This event
+    // is retained only by the common gate lease and is never a completion proof.
+    let evaluation = try numanXMotorReadyRuntime.makeDecisionEvaluation(
+      device: device, commandLease: lease, transaction: transaction.jointToken,
+      readyPoint: MetalSharedEventPoint(event: event, value: 1),
+      compiledSpeciesTemplateFingerprint: compiledSpeciesTemplateFingerprint,
+      parameterVersionFingerprint: parameterVersionFingerprint,
+      regionalProgramFingerprint: regionalProgramFingerprint,
+      scheduleFingerprint: scheduleFingerprint, brainProgramFingerprint: numanXBrainProgramFingerprint,
+      uncertaintyGate: numanXUncertaintyGate)
+    let commands = MetalBrainCommandEncoder.borrowed(encoder,
+      allocations: residencySet.allAllocations + evaluation.residencyAllocations)
+    commands.barrier()
+    try numanXMotorReadyRuntime.encodeDecision(encoder: commands, evaluation: evaluation)
+    commands.barrier()
+    return evaluation
+  }
+
+  private func borrowedConsequenceEncoder(_ encoder: any MTLComputeCommandEncoder,
+    allocations: [any MTLAllocation]) throws -> MetalBrainCommandEncoder {
+    if borrowedFastImportPipeline == nil {
+      guard let url = Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
+        ?? Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
+        throw TissueError.metal("borrowed brain transport shader is missing")
+      }
+      let options = MTLCompileOptions()
+      options.languageVersion = .version4_0
+      let library = try device.makeLibrary(source: String(contentsOf: url, encoding: .utf8), options: options)
+      guard let function = library.makeFunction(name: "borrowed_brain_copy_bytes") else {
+        throw TissueError.metal("borrowed brain transport kernel is missing")
+      }
+      borrowedFastImportPipeline = try device.makeComputePipelineState(function: function)
+    }
+    return .borrowed(encoder, allocations: allocations, copyPipeline: borrowedFastImportPipeline)
+  }
+
+  private func encodeAcceptedFastMotorImport(
+    _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
+    transaction: MetalJointAgentStateTransaction, encoder: MetalBrainCommandEncoder
+  ) throws {
     let section = agentStateRuntime.arena.layout.section(.cpgState)
     let reflexSection = agentStateRuntime.arena.layout.section(.reflexState)
     let fastCerebellarSection = agentStateRuntime.arena.layout.section(
@@ -2703,6 +2942,82 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         || lease.acceptedActiveSensingOutputByteCount > 0
         || lease.bodySchemaByteCount > 0
     else { return }
+    let destination = try agentStateRuntime.arena.borrowShadowHotBuffer(
+      transaction: transaction.agentStateToken
+    )
+    if lease.byteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.cpgBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: section.byteOffset,
+        size: lease.byteCount
+      )
+    }
+    if lease.reflexStateByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.reflexStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: reflexSection.byteOffset,
+        size: lease.reflexStateByteCount
+      )
+    }
+    if lease.fastCerebellarStateByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.fastCerebellarStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: fastCerebellarSection.byteOffset,
+        size: lease.fastCerebellarStateByteCount
+      )
+    }
+    if lease.fastAutonomicStateByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.fastAutonomicStateBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: fastAutonomicSection.byteOffset,
+        size: lease.fastAutonomicStateByteCount
+      )
+    }
+    if lease.acceptedSomaticOutputByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.acceptedSomaticOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedSomaticSection.byteOffset,
+        size: lease.acceptedSomaticOutputByteCount
+      )
+    }
+    if lease.acceptedAutonomicOutputByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.acceptedAutonomicOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedAutonomicSection.byteOffset,
+        size: lease.acceptedAutonomicOutputByteCount
+      )
+    }
+    if lease.acceptedActiveSensingOutputByteCount > 0 {
+      try encoder.copy(
+        sourceBuffer: lease.acceptedActiveSensingOutputBuffer,
+        sourceOffset: 0,
+        destinationBuffer: destination,
+        destinationOffset: acceptedActiveSensingSection.byteOffset,
+        size: lease.acceptedActiveSensingOutputByteCount
+      )
+    }
+    encoder.barrier()
+    try transaction.bindAcceptedFastMotorState(lease)
+  }
+
+  func importAcceptedFastMotorState(
+    _ lease: MetalTissueRuntime.AcceptedFastMotorStateLease,
+    transaction: MetalJointAgentStateTransaction
+  ) throws {
+    lock.lock()
+    defer { lock.unlock() }
     let descriptor = MTLResidencySetDescriptor()
     descriptor.label = "NumiBrain accepted fast motor residency"
     descriptor.initialCapacity = 7
@@ -2722,9 +3037,6 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     borrowedResidency.commit()
     borrowedResidency.requestResidency()
     defer { borrowedResidency.endResidency() }
-    let destination = try agentStateRuntime.arena.borrowShadowHotBuffer(
-      transaction: transaction.agentStateToken
-    )
     commandAllocator.reset()
     commandBuffer.beginCommandBuffer(allocator: commandAllocator)
     commandBuffer.useResidencySet(residencySet)
@@ -2734,73 +3046,15 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to encode accepted fast motor import")
     }
     encoder.label = "NumiBrain accepted fast motor import"
-    if lease.byteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.cpgBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: section.byteOffset,
-        size: lease.byteCount
-      )
-    }
-    if lease.reflexStateByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.reflexStateBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: reflexSection.byteOffset,
-        size: lease.reflexStateByteCount
-      )
-    }
-    if lease.fastCerebellarStateByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.fastCerebellarStateBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: fastCerebellarSection.byteOffset,
-        size: lease.fastCerebellarStateByteCount
-      )
-    }
-    if lease.fastAutonomicStateByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.fastAutonomicStateBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: fastAutonomicSection.byteOffset,
-        size: lease.fastAutonomicStateByteCount
-      )
-    }
-    if lease.acceptedSomaticOutputByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.acceptedSomaticOutputBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: acceptedSomaticSection.byteOffset,
-        size: lease.acceptedSomaticOutputByteCount
-      )
-    }
-    if lease.acceptedAutonomicOutputByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.acceptedAutonomicOutputBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: acceptedAutonomicSection.byteOffset,
-        size: lease.acceptedAutonomicOutputByteCount
-      )
-    }
-    if lease.acceptedActiveSensingOutputByteCount > 0 {
-      encoder.copy(
-        sourceBuffer: lease.acceptedActiveSensingOutputBuffer,
-        sourceOffset: 0,
-        destinationBuffer: destination,
-        destinationOffset: acceptedActiveSensingSection.byteOffset,
-        size: lease.acceptedActiveSensingOutputByteCount
-      )
+    do { try encodeAcceptedFastMotorImport(lease, transaction: transaction, encoder: .metal4(encoder)) }
+    catch {
+      encoder.endEncoding()
+      commandBuffer.endCommandBuffer()
+      throw error
     }
     encoder.endEncoding()
     commandBuffer.endCommandBuffer()
     _ = try commitCommandBuffer(label: "NumiBrain accepted fast motor import")
-    try transaction.bindAcceptedFastMotorState(lease)
   }
 
   public func borrowNumanXSomaticBuffer(

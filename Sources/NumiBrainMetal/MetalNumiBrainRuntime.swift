@@ -582,6 +582,9 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       case numanXApplySubmitted
       case numanXAppliedValidationRetryRequired
       case acceptedConsequenceSubmitted
+      case borrowedMotorEncoded
+      case borrowedConsequenceEncoded
+      case borrowedEncodingFailed
       case committed
       case aborted
       case terminalQuarantined
@@ -682,6 +685,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
 
     fileprivate let cognitiveTransaction: MetalJointAgentStateTransaction
+    fileprivate var borrowedMotor: BorrowedMotorCommand?
     fileprivate var asyncSubmissionIdentifier: UUID?
     fileprivate var provisionalFastSubmissionIdentifier: UUID?
     fileprivate var numanXPreparedSubmissionIdentifier: UUID?
@@ -1231,6 +1235,160 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       try? fastTissue.abortInteractiveJointControl()
       throw error
     }
+  }
+
+  /// Protected physical command encoded on a native owner's current timeline.
+  /// Its buffers remain owned by this open control until commit or abort.
+  @_spi(NumanXInterop)
+  public struct BorrowedMotorCommand {
+    public let substep: BrainJointSubstepToken
+    public let candidate: NumanXMotorCandidate
+    public let buffers: MetalTissueRuntime.NumanXMotorBufferLease
+    public let motorReadyGate: MetalNumanXMotorReadyGateLease
+    let evaluation: MetalNumanXMotorReadyEvaluation
+  }
+
+  /// Appends the normal receptor, cognitive, decision, and protective stages to
+  /// the physical owner's encoder. The owner must abandon the command on error.
+  /// No queue, command buffer submission, physical state, or receipt is created.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedMotorCommand(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder, rawSensors: [MetalRawSensorBufferLease]) throws
+    -> BorrowedMotorCommand {
+    lock.lock()
+    defer { lock.unlock() }
+    if activeTransaction === transaction, transaction.status == .borrowedMotorEncoded,
+      let previous = transaction.borrowedMotor { return previous }
+    try requireActive(transaction, status: .open)
+    do {
+      let lease = try cognitive.encodeBorrowedDecision(
+        transaction: transaction.cognitiveTransaction, encoder: encoder,
+        rawSensors: rawSensors,
+        regionalRecurrentInput: fastTissue.committedRegionalRecurrentBufferView(),
+        additionalAllocations: fastTissue.borrowedResidencyAllocations)
+      let decisionGate = try cognitive.encodeBorrowedDecisionReady(
+        transaction: transaction.cognitiveTransaction, lease: lease, encoder: encoder)
+      let motor = try fastTissue.encodeBorrowedNumanXMotorCandidate(
+        encoder: encoder, commandLease: lease, decisionEvaluation: decisionGate, transaction: transaction.token,
+        candidateDurationMicroseconds: transaction.token.targetTimestamp.rawValue
+          - transaction.token.committedTimestamp.rawValue)
+      let result = BorrowedMotorCommand(substep: motor.fastSystems.substep,
+        candidate: motor.candidate, buffers: motor.buffers,
+        motorReadyGate: motor.evaluation.lease, evaluation: motor.evaluation)
+      transaction.decision = lease.decision
+      transaction.activeSubstep = result.substep
+      transaction.borrowedMotor = result
+      transaction.status = .borrowedMotorEncoded
+      return result
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
+  private var borrowedHumanMotorWriter: MetalBorrowedHumanMotorWriter?
+
+  /// Writes validated protected excitation into native MRMujocoMuscleStateGPU.x
+  /// only. A failed proof writes NaN for native rejection; no physical state
+  /// outside excitation is changed and a preexisting native failure is retained.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedHumanExcitation(command: BorrowedMotorCommand,
+    encoder: any MTLComputeCommandEncoder, destinationMuscleStates: any MTLBuffer,
+    count: Int = 416, standStatuses: (any MTLBuffer)? = nil) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let activeTransaction, activeTransaction.status == .borrowedMotorEncoded,
+      activeTransaction.borrowedMotor?.evaluation === command.evaluation else {
+      throw TissueError.transaction("borrowed Human motor writer has no matching open command")
+    }
+    if borrowedHumanMotorWriter == nil {
+      borrowedHumanMotorWriter = try MetalBorrowedHumanMotorWriter(device: encoder.device)
+    }
+    try borrowedHumanMotorWriter!.encode(command: command, encoder: encoder,
+      destinationMuscleStates: destinationMuscleStates, count: count, standStatuses: standStatuses)
+  }
+
+  /// Appends only neural consequence work after the actual native owner has
+  /// accepted its physical step. The supplied receipt and receptors must come
+  /// from that exact accepted state. Publication waits for owner completion.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedAcceptedConsequence(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder, accepted: AcceptedPhysicsStateToken,
+    rawSensors: [MetalRawSensorBufferLease], receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .borrowedMotorEncoded)
+    guard let substep = transaction.activeSubstep,
+      let motor = transaction.borrowedMotor, motor.evaluation.hasValidSuccess(),
+      accepted.transactionFingerprint == transaction.token.fingerprint,
+      accepted.substepFingerprint == substep.fingerprint,
+      accepted.acceptedTimestamp == transaction.token.targetTimestamp else {
+      throw TissueError.transaction("borrowed consequence lacks the exact native accepted endpoint")
+    }
+    do {
+      try fastTissue.encodeBorrowedAcceptedPhysicsSubstep(encoder: encoder,
+        accepted: accepted, for: substep, receptorEvents: receptorEvents,
+        localizedMuscleLoadObservations: localizedMuscleLoadObservations)
+      let fastState = try fastTissue.borrowBorrowedAcceptedFastMotorState(for: transaction.token)
+      let recurrence = try fastTissue.borrowedAcceptedRegionalRecurrentBufferView(for: transaction.token)
+      try cognitive.encodeBorrowedAcceptedConsequence(
+        transaction: transaction.cognitiveTransaction, encoder: encoder,
+        acceptedPhysicsState: accepted, rawSensors: rawSensors,
+        acceptedRegionalRecurrentInput: recurrence, acceptedFastMotorState: fastState,
+        additionalAllocations: fastTissue.borrowedResidencyAllocations)
+      transaction.lastAcceptedSubstep = substep
+      transaction.lastAcceptedPhysicsState = accepted
+      transaction.activeSubstep = nil
+      transaction.status = .borrowedConsequenceEncoded
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
+  /// Publishes the ordinary paired fast/cognitive commit only after successful
+  /// completion of the owner's consequence command. Timing is measured by that
+  /// owner command; receipt identity remains the actual native physical token.
+  @_spi(NumanXInterop)
+  public func finishBorrowedControl(_ transaction: ControlTransaction,
+    gpuStartSeconds: Double, gpuEndSeconds: Double) throws -> BrainJointCommitToken {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .borrowedConsequenceEncoded)
+    guard let accepted = transaction.lastAcceptedPhysicsState else {
+      throw TissueError.transaction("borrowed control has no native accepted state")
+    }
+    do {
+      try fastTissue.recordBorrowedAcceptedCompletion(transaction: transaction.token,
+        gpuStartSeconds: gpuStartSeconds, gpuEndSeconds: gpuEndSeconds)
+      _ = try fastTissue.finishInteractiveJointControl()
+      try transaction.cognitiveTransaction.finishGPUState(acceptedPhysicsState: accepted)
+      let prepared = try prepareAtomicJointPublication(
+        fast: fastTissue.prepareJointRootTransactionCommit(), cognitive: transaction.cognitiveTransaction)
+      publishAtomicJointPublication(prepared, transaction: transaction)
+      return prepared.fast.receipt
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
+  /// Discards unpublished neural state after the owner command has terminated.
+  /// If physics already accepted but neural consequence failed, the owner must
+  /// stop the native continuation; this method does not rewind physical state.
+  @_spi(NumanXInterop)
+  public func abortBorrowedControl(_ transaction: ControlTransaction) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    guard activeTransaction === transaction,
+      transaction.status == .borrowedMotorEncoded
+        || transaction.status == .borrowedConsequenceEncoded
+        || transaction.status == .borrowedEncodingFailed else {
+      throw TissueError.transaction("borrowed control is not active")
+    }
+    if fastTissue.hasPendingRootTransaction { try fastTissue.abortRootTransaction() }
+    abortLocked(transaction)
   }
 
   /// Runs causal sensor transduction and the high-level decision once. The
