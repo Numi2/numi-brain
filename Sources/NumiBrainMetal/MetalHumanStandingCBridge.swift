@@ -131,7 +131,8 @@ private final class StandingBridge {
     if let programJSON, !programJSON.isEmpty {
       program = try JSONDecoder().decode(MuscleLocomotorProgram.self, from: Data(programJSON.utf8))
       guard program.modelSourceFingerprint == source.modelSourceFingerprint,
-        program.epochMicroseconds == epochMicroseconds else {
+        program.epochMicroseconds == epochMicroseconds,
+        program.calibrationArtifactSHA256 == sourceHash else {
         throw BrainRuntimeError.invalidDescriptor("standing program source or physical epoch differs")
       }
     } else {
