@@ -1,7 +1,7 @@
 import Foundation
 import Metal
 import XCTest
-@testable import NumiBrainMetal
+@_spi(NumanXInterop) @testable import NumiBrainMetal
 
 @available(macOS 26.0, *)
 final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {

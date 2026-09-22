@@ -25,6 +25,9 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   private var preparedGPUStateFinish: MetalAgentStateRuntime.PreparedGPUStateFinish?
   private var acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?
   private var connectomeCandidate: MetalConnectomeRuntime.Candidate?
+  private var borrowedMuscleController: MetalMuscleLocomotorController?
+  private var borrowedMuscleOutput: MetalDescendingMotorView?
+  private var borrowedMuscleEncodingFailed = false
 
   public init(jointToken: BrainJointTransactionToken, runtime: MetalAgentStateRuntime,
               cachedDecisionFingerprint: UInt64) throws {
@@ -68,6 +71,9 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     encoder: any MTL4ComputeCommandEncoder,
     sensory: MetalSensoryTransductionRuntime.Result) throws -> MetalConnectomeRuntime.DescendingView {
     lock.lock(); defer { lock.unlock() }; try require(.open)
+    guard borrowedMuscleController == nil else {
+      throw TissueError.transaction("a muscle locomotor root cannot also bind a connectome controller")
+    }
     try Self.validateConnectomeSpecies(binding: connectome.binding,
       ownerSpeciesFingerprint: runtime.arena.layout.speciesTemplateFingerprint)
     if let candidate = connectomeCandidate {
@@ -88,6 +94,54 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     let candidate = try connectome.encodeCandidate(encoder: encoder, root: jointToken, sensory: sensory)
     connectomeCandidate = candidate
     return candidate.view
+  }
+
+  /// Append the existing muscle controller kernels to a native owner's open
+  /// compute encoder. Sensor leases must be actual delivered receptor buffers;
+  /// this API never observes pose/contact directly or retains the encoder or
+  /// sensor leases. The caller owns their lifetime through GPU completion.
+  ///
+  /// Retries reuse the first decision. Balance history stays in this joint
+  /// transaction's shadow and follows its ordinary commit/abort path. A failed
+  /// encode requires abandoning the command buffer and aborting the root.
+  /// Returned logits still require the normal decision/protective motor stages;
+  /// they must never be copied into the physical excitation stream directly.
+  @_spi(NumanXInterop)
+  public func encodeMuscleLocomotor(_ controller: MetalMuscleLocomotorController,
+    encoder: any MTLComputeCommandEncoder,
+    rawSensors: [MetalRawSensorBufferLease]) throws -> MetalDescendingMotorView {
+    lock.lock()
+    defer { lock.unlock() }
+    try require(.open)
+    guard connectomeCandidate == nil else {
+      throw TissueError.transaction("a connectome root cannot also bind a muscle locomotor controller")
+    }
+    guard controller.speciesFingerprint == runtime.arena.layout.speciesTemplateFingerprint else {
+      throw TissueError.transaction("muscle controller belongs to a different physical species")
+    }
+    let ownerBuffer = try runtime.arena.borrowShadowHotBuffer(transaction: agentStateToken)
+    guard ownerBuffer.device.registryID == encoder.device.registryID else {
+      throw TissueError.transaction("borrowed muscle encoder belongs to a different agent-state device")
+    }
+    if let output = borrowedMuscleOutput {
+      guard borrowedMuscleController === controller else {
+        throw TissueError.transaction("physical retry cannot replace its muscle controller")
+      }
+      return output
+    }
+    guard borrowedMuscleController == nil else {
+      throw TissueError.transaction("failed borrowed muscle encoding requires root abort")
+    }
+    borrowedMuscleController = controller
+    do {
+      let output = try controller.encodeBorrowed(transaction: self, arena: runtime.arena, encoder: encoder,
+        rawSensors: rawSensors)
+      borrowedMuscleOutput = output
+      return output
+    } catch {
+      borrowedMuscleEncodingFailed = true
+      throw error
+    }
   }
 
   func bindAcceptedFastMotorState(_ lease: MetalTissueRuntime.AcceptedFastMotorStateLease) throws {
@@ -283,6 +337,8 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     runtime.publishPreparedCommit(preparedCommit)
     connectomeCandidate?.publish(); connectomeCandidate = nil
     MetalMuscleBalanceParticipantRegistry.publish(self)
+    borrowedMuscleController?.releaseBorrowedRoot(jointToken)
+    borrowedMuscleController = nil; borrowedMuscleOutput = nil
     self.preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .committed
   }
   public func abort() throws {
@@ -294,6 +350,8 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     try runtime.abort(transaction: agentStateToken)
     connectomeCandidate?.abort(); connectomeCandidate = nil
     MetalMuscleBalanceParticipantRegistry.abort(self)
+    borrowedMuscleController?.releaseBorrowedRoot(jointToken)
+    borrowedMuscleController = nil; borrowedMuscleOutput = nil
     acceptedPhysicsFingerprint = nil; preparedGPUStateFinish = nil
     preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .aborted
   }
@@ -305,6 +363,9 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   }
 
   private func require(_ expected: Status) throws {
+    guard !borrowedMuscleEncodingFailed else {
+      throw TissueError.transaction("failed borrowed muscle encoding permits only root abort")
+    }
     guard currentStatus == expected else {
       throw TissueError.transaction("joint brain-state transaction is \(currentStatus), expected \(expected)")
     }

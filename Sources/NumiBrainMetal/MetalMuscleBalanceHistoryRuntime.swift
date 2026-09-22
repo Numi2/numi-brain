@@ -54,6 +54,8 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
       )
     }
 
+    var outputBuffers: [any MTLBuffer] { [owner.outputErrors, owner.outputValidity] }
+
     func validateCommit(_ receipt: BrainJointCommitToken) throws {
       guard receipt.transactionFingerprint == root.fingerprint,
         receipt.brainGeneration == root.shadowGeneration,
@@ -278,7 +280,7 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
     correctionEnabled: Bool,
     observedErrors: any MTLBuffer,
     observedValidity: any MTLBuffer,
-    encoder: any MTL4ComputeCommandEncoder
+    encoder: MetalMuscleCommandEncoder
   ) throws -> Candidate {
     lock.lock()
     defer { lock.unlock() }
@@ -334,45 +336,16 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
       )
     }
 
-    let addresses = [
-      observedErrors.gpuAddress,
-      observedValidity.gpuAddress,
-      sourceConfiguration.gpuAddress,
-      committed.values.gpuAddress,
-      committed.timestamps.gpuAddress,
-      committed.validity.gpuAddress,
-      committed.filteredValues.gpuAddress,
-      committed.filteredTimestamps.gpuAddress,
-      committed.filteredValidity.gpuAddress,
-      shadow.values.gpuAddress,
-      shadow.timestamps.gpuAddress,
-      shadow.validity.gpuAddress,
-      shadow.filteredValues.gpuAddress,
-      shadow.filteredTimestamps.gpuAddress,
-      shadow.filteredValidity.gpuAddress,
-      outputErrors.gpuAddress,
-      outputValidity.gpuAddress,
-      uniforms.gpuAddress,
+    let buffers = [
+      observedErrors, observedValidity, sourceConfiguration,
+      committed.values, committed.timestamps, committed.validity,
+      committed.filteredValues, committed.filteredTimestamps, committed.filteredValidity,
+      shadow.values, shadow.timestamps, shadow.validity,
+      shadow.filteredValues, shadow.filteredTimestamps, shadow.filteredValidity,
+      outputErrors, outputValidity, uniforms,
     ]
-    for (index, address) in addresses.enumerated() {
-      arguments.setAddress(address, index: index)
-    }
-
-    encoder.setComputePipelineState(pipeline)
-    encoder.setArgumentTable(arguments)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: sourceCount, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(
-        width: pipeline.threadExecutionWidth,
-        height: 1,
-        depth: 1
-      )
-    )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    try encoder.dispatch(pipeline: pipeline, arguments: arguments,
+      addresses: buffers.map(\.gpuAddress), ownedBuffers: buffers, count: sourceCount)
     pendingRoot = root.fingerprint
     return Candidate(owner: self, root: root, stateIndex: destination)
   }

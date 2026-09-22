@@ -364,7 +364,7 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
   func encodeCandidate(
     root: BrainJointTransactionToken,
     locomotorEpochMicroseconds: UInt64,
-    encoder: any MTL4ComputeCommandEncoder,
+    encoder: MetalMuscleCommandEncoder,
     rawSensors: [MetalRawSensorBufferView]
   ) throws -> Candidate {
     lock.lock()
@@ -407,14 +407,14 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
 
     let vestibular = viewByModality[.vestibular]
     let touch = viewByModality[.touch]
-    for (index, address) in [
+    let sourceAddresses = [
       vestibular?.gpuAddress ?? dummySensor.gpuAddress,
       vestibular?.validityGPUAddress ?? dummyValidity.gpuAddress,
       touch?.gpuAddress ?? dummySensor.gpuAddress,
       touch?.validityGPUAddress ?? dummyValidity.gpuAddress,
-    ].enumerated() {
-      sourceArguments.setAddress(address, index: index)
-    }
+      sources.gpuAddress, sourceErrors.gpuAddress,
+      sourceValidity.gpuAddress, uniforms.gpuAddress,
+    ]
     let words = [
       UInt32(sourceCount), UInt32(muscleCount),
       correctionEnabled ? UInt32(1) : UInt32(0), UInt32(routeCount),
@@ -425,19 +425,10 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
       )
     }
 
-    encoder.setComputePipelineState(sourcePipeline)
-    encoder.setArgumentTable(sourceArguments)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: sourceCount, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(
-        width: sourcePipeline.threadExecutionWidth, height: 1, depth: 1
-      )
-    )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
+    try encoder.dispatch(pipeline: sourcePipeline, arguments: sourceArguments,
+      addresses: sourceAddresses,
+      ownedBuffers: [sources, sourceErrors, sourceValidity, uniforms, dummySensor, dummyValidity],
+      count: sourceCount)
 
     let historyCandidate = try historyRuntime?.encodeCandidate(
       root: root,
@@ -450,26 +441,16 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
       ?? sourceErrors.gpuAddress
     let routedValidity = historyCandidate?.view.validityGPUAddress
       ?? sourceValidity.gpuAddress
-    for (index, address) in [
-      routedErrors, routedValidity, routes.gpuAddress, ranges.gpuAddress,
-      corrections.gpuAddress, uniforms.gpuAddress,
-    ].enumerated() {
-      routeArguments.setAddress(address, index: index)
+    do {
+      try encoder.dispatch(pipeline: routePipeline, arguments: routeArguments,
+        addresses: [routedErrors, routedValidity, routes.gpuAddress, ranges.gpuAddress,
+          corrections.gpuAddress, uniforms.gpuAddress],
+        ownedBuffers: [sourceErrors, sourceValidity, routes, ranges, corrections, uniforms]
+          + (historyCandidate?.outputBuffers ?? []), count: muscleCount)
+    } catch {
+      historyCandidate?.abort()
+      throw error
     }
-
-    encoder.setComputePipelineState(routePipeline)
-    encoder.setArgumentTable(routeArguments)
-    encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: muscleCount, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(
-        width: routePipeline.threadExecutionWidth, height: 1, depth: 1
-      )
-    )
-    encoder.barrier(
-      afterEncoderStages: .dispatch,
-      beforeEncoderStages: .dispatch,
-      visibilityOptions: .device
-    )
     pendingRoot = root.fingerprint
     return Candidate(
       owner: self,

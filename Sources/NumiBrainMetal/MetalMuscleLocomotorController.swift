@@ -3,8 +3,9 @@ import Foundation
 import NumiBrainCore
 
 @available(macOS 26.0, *)
-final class MetalMuscleLocomotorController: @unchecked Sendable {
-  let program: MuscleLocomotorProgram
+@_spi(NumanXInterop)
+public final class MetalMuscleLocomotorController: @unchecked Sendable {
+  public let program: MuscleLocomotorProgram
   private let template: CompiledSpeciesTemplate
   private let version: UInt64
   private let channels: any MTLBuffer
@@ -13,8 +14,13 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
   private let pipeline: any MTLComputePipelineState
   private let arguments: any MTL4ArgumentTable
   private let balanceController: MetalMuscleBalanceController?
+  private let borrowedLock = NSLock()
+  private var borrowedRoot: UInt64?
+  private var borrowedArenaIdentifier: ObjectIdentifier?
+  private weak var borrowedArena: MetalAgentStateArena?
+  var speciesFingerprint: UInt64 { template.species.fingerprint }
 
-  init(program: MuscleLocomotorProgram, template: CompiledSpeciesTemplate,
+  public init(program: MuscleLocomotorProgram, template: CompiledSpeciesTemplate,
     parameterVersion: UInt64, device: any MTLDevice) throws {
     try program.validate(template: template)
     self.program = program; self.template = template; version = parameterVersion
@@ -76,11 +82,44 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     options.mathFloatingPointFunctions = .precise
     return try device.makeLibrary(source: String(contentsOf: url, encoding: .utf8), options: options)
   }
-  var residencyAllocations: [any MTLAllocation] {
+  public var residencyAllocations: [any MTLAllocation] {
     [channels, logits, uniforms] + (balanceController?.residencyAllocations ?? [])
   }
 
   func encode(root: BrainJointTransactionToken, encoder: any MTL4ComputeCommandEncoder,
+    rawSensors: [MetalRawSensorBufferView]) throws -> MetalDescendingMotorView {
+    try encode(root: root, encoder: .metal4(encoder), rawSensors: rawSensors)
+  }
+
+  func encodeBorrowed(transaction: MetalJointAgentStateTransaction,
+    arena: MetalAgentStateArena,
+    encoder: any MTLComputeCommandEncoder,
+    rawSensors: [MetalRawSensorBufferLease]) throws -> MetalDescendingMotorView {
+    borrowedLock.lock()
+    defer { borrowedLock.unlock() }
+    if let identity = borrowedArenaIdentifier {
+      guard identity == ObjectIdentifier(arena), borrowedArena === arena else {
+        throw TissueError.transaction("borrowed muscle controller belongs to another agent-state arena")
+      }
+    } else {
+      borrowedArenaIdentifier = ObjectIdentifier(arena)
+      borrowedArena = arena
+    }
+    guard borrowedRoot == nil else {
+      throw TissueError.transaction("borrowed muscle controller already owns an unfinished root")
+    }
+    borrowedRoot = transaction.jointToken.fingerprint
+    return try encode(root: transaction.jointToken,
+      encoder: .borrowed(encoder, sensors: rawSensors), rawSensors: rawSensors.map(\.view))
+  }
+
+  func releaseBorrowedRoot(_ root: BrainJointTransactionToken) {
+    borrowedLock.lock()
+    defer { borrowedLock.unlock() }
+    if borrowedRoot == root.fingerprint { borrowedRoot = nil }
+  }
+
+  private func encode(root: BrainJointTransactionToken, encoder: MetalMuscleCommandEncoder,
     rawSensors: [MetalRawSensorBufferView]) throws -> MetalDescendingMotorView {
     let sense = template.species.senses.first { $0.enabled && $0.modality == .proprioception }!
     let views = rawSensors.filter { $0.modality == .proprioception }
@@ -99,8 +138,7 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
       : Float(elapsed % program.periodMicroseconds) / Float(program.periodMicroseconds) * (2 * Float.pi)
     let words = [UInt32(program.channels.count), phase.bitPattern, UInt32(0), UInt32(0)]
     words.withUnsafeBytes { uniforms.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
-    encoder.barrier(afterQueueStages: [.dispatch, .blit], beforeStages: .dispatch, visibilityOptions: .device)
-    encoder.barrier(afterEncoderStages: [.dispatch, .blit], beforeEncoderStages: .dispatch, visibilityOptions: .device)
+    encoder.begin()
 
     let balanceCandidate = try balanceController?.encodeCandidate(
       root: root,
@@ -119,11 +157,9 @@ final class MetalMuscleLocomotorController: @unchecked Sendable {
     if let balanceCandidate {
       addresses.append(balanceCandidate.corrections.gpuAddress)
     }
-    for (i, address) in addresses.enumerated() { arguments.setAddress(address, index: i) }
-    encoder.setComputePipelineState(pipeline); encoder.setArgumentTable(arguments)
-    encoder.dispatchThreads(threadsPerGrid: MTLSize(width: program.channels.count, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: pipeline.threadExecutionWidth, height: 1, depth: 1))
-    encoder.barrier(afterEncoderStages: .dispatch, beforeEncoderStages: .dispatch, visibilityOptions: .device)
+    try encoder.dispatch(pipeline: pipeline, arguments: arguments, addresses: addresses,
+      ownedBuffers: [channels, logits, uniforms] + (balanceCandidate.map { [$0.corrections] } ?? []),
+      count: program.channels.count)
     return MetalDescendingMotorView(kind: .muscleLocomotor, transactionFingerprint: root.fingerprint, shadowGeneration: root.shadowGeneration,
       speciesFingerprint: template.species.fingerprint, parameterVersionFingerprint: version,
       programFingerprint: program.fingerprint, logits: logits, actuatorCount: program.channels.count)

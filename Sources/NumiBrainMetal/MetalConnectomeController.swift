@@ -40,16 +40,19 @@ public struct MetalConnectomeControllerSeed: Sendable {
 
 /// Only the owning controller constructs a view. The decision runtime checks
 /// its exact generation/body/version, then uses it BEFORE existing protection.
-struct MetalDescendingMotorView {
+@_spi(NumanXInterop)
+public struct MetalDescendingMotorView {
   enum Kind: UInt32 { case connectome = 1, muscleLocomotor = 2 }
   var kind: Kind = .connectome
-  let transactionFingerprint: UInt64
-  let shadowGeneration: UInt64
-  let speciesFingerprint: UInt64
-  let parameterVersionFingerprint: UInt64
-  let programFingerprint: UInt64
-  let logits: any MTLBuffer
-  let actuatorCount: Int
+  public let transactionFingerprint: UInt64
+  public let shadowGeneration: UInt64
+  public let speciesFingerprint: UInt64
+  public let parameterVersionFingerprint: UInt64
+  public let programFingerprint: UInt64
+  /// Borrowed read-only descending logits, not physical excitation. Consume
+  /// through the existing decision/protective motor stages before HumanIO.
+  public let logits: any MTLBuffer
+  public let actuatorCount: Int
 }
 
 @available(macOS 26.0, *)
