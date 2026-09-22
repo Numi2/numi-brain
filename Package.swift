@@ -9,6 +9,7 @@ let package = Package(
     .library(name: "NumiBrainABI", targets: ["NumiBrainABI"]),
     .library(name: "NumiBrainCore", targets: ["NumiBrainCore"]),
     .library(name: "NumiBrainMetal", targets: ["NumiBrainMetal"]),
+    .library(name: "NumiBrainHumanStanding", type: .dynamic, targets: ["NumiBrainMetal"]),
     .library(name: "NumiBrainMLX", targets: ["NumiBrainMLX"]),
     .library(name: "NumiBrainValidation", targets: ["NumiBrainValidation"]),
     .library(name: "NumiBrainQualification", targets: ["NumiBrainQualification"]),

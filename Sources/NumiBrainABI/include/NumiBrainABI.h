@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "NumiBrainNumanXMotorReadyABI.h"
 #include "NumiBrainNumanXHumanMatterABI.h"
+#include "NumiBrainHumanStandingABI.h"
 
 #ifdef __cplusplus
 extern "C" {
