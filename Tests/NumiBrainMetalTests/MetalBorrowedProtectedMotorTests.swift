@@ -119,6 +119,23 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     return motor
   }
 
+  private func acceptBorrowed(_ fixture: Fixture,
+    root: MetalNumiBrainRuntime.ControlTransaction,
+    motor: MetalNumiBrainRuntime.BorrowedMotorCommand) throws -> BrainJointCommitToken {
+    let accepted = try AcceptedPhysicsStateToken(transaction: root.token, substep: motor.substep,
+      physicsStateFingerprint: 0x8811, physicsGeneration: 101)
+    let input = try sensors(fixture, timestamp: root.token.targetTimestamp)
+    let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
+    let command = try XCTUnwrap(queue.makeCommandBuffer())
+    let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+    try fixture.brain.encodeBorrowedAcceptedConsequence(root, encoder: encoder,
+      accepted: accepted, rawSensors: input)
+    encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+    XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+    return try fixture.brain.finishBorrowedControl(root,
+      gpuStartSeconds: command.gpuStartTime, gpuEndSeconds: command.gpuEndTime)
+  }
+
   private func checkNativeWriter(_ fixture: Fixture,
     command motor: MetalNumiBrainRuntime.BorrowedMotorCommand) throws {
     let states = try XCTUnwrap(fixture.device.makeBuffer(length: 416 * 16, options: .storageModeShared))
@@ -246,5 +263,37 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
       gpuStartSeconds: command.gpuStartTime, gpuEndSeconds: command.gpuEndTime))
     let saved = try fixture.brain.saveCheckpoint(controlStepIdentifier: 1, physicalCheckpointFingerprint: 99)
     XCTAssertEqual(saved.cognitiveState.committedGeneration, saved.fastTissueState.committedSchedulerGeneration)
+  }
+
+  func testExecutedBorrowedAbortThenRetryMatchesFreshAcceptedRoot() throws {
+    for critical in [false, true] {
+      let retried = try makeFixture(), fresh = try makeFixture()
+      let rejectedRoot = try begin(retried)
+      _ = try borrowedMotor(retried, root: rejectedRoot, critical: critical)
+      try retried.brain.abortBorrowedControl(rejectedRoot)
+
+      let retryRoot = try begin(retried)
+      let retryMotor = try borrowedMotor(retried, root: retryRoot, critical: critical)
+      let retrySubstep = retryMotor.substep
+      let retryExcitations = try read(retryMotor.buffers.excitationBuffer, device: retried.device)
+      let retryHeader = try read(retryMotor.buffers.headerBuffer, device: retried.device)
+      let retryReceipt = try acceptBorrowed(retried, root: retryRoot, motor: retryMotor)
+      let retryState = try retried.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99)
+
+      let freshRoot = try begin(fresh)
+      let freshMotor = try borrowedMotor(fresh, root: freshRoot, critical: critical)
+      XCTAssertEqual(retrySubstep, freshMotor.substep)
+      XCTAssertEqual(retryExcitations,
+        try read(freshMotor.buffers.excitationBuffer, device: fresh.device))
+      XCTAssertEqual(retryHeader,
+        try read(freshMotor.buffers.headerBuffer, device: fresh.device))
+      let freshReceipt = try acceptBorrowed(fresh, root: freshRoot, motor: freshMotor)
+      XCTAssertEqual(retryReceipt, freshReceipt, "the accepted physical and neural receipt changed on retry")
+      let freshState = try fresh.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99)
+      XCTAssertEqual(retryState, freshState,
+        "an executed rejected root changed the accepted cognitive or fast checkpoint")
+    }
   }
 }
