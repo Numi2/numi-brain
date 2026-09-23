@@ -208,6 +208,53 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     XCTAssertEqual(ready.outputValidity, 1)
     XCTAssertEqual(ready.output, 0.5, accuracy: 1e-6)
     XCTAssertEqual(ready.filteredValidity.contents().load(as: UInt32.self), 1)
+
+    let missingCurrent = try run(
+      pipeline: pipeline,
+      queue: queue,
+      observed: 1,
+      observedValidity: 0,
+      config: config,
+      committedValues: warmup.values,
+      committedTimestamps: warmup.timestamps,
+      committedValidity: warmup.validity,
+      committedFilteredValues: warmup.filteredValues,
+      committedFilteredTimestamps: warmup.filteredTimestamps,
+      committedFilteredValidity: warmup.filteredValidity,
+      timestamp: 1_000,
+      capacity: capacity,
+      writeIndex: 1,
+      correctionEnabled: 1,
+      device: device
+    )
+    XCTAssertEqual(missingCurrent.output, 0)
+    XCTAssertEqual(missingCurrent.outputValidity, 0,
+      "a delayed valid sample cannot authorize correction when the current receptor is missing")
+    XCTAssertEqual(
+      warmup.validity.contents().assumingMemoryBound(to: UInt32.self)[0],
+      1,
+      "an invalid candidate must not modify committed history"
+    )
+    let retried = try run(
+      pipeline: pipeline,
+      queue: queue,
+      observed: 1,
+      observedValidity: 1,
+      config: config,
+      committedValues: warmup.values,
+      committedTimestamps: warmup.timestamps,
+      committedValidity: warmup.validity,
+      committedFilteredValues: warmup.filteredValues,
+      committedFilteredTimestamps: warmup.filteredTimestamps,
+      committedFilteredValidity: warmup.filteredValidity,
+      timestamp: 1_000,
+      capacity: capacity,
+      writeIndex: 1,
+      correctionEnabled: 1,
+      device: device
+    )
+    XCTAssertEqual(retried.outputValidity, ready.outputValidity)
+    XCTAssertEqual(retried.output.bitPattern, ready.output.bitPattern)
   }
 
   func testFilterInitializationNeverEmitsOnItsFirstReadyRoot() throws {
@@ -344,5 +391,107 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     )
     XCTAssertEqual(missing.output, 0)
     XCTAssertEqual(missing.outputValidity, 0)
+  }
+
+  func testMissingKinematicHistoryHoldsValidSupportRouteAndCanRetry() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let historyPipeline = try device.makeComputePipelineState(
+      function: XCTUnwrap(library.makeFunction(name: "nb_muscle_balance_history"))
+    )
+    let routePipeline = try device.makeComputePipelineState(
+      function: XCTUnwrap(library.makeFunction(name: "nb_muscle_balance_routes"))
+    )
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    let values = try upload([Float(0)], device: device)
+    let timestamps = try upload([UInt64(0)], device: device)
+    let validity = try upload([UInt32(0)], device: device)
+    let prior = try upload([Float(0)], device: device)
+    let priorTimestamp = try upload([UInt64(0)], device: device)
+    let priorValidity = try upload([UInt32(1)], device: device)
+    let config = HistorySource(
+      delayMicroseconds: 0,
+      filterTimeConstantSeconds: 0.001
+    )
+
+    func source(_ observedValidity: UInt32) throws -> (Float, UInt32) {
+      let candidate = try run(
+        pipeline: historyPipeline,
+        queue: queue,
+        observed: 1,
+        observedValidity: observedValidity,
+        config: config,
+        committedValues: values,
+        committedTimestamps: timestamps,
+        committedValidity: validity,
+        committedFilteredValues: prior,
+        committedFilteredTimestamps: priorTimestamp,
+        committedFilteredValidity: priorValidity,
+        timestamp: 1_000,
+        capacity: 1,
+        writeIndex: 0,
+        correctionEnabled: 1,
+        device: device
+      )
+      return (candidate.output, candidate.outputValidity)
+    }
+
+    func corrections(
+      kinematic: (Float, UInt32),
+      support: (Float, UInt32)
+    ) throws -> [Float] {
+      let errors = try upload([kinematic.0, support.0], device: device)
+      let masks = try upload([kinematic.1, support.1], device: device)
+      let routes = try upload([
+        UInt32(0), 0, Float(0.1).bitPattern, Float(0.1).bitPattern,
+        1, 0, Float(0.1).bitPattern, Float(0.1).bitPattern,
+      ], device: device)
+      let ranges = try upload([
+        UInt32(0), 1, 0, 0,
+        1, 1, 0, 0,
+      ], device: device)
+      let output = try upload([Float(-1), -1], device: device)
+      let uniforms = try upload([UInt32(2), 2, 1, 2], device: device)
+      let command = try XCTUnwrap(queue.makeCommandBuffer())
+      let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+      encoder.setComputePipelineState(routePipeline)
+      for (index, buffer) in [
+        errors, masks, routes, ranges, output, uniforms,
+      ].enumerated() {
+        encoder.setBuffer(buffer, offset: 0, index: index)
+      }
+      encoder.dispatchThreads(
+        MTLSize(width: 2, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 2, height: 1, depth: 1)
+      )
+      encoder.endEncoding()
+      command.commit()
+      command.waitUntilCompleted()
+      XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+      return Array(UnsafeBufferPointer(
+        start: output.contents().assumingMemoryBound(to: Float.self),
+        count: 2
+      ))
+    }
+
+    let missingKinematic = try source(0)
+    let validSupport = try source(1)
+    XCTAssertEqual(missingKinematic.1, 0)
+    XCTAssertEqual(validSupport.1, 1)
+    XCTAssertEqual(
+      try corrections(kinematic: missingKinematic, support: validSupport),
+      [0, 0],
+      "valid support must not cause partial actuation without kinematic evidence"
+    )
+    XCTAssertEqual(prior.contents().load(as: Float.self), 0,
+      "the rejected shadow must not alter committed filter history")
+    let validKinematic = try source(1)
+    let corrected = try corrections(
+      kinematic: validKinematic,
+      support: validSupport
+    )
+    XCTAssertGreaterThan(corrected[0], 0)
+    XCTAssertGreaterThan(corrected[1], 0)
+    XCTAssertEqual(corrected[0].bitPattern, corrected[1].bitPattern)
   }
 }

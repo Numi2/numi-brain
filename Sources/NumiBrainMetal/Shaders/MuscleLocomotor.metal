@@ -177,6 +177,9 @@ kernel void nb_muscle_balance_history(
   shadow_values[write_index] = observation_valid ? observed : 0.0f;
   shadow_timestamps[write_index] = uniforms.sample_timestamp_microseconds;
   shadow_validity[write_index] = observation_valid ? 1u : 0u;
+  // A valid delayed sample cannot authorize actuation when this root's
+  // physical receptor is absent. Keep the invalid shadow for accepted roots.
+  if (!observation_valid) return;
 
   const auto config = source_config[gid];
   if (uniforms.sample_timestamp_microseconds
@@ -222,8 +225,10 @@ kernel void nb_muscle_balance_history(
   }
 }
 
-// Routes source errors through a canonical per-muscle sparse range. Each route
-// is independently bounded and the final correction cannot exceed 0.5.
+// Routes source errors through a canonical per-muscle sparse range. All
+// declared sources are routed by admission, so one missing physical source
+// holds the prepared baseline for every muscle at this root. Each route is
+// independently bounded and the final correction cannot exceed 0.5.
 kernel void nb_muscle_balance_routes(
   device const float *source_errors [[buffer(0)]],
   device const uint *source_validity [[buffer(1)]],
@@ -236,6 +241,16 @@ kernel void nb_muscle_balance_routes(
   if (uniforms.z == 0u) {
     corrections[gid] = 0.0f;
     return;
+  }
+  if (uniforms.x == 0u || uniforms.x > 64u) {
+    corrections[gid] = 0.0f;
+    return;
+  }
+  for (uint source = 0u; source < uniforms.x; ++source) {
+    if (source_validity[source] == 0u || !isfinite(source_errors[source])) {
+      corrections[gid] = 0.0f;
+      return;
+    }
   }
   const auto range = ranges[gid];
   if (range.route_start > uniforms.w

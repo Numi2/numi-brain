@@ -220,6 +220,21 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
         locomotorProgram: locomotor
       )
     )
+    let otherOrientation = try XCTUnwrap(
+      template.sensoryProfile.bodyReceptorBindings.first {
+        $0.signal == .orientation && $0.component == 1
+      }
+    )
+    XCTAssertThrowsError(
+      try program(sources: [
+        source,
+        MuscleBalanceFeedbackSource(
+          identifier: 2,
+          bodyReceptorBindingIdentifier: otherOrientation.identifier,
+          referenceValue: 0
+        ),
+      ]).validate(template: template, locomotorProgram: locomotor)
+    )
     XCTAssertThrowsError(
       try program(
         routes: [

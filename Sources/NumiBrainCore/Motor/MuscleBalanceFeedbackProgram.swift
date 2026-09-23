@@ -210,6 +210,7 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     let supportSignals: Set<BodyReceptorSignal> = [.support, .localForce]
     let muscleIdentifiers = Set(locomotorProgram.channels.map(\.muscleIdentifier))
     var routeKeys = Set<UInt64>()
+    var routedSourceIdentifiers = Set<UInt32>()
     var maximumCorrectionByMuscle: [UInt32: Float] = [:]
     var routedSignals = Set<BodyReceptorSignal>()
     for route in routes {
@@ -229,13 +230,15 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
         )
       }
       maximumCorrectionByMuscle[route.muscleIdentifier] = cumulativeMaximum
+      routedSourceIdentifiers.insert(route.sourceIdentifier)
       routedSignals.insert(binding.signal)
     }
-    guard !routedSignals.isDisjoint(with: kinematicSignals),
+    guard routedSourceIdentifiers == Set(sourceIdentifiers),
+      !routedSignals.isDisjoint(with: kinematicSignals),
       mode != .supportAware || !routedSignals.isDisjoint(with: supportSignals)
     else {
       throw BrainRuntimeError.invalidDescriptor(
-        "support-aware balance requires routed causal kinematic and support/load evidence"
+        "balance feedback requires every declared source to be routed and causal kinematic evidence; support-aware feedback also requires routed support/load evidence"
       )
     }
   }

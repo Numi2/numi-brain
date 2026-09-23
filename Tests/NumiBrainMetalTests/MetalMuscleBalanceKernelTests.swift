@@ -137,13 +137,14 @@ final class MetalMuscleBalanceKernelTests: XCTestCase {
     XCTAssertEqual(nominal[2], 0, accuracy: 1e-6)
 
     let noVestibular = try evaluate(vestibularMask: 0)
-    XCTAssertEqual(noVestibular[0], 0.2, accuracy: 1e-6)
+    XCTAssertEqual(noVestibular[0], 0, accuracy: 1e-6)
     XCTAssertEqual(noVestibular[1], 0, accuracy: 1e-6)
     XCTAssertEqual(noVestibular[2], 0, accuracy: 1e-6)
 
+    XCTAssertEqual(try evaluate(touchMask: 0), [0, 0, 0])
     XCTAssertEqual(try evaluate(feedbackEnabled: 0), [0, 0, 0])
-    XCTAssertEqual(try evaluate(vestibularRaw: .nan), [0.2, 0, 0])
-    XCTAssertEqual(try evaluate(touchRaw: .infinity), [0.1, -0.4, 0])
+    XCTAssertEqual(try evaluate(vestibularRaw: .nan), [0, 0, 0])
+    XCTAssertEqual(try evaluate(touchRaw: .infinity), [0, 0, 0])
   }
 
   func testBalancedLocomotorPreservesBaselineAndProtectiveBounds() throws {
