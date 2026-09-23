@@ -150,6 +150,34 @@ final class NumanXFullBodyBalanceTransportTests: XCTestCase {
         locomotorProgram: locomotor
       )
     )
+
+    func withRoutes(_ routes: [MuscleBalanceFeedbackRoute])
+      -> MuscleBalanceFeedbackProgram {
+      MuscleBalanceFeedbackProgram(
+        locomotorProgramFingerprint: feedback.locomotorProgramFingerprint,
+        modelSourceFingerprint: feedback.modelSourceFingerprint,
+        sensoryProfileFingerprint: feedback.sensoryProfileFingerprint,
+        calibrationArtifactSHA256: feedback.calibrationArtifactSHA256,
+        mode: .supportAware,
+        updatePeriodMicroseconds: feedback.updatePeriodMicroseconds,
+        initializationDurationMicroseconds:
+          feedback.initializationDurationMicroseconds,
+        sources: feedback.sources,
+        routes: routes
+      )
+    }
+    XCTAssertThrowsError(
+      try withRoutes([feedback.routes[0]]).validate(
+        template: template,
+        locomotorProgram: locomotor
+      )
+    )
+    XCTAssertThrowsError(
+      try withRoutes([feedback.routes[1]]).validate(
+        template: template,
+        locomotorProgram: locomotor
+      )
+    )
   }
 
   func testSupportEndpointValidationFailsClosed() throws {

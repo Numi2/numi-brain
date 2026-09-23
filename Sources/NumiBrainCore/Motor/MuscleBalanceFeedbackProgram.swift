@@ -208,24 +208,16 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
       .vestibularStability,
     ]
     let supportSignals: Set<BodyReceptorSignal> = [.support, .localForce]
-    let resolvedSignals = Set(resolvedBindings.values.map(\.signal))
-    guard !resolvedSignals.isDisjoint(with: kinematicSignals),
-      mode != .supportAware || !resolvedSignals.isDisjoint(with: supportSignals)
-    else {
-      throw BrainRuntimeError.invalidDescriptor(
-        "support-aware balance requires causal kinematic and support/load evidence"
-      )
-    }
-
     let muscleIdentifiers = Set(locomotorProgram.channels.map(\.muscleIdentifier))
     var routeKeys = Set<UInt64>()
     var maximumCorrectionByMuscle: [UInt32: Float] = [:]
+    var routedSignals = Set<BodyReceptorSignal>()
     for route in routes {
       let key = UInt64(route.sourceIdentifier) << 32 | UInt64(route.muscleIdentifier)
       let cumulativeMaximum =
         maximumCorrectionByMuscle[route.muscleIdentifier, default: 0]
         + route.maximumCorrection
-      guard resolvedBindings[route.sourceIdentifier] != nil,
+      guard let binding = resolvedBindings[route.sourceIdentifier],
         muscleIdentifiers.contains(route.muscleIdentifier),
         route.gain.isFinite, route.gain != 0, abs(route.gain) <= 10,
         route.maximumCorrection.isFinite, route.maximumCorrection > 0,
@@ -237,6 +229,14 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
         )
       }
       maximumCorrectionByMuscle[route.muscleIdentifier] = cumulativeMaximum
+      routedSignals.insert(binding.signal)
+    }
+    guard !routedSignals.isDisjoint(with: kinematicSignals),
+      mode != .supportAware || !routedSignals.isDisjoint(with: supportSignals)
+    else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "support-aware balance requires routed causal kinematic and support/load evidence"
+      )
     }
   }
 
