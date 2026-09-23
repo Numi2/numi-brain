@@ -7,7 +7,13 @@ import NumiBrainCore
 // The native Human owner supplies the exact prepared source, owns every command
 // buffer, and publishes physical state. This bridge owns only neural state.
 @available(macOS 26.0, *)
-private struct StandingSource: Decodable {
+struct StandingSource: Decodable {
+  struct SupportEndpoint: Decodable {
+    let sourceEndpointIdentifier: UInt64
+    let bodyIdentifier: UInt32
+    let sourceGeometryIndex: UInt32
+    let touchReceptorIndex: UInt32
+  }
   struct Joint: Decodable {
     let jointIdentifier: UInt32
     let parentBodyIdentifier: UInt32
@@ -45,9 +51,37 @@ private struct StandingSource: Decodable {
   let coordinates: [Coordinate]
   let attachments: [NumanXMuscleAttachment]
   let channels: [Channel]
+  let supportEndpoints: [SupportEndpoint]?
+
+  private enum CodingKeys: String, CodingKey {
+    case version, modelSourceFingerprint, bodyCount, headBodyIdentifier
+    case joints, coordinates, attachments, channels, supportEndpoints
+  }
+
+  init(from decoder: Decoder) throws {
+    let source = try decoder.container(keyedBy: CodingKeys.self)
+    version = try source.decode(UInt32.self, forKey: .version)
+    modelSourceFingerprint = try source.decode(UInt64.self, forKey: .modelSourceFingerprint)
+    bodyCount = try source.decode(UInt32.self, forKey: .bodyCount)
+    headBodyIdentifier = try source.decode(UInt32.self, forKey: .headBodyIdentifier)
+    joints = try source.decode([Joint].self, forKey: .joints)
+    coordinates = try source.decode([Coordinate].self, forKey: .coordinates)
+    attachments = try source.decode([NumanXMuscleAttachment].self, forKey: .attachments)
+    channels = try source.decode([Channel].self, forKey: .channels)
+    // An absent field is the legacy no-support source. A present field must
+    // decode as a complete array; null and partial records are invalid.
+    supportEndpoints = source.contains(.supportEndpoints)
+      ? try source.decode([SupportEndpoint].self, forKey: .supportEndpoints) : nil
+  }
 
   func compile(latencyMicroseconds: UInt32) throws -> CompiledSpeciesTemplate {
-    guard version == 1, modelSourceFingerprint != 0,
+    // Version 2 is the source-bound support contract. A legacy Brain binary
+    // only admits version 1, so it cannot silently ignore the new endpoints.
+    guard (version == 1 && supportEndpoints == nil)
+      || (version == 2 && supportEndpoints != nil) else {
+      throw BrainRuntimeError.invalidDescriptor("standing source version and support contract differ")
+    }
+    guard modelSourceFingerprint != 0,
       bodyCount == 157, headBodyIdentifier < bodyCount,
       channels.count == 416, attachments.count == 416,
       coordinates.count == 122 else {
@@ -88,8 +122,31 @@ private struct StandingSource: Decodable {
       muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog(
         bodyCount: bodyCount, attachments: attachments),
       headBodyIdentifier: headBodyIdentifier)
-    return try NumanXFullBodyTransportTemplate.compile(
-      latencyMicroseconds: latencyMicroseconds, anatomy: anatomy)
+    guard let supportEndpoints else {
+      return try NumanXFullBodyTransportTemplate.compile(
+        latencyMicroseconds: latencyMicroseconds, anatomy: anatomy)
+    }
+    let receptorIndices = Set(supportEndpoints.map(\.touchReceptorIndex))
+    let sourceIdentifiers = Set(supportEndpoints.map(\.sourceEndpointIdentifier))
+    guard supportEndpoints.count == 10,
+      receptorIndices == Set(UInt32(0)..<10), sourceIdentifiers.count == 10,
+      supportEndpoints.allSatisfy({ endpoint in
+        endpoint.bodyIdentifier < bodyCount &&
+        endpoint.sourceGeometryIndex != UInt32.max &&
+        endpoint.sourceEndpointIdentifier != 0 &&
+        endpoint.sourceEndpointIdentifier ==
+          (UInt64(endpoint.bodyIdentifier) << 32 | UInt64(endpoint.sourceGeometryIndex))
+      }) else {
+      throw BrainRuntimeError.invalidDescriptor("standing support source mapping is invalid")
+    }
+    return try NumanXFullBodyTransportTemplate.compileWithSupportReceptors(
+      latencyMicroseconds: latencyMicroseconds, anatomy: anatomy,
+      supportEndpoints: supportEndpoints.map { endpoint in
+        NumanXFullBodySupportEndpoint(
+          sourceEndpointIdentifier: endpoint.sourceEndpointIdentifier,
+          bodyIdentifier: endpoint.bodyIdentifier,
+          touchReceptorIndex: endpoint.touchReceptorIndex)
+      })
   }
 
   func baseline(template: CompiledSpeciesTemplate, sourceHash: String,
