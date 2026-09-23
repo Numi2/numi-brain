@@ -116,4 +116,60 @@ final class MetalMuscleLocomotorKernelTests: XCTestCase {
       velocityGain: 0.02, enabled: 0, validity: 0), 0,
       "tonic recruitment cannot substitute for missing physical spindle evidence")
   }
+
+  func testJointPathShaderUsesAllDeliveredRowsAndFailsClosedOnInvalidEvidence() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let pipeline = try device.makeComputePipelineState(function: XCTUnwrap(
+      library.makeFunction(name: "nb_muscle_locomotor_joint_path")))
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    func upload<T>(_ values: [T]) throws -> any MTLBuffer {
+      try XCTUnwrap(values.withUnsafeBytes {
+        device.makeBuffer(bytes: $0.baseAddress!, length: $0.count,
+          options: .storageModeShared)
+      })
+    }
+    let channel: [UInt32] = [0, 1, 0, 3] +
+      [Float(0.25), 0.1, 0, 0, 0, 0, 1, 0].map(\.bitPattern)
+    var jointValues = [Float](repeating: 0, count: 128 * 7)
+    jointValues[6 * 7] = 1.01
+    jointValues[6 * 7 + 1] = 0.02
+    var reference = [Float](repeating: 0, count: 122)
+    reference[0] = 1
+    var jacobian = [Float](repeating: 0, count: 122)
+    jacobian[0] = 0.1
+    func evaluate(spindleValid: UInt32 = 3, invalidJoint: Int? = nil,
+      nonfiniteJoint: Bool = false) throws -> Float {
+      var values = jointValues
+      if nonfiniteJoint { values[6 * 7] = .nan }
+      var valid = [UInt32](repeating: 3, count: 128)
+      if let invalidJoint { valid[invalidJoint] = 0 }
+      let inputs: [any MTLBuffer] = [
+        try upload([Float(0.25), 0]), try upload([spindleValid]),
+        try upload(values), try upload(valid), try upload(channel),
+        try upload([Float(-1)]),
+        try upload([UInt32(1), Float(10).bitPattern,
+          Float(1).bitPattern, Float(0.2).bitPattern]),
+        try upload(reference), try upload([Float(0.25)]),
+        try upload(jacobian),
+      ]
+      let command = try XCTUnwrap(queue.makeCommandBuffer())
+      let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+      encoder.setComputePipelineState(pipeline)
+      for (index, buffer) in inputs.enumerated() {
+        encoder.setBuffer(buffer, offset: 0, index: index)
+      }
+      encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+      encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+      XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+      return inputs[5].contents().assumingMemoryBound(to: Float.self).pointee
+    }
+    XCTAssertEqual(tanh(try evaluate()), 0.148, accuracy: 1e-5)
+    XCTAssertTrue(try evaluate(spindleValid: 0).isNaN)
+    XCTAssertTrue(try evaluate(invalidJoint: 6).isNaN)
+    XCTAssertTrue(try evaluate(invalidJoint: 127).isNaN,
+      "even a zero-Jacobian joint requires physically delivered validity")
+    XCTAssertTrue(try evaluate(nonfiniteJoint: true).isNaN)
+  }
 }

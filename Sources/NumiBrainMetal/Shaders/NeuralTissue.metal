@@ -3605,9 +3605,12 @@ kernel void map_protective_motor_output(
         }
     }
     bool hasLocalizedSourceInhibition = false;
+    bool hasInvalidDescendingSource = false;
     float outputMinimum = actuatorDescriptors[0].output_minimum;
     float outputMaximum = actuatorDescriptors[0].output_maximum;
     for (uint index = 0u; index < uniforms->muscle_count; ++index) {
+        hasInvalidDescendingSource = hasInvalidDescendingSource ||
+            !isfinite(descendingSomaticExcitations[index]);
         const NBMotorChannelDescriptorABI channel = channels[index];
         const NBSomaticActuatorDescriptorABI actuator =
             actuatorDescriptors[index];
@@ -3769,7 +3772,10 @@ kernel void map_protective_motor_output(
     }
     NBMotorOutputHeaderABI header;
     header.format_version = NBMotorOutputVersion;
-    header.flags = NBMotorOutputFlagValid;
+    // A controller's invalid physical receptor must invalidate the complete
+    // motor candidate even if later clamp/protective arithmetic is finite.
+    // The borrowed Human writer turns an invalid header into native rejection.
+    header.flags = hasInvalidDescendingSource ? 0u : NBMotorOutputFlagValid;
     if ((command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u) {
         header.flags |= NBMotorOutputFlagEmergencyStop;
     }

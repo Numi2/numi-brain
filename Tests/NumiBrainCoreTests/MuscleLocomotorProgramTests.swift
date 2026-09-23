@@ -113,4 +113,84 @@ final class MuscleLocomotorProgramTests: XCTestCase {
     XCTAssertThrowsError(try program(onset: 102_000, period: 1_000_000)
       .validate(template: template))
   }
+
+  func testJointPathV4IsDistinctAndRequiresExactTonicOnlyProgram() throws {
+    let template = try fixture()
+    let channels = (UInt32(0)..<416).map {
+      MuscleLocomotorChannel(muscleIdentifier: $0, referenceLengthMeters: 0.25,
+        tonicExcitation: 0.03, lengthGain: 0, velocityGainSeconds: 0,
+        maximumExcitation: 1)
+    }
+    let feedback = MuscleJointPathFeedbackProgram(lengthGain: 10,
+      velocityGainSeconds: 1, maximumCorrection: 0.2)
+    func program(_ override: [MuscleLocomotorChannel]? = nil,
+      joint: Bool = true,
+      invalidFeedback: MuscleJointPathFeedbackProgram? = nil,
+      onset: UInt64? = nil) -> MuscleLocomotorProgram {
+      MuscleLocomotorProgram(modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "a", count: 64),
+        channels: override ?? channels, spindleFeedbackOnsetMicroseconds: onset,
+        jointPathFeedback: joint ? (invalidFeedback ?? feedback) : nil)
+    }
+    let legacy = program(joint: false)
+    let joint = program()
+    try legacy.validate(template: template)
+    try joint.validate(template: template)
+    XCTAssertEqual(legacy.version, 1)
+    XCTAssertEqual(joint.version, 4)
+    XCTAssertEqual(joint.baselineFingerprint, legacy.fingerprint)
+    XCTAssertNotEqual(joint.fingerprint, legacy.fingerprint)
+    XCTAssertEqual(joint, try JSONDecoder().decode(MuscleLocomotorProgram.self,
+      from: JSONEncoder().encode(joint)))
+    let legacyObject = try XCTUnwrap(JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(legacy)) as? [String: Any])
+    XCTAssertNil(legacyObject["jointPathFeedback"])
+    XCTAssertThrowsError(try program(onset: 102_000).validate(template: template))
+    for correction: Float in [0, 0.1, .nan] {
+      XCTAssertThrowsError(try program(invalidFeedback: .init(lengthGain: 10,
+        velocityGainSeconds: 1, maximumCorrection: correction)).validate(template: template))
+    }
+    var activeSpindle = channels
+    activeSpindle[0] = .init(muscleIdentifier: 0,
+      referenceLengthMeters: 0.25, tonicExcitation: 0.03,
+      lengthGain: 1, velocityGainSeconds: 0.02, maximumExcitation: 1)
+    XCTAssertThrowsError(try program(activeSpindle).validate(template: template))
+    var limited = channels
+    limited[0] = .init(muscleIdentifier: 0,
+      referenceLengthMeters: 0.25, tonicExcitation: 0.03,
+      lengthGain: 0, velocityGainSeconds: 0, maximumExcitation: 0.95)
+    XCTAssertThrowsError(try program(limited).validate(template: template))
+  }
+
+  func testJointPathCalibrationRejectsPartialAndNonfiniteSourceValues() throws {
+    func calibration(reference: [UInt32], optimal: [UInt32],
+      jacobian: [UInt32]) -> MuscleJointPathCalibration {
+      .init(referencePositionBitsByDof: reference,
+        optimalFiberLengthBitsByMuscle: optimal,
+        lengthJacobianBitsByMuscleDof: jacobian)
+    }
+    let reference = [UInt32](repeating: Float(0).bitPattern, count: 122)
+    let optimal = [UInt32](repeating: Float(0.25).bitPattern, count: 416)
+    let jacobian = [UInt32](repeating: Float(0).bitPattern, count: 416 * 122)
+    let valid = calibration(reference: reference, optimal: optimal, jacobian: jacobian)
+    XCTAssertNoThrow(try valid.validate())
+    XCTAssertEqual(valid, try JSONDecoder().decode(MuscleJointPathCalibration.self,
+      from: JSONEncoder().encode(valid)))
+    XCTAssertThrowsError(try calibration(reference: Array(reference.dropLast()),
+      optimal: optimal, jacobian: jacobian).validate())
+    XCTAssertThrowsError(try calibration(reference: reference,
+      optimal: Array(optimal.dropLast()), jacobian: jacobian).validate())
+    XCTAssertThrowsError(try calibration(reference: reference,
+      optimal: optimal, jacobian: Array(jacobian.dropLast())).validate())
+    var invalid = reference; invalid[0] = Float.nan.bitPattern
+    XCTAssertThrowsError(try calibration(reference: invalid,
+      optimal: optimal, jacobian: jacobian).validate())
+    var zeroOptimal = optimal; zeroOptimal[0] = Float(0).bitPattern
+    XCTAssertThrowsError(try calibration(reference: reference,
+      optimal: zeroOptimal, jacobian: jacobian).validate())
+    var infinite = jacobian; infinite[0] = Float.infinity.bitPattern
+    XCTAssertThrowsError(try calibration(reference: reference,
+      optimal: optimal, jacobian: infinite).validate())
+  }
 }

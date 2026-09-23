@@ -52,10 +52,12 @@ struct StandingSource: Decodable {
   let attachments: [NumanXMuscleAttachment]
   let channels: [Channel]
   let supportEndpoints: [SupportEndpoint]?
+  let jointPathCalibration: MuscleJointPathCalibration?
 
   private enum CodingKeys: String, CodingKey {
     case version, modelSourceFingerprint, bodyCount, headBodyIdentifier
     case joints, coordinates, attachments, channels, supportEndpoints
+    case jointPathCalibration
   }
 
   init(from decoder: Decoder) throws {
@@ -72,14 +74,23 @@ struct StandingSource: Decodable {
     // decode as a complete array; null and partial records are invalid.
     supportEndpoints = source.contains(.supportEndpoints)
       ? try source.decode([SupportEndpoint].self, forKey: .supportEndpoints) : nil
+    // A present calibration must decode completely. It is owned by the exact
+    // prepared native source and is never filled from a program-side fixture.
+    jointPathCalibration = source.contains(.jointPathCalibration)
+      ? try source.decode(MuscleJointPathCalibration.self,
+        forKey: .jointPathCalibration) : nil
   }
 
   func compile(latencyMicroseconds: UInt32) throws -> CompiledSpeciesTemplate {
-    // Version 2 is the source-bound support contract. A legacy Brain binary
-    // only admits version 1, so it cannot silently ignore the new endpoints.
-    guard (version == 1 && supportEndpoints == nil)
-      || (version == 2 && supportEndpoints != nil) else {
+    // Version 3 adds an authenticated native reference-path calibration.
+    // The unchanged version 1/2 source remains valid only without that field.
+    guard (version == 1 && supportEndpoints == nil && jointPathCalibration == nil)
+      || (version == 2 && supportEndpoints != nil && jointPathCalibration == nil)
+      || (version == 3 && supportEndpoints != nil && jointPathCalibration != nil) else {
       throw BrainRuntimeError.invalidDescriptor("standing source version and support contract differ")
+    }
+    if let jointPathCalibration {
+      try jointPathCalibration.validate()
     }
     guard modelSourceFingerprint != 0,
       bodyCount == 157, headBodyIdentifier < bodyCount,
@@ -116,6 +127,14 @@ struct StandingSource: Decodable {
       channels.enumerated().allSatisfy({ $0.offset == Int($0.element.muscleIdentifier) }),
       attachments.enumerated().allSatisfy({ $0.offset == Int($0.element.muscleIdentifier) })
     else { throw BrainRuntimeError.invalidDescriptor("standing source index order is invalid") }
+    if version == 3 {
+      guard Set(coordinates.map(\.qIndex)).count == coordinates.count,
+        coordinates.allSatisfy({ $0.qIndex >= 7 && $0.qIndex < 129 })
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "standing joint-path source q indices are not unique native coordinates")
+      }
+    }
     let anatomy = try NumanXFullBodyAnatomy(
       jointTopologyCatalog: NumanXJointTopologyCatalog(
         numanXModelFingerprint: modelSourceFingerprint, bodyCount: bodyCount, joints: topology),
@@ -196,6 +215,12 @@ private final class StandingBridge {
       program = source.baseline(template: template, sourceHash: sourceHash,
         epochMicroseconds: epochMicroseconds)
     }
+    guard (program.version == 4 && source.version == 3 &&
+        source.jointPathCalibration != nil)
+      || (program.version != 4 && source.version != 3) else {
+      throw BrainRuntimeError.invalidDescriptor(
+        "standing joint-path program requires the version 3 prepared physical source")
+    }
     try program.validate(template: template)
     self.timestepMicroseconds = timestepMicroseconds
     self.epochMicroseconds = epochMicroseconds
@@ -210,7 +235,9 @@ private final class StandingBridge {
       randomContext: TissueRandomContext(seed: seed,
         environmentIdentifier: 1, episodeIdentifier: 1),
       schedulerEnvironmentIdentifier: 1, maximumEncodedSubsteps: 1,
-      muscleLocomotor: program)
+      muscleLocomotor: program,
+      jointPathCalibration: program.version == 4
+        ? source.jointPathCalibration : nil)
     brain = try MetalNumiBrainRuntime.makeRuntime(configuration: configuration,
       publication: publication, device: device)
   }

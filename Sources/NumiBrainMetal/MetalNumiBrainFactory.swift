@@ -9,6 +9,7 @@ import NumiBrainCore
 @frozen
 public struct MetalNumiBrainConfiguration: Sendable {
   public let muscleLocomotor: MuscleLocomotorProgram?
+  public let jointPathCalibration: MuscleJointPathCalibration?
   public let connectome: MetalConnectomeConfiguration?
   public let initialTissueState: TissueGrid
   public let tissueParameters: TissueParameters
@@ -41,10 +42,12 @@ public struct MetalNumiBrainConfiguration: Sendable {
     maximumEncodedSubsteps: Int = 4_096,
     connectome: MetalConnectomeConfiguration? = nil,
     muscleLocomotor: MuscleLocomotorProgram? = nil,
+    jointPathCalibration: MuscleJointPathCalibration? = nil,
     affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) {
     self.connectome = connectome
     self.muscleLocomotor = muscleLocomotor
+    self.jointPathCalibration = jointPathCalibration
     self.initialTissueState = initialTissueState
     self.tissueParameters = tissueParameters
     self.tissueStimulus = tissueStimulus
@@ -136,6 +139,11 @@ extension MetalNumiBrainRuntime {
     guard configuration.muscleLocomotor == nil || (configuration.connectome == nil && foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
       throw TissueError.transaction("research locomotor control cannot inherit policy qualification or compete with another controller")
     }
+    guard (configuration.muscleLocomotor?.version == 4)
+      == (configuration.jointPathCalibration != nil) else {
+      throw TissueError.transaction(
+        "joint-path calibration must belong to an explicit version 4 locomotor program")
+    }
     guard configuration.connectome == nil || (foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
       throw ConnectomeError.invalid("a modified connectome controller cannot inherit an existing policy qualification")
     }
@@ -165,6 +173,7 @@ extension MetalNumiBrainRuntime {
         foundationPolicyArchitecture: foundationPolicyArchitecture,
         connectome: connectomeSeed,
         muscleLocomotor: configuration.muscleLocomotor,
+        jointPathCalibration: configuration.jointPathCalibration,
         affectiveModelConfiguration: configuration.affectiveModelConfiguration
       )
     }

@@ -11,10 +11,13 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
   private struct Fixture {
     let device: any MTLDevice
     let template: CompiledSpeciesTemplate
+    let program: MuscleLocomotorProgram
     let brain: MetalNumiBrainRuntime
   }
 
-  private func makeFixture() throws -> Fixture {
+  private func makeFixture(jointPath: Bool = false,
+    delayedSpindle: Bool = false,
+    firstJacobian: Float = 0) throws -> Fixture {
     let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
     let zero = try NumanXBodyLocalPoint(x: 0, y: 0, z: 0)
     let joints = try (UInt32(0)..<122).map { index in
@@ -41,8 +44,18 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
       calibrationArtifactSHA256: String(repeating: "a", count: 64),
       channels: (UInt32(0)..<416).map {
         .init(muscleIdentifier: $0, referenceLengthMeters: 0.25,
-          tonicExcitation: 0.05, lengthGain: 0.3, velocityGainSeconds: 0.02)
-      })
+          tonicExcitation: 0.05, lengthGain: jointPath ? 0 : 0.3,
+          velocityGainSeconds: jointPath ? 0 : 0.02,
+          maximumExcitation: jointPath ? 1 : 0.95)
+      }, spindleFeedbackOnsetMicroseconds: delayedSpindle ? 102_000 : nil,
+      jointPathFeedback: jointPath ? .init(lengthGain: 10,
+        velocityGainSeconds: 1, maximumCorrection: 0.2) : nil)
+    let jointCalibration: MuscleJointPathCalibration? = jointPath ? .init(
+      referencePositionBitsByDof: [UInt32](repeating: Float(0).bitPattern, count: 122),
+      optimalFiberLengthBitsByMuscle: [UInt32](repeating: Float(0.25).bitPattern, count: 416),
+      lengthJacobianBitsByMuscleDof: [firstJacobian.bitPattern]
+        + [UInt32](repeating: Float(0).bitPattern,
+          count: 416 * 122 - 1)) : nil
     let parameters = TissueParameters.corticalSheetV0
     let publication = try BrainParameterPublication.developmentalSeedV1(
       species: template.species, tissueParameters: parameters)
@@ -50,14 +63,16 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
       initialTissueState: try CPUTissueDynamics.makeRestingGrid(width: 8, height: 8, parameters: parameters),
       tissueParameters: parameters, tissueStimulus: .none, compiledSpeciesTemplate: template,
       randomContext: TissueRandomContext(seed: 0x4e55_4d49, environmentIdentifier: 7, episodeIdentifier: 23),
-      schedulerEnvironmentIdentifier: 7, maximumEncodedSubsteps: 1, muscleLocomotor: program)
-    return try Fixture(device: device, template: template,
+      schedulerEnvironmentIdentifier: 7, maximumEncodedSubsteps: 1,
+      muscleLocomotor: program, jointPathCalibration: jointCalibration)
+    return try Fixture(device: device, template: template, program: program,
       brain: MetalNumiBrainRuntime.makeRuntime(configuration: configuration,
         publication: publication, device: device))
   }
 
   private func sensors(_ fixture: Fixture, timestamp: BrainTimestamp,
-    critical: Bool = false) throws -> [MetalRawSensorBufferLease] {
+    critical: Bool = false, jointPosition: Float? = nil,
+    jointVelocity: Float? = nil) throws -> [MetalRawSensorBufferLease] {
     try fixture.template.species.senses.filter(\.enabled).map { sense in
       let count = Int(sense.receptorCount * sense.observationDimension)
       let buffer = try XCTUnwrap(fixture.device.makeBuffer(length: count * 4, options: .storageModeShared))
@@ -70,10 +85,17 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
         }
       }
       if sense.modality == .interoception { values[0] = critical ? -0.5 : 0.5 }
+      if sense.modality == .kinesthesia, let jointPosition, let jointVelocity {
+        values[6 * 7] = jointPosition
+        values[6 * 7 + 1] = jointVelocity
+      }
       let validity = try XCTUnwrap(fixture.device.makeBuffer(
         length: Int(sense.receptorCount) * 4, options: .storageModeShared))
       validity.contents().assumingMemoryBound(to: UInt32.self).initialize(
         repeating: UInt32.max, count: Int(sense.receptorCount))
+      if sense.modality == .kinesthesia && jointPosition != nil {
+        validity.contents().assumingMemoryBound(to: UInt32.self)[6] = 3
+      }
       return try MetalRawSensorBufferLease(buffer: buffer, modality: sense.modality,
         receptorTimestamp: .init(microseconds: timestamp.rawValue - UInt64(sense.latencyMicroseconds)),
         receptorCount: sense.receptorCount, featureDimension: sense.observationDimension,
@@ -121,11 +143,14 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
 
   private func acceptBorrowed(_ fixture: Fixture,
     root: MetalNumiBrainRuntime.ControlTransaction,
-    motor: MetalNumiBrainRuntime.BorrowedMotorCommand) throws -> BrainJointCommitToken {
+    motor: MetalNumiBrainRuntime.BorrowedMotorCommand,
+    jointPosition: Float? = nil,
+    jointVelocity: Float? = nil) throws -> BrainJointCommitToken {
     let accepted = try AcceptedPhysicsStateToken(transaction: root.token, substep: motor.substep,
       physicsStateFingerprint: 0x8811,
       physicsGeneration: root.token.basePhysicsGeneration + 1)
-    let input = try sensors(fixture, timestamp: root.token.targetTimestamp)
+    let input = try sensors(fixture, timestamp: root.token.targetTimestamp,
+      jointPosition: jointPosition, jointVelocity: jointVelocity)
     let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
     let command = try XCTUnwrap(queue.makeCommandBuffer())
     let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
@@ -359,5 +384,133 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
         physicalCheckpointFingerprint: 99), freshState,
         "checkpointing after an abort changed the next accepted root")
     }
+  }
+
+  func testExactJointPacketBootstrapsOnlyV4AcceptedBelief() throws {
+    let position: Float = 0.125
+    let velocity: Float = -0.25
+    func checkpoint(_ fixture: Fixture) throws -> MetalNumiBrainCheckpoint {
+      let root = try begin(fixture)
+      let motor = try borrowedMotor(fixture, root: root)
+      _ = try acceptBorrowed(fixture, root: root, motor: motor,
+        jointPosition: position, jointVelocity: velocity)
+      return try fixture.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99)
+    }
+    func evidence(_ fixture: Fixture, _ saved: MetalNumiBrainCheckpoint)
+      throws -> (observations: [UInt32], validity: [UInt32], joint: [UInt32]) {
+      let species = fixture.template.species
+      let layout = try MetalAgentStateLayout(species: species,
+        regionalProgram: species.regionalProgram())
+      XCTAssertEqual(saved.cognitiveState.hotLayoutFingerprint, layout.fingerprint)
+      let priorScalars = species.senses.filter {
+        $0.enabled && $0.modality.rawValue < SensoryModality.kinesthesia.rawValue
+      }.reduce(0) { $0 + Int($1.receptorCount * $1.observationDimension) }
+      let scalar = priorScalars + 6 * 7
+      let observations = layout.section(.sensoryObservations).byteOffset
+      let validity = layout.section(.sensoryValidity).byteOffset
+      let joint = layout.section(.jointBelief).byteOffset
+      let data = saved.cognitiveState.hotState
+      func words(_ start: Int, _ count: Int) -> [UInt32] {
+        data.withUnsafeBytes { bytes in
+          (0..<count).map {
+            UInt32(littleEndian: bytes.loadUnaligned(
+              fromByteOffset: start + $0 * 4, as: UInt32.self))
+          }
+        }
+      }
+      return (words(observations + scalar * 4, 7),
+        words(validity + scalar * 4, 7), words(joint, 32))
+    }
+
+    let v4 = try makeFixture(jointPath: true)
+    let v4State = try evidence(v4, checkpoint(v4))
+    XCTAssertEqual(v4State.observations[0], position.bitPattern)
+    XCTAssertEqual(v4State.observations[1], velocity.bitPattern)
+    XCTAssertTrue(v4State.validity[0...1].allSatisfy { $0 != 0 })
+    XCTAssertTrue(v4State.validity[2...6].allSatisfy { $0 == 0 })
+    XCTAssertEqual(v4State.joint[0], position.bitPattern)
+    XCTAssertEqual(v4State.joint[6], velocity.bitPattern)
+    XCTAssertEqual(v4State.joint[12], Float(0).bitPattern)
+    XCTAssertEqual(v4State.joint[18], Float(0).bitPattern)
+    XCTAssertEqual(v4State.joint[30], Float(1).bitPattern)
+    XCTAssertEqual(v4State.joint[31], Float(0).bitPattern)
+
+    let v3 = try makeFixture(delayedSpindle: true)
+    let v3State = try evidence(v3, checkpoint(v3))
+    XCTAssertNotEqual(v3State.observations[0], position.bitPattern)
+    XCTAssertGreaterThan(Float(bitPattern: v3State.joint[12]), 0.9)
+    XCTAssertLessThan(Float(bitPattern: v3State.joint[30]), 1)
+  }
+
+  func testV4CheckpointRejectsDifferentSourcePathCalibration() throws {
+    let source = try makeFixture(jointPath: true)
+    let changed = try makeFixture(jointPath: true, firstJacobian: 0.001)
+    let saved = try source.brain.saveCheckpoint(controlStepIdentifier: 0,
+      physicalCheckpointFingerprint: 99)
+    let changedSaved = try changed.brain.saveCheckpoint(controlStepIdentifier: 0,
+      physicalCheckpointFingerprint: 99)
+    XCTAssertNotEqual(saved.cognitiveState.muscleLocomotorFingerprint,
+      source.program.fingerprint)
+    XCTAssertNotEqual(saved.cognitiveState.muscleLocomotorFingerprint,
+      changedSaved.cognitiveState.muscleLocomotorFingerprint)
+    XCTAssertThrowsError(try changed.brain.loadCheckpoint(saved,
+      physicalCheckpointFingerprint: 99))
+    XCTAssertEqual(changed.brain.committedGeneration, 0)
+  }
+
+  func testInvalidJointPacketRejectsNativeWriteAndAcceptedRetryMatchesFresh() throws {
+    let retried = try makeFixture(jointPath: true)
+    let fresh = try makeFixture(jointPath: true)
+    let baseline = try retried.brain.saveCheckpoint(controlStepIdentifier: 0,
+      physicalCheckpointFingerprint: 99)
+    let rejected = try begin(retried)
+    let input = try sensors(retried, timestamp: rejected.token.committedTimestamp)
+    let joint = try XCTUnwrap(input.first(where: { $0.view.modality == .kinesthesia }))
+    let jointValidity = try XCTUnwrap(joint.validityBuffer)
+    jointValidity.contents().assumingMemoryBound(to: UInt32.self)[127] = 0
+    let states = try XCTUnwrap(retried.device.makeBuffer(length: 416 * 16,
+      options: .storageModeShared))
+    let physical = states.contents().assumingMemoryBound(to: SIMD4<Float>.self)
+    physical.initialize(repeating: SIMD4<Float>(0.75, 0.25, 0.3, 0.4), count: 416)
+    let queue = try XCTUnwrap(retried.device.makeCommandQueue())
+    let command = try XCTUnwrap(queue.makeCommandBuffer())
+    let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+    let candidate = try retried.brain.encodeBorrowedMotorCommand(rejected,
+      encoder: encoder, rawSensors: input)
+    try retried.brain.encodeBorrowedHumanExcitation(command: candidate,
+      encoder: encoder, destinationMuscleStates: states)
+    encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+    XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+    XCTAssertTrue((0..<416).allSatisfy { physical[$0].x.isNaN },
+      "invalid physical joint evidence must reach native rejection")
+    XCTAssertTrue((0..<416).allSatisfy {
+      physical[$0].y == 0.25 && physical[$0].z == 0.3 && physical[$0].w == 0.4
+    })
+    try retried.brain.abortBorrowedControl(rejected)
+    let afterAbort = try retried.brain.saveCheckpoint(controlStepIdentifier: 0,
+      physicalCheckpointFingerprint: 99)
+    XCTAssertEqual(afterAbort.cognitiveState, baseline.cognitiveState)
+    XCTAssertEqual(afterAbort.fastTissueState.committedHistoryOwnerMask,
+      baseline.fastTissueState.committedHistoryOwnerMask)
+
+    let retryRoot = try begin(retried)
+    let retry = try borrowedMotor(retried, root: retryRoot)
+    let retryExcitation = try read(retry.buffers.excitationBuffer, device: retried.device)
+    let retryHeader = try read(retry.buffers.headerBuffer, device: retried.device)
+    let retryReceipt = try acceptBorrowed(retried, root: retryRoot, motor: retry)
+    let retryCheckpoint = try retried.brain.saveCheckpoint(controlStepIdentifier: 1,
+      physicalCheckpointFingerprint: 99)
+
+    let freshRoot = try begin(fresh)
+    let expected = try borrowedMotor(fresh, root: freshRoot)
+    XCTAssertEqual(retryExcitation,
+      try read(expected.buffers.excitationBuffer, device: fresh.device))
+    XCTAssertEqual(retryHeader,
+      try read(expected.buffers.headerBuffer, device: fresh.device))
+    XCTAssertEqual(retryReceipt, try acceptBorrowed(fresh,
+      root: freshRoot, motor: expected))
+    XCTAssertEqual(retryCheckpoint, try fresh.brain.saveCheckpoint(
+      controlStepIdentifier: 1, physicalCheckpointFingerprint: 99))
   }
 }

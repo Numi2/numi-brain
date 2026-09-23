@@ -39,19 +39,25 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
   /// Standalone v3 only. Elapsed committed physical time before spindle gain
   /// begins; tonic recruitment and physical spindle validity remain active.
   public let spindleFeedbackOnsetMicroseconds: UInt64?
+  /// Standalone v4 only. Prepared, source-bound joint proprioception replaces
+  /// spindle correction while retaining the same 416 tonic muscle channels.
+  public let jointPathFeedback: MuscleJointPathFeedbackProgram?
 
   public init(modelSourceFingerprint: UInt64, sensoryProfileFingerprint: UInt64,
     calibrationArtifactSHA256: String, epochMicroseconds: UInt64 = 0,
     periodMicroseconds: UInt64 = 0, channels: [MuscleLocomotorChannel],
     balanceFeedback: MuscleBalanceFeedbackProgram? = nil,
-    spindleFeedbackOnsetMicroseconds: UInt64? = nil) {
-    version = spindleFeedbackOnsetMicroseconds != nil ? 3 : (balanceFeedback == nil ? 1 : 2)
+    spindleFeedbackOnsetMicroseconds: UInt64? = nil,
+    jointPathFeedback: MuscleJointPathFeedbackProgram? = nil) {
+    version = jointPathFeedback != nil ? 4 :
+      (spindleFeedbackOnsetMicroseconds != nil ? 3 : (balanceFeedback == nil ? 1 : 2))
     self.modelSourceFingerprint = modelSourceFingerprint
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
     self.calibrationArtifactSHA256 = calibrationArtifactSHA256
     self.epochMicroseconds = epochMicroseconds; self.periodMicroseconds = periodMicroseconds
     self.channels = channels; self.balanceFeedback = balanceFeedback
     self.spindleFeedbackOnsetMicroseconds = spindleFeedbackOnsetMicroseconds
+    self.jointPathFeedback = jointPathFeedback
   }
 
   /// Validates the source-bound baseline without recursively validating an
@@ -96,15 +102,37 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
   }
 
   public func validate(template: CompiledSpeciesTemplate) throws {
-    guard (version == 1 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds == nil)
-      || (version == 2 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil)
-      || (version == 3 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds != nil)
+    guard (version == 1 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds == nil
+        && jointPathFeedback == nil)
+      || (version == 2 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil
+        && jointPathFeedback == nil)
+      || (version == 3 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds != nil
+        && jointPathFeedback == nil)
+      || (version == 4 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds == nil
+        && jointPathFeedback != nil)
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "locomotor program version does not match its whole-body feedback layer"
       )
     }
     try validateBaseline(template: template)
+    if let jointPathFeedback {
+      try jointPathFeedback.validate()
+      guard periodMicroseconds == 0,
+        channels.allSatisfy({
+          $0.lengthGain == 0 && $0.velocityGainSeconds == 0 &&
+          $0.gaitSine == 0 && $0.gaitCosine == 0 && $0.maximumExcitation == 1
+        }),
+        let kinesthesia = template.species.senses.first(where: {
+          $0.enabled && $0.modality == .kinesthesia
+        }),
+        kinesthesia.receptorCount == 128, kinesthesia.observationDimension == 7,
+        kinesthesia.latencyMicroseconds > 0
+      else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "joint-path control requires exact physical kinesthesia and tonic-only 416-muscle channels")
+      }
+    }
     if let onset = spindleFeedbackOnsetMicroseconds {
       let latency = template.species.senses.first {
         $0.enabled && $0.modality == .proprioception
@@ -139,6 +167,25 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
 
   /// Canonical ordered bytes retain v1/v2 identity and bind the v3 onset.
   public var fingerprint: UInt64 {
+    if let jointPathFeedback {
+      var hash: UInt64 = 0xcbf29ce484222325
+      func bytes(_ values: [UInt8]) {
+        for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+      }
+      func integer(_ value: UInt64) {
+        bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+      }
+      // The exact accepted-kinesthesia posterior changes v4 checkpoint
+      // semantics. Do not restore a checkpoint produced by the earlier v4
+      // exploratory runtime into this one.
+      bytes(Array("NBMUSCLELOCOMOTOR4EXACTKIN1".utf8)); integer(UInt64(version))
+      integer(baselineFingerprint)
+      for value in [jointPathFeedback.lengthGain,
+        jointPathFeedback.velocityGainSeconds, jointPathFeedback.maximumCorrection] {
+        integer(UInt64(value.bitPattern))
+      }
+      return hash
+    }
     if let onset = spindleFeedbackOnsetMicroseconds {
       var hash: UInt64 = 0xcbf29ce484222325
       func bytes(_ values: [UInt8]) { for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 } }

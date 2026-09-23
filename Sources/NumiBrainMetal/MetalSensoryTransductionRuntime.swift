@@ -192,7 +192,8 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     arena: MetalAgentStateArena,
     species: SpeciesTemplate,
     profile: SensoryTransductionProfile,
-    sharedParameters: MetalSharedParameterBank
+    sharedParameters: MetalSharedParameterBank,
+    exactJointKinesthesia: Bool = false
   ) throws {
     guard MemoryLayout<SensoryUniforms>.stride == 112,
       MemoryLayout<SensoryDescriptorRecord>.stride == 64,
@@ -205,6 +206,15 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
     var observationOffset: UInt32 = 0
     var adaptationOffset: UInt32 = 0
     var descriptors: [SensoryDescriptorRecord] = []
+    if exactJointKinesthesia {
+      guard let kinesthesia = species.senses.first(where: {
+        $0.enabled && $0.modality == .kinesthesia
+      }), kinesthesia.receptorCount == 128,
+        kinesthesia.observationDimension == 7,
+        kinesthesia.noiseStandardDeviation == 0 else {
+        throw TissueError.metal("exact joint kinesthesia requires the authenticated 128-by-7 noiseless packet")
+      }
+    }
     let enabledTopologies = species.senses.filter(\.enabled).sorted {
       $0.modality.rawValue < $1.modality.rawValue
     }
@@ -230,7 +240,7 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
           outputScalarOffset: observationOffset,
           adaptationOffset: adaptationOffset,
           rawScalarCount: scalarCount,
-          flags: 1,
+          flags: 1 | (exactJointKinesthesia && topology.modality == .kinesthesia ? 2 : 0),
           latencyMicroseconds: UInt64(topology.latencyMicroseconds),
           adaptationTimeConstantSeconds:
             Float(topology.adaptationTimeConstantMicroseconds) * 0.000_001,

@@ -4408,7 +4408,11 @@ kernel void generate_motor_spinal_autonomic_state(
       0.0f,
       1.0f
     );
-    descending_baseline[gid] = baseline_excitation;
+    // A source-bound locomotor kernel may reject an invalid delivered receptor
+    // with a nonfinite logit. Preserve that failure through ordinary clamping
+    // so the borrowed Human writer can reject the entire physical candidate.
+    const bool invalid_locomotor_input = muscle_locomotor && !isfinite(motor_logit);
+    descending_baseline[gid] = invalid_locomotor_input ? NAN : baseline_excitation;
     spinal_state.final_excitation = clamp(
       baseline_excitation + fast_cerebellar_residual
         + spinal_state.cpg_output,
@@ -4416,7 +4420,7 @@ kernel void generate_motor_spinal_autonomic_state(
       1.0f
     );
     spinal[gid] = spinal_state;
-    somatic_output[gid] = spinal_state.final_excitation;
+    somatic_output[gid] = invalid_locomotor_input ? NAN : spinal_state.final_excitation;
   }
   if (gid < uniforms.synergy_count) {
     device float *synergies = reinterpret_cast<device float *>(

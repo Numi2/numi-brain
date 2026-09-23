@@ -2294,6 +2294,8 @@ kernel void assimilate_accepted_joint_schema(
   ), 0.0f, 1.0f);
   float maximum_error = 0.0f;
   uint evidence_channels = 0u;
+  uint declared_channels = 0u;
+  bool exact_joint_kinesthesia = false;
   const uint coordinate_count = min(topology.identifiers.w, 6u);
   // A fixed joint has no coordinate receptor evidence by construction, but
   // its immutable parent/child topology is still causal body-schema
@@ -2321,13 +2323,24 @@ kernel void assimilate_accepted_joint_schema(
     float velocity_weight = 0.0f;
     float limit_total = 0.0f;
     float limit_weight = 0.0f;
+    uint declared_signals = 0u;
+    bool exact_position = false;
+    bool exact_velocity = false;
     for (uint binding_index = range.binding_offset;
         binding_index < binding_end; ++binding_index) {
       const NBJointReceptorBindingRecord binding = bindings[binding_index];
       if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
           || binding.joint_index != gid
-          || binding.coordinate_slot != coordinate
-          || binding.observation_scalar_index >= uniforms.observation_count
+          || binding.coordinate_slot != coordinate) continue;
+      if (binding.signal >= 1u && binding.signal <= 3u) {
+        declared_signals |= 1u << (binding.signal - 1u);
+      }
+      if ((binding.flags & 2u) != 0u) {
+        exact_joint_kinesthesia = true;
+        exact_position |= binding.signal == 1u;
+        exact_velocity |= binding.signal == 2u;
+      }
+      if (binding.observation_scalar_index >= uniforms.observation_count
           || validity[binding.observation_scalar_index] == 0u
           || !isfinite(binding.scale) || !isfinite(binding.bias)
           || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
@@ -2364,22 +2377,24 @@ kernel void assimilate_accepted_joint_schema(
       ? position_total / position_weight : prior_position;
     const float observed_velocity = has_velocity
       ? velocity_total / velocity_weight : prior_velocity;
-    const float corrected_position = mix(
+    const bool bootstrap_position = !prior_valid && exact_position && has_position;
+    const bool bootstrap_velocity = !prior_valid && exact_velocity && has_velocity;
+    const float corrected_position = bootstrap_position ? observed_position : mix(
       prior_position, observed_position, has_position ? gain : 0.0f
     );
-    const float corrected_velocity = mix(
+    const float corrected_velocity = bootstrap_velocity ? observed_velocity : mix(
       prior_velocity, observed_velocity, has_velocity ? gain : 0.0f
     );
     joint[coordinate] = corrected_position;
     joint[6u + coordinate] = corrected_velocity;
     const float position_residual = observed_position - corrected_position;
     const float velocity_residual = observed_velocity - corrected_velocity;
-    joint[12u + coordinate] = max(mix(
+    joint[12u + coordinate] = bootstrap_position ? 0.0f : max(mix(
       prior_valid ? max(joint[12u + coordinate], 0.0f) : 1.0f,
       position_residual * position_residual,
       has_position ? gain : 0.0f
     ), 0.0f);
-    joint[18u + coordinate] = max(mix(
+    joint[18u + coordinate] = bootstrap_velocity ? 0.0f : max(mix(
       prior_valid ? max(joint[18u + coordinate], 0.0f) : 1.0f,
       velocity_residual * velocity_residual,
       has_velocity ? gain : 0.0f
@@ -2392,6 +2407,7 @@ kernel void assimilate_accepted_joint_schema(
       );
     }
     evidence_channels += uint(has_position) + uint(has_velocity) + uint(has_limit);
+    declared_channels += popcount(declared_signals);
     maximum_error = max(
       maximum_error,
       max(abs(position_residual), abs(velocity_residual))
@@ -2399,7 +2415,8 @@ kernel void assimilate_accepted_joint_schema(
   }
   if (evidence_channels == 0u) return;
   const float evidence_fraction = float(evidence_channels)
-    / max(float(coordinate_count * 3u), 1.0f);
+    / max(float(exact_joint_kinesthesia ? declared_channels
+      : coordinate_count * 3u), 1.0f);
   // Coverage is direct causal evidence about whether this joint belongs to
   // the accepted articulated body, not a state variable integrated from an
   // arbitrary zero prior. Attenuating the first valid observation by a

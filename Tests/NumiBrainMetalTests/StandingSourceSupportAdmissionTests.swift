@@ -152,4 +152,45 @@ final class StandingSourceSupportAdmissionTests: XCTestCase {
     object["supportEndpoints"] = partial
     XCTAssertThrowsError(try decode(object))
   }
+
+  func testVersion3JointCalibrationRequiresCompleteSourceAndUniqueNativeQMap() throws {
+    var source = try sourceObject()
+    source["version"] = 2
+    source["supportEndpoints"] = endpoints()
+    let calibration: [String: Any] = [
+      "version": UInt32(1),
+      "referencePositionBitsByDof": [UInt32](repeating: Float(0).bitPattern, count: 122),
+      "optimalFiberLengthBitsByMuscle": [UInt32](repeating: Float(0.25).bitPattern, count: 416),
+      "lengthJacobianBitsByMuscleDof": [UInt32](repeating: Float(0).bitPattern, count: 416 * 122),
+    ]
+    source["jointPathCalibration"] = calibration
+    XCTAssertThrowsError(try decode(source).compile(latencyMicroseconds: 1_000),
+      "version 2 must not silently admit an unused joint calibration")
+    source["version"] = 3
+    let prepared = try decode(source)
+    XCTAssertEqual(prepared.version, 3)
+    XCTAssertNotNil(prepared.jointPathCalibration)
+    XCTAssertNoThrow(try prepared.compile(latencyMicroseconds: 1_000))
+
+    source.removeValue(forKey: "jointPathCalibration")
+    XCTAssertThrowsError(try decode(source).compile(latencyMicroseconds: 1_000))
+    source["jointPathCalibration"] = NSNull()
+    XCTAssertThrowsError(try decode(source))
+    var partial = calibration
+    partial.removeValue(forKey: "lengthJacobianBitsByMuscleDof")
+    source["jointPathCalibration"] = partial
+    XCTAssertThrowsError(try decode(source))
+    var short = calibration
+    short["referencePositionBitsByDof"] = [UInt32](repeating: 0, count: 121)
+    source["jointPathCalibration"] = short
+    XCTAssertThrowsError(try decode(source).compile(latencyMicroseconds: 1_000))
+
+    source["jointPathCalibration"] = calibration
+    var coordinates = try XCTUnwrap(source["coordinates"] as? [[String: Any]])
+    let firstQ = try XCTUnwrap(coordinates[0]["qIndex"] as? UInt32)
+    coordinates[1]["qIndex"] = firstQ
+    source["coordinates"] = coordinates
+    XCTAssertThrowsError(try decode(source).compile(latencyMicroseconds: 1_000),
+      "calibration cannot bind ambiguous native configuration indices")
+  }
 }

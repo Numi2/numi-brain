@@ -127,6 +127,15 @@ inline bool nb_has_typed_numanx_fullbody_interoception(
       == NB_SENSORY_NUMANX_FULLBODY_SCHEMA_FINGERPRINT;
 }
 
+inline bool nb_has_exact_joint_kinesthesia(NBSensoryDescriptor descriptor)
+{
+  return (descriptor.flags & 2u) != 0u
+    && descriptor.modality == 9u
+    && descriptor.receptor_count == 128u
+    && descriptor.feature_dimension == 7u
+    && descriptor.noise_standard_deviation == 0.0f;
+}
+
 inline uint nb_hash32(uint value) {
   value ^= value >> 16;
   value *= 0x7feb352du;
@@ -395,8 +404,13 @@ kernel void transduce_receptor_observations(
   device uint *validity = reinterpret_cast<device uint *>(
     hot_state + uniforms.validity_offset
   );
-  validity[gid] = raw_validity;
-  if (raw_validity == 0u) return;
+  const bool exact_joint_packet = nb_has_exact_joint_kinesthesia(descriptor);
+  const uint feature = local_scalar % descriptor.feature_dimension;
+  const bool exact_joint_kinesthesia = exact_joint_packet && feature < 2u;
+  const uint feature_validity = exact_joint_packet
+    && (raw_validity & (1u << feature)) == 0u ? 0u : raw_validity;
+  validity[gid] = feature_validity;
+  if (feature_validity == 0u) return;
   const float raw_value = sensory_parameters[0] * nb_raw_input(
     descriptor.input_buffer_index,
     local_scalar,
@@ -426,7 +440,7 @@ kernel void transduce_receptor_observations(
     local_scalar,
     input0, input1, input2, input3, input4, input5, input6, input7
   );
-  observations[gid] = typed_numanx_interoception
+  observations[gid] = (typed_numanx_interoception || exact_joint_kinesthesia)
     ? raw_sample
     : raw_value
       - max(sensory_parameters[2], 0.0f) * adaptation[global_receptor]

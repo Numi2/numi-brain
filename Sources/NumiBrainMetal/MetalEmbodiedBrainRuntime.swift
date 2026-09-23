@@ -274,6 +274,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     initialGeneration: UInt64 = 0,
     connectome: MetalConnectomeControllerSeed? = nil,
     muscleLocomotor: MuscleLocomotorProgram? = nil,
+    jointPathCalibration: MuscleJointPathCalibration? = nil,
     affectiveModelConfiguration: AffectiveModelConfiguration = .reference
   ) throws {
     try self.init(
@@ -292,6 +293,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       initialGeneration: initialGeneration,
       connectome: connectome,
       muscleLocomotor: muscleLocomotor,
+      jointPathCalibration: jointPathCalibration,
       affectiveModelConfiguration: affectiveModelConfiguration
     )
   }
@@ -330,6 +332,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       initialGeneration: initialGeneration,
       connectome: connectome,
       muscleLocomotor: muscleLocomotor,
+      jointPathCalibration: nil,
       affectiveModelConfiguration: affectiveModelConfiguration
     )
   }
@@ -351,6 +354,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     initialGeneration: UInt64,
     connectome: MetalConnectomeControllerSeed?,
     muscleLocomotor: MuscleLocomotorProgram?,
+    jointPathCalibration: MuscleJointPathCalibration?,
     affectiveModelConfiguration: AffectiveModelConfiguration
   ) throws {
     let species = compiledSpeciesTemplate.species
@@ -384,8 +388,11 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     }
     let muscleLocomotorController = try muscleLocomotor.map {
       try MetalMuscleLocomotorController(program: $0, template: compiledSpeciesTemplate,
-        parameterVersion: parameterVersion.fingerprint, device: device)
+        parameterVersion: parameterVersion.fingerprint, device: device,
+        jointPathCalibration: jointPathCalibration)
     }
+    let exactJointKinesthesia = muscleLocomotor?.version == 4
+      && jointPathCalibration != nil
     let connectomeController = try connectome.map {
       try MetalConnectomeController(seed: $0, template: compiledSpeciesTemplate, device: device)
     }
@@ -406,7 +413,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       arena: agentStateRuntime.arena,
       species: species,
       profile: sensoryProfile,
-      sharedParameters: sharedParameterBank
+      sharedParameters: sharedParameterBank,
+      exactJointKinesthesia: exactJointKinesthesia
     )
     let cognitiveRuntime = try MetalCognitiveStateRuntime(
       device: device,
@@ -451,7 +459,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       sensoryProfile: sensoryProfile,
       jointTopologyCatalog: jointTopologyCatalog,
       muscleAttachmentCatalog: muscleAttachmentCatalog,
-      sharedParameters: sharedParameterBank
+      sharedParameters: sharedParameterBank,
+      exactJointKinesthesia: exactJointKinesthesia
     )
     let acceptedPhysicsGateRuntime = try MetalAcceptedPhysicsGateRuntime(
       device: device
@@ -479,7 +488,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       numanXImmutableFingerprints.append(("connectomeBinding", neural.program.binding.fingerprint))
     }
     if let locomotor = muscleLocomotorController {
-      numanXImmutableFingerprints.append(("muscleLocomotor", locomotor.program.fingerprint))
+      numanXImmutableFingerprints.append(("muscleLocomotor", locomotor.bindingFingerprint))
     }
     let numanXHumanMatterRuntime = try MetalNumanXHumanMatterBrainRuntime(
       device: device,
@@ -586,7 +595,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       hotState: payload.hotState,
       persistentMemory: payload.persistentMemory,
       connectomeState: try connectomeController?.mind.snapshotCommitted(),
-      muscleLocomotorFingerprint: muscleLocomotorController?.program.fingerprint
+      muscleLocomotorFingerprint: muscleLocomotorController?.bindingFingerprint
     )
   }
 
@@ -627,7 +636,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     physicalCheckpointFingerprint: UInt64
   ) throws {
     try checkpoint.validate()
-    guard checkpoint.muscleLocomotorFingerprint == muscleLocomotorController?.program.fingerprint else {
+    guard checkpoint.muscleLocomotorFingerprint == muscleLocomotorController?.bindingFingerprint else {
       throw TissueError.transaction("checkpoint names a different locomotor program")
     }
     guard (checkpoint.connectomeState == nil) == (connectomeController == nil) else {

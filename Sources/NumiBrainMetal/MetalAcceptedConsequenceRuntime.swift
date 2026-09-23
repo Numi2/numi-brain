@@ -343,7 +343,8 @@ private func makeAcceptedJointReceptorTables(
   sensoryProfile: SensoryTransductionProfile,
   observationRanges: [SensoryModality: ObservationRange],
   observationCount: UInt32,
-  jointTopologyCatalog: NumanXJointTopologyCatalog
+  jointTopologyCatalog: NumanXJointTopologyCatalog,
+  exactJointKinesthesia: Bool
 ) throws -> AcceptedJointReceptorTables {
   let topologyByModality = Dictionary(
     uniqueKeysWithValues: species.senses.map { ($0.modality, $0) }
@@ -372,6 +373,34 @@ private func makeAcceptedJointReceptorTables(
     }
     return $0.binding.identifier < $1.binding.identifier
   }
+  if exactJointKinesthesia {
+    let expected = jointTopologyCatalog.joints.reduce(0) {
+      $0 + $1.coordinates.count * 2
+    }
+    guard indexedBindings.count == expected,
+      jointTopologyCatalog.joints.enumerated().allSatisfy({ jointIndex, joint in
+        joint.coordinates.indices.allSatisfy({ coordinateSlot in
+          let pair = indexedBindings.filter {
+            $0.jointIndex == jointIndex && $0.coordinateSlot == coordinateSlot
+          }
+          return pair.count == 2 && Set(pair.map { $0.binding.signal })
+            == Set([.position, .velocity])
+        })
+      }),
+      indexedBindings.allSatisfy({ entry in
+        let binding = entry.binding
+        let coordinate = jointTopologyCatalog.joints[entry.jointIndex]
+          .coordinates[entry.coordinateSlot]
+        return binding.modality == .kinesthesia
+          && binding.receptorIndex == coordinate.kinesthesiaReceptorIndex
+          && binding.receptorIndex >= 6 && binding.receptorIndex < 128
+          && binding.scale == 1 && binding.bias == 0 && binding.weight == 1
+          && ((binding.signal == .position && binding.featureIndex == 0)
+            || (binding.signal == .velocity && binding.featureIndex == 1))
+      }) else {
+      throw TissueError.metal("exact joint posterior requires complete source-bound q/v receptors")
+    }
+  }
   let bindings = try indexedBindings.map {
     entry -> AcceptedJointReceptorBindingRecord in
     let binding = entry.binding
@@ -397,7 +426,7 @@ private func makeAcceptedJointReceptorTables(
       scale: binding.scale,
       bias: binding.bias,
       weight: binding.weight,
-      flags: 1
+      flags: 1 | (exactJointKinesthesia ? 2 : 0)
     )
   }
   var ranges = [AcceptedBodyReceptorBindingRange](
@@ -947,7 +976,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     sensoryProfile: SensoryTransductionProfile,
     jointTopologyCatalog: NumanXJointTopologyCatalog,
     muscleAttachmentCatalog: NumanXMuscleAttachmentCatalog?,
-    sharedParameters: MetalSharedParameterBank
+    sharedParameters: MetalSharedParameterBank,
+    exactJointKinesthesia: Bool = false
   ) throws {
     let sensorimotorWorldDimension = Int(
       try WorldModelLevelDescriptor.referenceV1(level: .sensorimotor)
@@ -1016,7 +1046,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       sensoryProfile: sensoryProfile,
       observationRanges: ranges,
       observationCount: offset,
-      jointTopologyCatalog: jointTopologyCatalog
+      jointTopologyCatalog: jointTopologyCatalog,
+      exactJointKinesthesia: exactJointKinesthesia
     )
     let muscleTables = try makeAcceptedMuscleReceptorTables(
       species: species,
