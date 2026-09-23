@@ -2321,11 +2321,13 @@ kernel void assimilate_accepted_joint_schema(
     float position_weight = 0.0f;
     float velocity_total = 0.0f;
     float velocity_weight = 0.0f;
+    float exact_position_total = 0.0f;
+    float exact_position_weight = 0.0f;
+    float exact_velocity_total = 0.0f;
+    float exact_velocity_weight = 0.0f;
     float limit_total = 0.0f;
     float limit_weight = 0.0f;
     uint declared_signals = 0u;
-    bool exact_position = false;
-    bool exact_velocity = false;
     for (uint binding_index = range.binding_offset;
         binding_index < binding_end; ++binding_index) {
       const NBJointReceptorBindingRecord binding = bindings[binding_index];
@@ -2337,8 +2339,6 @@ kernel void assimilate_accepted_joint_schema(
       }
       if ((binding.flags & 2u) != 0u) {
         exact_joint_kinesthesia = true;
-        exact_position |= binding.signal == 1u;
-        exact_velocity |= binding.signal == 2u;
       }
       if (binding.observation_scalar_index >= uniforms.observation_count
           || validity[binding.observation_scalar_index] == 0u
@@ -2354,10 +2354,18 @@ kernel void assimilate_accepted_joint_schema(
         case 1u:
           position_total += evidence * binding.weight;
           position_weight += binding.weight;
+          if ((binding.flags & 2u) != 0u) {
+            exact_position_total += evidence * binding.weight;
+            exact_position_weight += binding.weight;
+          }
           break;
         case 2u:
           velocity_total += evidence * binding.weight;
           velocity_weight += binding.weight;
+          if ((binding.flags & 2u) != 0u) {
+            exact_velocity_total += evidence * binding.weight;
+            exact_velocity_weight += binding.weight;
+          }
           break;
         case 3u:
           limit_total += clamp(evidence, 0.0f, 1.0f) * binding.weight;
@@ -2373,28 +2381,34 @@ kernel void assimilate_accepted_joint_schema(
     const bool has_position = position_weight > 0.0f;
     const bool has_velocity = velocity_weight > 0.0f;
     const bool has_limit = limit_weight > 0.0f;
-    const float observed_position = has_position
-      ? position_total / position_weight : prior_position;
-    const float observed_velocity = has_velocity
-      ? velocity_total / velocity_weight : prior_velocity;
-    const bool bootstrap_position = !prior_valid && exact_position && has_position;
-    const bool bootstrap_velocity = !prior_valid && exact_velocity && has_velocity;
-    const float corrected_position = bootstrap_position ? observed_position : mix(
+    const bool exact_position_observed = exact_position_weight > 0.0f;
+    const bool exact_velocity_observed = exact_velocity_weight > 0.0f;
+    const float observed_position = exact_position_observed
+      ? exact_position_total / exact_position_weight
+      : (has_position ? position_total / position_weight : prior_position);
+    const float observed_velocity = exact_velocity_observed
+      ? exact_velocity_total / exact_velocity_weight
+      : (has_velocity ? velocity_total / velocity_weight : prior_velocity);
+    // These values are source-qualified accepted receptor measurements, not
+    // a second physics path. Filtering them behind the prior posterior makes
+    // ordinary motion look like prediction error and can inhibit the very
+    // muscles that must correct it. Other receptor evidence remains filtered.
+    const float corrected_position = exact_position_observed ? observed_position : mix(
       prior_position, observed_position, has_position ? gain : 0.0f
     );
-    const float corrected_velocity = bootstrap_velocity ? observed_velocity : mix(
+    const float corrected_velocity = exact_velocity_observed ? observed_velocity : mix(
       prior_velocity, observed_velocity, has_velocity ? gain : 0.0f
     );
     joint[coordinate] = corrected_position;
     joint[6u + coordinate] = corrected_velocity;
     const float position_residual = observed_position - corrected_position;
     const float velocity_residual = observed_velocity - corrected_velocity;
-    joint[12u + coordinate] = bootstrap_position ? 0.0f : max(mix(
+    joint[12u + coordinate] = exact_position_observed ? 0.0f : max(mix(
       prior_valid ? max(joint[12u + coordinate], 0.0f) : 1.0f,
       position_residual * position_residual,
       has_position ? gain : 0.0f
     ), 0.0f);
-    joint[18u + coordinate] = bootstrap_velocity ? 0.0f : max(mix(
+    joint[18u + coordinate] = exact_velocity_observed ? 0.0f : max(mix(
       prior_valid ? max(joint[18u + coordinate], 0.0f) : 1.0f,
       velocity_residual * velocity_residual,
       has_velocity ? gain : 0.0f

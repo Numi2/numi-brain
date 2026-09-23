@@ -443,6 +443,37 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     XCTAssertLessThan(Float(bitPattern: v3State.joint[30]), 1)
   }
 
+  func testExactJointPacketTracksLaterAcceptedChangesWithoutLag() throws {
+    let fixture = try makeFixture(jointPath: true)
+    let first = try begin(fixture)
+    let firstMotor = try borrowedMotor(fixture, root: first)
+    _ = try acceptBorrowed(fixture, root: first, motor: firstMotor,
+      jointPosition: 0.125, jointVelocity: -0.25)
+
+    let second = try begin(fixture, step: 2)
+    let secondMotor = try borrowedMotor(fixture, root: second)
+    _ = try acceptBorrowed(fixture, root: second, motor: secondMotor,
+      jointPosition: 0.4, jointVelocity: -0.4)
+    let saved = try fixture.brain.saveCheckpoint(controlStepIdentifier: 2,
+      physicalCheckpointFingerprint: 99)
+    let layout = try MetalAgentStateLayout(species: fixture.template.species,
+      regionalProgram: fixture.template.species.regionalProgram())
+    let jointOffset = layout.section(.jointBelief).byteOffset
+    let data = saved.cognitiveState.hotState
+    func jointWord(_ index: Int) -> UInt32 {
+      data.withUnsafeBytes { bytes in
+        UInt32(littleEndian: bytes.loadUnaligned(
+          fromByteOffset: jointOffset + index * 4, as: UInt32.self))
+      }
+    }
+    XCTAssertEqual(jointWord(0), Float(0.4).bitPattern)
+    XCTAssertEqual(jointWord(6), Float(-0.4).bitPattern)
+    XCTAssertEqual(jointWord(12), Float(0).bitPattern)
+    XCTAssertEqual(jointWord(18), Float(0).bitPattern)
+    XCTAssertEqual(jointWord(30), Float(1).bitPattern)
+    XCTAssertEqual(jointWord(31), Float(0).bitPattern)
+  }
+
   func testV4CheckpointRejectsDifferentSourcePathCalibration() throws {
     let source = try makeFixture(jointPath: true)
     let changed = try makeFixture(jointPath: true, firstJacobian: 0.001)
