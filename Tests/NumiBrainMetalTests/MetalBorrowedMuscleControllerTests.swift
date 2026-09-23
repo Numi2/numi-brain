@@ -211,4 +211,82 @@ final class MetalBorrowedMuscleControllerTests: XCTestCase {
     XCTAssertEqual(borrowedRuntime.arena.committedGeneration, 4)
     XCTAssertEqual(referenceRuntime.arena.committedGeneration, 4)
   }
+
+  func testDelayedSpindleOnsetUsesCommittedTimeAcrossBorrowedAbort() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let body = try template(), regional = try body.species.regionGraph.regionalProgram()
+    let channels = (UInt32(0)..<416).map {
+      MuscleLocomotorChannel(muscleIdentifier: $0, referenceLengthMeters: 0.25,
+        tonicExcitation: 0.03, lengthGain: 1, velocityGainSeconds: 0.02)
+    }
+    func program(onset: UInt64?) -> MuscleLocomotorProgram {
+      MuscleLocomotorProgram(modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: body.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "a", count: 64),
+        epochMicroseconds: 1_000, channels: channels.map { channel in
+          MuscleLocomotorChannel(muscleIdentifier: channel.muscleIdentifier,
+            referenceLengthMeters: channel.referenceLengthMeters,
+            tonicExcitation: channel.tonicExcitation,
+            lengthGain: onset == nil ? 0 : channel.lengthGain,
+            velocityGainSeconds: onset == nil ? 0 : channel.velocityGainSeconds)
+        }, spindleFeedbackOnsetMicroseconds: onset)
+    }
+    let delayedProgram = program(onset: 2_000), heldOffProgram = program(onset: nil)
+    let runtime = try MetalAgentStateRuntime(device: device, species: body.species,
+      regionalProgram: regional)
+    let referenceRuntime = try MetalAgentStateRuntime(device: device, species: body.species,
+      regionalProgram: regional)
+    let offRuntime = try MetalAgentStateRuntime(device: device, species: body.species,
+      regionalProgram: regional)
+    let delayed = try MetalMuscleLocomotorController(program: delayedProgram,
+      template: body, parameterVersion: 7, device: device)
+    let reference = try MetalMuscleLocomotorController(program: delayedProgram,
+      template: body, parameterVersion: 7, device: device)
+    let heldOff = try MetalMuscleLocomotorController(program: heldOffProgram,
+      template: body, parameterVersion: 7, device: device)
+    for step in UInt64(1)...3 {
+      if step == 3 {
+        let rejected = try root(runtime, environment: 1, step: 30)
+        let sample = try sensors(device,
+          timestamp: rejected.jointToken.committedTimestamp.rawValue, orientation: 0)
+        let rejectedOutput = try evaluate(delayed, transaction: rejected,
+          sensors: sample, device: device, borrowed: true)
+        try rejected.abort()
+        XCTAssertEqual(runtime.arena.committedGeneration, 2,
+          "aborted candidate cannot advance the onset clock")
+        let retried = try root(runtime, environment: 1, step: step)
+        let retryOutput = try evaluate(delayed, transaction: retried,
+          sensors: sample, device: device, borrowed: true)
+        XCTAssertEqual(retryOutput, rejectedOutput,
+          "same committed timestamp must replay the delayed spindle decision")
+        let fresh = try root(referenceRuntime, environment: 2, step: step)
+        let freshOutput = try evaluate(reference, transaction: fresh,
+          sensors: sample, device: device, borrowed: false)
+        XCTAssertEqual(retryOutput, freshOutput,
+          "abort must not change the fresh v3 onset decision")
+        let off = try root(offRuntime, environment: 3, step: step)
+        let offOutput = try evaluate(heldOff, transaction: off,
+          sensors: sample, device: device, borrowed: false)
+        XCTAssertNotEqual(retryOutput, offOutput,
+          "committed step three must apply the source-bound spindle correction")
+        try accept(retried); try accept(fresh); try accept(off)
+      } else {
+        let a = try root(runtime, environment: 1, step: step)
+        let b = try root(referenceRuntime, environment: 2, step: step)
+        let off = try root(offRuntime, environment: 3, step: step)
+        let sample = try sensors(device, timestamp: a.jointToken.committedTimestamp.rawValue,
+          orientation: 0)
+        let actual = try evaluate(delayed, transaction: a,
+          sensors: sample, device: device, borrowed: true)
+        let expected = try evaluate(reference, transaction: b,
+          sensors: sample, device: device, borrowed: false)
+        let held = try evaluate(heldOff, transaction: off,
+          sensors: sample, device: device, borrowed: false)
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(actual, held,
+          "pre-onset v3 logits must match the held-off v1 controller bitwise")
+        try accept(a); try accept(b); try accept(off)
+      }
+    }
+  }
 }

@@ -90,6 +90,30 @@ kernel void nb_muscle_locomotor(
     c, length, velocity, as_type<float>(uniforms.y), 0.0f);
 }
 
+// Standalone v3 keeps the v1 kernel untouched. The host sets uniforms.z from
+// committed physical time. Before onset, only the two spindle gains are zero;
+// valid delivered spindle evidence and tonic recruitment are still required.
+kernel void nb_muscle_locomotor_delayed(
+  device const float *spindles [[buffer(0)]],
+  device const uint *validity [[buffer(1)]],
+  device const NBMuscleLocomotorChannel *channels [[buffer(2)]],
+  device float *logits [[buffer(3)]],
+  constant uint4 &uniforms [[buffer(4)]], uint gid [[thread_position_in_grid]]) {
+  if (gid >= uniforms.x) return;
+  auto c = channels[gid];
+  float length = 0.0f, velocity = 0.0f;
+  if (!nb_muscle_locomotor_inputs(spindles, validity, c, length, velocity)) {
+    logits[gid] = 0.0f;
+    return;
+  }
+  if (uniforms.z == 0u) {
+    c.length_gain = 0.0f;
+    c.velocity_gain = 0.0f;
+  }
+  logits[gid] = nb_muscle_locomotor_logit(
+    c, length, velocity, as_type<float>(uniforms.y), 0.0f);
+}
+
 // Reads only the exact body-receptor rows named by the immutable feedback
 // program. Invalid receptor evidence is recorded as invalid and is never
 // interpreted as a measured zero error. Extraction continues during baseline

@@ -62,4 +62,55 @@ final class MuscleLocomotorProgramTests: XCTestCase {
     XCTAssertNotEqual(program(gait, period: 1_000_000).fingerprint, standing.fingerprint)
     XCTAssertThrowsError(try standing.validate(template: NumanXFullBodyTransportTemplate.compile()))
   }
+
+  func testStandaloneDelayedSpindleOnsetIsVersionedBoundAndDecoded() throws {
+    let template = try fixture()
+    let channels = (UInt32(0)..<416).map {
+      MuscleLocomotorChannel(muscleIdentifier: $0, referenceLengthMeters: 0.25,
+        tonicExcitation: 0.03, lengthGain: 1, velocityGainSeconds: 0.02,
+        maximumExcitation: 1)
+    }
+    func program(onset: UInt64? = nil, period: UInt64 = 0) -> MuscleLocomotorProgram {
+      .init(modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "a", count: 64),
+        epochMicroseconds: 1_000, periodMicroseconds: period, channels: channels,
+        spindleFeedbackOnsetMicroseconds: onset)
+    }
+    let immediate = program(), delayed = program(onset: 102_000)
+    try immediate.validate(template: template)
+    try delayed.validate(template: template)
+    XCTAssertEqual(immediate.version, 1)
+    XCTAssertEqual(delayed.version, 3)
+    XCTAssertEqual(delayed.baselineFingerprint, immediate.fingerprint)
+    XCTAssertNotEqual(delayed.fingerprint, immediate.fingerprint)
+    XCTAssertNotEqual(delayed.fingerprint, program(onset: 103_000).fingerprint)
+    let oldJSON = try XCTUnwrap(JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(immediate)) as? [String: Any])
+    XCTAssertNil(oldJSON["spindleFeedbackOnsetMicroseconds"])
+    let delayedData = try JSONEncoder().encode(delayed)
+    let delayedJSON = try XCTUnwrap(JSONSerialization.jsonObject(
+      with: delayedData) as? [String: Any])
+    XCTAssertEqual(delayedJSON["spindleFeedbackOnsetMicroseconds"] as? UInt64, 102_000)
+    XCTAssertEqual(delayed, try JSONDecoder().decode(MuscleLocomotorProgram.self,
+      from: delayedData))
+    func checkRejected(_ json: [String: Any]) throws {
+      let data = try JSONSerialization.data(withJSONObject: json)
+      let candidate = try JSONDecoder().decode(MuscleLocomotorProgram.self, from: data)
+      XCTAssertThrowsError(try candidate.validate(template: template))
+    }
+    var changed = delayedJSON
+    changed.removeValue(forKey: "spindleFeedbackOnsetMicroseconds")
+    try checkRejected(changed)
+    changed = delayedJSON
+    changed["spindleFeedbackOnsetMicroseconds"] = 0
+    try checkRejected(changed)
+    changed["spindleFeedbackOnsetMicroseconds"] = 102_001
+    try checkRejected(changed)
+    changed = delayedJSON
+    changed["version"] = 1
+    try checkRejected(changed)
+    XCTAssertThrowsError(try program(onset: 102_000, period: 1_000_000)
+      .validate(template: template))
+  }
 }

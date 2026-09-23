@@ -158,6 +158,10 @@ final class MuscleBalanceFeedbackProgramTests: XCTestCase {
     XCTAssertEqual(balanced.version, 2)
     XCTAssertEqual(balanced.baselineFingerprint, locomotor.fingerprint)
     XCTAssertNotEqual(balanced.fingerprint, locomotor.fingerprint)
+    let balancedJSON = try XCTUnwrap(JSONSerialization.jsonObject(
+      with: JSONEncoder().encode(balanced)) as? [String: Any])
+    XCTAssertNil(balancedJSON["spindleFeedbackOnsetMicroseconds"],
+      "v2 JSON must retain its original field set")
     XCTAssertEqual(
       balanced,
       try JSONDecoder().decode(

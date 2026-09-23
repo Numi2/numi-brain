@@ -69,4 +69,51 @@ final class MetalMuscleLocomotorKernelTests: XCTestCase {
     XCTAssertEqual(try evaluate(length: .greatestFiniteMagnitude), [0, 0, 0])
     XCTAssertEqual(try evaluate(phase: Float.pi / 2), a)
   }
+
+  func testDelayedSpindleUsesExactHeldOffLogitUntilOnsetAndStillRequiresEvidence() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    func upload<T>(_ values: [T]) throws -> any MTLBuffer {
+      try XCTUnwrap(values.withUnsafeBytes {
+        device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)
+      })
+    }
+    func logit(function: String, lengthGain: Float, velocityGain: Float,
+      enabled: UInt32, validity: UInt32 = 3) throws -> UInt32 {
+      let pipeline = try device.makeComputePipelineState(function: XCTUnwrap(
+        library.makeFunction(name: function)))
+      let row: [UInt32] = [0, 1, 0, 3] +
+        [Float(0.25), 0.2, lengthGain, velocityGain, 0, 0, 1, 0].map(\.bitPattern)
+      let inputs = try upload([Float(0.3), 0.5])
+      let valid = try upload([validity]), channels = try upload(row)
+      let output = try upload([UInt32.max])
+      let uniforms = try upload([UInt32(1), Float(0).bitPattern, enabled, 0])
+      let command = try XCTUnwrap(queue.makeCommandBuffer())
+      let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+      encoder.setComputePipelineState(pipeline)
+      for (index, buffer) in [inputs, valid, channels, output, uniforms].enumerated() {
+        encoder.setBuffer(buffer, offset: 0, index: index)
+      }
+      encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+      encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+      XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+      return output.contents().assumingMemoryBound(to: UInt32.self).pointee
+    }
+    let heldOff = try logit(function: "nb_muscle_locomotor", lengthGain: 0,
+      velocityGain: 0, enabled: 0)
+    let immediate = try logit(function: "nb_muscle_locomotor", lengthGain: 1,
+      velocityGain: 0.02, enabled: 0)
+    let before = try logit(function: "nb_muscle_locomotor_delayed", lengthGain: 1,
+      velocityGain: 0.02, enabled: 0)
+    let after = try logit(function: "nb_muscle_locomotor_delayed", lengthGain: 1,
+      velocityGain: 0.02, enabled: 1)
+    XCTAssertEqual(before, heldOff, "pre-onset motor logit must match v1 held-off bits")
+    XCTAssertEqual(after, immediate, "post-onset motor logit must match immediate spindle bits")
+    XCTAssertNotEqual(after, before)
+    XCTAssertEqual(try logit(function: "nb_muscle_locomotor_delayed", lengthGain: 1,
+      velocityGain: 0.02, enabled: 0, validity: 0), 0,
+      "tonic recruitment cannot substitute for missing physical spindle evidence")
+  }
 }

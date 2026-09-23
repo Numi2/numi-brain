@@ -61,8 +61,9 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
         device: device
       )
     }
-    let functionName = balanceController == nil
-      ? "nb_muscle_locomotor" : "nb_muscle_locomotor_balanced"
+    let functionName = program.spindleFeedbackOnsetMicroseconds != nil
+      ? "nb_muscle_locomotor_delayed"
+      : (balanceController == nil ? "nb_muscle_locomotor" : "nb_muscle_locomotor_balanced")
     guard let function = library.makeFunction(name: functionName) else {
       throw TissueError.metal("locomotor kernel missing")
     }
@@ -136,7 +137,10 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     let elapsed = root.committedTimestamp.rawValue - program.epochMicroseconds
     let phase = program.periodMicroseconds == 0 ? Float(0)
       : Float(elapsed % program.periodMicroseconds) / Float(program.periodMicroseconds) * (2 * Float.pi)
-    let words = [UInt32(program.channels.count), phase.bitPattern, UInt32(0), UInt32(0)]
+    let spindleEnabled: UInt32 = program.spindleFeedbackOnsetMicroseconds.map {
+      elapsed >= $0 ? 1 : 0
+    } ?? 0
+    let words = [UInt32(program.channels.count), phase.bitPattern, spindleEnabled, UInt32(0)]
     words.withUnsafeBytes { uniforms.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
     encoder.begin()
 

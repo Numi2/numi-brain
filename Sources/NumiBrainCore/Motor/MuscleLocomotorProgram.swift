@@ -36,17 +36,22 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
   public let periodMicroseconds: UInt64
   public let channels: [MuscleLocomotorChannel]
   public let balanceFeedback: MuscleBalanceFeedbackProgram?
+  /// Standalone v3 only. Elapsed committed physical time before spindle gain
+  /// begins; tonic recruitment and physical spindle validity remain active.
+  public let spindleFeedbackOnsetMicroseconds: UInt64?
 
   public init(modelSourceFingerprint: UInt64, sensoryProfileFingerprint: UInt64,
     calibrationArtifactSHA256: String, epochMicroseconds: UInt64 = 0,
     periodMicroseconds: UInt64 = 0, channels: [MuscleLocomotorChannel],
-    balanceFeedback: MuscleBalanceFeedbackProgram? = nil) {
-    version = balanceFeedback == nil ? 1 : 2
+    balanceFeedback: MuscleBalanceFeedbackProgram? = nil,
+    spindleFeedbackOnsetMicroseconds: UInt64? = nil) {
+    version = spindleFeedbackOnsetMicroseconds != nil ? 3 : (balanceFeedback == nil ? 1 : 2)
     self.modelSourceFingerprint = modelSourceFingerprint
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
     self.calibrationArtifactSHA256 = calibrationArtifactSHA256
     self.epochMicroseconds = epochMicroseconds; self.periodMicroseconds = periodMicroseconds
     self.channels = channels; self.balanceFeedback = balanceFeedback
+    self.spindleFeedbackOnsetMicroseconds = spindleFeedbackOnsetMicroseconds
   }
 
   /// Validates the source-bound baseline without recursively validating an
@@ -91,14 +96,25 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
   }
 
   public func validate(template: CompiledSpeciesTemplate) throws {
-    guard (version == 1 && balanceFeedback == nil)
-      || (version == 2 && balanceFeedback != nil)
+    guard (version == 1 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds == nil)
+      || (version == 2 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil)
+      || (version == 3 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds != nil)
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "locomotor program version does not match its whole-body feedback layer"
       )
     }
     try validateBaseline(template: template)
+    if let onset = spindleFeedbackOnsetMicroseconds {
+      let latency = template.species.senses.first {
+        $0.enabled && $0.modality == .proprioception
+      }!.latencyMicroseconds
+      guard periodMicroseconds == 0, latency > 0, onset > 0,
+        onset % UInt64(latency) == 0 else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "delayed spindle onset must align to committed standing steps")
+      }
+    }
     try balanceFeedback?.validate(template: template, locomotorProgram: self)
   }
 
@@ -121,9 +137,16 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
     return hash
   }
 
-  /// Canonical ordered bytes include the v1 baseline and, for v2, the exact
-  /// independently qualified whole-body correction program.
+  /// Canonical ordered bytes retain v1/v2 identity and bind the v3 onset.
   public var fingerprint: UInt64 {
+    if let onset = spindleFeedbackOnsetMicroseconds {
+      var hash: UInt64 = 0xcbf29ce484222325
+      func bytes(_ values: [UInt8]) { for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 } }
+      func integer(_ value: UInt64) { bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) }) }
+      bytes(Array("NBMUSCLELOCOMOTOR3".utf8)); integer(UInt64(version))
+      integer(baselineFingerprint); integer(onset)
+      return hash
+    }
     guard let balanceFeedback else { return baselineFingerprint }
     var hash: UInt64 = 0xcbf29ce484222325
     func bytes(_ values: [UInt8]) { for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 } }
