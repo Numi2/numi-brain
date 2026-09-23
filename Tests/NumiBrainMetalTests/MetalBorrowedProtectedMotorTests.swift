@@ -123,7 +123,8 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     root: MetalNumiBrainRuntime.ControlTransaction,
     motor: MetalNumiBrainRuntime.BorrowedMotorCommand) throws -> BrainJointCommitToken {
     let accepted = try AcceptedPhysicsStateToken(transaction: root.token, substep: motor.substep,
-      physicsStateFingerprint: 0x8811, physicsGeneration: 101)
+      physicsStateFingerprint: 0x8811,
+      physicsGeneration: root.token.basePhysicsGeneration + 1)
     let input = try sensors(fixture, timestamp: root.token.targetTimestamp)
     let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
     let command = try XCTUnwrap(queue.makeCommandBuffer())
@@ -294,6 +295,69 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
         physicalCheckpointFingerprint: 99)
       XCTAssertEqual(retryState, freshState,
         "an executed rejected root changed the accepted cognitive or fast checkpoint")
+    }
+  }
+
+  func testExecutedBorrowedAbortAfterAcceptedHistoryMatchesFreshSecondRoot() throws {
+    for critical in [false, true] {
+      let retried = try makeFixture(), fresh = try makeFixture()
+      for fixture in [retried, fresh] {
+        let firstRoot = try begin(fixture)
+        let firstMotor = try borrowedMotor(fixture, root: firstRoot)
+        _ = try acceptBorrowed(fixture, root: firstRoot, motor: firstMotor)
+      }
+      let baseline = try retried.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99)
+      XCTAssertEqual(baseline, try fresh.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99))
+
+      let rejectedRoot = try begin(retried, step: 2)
+      _ = try borrowedMotor(retried, root: rejectedRoot, critical: critical)
+      try retried.brain.abortBorrowedControl(rejectedRoot)
+      let afterAbort = try retried.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99)
+      XCTAssertEqual(afterAbort.cognitiveState, baseline.cognitiveState)
+      XCTAssertEqual(afterAbort.fastTissueState.committedHistoryOwnerMask,
+        baseline.fastTissueState.committedHistoryOwnerMask)
+      XCTAssertEqual(afterAbort.fastTissueState.committedRelayHistoryTimestamps,
+        baseline.fastTissueState.committedRelayHistoryTimestamps)
+
+      let retryRoot = try begin(retried, step: 2)
+      let retryMotor = try borrowedMotor(retried, root: retryRoot, critical: critical)
+      let retrySubstep = retryMotor.substep
+      let retryExcitations = try read(retryMotor.buffers.excitationBuffer, device: retried.device)
+      let retryHeader = try read(retryMotor.buffers.headerBuffer, device: retried.device)
+      let retryReceipt = try acceptBorrowed(retried, root: retryRoot, motor: retryMotor)
+      let retryState = try retried.brain.saveCheckpoint(controlStepIdentifier: 2,
+        physicalCheckpointFingerprint: 99)
+
+      let freshRoot = try begin(fresh, step: 2)
+      let freshMotor = try borrowedMotor(fresh, root: freshRoot, critical: critical)
+      XCTAssertEqual(retrySubstep, freshMotor.substep)
+      XCTAssertEqual(retryExcitations,
+        try read(freshMotor.buffers.excitationBuffer, device: fresh.device))
+      XCTAssertEqual(retryHeader,
+        try read(freshMotor.buffers.headerBuffer, device: fresh.device))
+      let freshReceipt = try acceptBorrowed(fresh, root: freshRoot, motor: freshMotor)
+      XCTAssertEqual(retryReceipt, freshReceipt)
+      let freshState = try fresh.brain.saveCheckpoint(controlStepIdentifier: 2,
+        physicalCheckpointFingerprint: 99)
+      XCTAssertEqual(retryState, freshState,
+        "a rejected command changed an accepted root after earlier history was committed")
+
+      let restored = try makeFixture()
+      try restored.brain.loadCheckpoint(afterAbort, physicalCheckpointFingerprint: 99)
+      let restoredRoot = try begin(restored, step: 2)
+      let restoredMotor = try borrowedMotor(restored, root: restoredRoot, critical: critical)
+      XCTAssertEqual(try read(restoredMotor.buffers.excitationBuffer, device: restored.device),
+        retryExcitations)
+      XCTAssertEqual(try read(restoredMotor.buffers.headerBuffer, device: restored.device),
+        retryHeader)
+      XCTAssertEqual(try acceptBorrowed(restored, root: restoredRoot, motor: restoredMotor),
+        freshReceipt)
+      XCTAssertEqual(try restored.brain.saveCheckpoint(controlStepIdentifier: 2,
+        physicalCheckpointFingerprint: 99), freshState,
+        "checkpointing after an abort changed the next accepted root")
     }
   }
 }
