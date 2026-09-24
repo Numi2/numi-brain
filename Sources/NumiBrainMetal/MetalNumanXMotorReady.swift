@@ -1103,9 +1103,11 @@ final class MetalNumanXMotorReadyRuntime {
     )
     encoder.setComputePipelineState(decisionPipeline)
     encoder.setArgumentTable(decisionArguments)
+    let decisionLaneCount = decisionPipeline.threadExecutionWidth == 32
+      && decisionPipeline.maxTotalThreadsPerThreadgroup >= 32 ? 32 : 1
     encoder.dispatchThreads(
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      threadsPerGrid: MTLSize(width: decisionLaneCount, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: decisionLaneCount, height: 1, depth: 1)
     )
   }
 
@@ -1121,9 +1123,11 @@ final class MetalNumanXMotorReadyRuntime {
     decisionArguments.setAddress(
       evaluation.uncertaintyPolicyBuffer.gpuAddress, index: 4
     )
+    let decisionLaneCount = decisionPipeline.threadExecutionWidth == 32
+      && decisionPipeline.maxTotalThreadsPerThreadgroup >= 32 ? 32 : 1
     try encoder.dispatch(pipeline: decisionPipeline, argumentTable: decisionArguments,
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      threadsPerGrid: MTLSize(width: decisionLaneCount, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: decisionLaneCount, height: 1, depth: 1)
     )
   }
 

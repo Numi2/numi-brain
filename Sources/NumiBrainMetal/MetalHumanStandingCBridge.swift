@@ -309,6 +309,84 @@ private final class StandingBridge {
     pendingMotor = motor
   }
 
+  private func timedMotorEncoder(commandBuffer: any MTLCommandBuffer,
+    stage: String, step: UInt64) throws -> any MTLComputeCommandEncoder {
+    let device = commandBuffer.device
+    if device.supportsCounterSampling(.atStageBoundary),
+      let set = device.counterSets?.first(where: {
+        $0.name == MTLCommonCounterSet.timestamp.rawValue
+      }) {
+      let descriptor = MTLCounterSampleBufferDescriptor()
+      descriptor.counterSet = set
+      descriptor.storageMode = .shared
+      descriptor.sampleCount = 2
+      descriptor.label = "NumiBrain \(stage)"
+      if let samples = try? device.makeCounterSampleBuffer(descriptor: descriptor) {
+        let pass = MTLComputePassDescriptor()
+        pass.sampleBufferAttachments[0].sampleBuffer = samples
+        pass.sampleBufferAttachments[0].startOfEncoderSampleIndex = 0
+        pass.sampleBufferAttachments[0].endOfEncoderSampleIndex = 1
+        commandBuffer.addCompletedHandler { completed in
+          guard completed.status == .completed,
+            let data = try? samples.resolveCounterRange(0..<2),
+            data.count == 2 * MemoryLayout<MTLCounterResultTimestamp>.stride
+          else { return }
+          data.withUnsafeBytes { raw in
+            let values = raw.bindMemory(to: MTLCounterResultTimestamp.self)
+            let start = values[0].timestamp
+            let end = values[1].timestamp
+            guard start != 0, end >= start,
+              start != MTLCounterErrorValue, end != MTLCounterErrorValue else { return }
+            let record = "brain_gpu_inner_stage=\(stage) step=\(step) elapsed_ns=\(end - start)\n"
+            FileHandle.standardError.write(Data(record.utf8))
+          }
+        }
+        if let encoder = commandBuffer.makeComputeCommandEncoder(descriptor: pass) {
+          encoder.label = stage
+          return encoder
+        }
+      }
+    }
+    guard let encoder = commandBuffer.makeComputeCommandEncoder() else {
+      throw BrainRuntimeError.transaction("standing inner phase encoder allocation failed")
+    }
+    encoder.label = stage
+    return encoder
+  }
+
+  func encodeMotorTissuePhased(commandBuffer: any MTLCommandBuffer,
+    muscleStates: any MTLBuffer, muscleCount: UInt32) throws {
+    guard let pending, pendingMotor == nil, muscleCount == 416,
+      commandBuffer.device.registryID == muscleStates.device.registryID else {
+      throw BrainRuntimeError.transaction("standing inner tissue phase lacks one open native decision")
+    }
+    let step = brain.committedGeneration
+    var active: (any MTLComputeCommandEncoder)? = try timedMotorEncoder(
+      commandBuffer: commandBuffer, stage: "brain_tissue_decision_ready", step: step)
+    defer { active?.endEncoding() }
+    guard let first = active else {
+      throw BrainRuntimeError.transaction("standing inner tissue first encoder is missing")
+    }
+    let phased = try brain.encodeBorrowedMotorAfterDecisionPhased(
+      pending, encoder: first, nextPhase: { stage in
+        active?.endEncoding()
+        active = nil
+        let next = try self.timedMotorEncoder(commandBuffer: commandBuffer,
+          stage: stage, step: step)
+        active = next
+        return next
+      })
+    active?.endEncoding()
+    active = nil
+    let writer = try timedMotorEncoder(commandBuffer: commandBuffer,
+      stage: "brain_tissue_human_writer", step: step)
+    active = writer
+    try brain.encodeBorrowedHumanExcitation(command: phased.command,
+      encoder: writer, destinationMuscleStates: muscleStates,
+      count: 416)
+    pendingMotor = phased.command
+  }
+
   func encodeMotor(encoder: any MTLComputeCommandEncoder, stepIndex: UInt32,
     receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
     muscleStates: any MTLBuffer, muscleCount: UInt32) throws {
@@ -461,6 +539,24 @@ public func nbHumanStandingEncodeMotorTissue(_ handle: UnsafeMutableRawPointer?,
     else { throw BrainRuntimeError.transaction("standing tissue objects are missing") }
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeMotorTissue(encoder: metalEncoder, muscleStates: states,
+        muscleCount: muscleCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_motor_tissue_phased_v1")
+public func nbHumanStandingEncodeMotorTissuePhased(_ handle: UnsafeMutableRawPointer?,
+  _ commandBuffer: UnsafeMutableRawPointer?, _ muscleStates: UnsafeMutableRawPointer?,
+  _ muscleCount: UInt32, _ errorBuffer: UnsafeMutablePointer<CChar>?,
+  _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let commandBuffer, let muscleStates,
+      let metalCommand = Unmanaged<AnyObject>.fromOpaque(commandBuffer).takeUnretainedValue() as? any MTLCommandBuffer,
+      let states = Unmanaged<AnyObject>.fromOpaque(muscleStates).takeUnretainedValue() as? any MTLBuffer
+    else { throw BrainRuntimeError.transaction("standing phased tissue objects are missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeMotorTissuePhased(commandBuffer: metalCommand, muscleStates: states,
         muscleCount: muscleCount)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }

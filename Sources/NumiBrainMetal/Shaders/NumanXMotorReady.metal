@@ -506,9 +506,18 @@ kernel void numanx_publish_decision_ready(
   device NBNumanXDecisionReadyGateGPU *gate [[buffer(2)]],
   device const NBControlHeaderGPU *controlHeader [[buffer(3)]],
   constant NBNumanXUncertaintyPolicyGPU &uncertaintyPolicy [[buffer(4)]],
-  uint gid [[thread_position_in_grid]])
+  uint lane [[thread_index_in_threadgroup]],
+  uint3 lanesPerThreadgroup [[threads_per_threadgroup]])
 {
-  if (gid != 0u) return;
+  // Keep the canonical FNV byte order in lane zero while all SIMD lanes
+  // load the decision source and broadcast each byte to that lane.
+  const NBDecisionSourceDigestGPU sourceDigest =
+    lanesPerThreadgroup.x >= 32u
+      ? nb_decision_source_digest_simd(
+          dispatch, uncertaintyPolicy, controlHeader, decisionBytes, lane)
+      : nb_decision_source_digest(
+          dispatch, uncertaintyPolicy, controlHeader, decisionBytes);
+  if (lane != 0u) return;
   NBNumanXDecisionReadyGateGPU output = dispatch.expected;
   const NBControlHeaderGPU control = controlHeader[0];
   const bool uncertaintyPolicyDisabled = uncertaintyPolicy.flags == 0u
@@ -547,31 +556,9 @@ kernel void numanx_publish_decision_ready(
     && output.autonomicCommandFingerprint == 0ul
     && output.activeSensingCommandFingerprint == 0ul
     && dispatch.reserved == 0ul
+    && sourceDigest.rangesValid
     && output.gateFingerprint == nb_record_fingerprint(output);
-  ulong aggregate = NB_FNV_OFFSET;
-  nb_mix_uint(aggregate, 0x44454331u);
-  nb_mix_uint(aggregate, output.rangeCount);
-  nb_mix_uint(aggregate, uncertaintyPolicy.abiVersion);
-  nb_mix_uint(aggregate, uncertaintyPolicy.flags);
-  nb_mix_float(aggregate, uncertaintyPolicy.supervisionRequestThreshold);
-  nb_mix_float(aggregate, uncertaintyPolicy.rootRejectionThreshold);
-  nb_mix_float(aggregate, control.unsupportedUncertainty);
-  for (uint index = 0u; index < output.rangeCount; ++index) {
-    const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
-    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
-    if (end < ulong(range.byteOffset) || end > dispatch.sourceByteCount) {
-      valid = false;
-      break;
-    }
-    nb_mix_uint(aggregate, index);
-    nb_mix_uint(aggregate, range.byteOffset);
-    nb_mix_uint(aggregate, range.byteCount);
-    nb_mix_bytes(
-      aggregate,
-      decisionBytes + ulong(range.byteOffset),
-      ulong(range.byteCount)
-    );
-  }
+  const ulong aggregate = sourceDigest.fingerprint;
   const bool uncertaintyValid = isfinite(control.unsupportedUncertainty)
     && control.unsupportedUncertainty >= 0.0f;
   const float normalizedUncertainty = uncertaintyValid

@@ -4815,6 +4815,26 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     transaction: BrainJointTransactionToken,
     candidateDurationMicroseconds: UInt64
   ) throws -> BorrowedMotorCandidate {
+    try encodeBorrowedNumanXMotorCandidatePhased(
+      encoder: nativeEncoder, commandLease: commandLease,
+      decisionEvaluation: decisionEvaluation, transaction: transaction,
+      candidateDurationMicroseconds: candidateDurationMicroseconds,
+      nextPhase: nil
+    ).candidate
+  }
+
+  /// Optional profiling split. The caller creates every encoder on the same
+  /// physical owner's command buffer and ends the prior encoder before
+  /// returning the next one. The normal path passes nil and stays in one pass.
+  func encodeBorrowedNumanXMotorCandidatePhased(
+    encoder nativeEncoder: any MTLComputeCommandEncoder,
+    commandLease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease,
+    decisionEvaluation: MetalNumanXDecisionReadyEvaluation,
+    transaction: BrainJointTransactionToken,
+    candidateDurationMicroseconds: UInt64,
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)?
+  ) throws -> (candidate: BorrowedMotorCandidate,
+    finalEncoder: any MTLComputeCommandEncoder) {
     guard !borrowedEncodingFailed,
       decisionEvaluation.transaction == transaction,
       (decisionEvaluation.sourceBuffer as AnyObject) === (commandLease.buffer as AnyObject) else {
@@ -4826,7 +4846,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         candidateDurationMicroseconds == previous.fastSystems.substep.durationMicroseconds else {
         throw TissueError.transaction("a physical retry cannot replace its pending motor candidate")
       }
-      return previous
+      return (previous, nativeEncoder)
     }
     guard commandLease.buffer.device.registryID == nativeEncoder.device.registryID else {
       throw TissueError.transaction("borrowed decision is on a foreign device")
@@ -5009,8 +5029,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       readyPoint: MetalSharedEventPoint(event: decisionEvaluation.lease.readyPoint.event, value: 2),
       brainProgramFingerprint: decisionEvaluation.expected.brainProgramFingerprint,
       fastProgramFingerprint: numanXFastProgramFingerprint)
-    let encoder = try borrowedEncoder(nativeEncoder,
-      extraAllocations: [commandLease.buffer] + motorEvaluation.residencyAllocations)
+    let retainedAllocations: [any MTLAllocation] =
+      [commandLease.buffer] + motorEvaluation.residencyAllocations
+    var phaseNativeEncoder = nativeEncoder
+    var encoder = try borrowedEncoder(phaseNativeEncoder,
+      extraAllocations: retainedAllocations)
     borrowedEncodingFailed = true
     encoder.barrier()
     let eventArgumentTable = MetalBrainArgumentTable(self.eventArgumentTable)
@@ -5022,6 +5045,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       initialMotorStateIndex: initialMotorStateIndex
     )
     encoder.barrier()
+    if let nextPhase {
+      phaseNativeEncoder = try nextPhase("brain_tissue_events")
+      encoder = try borrowedEncoder(phaseNativeEncoder,
+        extraAllocations: retainedAllocations)
+    }
     eventArgumentTable.setAddress(uniformGPUAddress, index: 0)
     eventArgumentTable.setAddress(eventBuffer.gpuAddress, index: 1)
     eventArgumentTable.setAddress(activeEventIndexBuffer.gpuAddress, index: 2)
@@ -5030,6 +5058,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase {
+      phaseNativeEncoder = try nextPhase("brain_tissue_update")
+      encoder = try borrowedEncoder(phaseNativeEncoder,
+        extraAllocations: retainedAllocations)
+    }
     argumentTable.setAddress(stateBuffers[root.rootShadowIndex].gpuAddress, index: 0)
     argumentTable.setAddress(stateBuffers[destination].gpuAddress, index: 1)
     argumentTable.setAddress(uniformGPUAddress, index: 2)
@@ -5047,6 +5080,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: threadgroupSize()
     )
     encoder.barrier()
+    if let nextPhase {
+      phaseNativeEncoder = try nextPhase("brain_tissue_motor_ready")
+      encoder = try borrowedEncoder(phaseNativeEncoder,
+        extraAllocations: retainedAllocations)
+    }
     try numanXMotorReadyRuntime.encodeMotor(encoder: encoder, evaluation: motorEvaluation,
       buffers: buffers, descendingSomaticBuffer: descendingSomaticBuffer,
       descendingAutonomicBuffer: baselineFastAutonomicCommandBuffer)
@@ -5072,7 +5110,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       fastSystems: fastSystems, candidate: candidate, buffers: buffers, evaluation: motorEvaluation)
     borrowedMotorCandidate = result
     borrowedEncodingFailed = false
-    return result
+    return (result, phaseNativeEncoder)
   }
 
   /// Submits the first fast physical candidate directly behind an asynchronous

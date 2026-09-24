@@ -1344,6 +1344,50 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Exposes encoder boundaries only for native GPU phase attribution. Every
+  /// encoder is borrowed from the same physical owner command buffer.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedMotorAfterDecisionPhased(
+    _ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder,
+    nextPhase: @escaping (String) throws -> any MTLComputeCommandEncoder
+  ) throws -> (command: BorrowedMotorCommand,
+    finalEncoder: any MTLComputeCommandEncoder) {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .borrowedDecisionEncoded)
+    guard let lease = transaction.borrowedDecisionLease else {
+      transaction.status = .borrowedEncodingFailed
+      throw TissueError.transaction("borrowed decision lease is missing")
+    }
+    do {
+      let decisionGate = try cognitive.encodeBorrowedDecisionReady(
+        transaction: transaction.cognitiveTransaction, lease: lease,
+        encoder: encoder)
+      let descendingEncoder = try nextPhase("brain_tissue_descending_copy")
+      let phased = try fastTissue.encodeBorrowedNumanXMotorCandidatePhased(
+        encoder: descendingEncoder, commandLease: lease,
+        decisionEvaluation: decisionGate,
+        transaction: transaction.token,
+        candidateDurationMicroseconds: transaction.token.targetTimestamp.rawValue
+          - transaction.token.committedTimestamp.rawValue,
+        nextPhase: nextPhase)
+      let motor = phased.candidate
+      let result = BorrowedMotorCommand(substep: motor.fastSystems.substep,
+        candidate: motor.candidate, buffers: motor.buffers,
+        motorReadyGate: motor.evaluation.lease, evaluation: motor.evaluation)
+      transaction.decision = lease.decision
+      transaction.activeSubstep = result.substep
+      transaction.borrowedMotor = result
+      transaction.borrowedDecisionLease = nil
+      transaction.status = .borrowedMotorEncoded
+      return (result, phased.finalEncoder)
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
   private var borrowedHumanMotorWriter: MetalBorrowedHumanMotorWriter?
 
   /// Writes validated protected excitation into native MRMujocoMuscleStateGPU.x
