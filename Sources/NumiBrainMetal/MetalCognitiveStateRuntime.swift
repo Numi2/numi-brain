@@ -724,7 +724,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     try dispatch(
       encoder: encoder,
       pipeline: curiosityPipeline,
-      threadCount: 1
+      threadCount: 32
     )
     barrier(encoder)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)

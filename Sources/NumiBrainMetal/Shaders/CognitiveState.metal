@@ -1308,7 +1308,12 @@ kernel void update_curiosity_drive_from_world_model(
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   uint gid [[thread_position_in_grid]])
 {
-  if (gid != 0u || uniforms.drive_count <= 8u) return;
+  if (uniforms.drive_count <= 8u) return;
+  // The signed world-model variance keeps its ascending-coordinate sum.
+  // Independent reads and normalization from the larger body schema are
+  // prepared across one SIMD group, then folded by lane zero in source order.
+  threadgroup float prepared[1792];
+  threadgroup uint prepared_valid[512];
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
@@ -1326,7 +1331,7 @@ kernel void update_curiosity_drive_from_world_model(
     );
   float epistemic_variance = 0.0f;
   if (uniforms.world_model_scalar_count >= 9u * 128u) {
-    for (uint index = 0u; index < 128u; ++index) {
+    for (uint index = gid; index < 128u; index += 32u) {
       float mean = 0.0f;
       for (uint head = 0u; head < 5u; ++head) {
         mean += world[(3u + head) * 128u + index] * 0.2f;
@@ -1335,14 +1340,22 @@ kernel void update_curiosity_drive_from_world_model(
         const float difference = world[
           (3u + head) * 128u + index
         ] - mean;
-        epistemic_variance += difference * difference * 0.2f;
+        prepared[5u * index + head] = difference * difference * 0.2f;
       }
     }
-    epistemic_variance /= 128.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      for (uint index = 0u; index < 128u; ++index)
+        for (uint head = 0u; head < 5u; ++head)
+          epistemic_variance += prepared[5u * index + head];
+      epistemic_variance /= 128.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
   }
   float best_sensing_efficacy =
     uniforms.active_sensing_count == 0u ? 1.0f : 0.0f;
   float best_body_sensing_efficacy = 0.0f;
+  if (gid == 0u)
   for (uint channel = 0u; channel < uniforms.active_sensing_count; ++channel) {
     const NBActiveSensingEfficacyRecord sensing = sensing_efficacy[channel];
     const float efficacy = sensing.sample_count > 0u
@@ -1358,6 +1371,34 @@ kernel void update_curiosity_drive_from_world_model(
     }
   }
   float body_model_uncertainty = 0.0f;
+  if (uniforms.body_belief_count <= 512u) {
+    for (uint body_index = gid;
+        body_index < uniforms.body_belief_count; body_index += 32u) {
+      device const float *body = reinterpret_cast<device const float *>(
+        hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        body + NB_BODY_IDENTITY_FLOAT_OFFSET
+      );
+      const bool valid = (identity[3] & 1ul) != 0ul
+        && isfinite(body[NB_BODY_LOAD_VARIANCE]);
+      prepared_valid[body_index] = valid ? 1u : 0u;
+      if (valid) {
+        const float standard_deviation = sqrt(
+          max(body[NB_BODY_LOAD_VARIANCE], 0.0f));
+        prepared[body_index] =
+          standard_deviation / (1.0f + standard_deviation);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u)
+      for (uint body_index = 0u;
+          body_index < uniforms.body_belief_count; ++body_index)
+        if (prepared_valid[body_index] != 0u)
+          body_model_uncertainty = max(
+            body_model_uncertainty, prepared[body_index]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  } else if (gid == 0u) {
   for (uint body_index = 0u;
       body_index < uniforms.body_belief_count; ++body_index) {
     device const float *body = reinterpret_cast<device const float *>(
@@ -1376,6 +1417,52 @@ kernel void update_curiosity_drive_from_world_model(
       standard_deviation / (1.0f + standard_deviation)
     );
   }
+  }
+  if (uniforms.joint_belief_count <= 256u) {
+    for (uint joint_index = gid;
+        joint_index < uniforms.joint_belief_count; joint_index += 32u) {
+      device const float *joint = reinterpret_cast<device const float *>(
+        hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+      );
+      if ((identity[7] & 1ul) == 0ul) {
+        prepared_valid[joint_index] = 0u;
+        continue;
+      }
+      const uint coordinate_count = min(uint(identity[3]), 6u);
+      prepared_valid[joint_index] = coordinate_count + 1u;
+      for (uint coordinate = 0u; coordinate < coordinate_count;
+          ++coordinate) {
+        const float joint_variance = max(
+          max(joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f),
+          max(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f)
+        );
+        const float standard_deviation = sqrt(joint_variance);
+        prepared[7u * joint_index + coordinate] =
+          standard_deviation / (1.0f + standard_deviation);
+      }
+      const float prediction_error = abs(joint[NB_JOINT_PREDICTION_ERROR]);
+      prepared[7u * joint_index + 6u] =
+        prediction_error / (1.0f + prediction_error);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      for (uint joint_index = 0u;
+          joint_index < uniforms.joint_belief_count; ++joint_index) {
+        const uint valid = prepared_valid[joint_index];
+        if (valid == 0u) continue;
+        for (uint coordinate = 0u; coordinate < valid - 1u; ++coordinate)
+          body_model_uncertainty = max(
+            body_model_uncertainty,
+            prepared[7u * joint_index + coordinate]);
+        body_model_uncertainty = max(
+          body_model_uncertainty, prepared[7u * joint_index + 6u]);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  } else if (gid == 0u) {
   for (uint joint_index = 0u;
       joint_index < uniforms.joint_belief_count; ++joint_index) {
     device const float *joint = reinterpret_cast<device const float *>(
@@ -1403,6 +1490,40 @@ kernel void update_curiosity_drive_from_world_model(
       prediction_error / (1.0f + prediction_error)
     );
   }
+  }
+  if (uniforms.muscle_belief_count <= 512u) {
+    for (uint muscle_index = gid;
+        muscle_index < uniforms.muscle_belief_count; muscle_index += 32u) {
+      device const float *muscle = reinterpret_cast<device const float *>(
+        hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
+      );
+      device const ulong *identity = reinterpret_cast<device const ulong *>(
+        muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
+      );
+      const bool valid = (identity[3] & 1ul) != 0ul;
+      prepared_valid[muscle_index] = valid ? 1u : 0u;
+      if (valid) {
+        const float prediction_error = abs(muscle[5]);
+        prepared[2u * muscle_index] =
+          prediction_error / (1.0f + prediction_error);
+        prepared[2u * muscle_index + 1u] =
+          1.0f - clamp(muscle[8], 0.0f, 1.0f);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      for (uint muscle_index = 0u;
+          muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+        if (prepared_valid[muscle_index] == 0u) continue;
+        body_model_uncertainty = max(
+          body_model_uncertainty,
+          max(prepared[2u * muscle_index],
+            prepared[2u * muscle_index + 1u])
+        );
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  } else if (gid == 0u) {
   for (uint muscle_index = 0u;
       muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
     device const float *muscle = reinterpret_cast<device const float *>(
@@ -1419,6 +1540,8 @@ kernel void update_curiosity_drive_from_world_model(
       max(prediction_error / (1.0f + prediction_error), low_agency)
     );
   }
+  }
+  if (gid != 0u) return;
   float structured_belief_uncertainty = 0.0f;
   device const NBObjectSlotRecord *objects =
     reinterpret_cast<device const NBObjectSlotRecord *>(
