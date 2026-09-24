@@ -21,6 +21,8 @@ constant uint NB_MOTOR_OUTPUT_EMERGENCY_STOP = 2u;
 constant uint NB_MOTOR_OUTPUT_KNOWN_FLAGS = 15u;
 constant ulong NB_FNV_OFFSET = 14695981039346656037ul;
 constant ulong NB_FNV_PRIME = 1099511628211ul;
+constant uint NB_DECISION_CHUNK_BYTES = 1024u;
+constant uint NB_DECISION_CHUNK_LANES = 256u;
 
 struct NBNumanXDecisionReadyGateGPU {
   uint abiVersion;
@@ -423,6 +425,94 @@ inline NBDecisionSourceDigestGPU nb_decision_source_digest_simd(
   return result;
 }
 
+inline uint nb_decision_source_chunk_count(
+  constant const NBNumanXDecisionReadyDispatchGPU &dispatch
+) {
+  uint count = 0u;
+  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
+    const uint length = dispatch.ranges[index].byteCount;
+    const uint chunks = length / NB_DECISION_CHUNK_BYTES
+      + uint(length % NB_DECISION_CHUNK_BYTES != 0u);
+    if (chunks > NB_DECISION_CHUNK_LANES - count)
+      return NB_DECISION_CHUNK_LANES + 1u;
+    count += chunks;
+  }
+  return count;
+}
+
+// One lane owns one canonical range chunk. Its ordered FNV chain is bounded
+// to 1024 bytes; no source byte is omitted or sampled. The range metadata and
+// chunk hashes are folded in source order below. The old serial digest remains
+// available when a model exceeds the bounded GPU chunk capacity.
+inline ulong nb_decision_source_chunk_fingerprint(
+  constant const NBNumanXDecisionReadyDispatchGPU &dispatch,
+  device const uchar *decisionBytes,
+  uint ordinal
+) {
+  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
+    const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
+    const uint chunks = range.byteCount / NB_DECISION_CHUNK_BYTES
+      + uint(range.byteCount % NB_DECISION_CHUNK_BYTES != 0u);
+    if (ordinal >= chunks) {
+      ordinal -= chunks;
+      continue;
+    }
+    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
+    if (end < ulong(range.byteOffset) || end > dispatch.sourceByteCount)
+      return 0ul;
+    const uint offset = ordinal * NB_DECISION_CHUNK_BYTES;
+    const uint length = min(NB_DECISION_CHUNK_BYTES,
+                            range.byteCount - offset);
+    ulong fingerprint = NB_FNV_OFFSET;
+    nb_mix_uint(fingerprint, 0x43484e32u);
+    nb_mix_uint(fingerprint, index);
+    nb_mix_uint(fingerprint, ordinal);
+    nb_mix_uint(fingerprint, length);
+    nb_mix_bytes(fingerprint,
+      decisionBytes + ulong(range.byteOffset) + ulong(offset), ulong(length));
+    return fingerprint == 0ul ? NB_FNV_OFFSET : fingerprint;
+  }
+  return 0ul;
+}
+
+inline NBDecisionSourceDigestGPU nb_decision_source_digest_chunks(
+  constant const NBNumanXDecisionReadyDispatchGPU &dispatch,
+  constant const NBNumanXUncertaintyPolicyGPU &policy,
+  device const NBControlHeaderGPU *controlHeader,
+  threadgroup const ulong *chunks
+) {
+  NBDecisionSourceDigestGPU result{NB_FNV_OFFSET, true};
+  // A new domain prevents an older serial-digest gate from being accepted as
+  // this tree-shaped source identity under the same fixed-size gate record.
+  nb_mix_uint(result.fingerprint, 0x44454332u);
+  nb_mix_uint(result.fingerprint, dispatch.expected.rangeCount);
+  nb_mix_uint(result.fingerprint, policy.abiVersion);
+  nb_mix_uint(result.fingerprint, policy.flags);
+  nb_mix_float(result.fingerprint, policy.supervisionRequestThreshold);
+  nb_mix_float(result.fingerprint, policy.rootRejectionThreshold);
+  nb_mix_float(result.fingerprint, controlHeader[0].unsupportedUncertainty);
+  uint ordinal = 0u;
+  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
+    const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
+    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
+    if (end < ulong(range.byteOffset) || end > dispatch.sourceByteCount)
+      result.rangesValid = false;
+    nb_mix_uint(result.fingerprint, index);
+    nb_mix_uint(result.fingerprint, range.byteOffset);
+    nb_mix_uint(result.fingerprint, range.byteCount);
+    const uint count = range.byteCount / NB_DECISION_CHUNK_BYTES
+      + uint(range.byteCount % NB_DECISION_CHUNK_BYTES != 0u);
+    for (uint chunk = 0u; chunk < count; ++chunk) {
+      const uint length = min(NB_DECISION_CHUNK_BYTES,
+                              range.byteCount - chunk * NB_DECISION_CHUNK_BYTES);
+      nb_mix_uint(result.fingerprint, length);
+      nb_mix_ulong(result.fingerprint, chunks[ordinal++]);
+    }
+  }
+  if (result.fingerprint == 0ul) result.fingerprint = NB_FNV_OFFSET;
+  return result;
+}
+
 kernel void numanx_apply_accepted_culture_action(
   constant NBNumanXCultureActionGPU &action [[buffer(0)]],
   device const uint *electrodeCounts [[buffer(1)]],
@@ -509,14 +599,27 @@ kernel void numanx_publish_decision_ready(
   uint lane [[thread_index_in_threadgroup]],
   uint3 lanesPerThreadgroup [[threads_per_threadgroup]])
 {
-  // Keep the canonical FNV byte order in lane zero while all SIMD lanes
-  // load the decision source and broadcast each byte to that lane.
-  const NBDecisionSourceDigestGPU sourceDigest =
-    lanesPerThreadgroup.x >= 32u
-      ? nb_decision_source_digest_simd(
-          dispatch, uncertaintyPolicy, controlHeader, decisionBytes, lane)
-      : nb_decision_source_digest(
-          dispatch, uncertaintyPolicy, controlHeader, decisionBytes);
+  threadgroup ulong chunkFingerprints[NB_DECISION_CHUNK_LANES];
+  const uint chunkCount = nb_decision_source_chunk_count(dispatch);
+  const bool chunked = lanesPerThreadgroup.x >= NB_DECISION_CHUNK_LANES
+    && chunkCount <= NB_DECISION_CHUNK_LANES;
+  NBDecisionSourceDigestGPU sourceDigest{NB_FNV_OFFSET, false};
+  if (chunked) {
+    if (lane < chunkCount)
+      chunkFingerprints[lane] = nb_decision_source_chunk_fingerprint(
+        dispatch, decisionBytes, lane);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lane == 0u)
+      sourceDigest = nb_decision_source_digest_chunks(
+        dispatch, uncertaintyPolicy, controlHeader, chunkFingerprints);
+  } else if (lanesPerThreadgroup.x >= 32u) {
+    if (lane < 32u)
+      sourceDigest = nb_decision_source_digest_simd(
+        dispatch, uncertaintyPolicy, controlHeader, decisionBytes, lane);
+  } else if (lane == 0u) {
+    sourceDigest = nb_decision_source_digest(
+      dispatch, uncertaintyPolicy, controlHeader, decisionBytes);
+  }
   if (lane != 0u) return;
   NBNumanXDecisionReadyGateGPU output = dispatch.expected;
   const NBControlHeaderGPU control = controlHeader[0];
@@ -630,6 +733,11 @@ kernel void numanx_publish_motor_ready(
   // separate SIMD groups so device loads and integer multiplies can overlap.
   threadgroup ulong partialFingerprint[5];
   threadgroup uint partialValid[2];
+  threadgroup ulong decisionChunks[NB_DECISION_CHUNK_LANES];
+  const bool chunkedDecision =
+    lanesPerThreadgroup.x >= 416u &&
+    nb_decision_source_chunk_count(decisionExpected)
+      <= NB_DECISION_CHUNK_LANES;
   if (lanesPerThreadgroup.x >= 192u) {
     if (tid == 0u) {
       const NBMotorOutputHeaderGPU header = motorHeader[0];
@@ -651,7 +759,12 @@ kernel void numanx_publish_motor_ready(
         0x41435431u, activeSensingCommands,
         ulong(candidate.activeSensingCommandByteCount)
       );
-    } else if (tid >= 128u && tid < 160u) {
+    } else if (chunkedDecision && tid >= 128u && tid < 384u) {
+      const uint ordinal = tid - 128u;
+      if (ordinal < nb_decision_source_chunk_count(decisionExpected))
+        decisionChunks[ordinal] = nb_decision_source_chunk_fingerprint(
+          decisionExpected, decisionBytes, ordinal);
+    } else if (!chunkedDecision && tid >= 128u && tid < 160u) {
       const NBDecisionSourceDigestGPU digest = nb_decision_source_digest_simd(
         decisionExpected, uncertaintyPolicy, controlHeader, decisionBytes,
         tid - 128u
@@ -660,7 +773,7 @@ kernel void numanx_publish_motor_ready(
         partialFingerprint[4] = digest.fingerprint;
         partialValid[0] = digest.rangesValid ? 1u : 0u;
       }
-    } else if (tid == 160u) {
+    } else if (tid == (chunkedDecision ? 384u : 160u)) {
       bool commandsValid = true;
       const NBMotorOutputHeaderGPU header = motorHeader[0];
       for (uint index = 0u; index < expected.muscleCount; ++index) {
@@ -672,6 +785,16 @@ kernel void numanx_publish_motor_ready(
       partialValid[1] = commandsValid ? 1u : 0u;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (chunkedDecision) {
+      if (tid == 128u) {
+        const NBDecisionSourceDigestGPU digest =
+          nb_decision_source_digest_chunks(decisionExpected,
+            uncertaintyPolicy, controlHeader, decisionChunks);
+        partialFingerprint[4] = digest.fingerprint;
+        partialValid[0] = digest.rangesValid ? 1u : 0u;
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
   } else if (tid == 0u) {
     const NBMotorOutputHeaderGPU header = motorHeader[0];
     partialFingerprint[0] = nb_somatic_output_fingerprint(
