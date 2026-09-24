@@ -187,6 +187,8 @@ private final class StandingBridge {
   let source: StandingSource
   let template: CompiledSpeciesTemplate
   let program: MuscleLocomotorProgram
+  let programFingerprint: UInt64
+  let baselineProgramFingerprint: UInt64
   let publication: BrainParameterPublication
   let brain: MetalNumiBrainRuntime
   let timestepMicroseconds: UInt32
@@ -222,6 +224,11 @@ private final class StandingBridge {
         "standing joint-path program requires the version 3 prepared physical source")
     }
     try program.validate(template: template)
+    // The program is immutable for this standing participant. Its canonical
+    // fingerprint walks all 416 channels, so compute it at creation rather
+    // than on every accepted-step ABI receipt.
+    programFingerprint = program.fingerprint
+    baselineProgramFingerprint = program.baselineFingerprint
     self.timestepMicroseconds = timestepMicroseconds
     self.epochMicroseconds = epochMicroseconds
     let parameters = TissueParameters.corticalSheetV0
@@ -424,8 +431,8 @@ public func nbHumanStandingInfo(_ handle: UnsafeMutableRawPointer?,
   guard #available(macOS 26.0, *), let handle, let info else { return 0 }
   let bridge = Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
   info.pointee.model_source_fingerprint = bridge.source.modelSourceFingerprint
-  info.pointee.locomotor_program_fingerprint = bridge.program.fingerprint
-  info.pointee.baseline_program_fingerprint = bridge.program.baselineFingerprint
+  info.pointee.locomotor_program_fingerprint = bridge.programFingerprint
+  info.pointee.baseline_program_fingerprint = bridge.baselineProgramFingerprint
   info.pointee.compiled_species_fingerprint = bridge.template.species.fingerprint
   info.pointee.sensory_profile_fingerprint = bridge.template.sensoryProfile.fingerprint
   info.pointee.parameter_version_fingerprint = bridge.publication.version.fingerprint
