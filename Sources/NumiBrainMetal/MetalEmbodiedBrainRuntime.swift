@@ -982,7 +982,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     encoder: any MTLComputeCommandEncoder,
     rawSensors: [MetalRawSensorBufferLease],
     regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
-    additionalAllocations: [any MTLAllocation] = []
+    additionalAllocations: [any MTLAllocation] = [],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil
   ) throws -> NumanXSomaticBufferLease {
     lock.lock()
     defer { lock.unlock() }
@@ -1002,12 +1003,21 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       allocations.append(sensor.buffer)
       if let validity = sensor.validityBuffer { allocations.append(validity) }
     }
-    let commands = MetalBrainCommandEncoder.borrowed(encoder, allocations: allocations)
+    var activeEncoder = encoder
+    var commands = MetalBrainCommandEncoder.borrowed(activeEncoder,
+      allocations: allocations)
+    func advance(_ stage: String) throws {
+      guard let nextPhase else { return }
+      activeEncoder = try nextPhase(stage)
+      commands = MetalBrainCommandEncoder.borrowed(activeEncoder,
+        allocations: allocations)
+    }
     commands.barrier()
     try developmentalRuntime.encodeCurrentStage(encoder: commands,
       transaction: transaction.agentStateToken,
       timestamp: transaction.jointToken.committedTimestamp)
     commands.barrier()
+    try advance("brain_decision_sensory")
     let sensory = try sensoryRuntime.encode(encoder: commands,
       transaction: transaction.agentStateToken, rawSensorViews: rawSensors.map(\.view),
       environmentIdentifier: transaction.jointToken.environmentIdentifier,
@@ -1017,22 +1027,32 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       targetTimestamp: transaction.jointToken.committedTimestamp,
       deltaMicroseconds: UInt32(duration), allowsMatchingAcceptedFrameReuse: true)
     commands.barrier()
+    try advance("brain_decision_cognitive")
     try cognitiveRuntime.encodeAcceptedCognitiveStep(encoder: commands,
       transaction: transaction.agentStateToken,
       targetTimestamp: transaction.jointToken.committedTimestamp,
       deltaMicroseconds: duration, receptorEventCapacity: sensory.eventCapacity,
       regionalRecurrentInput: regionalRecurrentInput)
     commands.barrier()
+    try advance("brain_decision_memory")
     try memoryRuntime.encodeRetrieval(encoder: commands,
       transaction: transaction.agentStateToken,
       timestamp: transaction.jointToken.committedTimestamp)
     commands.barrier()
+    try advance("brain_decision_locomotor")
     let logits = try transaction.encodeMuscleLocomotor(muscleLocomotorController,
-      encoder: encoder, rawSensors: rawSensors)
+      encoder: activeEncoder, rawSensors: rawSensors)
+    try advance("brain_decision_policy")
+    let decisionNextPhase: ((String) throws -> MetalBrainCommandEncoder)? =
+      nextPhase == nil ? nil : { stage in
+        try advance(stage)
+        return commands
+      }
     let output = try decisionRuntime.encode(encoder: commands,
       transaction: transaction.agentStateToken,
       timestamp: transaction.jointToken.committedTimestamp,
-      rawSensorViews: rawSensors.map(\.view), connectomeMotor: logits)
+      rawSensorViews: rawSensors.map(\.view), connectomeMotor: logits,
+      nextPhase: decisionNextPhase)
     commands.barrier()
     let decision = try makeDecisionBufferView(transaction: transaction,
       sensory: sensory, decision: output, feedback: nil)

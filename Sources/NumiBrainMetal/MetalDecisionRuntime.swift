@@ -714,8 +714,13 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     rawSensorViews: [MetalRawSensorBufferView],
     externalGoal: ActiveGoal? = nil,
     activeSensingCommandScale: Float = 1,
-    connectomeMotor: MetalDescendingMotorView? = nil
+    connectomeMotor: MetalDescendingMotorView? = nil,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws -> OutputView {
+    var encoder = encoder
+    func advance(_ stage: String) throws {
+      if let nextPhase { encoder = try nextPhase(stage) }
+    }
     let hot = try arena.hotStateView(transaction: transaction)
     let sortedRawSensorViews = rawSensorViews.sorted {
       $0.modality.rawValue < $1.modality.rawValue
@@ -851,40 +856,50 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     argumentTable.setAddress(connectomeMotor?.logits.gpuAddress ?? policyObservationFallbackBuffer.gpuAddress, index: 25)
     try dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
     barrier(encoder)
+    try advance("brain_policy_goal")
     try dispatch(encoder, pipeline: goalPipeline, count: 1)
     barrier(encoder)
+    try advance("brain_policy_workspace")
     try dispatch(encoder, pipeline: workspaceActionPipeline, count: 1)
     barrier(encoder)
+    try advance("brain_policy_proposal")
     try dispatch(
       encoder,
       pipeline: proposalPipeline,
       count: Int(species.capacities.activeOptionCandidateCapacity)
     )
     barrier(encoder)
+    try advance("brain_policy_planning")
     try dispatch(
       encoder,
       pipeline: planningPipeline,
       count: Int(species.capacities.activeOptionCandidateCapacity)
     )
     barrier(encoder)
+    try advance("brain_policy_selection")
     try dispatch(encoder, pipeline: selectionPipeline, count: 1)
     barrier(encoder)
+    try advance("brain_policy_internal")
     try dispatch(
       encoder,
       pipeline: internalActionPipeline,
       count: InternalActionKind.allCases.count
     )
     barrier(encoder)
+    try advance("brain_policy_motor_goal")
     try dispatch(encoder, pipeline: motorGoalPipeline, count: 1)
     barrier(encoder)
+    try advance("brain_policy_cerebellar")
     try dispatch(
       encoder,
       pipeline: cerebellarPipeline,
       count: 1
     )
     barrier(encoder)
+    try advance("brain_policy_cpg")
     try dispatch(encoder, pipeline: cpgPipeline, count: 1)
     barrier(encoder)
+    try advance("brain_policy_motor")
     try dispatch(
       encoder,
       pipeline: motorPipeline,
@@ -900,6 +915,7 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       )
     )
     barrier(encoder)
+    try advance("brain_policy_prediction")
     try dispatch(
       encoder,
       pipeline: cerebellarPredictionPipeline,

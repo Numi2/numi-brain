@@ -286,7 +286,8 @@ private final class StandingBridge {
   }
 
   func encodeMotorDecision(encoder: any MTLComputeCommandEncoder, stepIndex: UInt32,
-    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32) throws {
+    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
     guard pending == nil, stepIndex < UInt32.max,
       UInt64(stepIndex) == brain.committedGeneration,
       UInt64(stepIndex) + 1 <= (UInt64.max - epochMicroseconds) / UInt64(timestepMicroseconds) else {
@@ -302,7 +303,29 @@ private final class StandingBridge {
       cachedDecisionFingerprint: 0x4e554d4900000000 | UInt64(stepIndex + 1))
     pending = transaction
     try brain.encodeBorrowedMotorDecision(transaction,
-      encoder: encoder, rawSensors: input)
+      encoder: encoder, rawSensors: input, nextPhase: nextPhase)
+  }
+
+  /// Diagnostic boundaries remain on the physical owner's command buffer.
+  func encodeMotorDecisionPhased(commandBuffer: any MTLCommandBuffer,
+    stepIndex: UInt32, receptors: UnsafePointer<NBHumanStandingReceptor>?,
+    count: UInt32) throws {
+    let step = UInt64(stepIndex)
+    var active: (any MTLComputeCommandEncoder)? = try timedMotorEncoder(
+      commandBuffer: commandBuffer, stage: "brain_decision_development", step: step)
+    defer { active?.endEncoding() }
+    guard let first = active else {
+      throw BrainRuntimeError.transaction("standing decision first encoder is missing")
+    }
+    try encodeMotorDecision(encoder: first, stepIndex: stepIndex,
+      receptors: receptors, count: count, nextPhase: { stage in
+        active?.endEncoding()
+        active = nil
+        let next = try self.timedMotorEncoder(commandBuffer: commandBuffer,
+          stage: stage, step: step)
+        active = next
+        return next
+      })
   }
 
   func encodeMotorTissue(encoder: any MTLComputeCommandEncoder,
@@ -559,6 +582,23 @@ public func nbHumanStandingEncodeMotorDecision(_ handle: UnsafeMutableRawPointer
     else { throw BrainRuntimeError.transaction("standing decision encoder is missing") }
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeMotorDecision(encoder: metalEncoder, stepIndex: step,
+        receptors: receptors, count: receptorCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_motor_decision_phased_v1")
+public func nbHumanStandingEncodeMotorDecisionPhased(_ handle: UnsafeMutableRawPointer?,
+  _ commandBuffer: UnsafeMutableRawPointer?, _ step: UInt32,
+  _ receptors: UnsafePointer<NBHumanStandingReceptor>?, _ receptorCount: UInt32,
+  _ errorBuffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let commandBuffer,
+      let metalCommand = Unmanaged<AnyObject>.fromOpaque(commandBuffer).takeUnretainedValue() as? any MTLCommandBuffer
+    else { throw BrainRuntimeError.transaction("standing phased decision command is missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeMotorDecisionPhased(commandBuffer: metalCommand, stepIndex: step,
         receptors: receptors, count: receptorCount)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }

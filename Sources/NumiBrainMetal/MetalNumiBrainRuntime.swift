@@ -1293,7 +1293,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   /// The following borrowed encoder must finish this same open transaction.
   @_spi(NumanXInterop)
   public func encodeBorrowedMotorDecision(_ transaction: ControlTransaction,
-    encoder: any MTLComputeCommandEncoder, rawSensors: [MetalRawSensorBufferLease]) throws {
+    encoder: any MTLComputeCommandEncoder, rawSensors: [MetalRawSensorBufferLease],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .open)
@@ -1302,7 +1303,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         transaction: transaction.cognitiveTransaction, encoder: encoder,
         rawSensors: rawSensors,
         regionalRecurrentInput: fastTissue.committedRegionalRecurrentBufferView(),
-        additionalAllocations: fastTissue.borrowedResidencyAllocations)
+        additionalAllocations: fastTissue.borrowedResidencyAllocations,
+        nextPhase: nextPhase)
       transaction.status = .borrowedDecisionEncoded
     } catch {
       transaction.status = .borrowedEncodingFailed
