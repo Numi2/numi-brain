@@ -564,8 +564,13 @@ kernel void ingest_regional_recurrent_state(
 kernel void advance_homeostasis_and_neuromodulation(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
+  device atomic_uint *plasticity_layout_flag [[buffer(5)]],
   uint gid [[thread_position_in_grid]])
 {
+  // This dispatch precedes every fast-plasticity update on the same command
+  // buffer. A later site marks a noncanonical region before reduction begins.
+  if (gid == 0u)
+    atomic_store_explicit(plasticity_layout_flag, 0u, memory_order_relaxed);
   if (gid >= max(uniforms.drive_count, uniforms.neuromodulator_count)) {
     return;
   }
@@ -2640,6 +2645,7 @@ kernel void advance_fast_plasticity_foundation(
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *plasticity_parameters [[buffer(2)]],
   device const NBPlasticityRegionRangeRecord *region_ranges [[buffer(3)]],
+  device atomic_uint *plasticity_layout_flag [[buffer(5)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.fast_plasticity_count
@@ -2677,6 +2683,10 @@ kernel void advance_fast_plasticity_foundation(
     site.learning_rate = max(plasticity_parameters[0], 0.0f);
     site.maximum_magnitude = max(plasticity_parameters[7], 1.0e-4f);
   }
+  if (uint(site.region_identifier) !=
+      maturation[gid % uniforms.module_count].module_identifier)
+    atomic_fetch_or_explicit(
+      plasticity_layout_flag, 1u, memory_order_relaxed);
   site.flags |= 1u;
   uint region_index = gid % uniforms.module_count;
   for (uint index = 0u; index < uniforms.module_count; ++index) {
@@ -2794,6 +2804,7 @@ kernel void reduce_fast_plasticity_by_region(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device const float *plasticity_parameters [[buffer(2)]],
+  device atomic_uint *plasticity_layout_flag [[buffer(5)]],
   uint gid [[thread_position_in_grid]])
 {
   if (gid >= uniforms.module_count || uniforms.fast_plasticity_count == 0u) return;
@@ -2825,7 +2836,12 @@ kernel void reduce_fast_plasticity_by_region(
     / (uniforms.module_count * basis_stride);
   float projection[basis_operator_channel_count] = {};
   uint coefficient_count = 0u;
-  for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
+  const bool interleaved = atomic_load_explicit(
+    plasticity_layout_flag, memory_order_relaxed) == 0u;
+  const uint start = interleaved ? gid : 0u;
+  const uint stride = interleaved ? uniforms.module_count : 1u;
+  for (uint index = start; index < uniforms.fast_plasticity_count;
+      index += stride) {
     const NBFastPlasticityStateRecord site = sites[index];
     if (uint(site.region_identifier) != module_identifier) continue;
     if (basis_capacity == 0u) continue;

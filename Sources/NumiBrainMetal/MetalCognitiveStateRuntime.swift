@@ -152,6 +152,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   private let uniformBuffer: any MTLBuffer
   private let worldModelDescriptorBuffer: any MTLBuffer
   private let plasticityRegionRangeBuffer: any MTLBuffer
+  private let plasticityLayoutFlagBuffer: any MTLBuffer
   private let unconditionalAcceptanceGateBuffer: any MTLBuffer
   private let worldModelLevelRecords: [WorldModelLevelRecord]
   private let visionObservationOffset: UInt32
@@ -242,7 +243,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain cognitive-state arguments"
-    descriptor.maxBufferBindCount = 5
+    descriptor.maxBufferBindCount = 6
     descriptor.initializeBindings = true
     let worldDescriptor = MTL4ArgumentTableDescriptor()
     worldDescriptor.label = "NumiBrain hierarchical world-model arguments"
@@ -360,6 +361,10 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
         length: plasticityRegionRangeByteCount,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
+      let plasticityLayoutFlagBuffer = device.makeBuffer(
+        length: MemoryLayout<UInt32>.stride,
+        options: [.storageModePrivate, .hazardTrackingModeTracked]
+      ),
       let unconditionalAcceptanceGateBuffer = device.makeBuffer(
         length: MemoryLayout<UInt32>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
@@ -371,6 +376,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     worldModelDescriptorBuffer.label = "NumiBrain immutable hierarchical world-model layout"
     plasticityRegionRangeBuffer.label =
       "NumiBrain immutable plasticity regional recurrent ranges"
+    plasticityLayoutFlagBuffer.label =
+      "NumiBrain current plasticity region layout proof"
     worldModelLevelRecords.withUnsafeBytes { bytes in
       guard let source = bytes.baseAddress else { return }
       worldModelDescriptorBuffer.contents().copyMemory(
@@ -387,6 +394,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       of: UInt32(1), as: UInt32.self
     )
     argumentTable.setAddress(plasticityRegionRangeBuffer.gpuAddress, index: 3)
+    argumentTable.setAddress(plasticityLayoutFlagBuffer.gpuAddress, index: 5)
     self.layoutFingerprint = arena.layout.fingerprint
     self.arena = arena
     self.species = species
@@ -412,6 +420,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     self.uniformBuffer = uniformBuffer
     self.worldModelDescriptorBuffer = worldModelDescriptorBuffer
     self.plasticityRegionRangeBuffer = plasticityRegionRangeBuffer
+    self.plasticityLayoutFlagBuffer = plasticityLayoutFlagBuffer
     self.unconditionalAcceptanceGateBuffer = unconditionalAcceptanceGateBuffer
     self.worldModelLevelRecords = worldModelLevelRecords
     self.visionObservationOffset = visionObservationOffset
@@ -484,7 +493,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
   public var residencyAllocations: [any MTLAllocation] {
     [
       uniformBuffer, worldModelDescriptorBuffer, plasticityRegionRangeBuffer,
-      unconditionalAcceptanceGateBuffer,
+      plasticityLayoutFlagBuffer, unconditionalAcceptanceGateBuffer,
     ]
   }
 
