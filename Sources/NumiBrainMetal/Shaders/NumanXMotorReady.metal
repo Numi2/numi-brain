@@ -197,7 +197,12 @@ static_assert(sizeof(NBNumanXMotorCandidateGPU) == 152);
 static_assert(sizeof(NBMotorOutputHeaderGPU) == 80);
 
 inline void nb_mix_byte(thread ulong &hash, uchar value) {
-  hash = (hash ^ ulong(value)) * NB_FNV_PRIME;
+  const uint low = uint(hash) ^ uint(value);
+  const uint high = uint(hash >> 32u);
+  // FNV prime is 2^40 + 435. Form the product modulo 2^64 from native
+  // 32-bit products, including the carry from low * 435.
+  hash = (ulong(high * 435u + (low << 8u) + mulhi(low, 435u)) << 32u)
+    | ulong(low * 435u);
 }
 
 inline void nb_mix_uint(thread ulong &hash, uint value) {
@@ -335,6 +340,87 @@ inline ulong nb_somatic_output_fingerprint(
     nb_mix_float(hash, commands[index]);
   }
   return hash;
+}
+
+struct NBDecisionSourceDigestGPU {
+  ulong fingerprint;
+  bool rangesValid;
+};
+
+inline NBDecisionSourceDigestGPU nb_decision_source_digest(
+  constant const NBNumanXDecisionReadyDispatchGPU &dispatch,
+  constant const NBNumanXUncertaintyPolicyGPU &policy,
+  device const NBControlHeaderGPU *controlHeader,
+  device const uchar *decisionBytes
+) {
+  NBDecisionSourceDigestGPU result{NB_FNV_OFFSET, true};
+  nb_mix_uint(result.fingerprint, 0x44454331u);
+  nb_mix_uint(result.fingerprint, dispatch.expected.rangeCount);
+  nb_mix_uint(result.fingerprint, policy.abiVersion);
+  nb_mix_uint(result.fingerprint, policy.flags);
+  nb_mix_float(result.fingerprint, policy.supervisionRequestThreshold);
+  nb_mix_float(result.fingerprint, policy.rootRejectionThreshold);
+  nb_mix_float(result.fingerprint, controlHeader[0].unsupportedUncertainty);
+  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
+    const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
+    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
+    if (end < ulong(range.byteOffset) || end > dispatch.sourceByteCount) {
+      result.rangesValid = false;
+      continue;
+    }
+    nb_mix_uint(result.fingerprint, index);
+    nb_mix_uint(result.fingerprint, range.byteOffset);
+    nb_mix_uint(result.fingerprint, range.byteCount);
+    nb_mix_bytes(result.fingerprint,
+      decisionBytes + ulong(range.byteOffset), ulong(range.byteCount));
+  }
+  if (result.fingerprint == 0ul) result.fingerprint = NB_FNV_OFFSET;
+  return result;
+}
+
+inline NBDecisionSourceDigestGPU nb_decision_source_digest_simd(
+  constant const NBNumanXDecisionReadyDispatchGPU &dispatch,
+  constant const NBNumanXUncertaintyPolicyGPU &policy,
+  device const NBControlHeaderGPU *controlHeader,
+  device const uchar *decisionBytes,
+  uint lane
+) {
+  NBDecisionSourceDigestGPU result{NB_FNV_OFFSET, true};
+  if (lane == 0u) {
+    nb_mix_uint(result.fingerprint, 0x44454331u);
+    nb_mix_uint(result.fingerprint, dispatch.expected.rangeCount);
+    nb_mix_uint(result.fingerprint, policy.abiVersion);
+    nb_mix_uint(result.fingerprint, policy.flags);
+    nb_mix_float(result.fingerprint, policy.supervisionRequestThreshold);
+    nb_mix_float(result.fingerprint, policy.rootRejectionThreshold);
+    nb_mix_float(result.fingerprint, controlHeader[0].unsupportedUncertainty);
+  }
+  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
+    const NBNumanXDecisionRangeGPU range = dispatch.ranges[index];
+    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
+    if (end < ulong(range.byteOffset) || end > dispatch.sourceByteCount) {
+      result.rangesValid = false;
+      continue;
+    }
+    if (lane == 0u) {
+      nb_mix_uint(result.fingerprint, index);
+      nb_mix_uint(result.fingerprint, range.byteOffset);
+      nb_mix_uint(result.fingerprint, range.byteCount);
+    }
+    const device uchar *bytes = decisionBytes + ulong(range.byteOffset);
+    for (ulong base = 0ul; base < ulong(range.byteCount); base += 32ul) {
+      const ulong byteIndex = base + ulong(lane);
+      const uchar loaded = byteIndex < ulong(range.byteCount)
+        ? bytes[byteIndex] : uchar(0u);
+      const uint limit = uint(min(ulong(range.byteCount) - base, 32ul));
+      for (uint offset = 0u; offset < limit; ++offset) {
+        const uchar value = simd_broadcast(loaded, offset);
+        if (lane == 0u) nb_mix_byte(result.fingerprint, value);
+      }
+    }
+  }
+  if (result.fingerprint == 0ul) result.fingerprint = NB_FNV_OFFSET;
+  return result;
 }
 
 kernel void numanx_apply_accepted_culture_action(
@@ -550,9 +636,87 @@ kernel void numanx_publish_motor_ready(
   device NBNumanXMotorReadyGateGPU *gate [[buffer(11)]],
   device const NBControlHeaderGPU *controlHeader [[buffer(12)]],
   constant NBNumanXUncertaintyPolicyGPU &uncertaintyPolicy [[buffer(13)]],
-  uint gid [[thread_position_in_grid]])
+  uint tid [[thread_index_in_threadgroup]],
+  uint3 lanesPerThreadgroup [[threads_per_threadgroup]])
 {
-  if (gid != 0u) return;
+  // Each long FNV chain retains its byte order. Independent chains run on
+  // separate SIMD groups so device loads and integer multiplies can overlap.
+  threadgroup ulong partialFingerprint[5];
+  threadgroup uint partialValid[2];
+  if (lanesPerThreadgroup.x >= 192u) {
+    if (tid == 0u) {
+      const NBMotorOutputHeaderGPU header = motorHeader[0];
+      partialFingerprint[0] = nb_somatic_output_fingerprint(
+        header, muscleCommands, expected.muscleCount
+      );
+    } else if (tid == 32u) {
+      partialFingerprint[1] = nb_range_fingerprint(
+        0x534f4d31u, descendingSomatic,
+        ulong(candidate.muscleExcitationByteCount)
+      );
+    } else if (tid == 64u) {
+      partialFingerprint[2] = nb_range_fingerprint(
+        0x41555431u, descendingAutonomic,
+        ulong(candidate.autonomicCommandByteCount)
+      );
+    } else if (tid == 96u) {
+      partialFingerprint[3] = nb_range_fingerprint(
+        0x41435431u, activeSensingCommands,
+        ulong(candidate.activeSensingCommandByteCount)
+      );
+    } else if (tid >= 128u && tid < 160u) {
+      const NBDecisionSourceDigestGPU digest = nb_decision_source_digest_simd(
+        decisionExpected, uncertaintyPolicy, controlHeader, decisionBytes,
+        tid - 128u
+      );
+      if (tid == 128u) {
+        partialFingerprint[4] = digest.fingerprint;
+        partialValid[0] = digest.rangesValid ? 1u : 0u;
+      }
+    } else if (tid == 160u) {
+      bool commandsValid = true;
+      const NBMotorOutputHeaderGPU header = motorHeader[0];
+      for (uint index = 0u; index < expected.muscleCount; ++index) {
+        const float command = muscleCommands[index];
+        commandsValid = commandsValid && isfinite(command)
+          && command >= header.outputMinimum
+          && command <= header.outputMaximum;
+      }
+      partialValid[1] = commandsValid ? 1u : 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  } else if (tid == 0u) {
+    const NBMotorOutputHeaderGPU header = motorHeader[0];
+    partialFingerprint[0] = nb_somatic_output_fingerprint(
+      header, muscleCommands, expected.muscleCount
+    );
+    partialFingerprint[1] = nb_range_fingerprint(
+      0x534f4d31u, descendingSomatic,
+      ulong(candidate.muscleExcitationByteCount)
+    );
+    partialFingerprint[2] = nb_range_fingerprint(
+      0x41555431u, descendingAutonomic,
+      ulong(candidate.autonomicCommandByteCount)
+    );
+    partialFingerprint[3] = nb_range_fingerprint(
+      0x41435431u, activeSensingCommands,
+      ulong(candidate.activeSensingCommandByteCount)
+    );
+    const NBDecisionSourceDigestGPU digest = nb_decision_source_digest(
+      decisionExpected, uncertaintyPolicy, controlHeader, decisionBytes
+    );
+    partialFingerprint[4] = digest.fingerprint;
+    partialValid[0] = digest.rangesValid ? 1u : 0u;
+    bool commandsValid = true;
+    for (uint index = 0u; index < expected.muscleCount; ++index) {
+      const float command = muscleCommands[index];
+      commandsValid = commandsValid && isfinite(command)
+        && command >= header.outputMinimum
+        && command <= header.outputMaximum;
+    }
+    partialValid[1] = commandsValid ? 1u : 0u;
+  }
+  if (tid != 0u) return;
   NBNumanXMotorReadyGateGPU output = expected;
   const NBNumanXDecisionReadyGateGPU decisionPending =
     decisionExpected.expected;
@@ -560,31 +724,11 @@ kernel void numanx_publish_motor_ready(
   const NBMotorOutputHeaderGPU header = motorHeader[0];
   const NBNumanXMotorCandidateGPU candidateValue = candidate;
   const ulong candidateFingerprint = nb_candidate_fingerprint(candidateValue);
-  const ulong somaticFingerprint = nb_somatic_output_fingerprint(
-    header, muscleCommands, expected.muscleCount
-  );
-  const ulong descendingFingerprint = nb_range_fingerprint(
-    0x534f4d31u,
-    descendingSomatic,
-    ulong(candidate.muscleExcitationByteCount)
-  );
-  const ulong autonomicFingerprint = nb_range_fingerprint(
-    0x41555431u,
-    descendingAutonomic,
-    ulong(candidate.autonomicCommandByteCount)
-  );
-  const ulong activeSensingFingerprint = nb_range_fingerprint(
-    0x41435431u,
-    activeSensingCommands,
-    ulong(candidate.activeSensingCommandByteCount)
-  );
-  bool commandsValid = true;
-  for (uint index = 0u; index < expected.muscleCount; ++index) {
-    const float command = muscleCommands[index];
-    commandsValid = commandsValid && isfinite(command)
-      && command >= header.outputMinimum
-      && command <= header.outputMaximum;
-  }
+  const ulong somaticFingerprint = partialFingerprint[0];
+  const ulong descendingFingerprint = partialFingerprint[1];
+  const ulong autonomicFingerprint = partialFingerprint[2];
+  const ulong activeSensingFingerprint = partialFingerprint[3];
+  const bool commandsValid = partialValid[1] != 0u;
   const bool decisionExpectedValid =
     decisionPending.abiVersion == NB_NUMANX_READY_ABI_VERSION
     && decisionPending.structBytes == NB_NUMANX_DECISION_GATE_BYTES
@@ -601,49 +745,14 @@ kernel void numanx_publish_motor_ready(
     && decisionPending.autonomicCommandFingerprint == 0ul
     && decisionPending.activeSensingCommandFingerprint == 0ul
     && decisionPending.gateFingerprint == nb_record_fingerprint(decisionPending);
-  bool decisionSourceValid = decisionExpectedValid;
-  ulong decisionOutputFingerprint = NB_FNV_OFFSET;
-  nb_mix_uint(decisionOutputFingerprint, 0x44454331u);
-  nb_mix_uint(decisionOutputFingerprint, decisionPending.rangeCount);
-  nb_mix_uint(decisionOutputFingerprint, uncertaintyPolicy.abiVersion);
-  nb_mix_uint(decisionOutputFingerprint, uncertaintyPolicy.flags);
-  nb_mix_float(
-    decisionOutputFingerprint,
-    uncertaintyPolicy.supervisionRequestThreshold
-  );
-  nb_mix_float(
-    decisionOutputFingerprint,
-    uncertaintyPolicy.rootRejectionThreshold
-  );
-  nb_mix_float(
-    decisionOutputFingerprint,
-    controlHeader[0].unsupportedUncertainty
-  );
-  for (uint index = 0u; index < NB_NUMANX_DECISION_MAX_RANGES; ++index) {
-    const NBNumanXDecisionRangeGPU range = decisionExpected.ranges[index];
-    const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
-    if (end < ulong(range.byteOffset)
-        || end > decisionExpected.sourceByteCount) {
-      decisionSourceValid = false;
-      continue;
-    }
-    nb_mix_uint(decisionOutputFingerprint, index);
-    nb_mix_uint(decisionOutputFingerprint, range.byteOffset);
-    nb_mix_uint(decisionOutputFingerprint, range.byteCount);
-    nb_mix_bytes(
-      decisionOutputFingerprint,
-      decisionBytes + ulong(range.byteOffset),
-      ulong(range.byteCount)
-    );
-  }
+  const bool decisionSourceValid =
+    decisionExpectedValid && partialValid[0] != 0u;
+  const ulong decisionOutputFingerprint = partialFingerprint[4];
   const bool uncertaintyPolicyEnabled =
     decisionPending.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND
     && uncertaintyPolicy.abiVersion
       == NB_NUMANX_UNCERTAINTY_POLICY_ABI_VERSION
     && uncertaintyPolicy.flags == NB_NUMANX_DECISION_UNCERTAINTY_POLICY_BOUND;
-  if (decisionOutputFingerprint == 0ul) {
-    decisionOutputFingerprint = NB_FNV_OFFSET;
-  }
   const bool decisionValid = decisionSourceValid
     && decision.abiVersion == NB_NUMANX_READY_ABI_VERSION
     && decision.structBytes == NB_NUMANX_DECISION_GATE_BYTES

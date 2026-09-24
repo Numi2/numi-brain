@@ -1177,9 +1177,11 @@ final class MetalNumanXMotorReadyRuntime {
       evaluation.decisionEvaluation.uncertaintyPolicyBuffer.gpuAddress,
       index: 13
     )
+    let motorLaneCount = motorPipeline.threadExecutionWidth == 32
+      && motorPipeline.maxTotalThreadsPerThreadgroup >= 192 ? 192 : 1
     try encoder.dispatch(pipeline: motorPipeline, argumentTable: motorArguments,
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      threadsPerGrid: MTLSize(width: motorLaneCount, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: motorLaneCount, height: 1, depth: 1)
     )
   }
 
