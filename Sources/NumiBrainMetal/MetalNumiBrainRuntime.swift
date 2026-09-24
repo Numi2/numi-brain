@@ -582,6 +582,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       case numanXApplySubmitted
       case numanXAppliedValidationRetryRequired
       case acceptedConsequenceSubmitted
+      case borrowedDecisionEncoded
       case borrowedMotorEncoded
       case borrowedConsequenceEncoded
       case borrowedEncodingFailed
@@ -685,6 +686,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
 
     fileprivate let cognitiveTransaction: MetalJointAgentStateTransaction
+    fileprivate var borrowedDecisionLease: MetalEmbodiedBrainRuntime.NumanXSomaticBufferLease?
     fileprivate var borrowedMotor: BorrowedMotorCommand?
     fileprivate var asyncSubmissionIdentifier: UUID?
     fileprivate var provisionalFastSubmissionIdentifier: UUID?
@@ -1286,6 +1288,61 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     }
   }
 
+  /// Profiles the cognitive half on the physical owner's first encoder.
+  /// The following borrowed encoder must finish this same open transaction.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedMotorDecision(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder, rawSensors: [MetalRawSensorBufferLease]) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .open)
+    do {
+      transaction.borrowedDecisionLease = try cognitive.encodeBorrowedDecision(
+        transaction: transaction.cognitiveTransaction, encoder: encoder,
+        rawSensors: rawSensors,
+        regionalRecurrentInput: fastTissue.committedRegionalRecurrentBufferView(),
+        additionalAllocations: fastTissue.borrowedResidencyAllocations)
+      transaction.status = .borrowedDecisionEncoded
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
+  /// Completes the same physical motor command after the cognitive encoder.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedMotorAfterDecision(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder) throws -> BorrowedMotorCommand {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .borrowedDecisionEncoded)
+    guard let lease = transaction.borrowedDecisionLease else {
+      transaction.status = .borrowedEncodingFailed
+      throw TissueError.transaction("borrowed decision lease is missing")
+    }
+    do {
+      let decisionGate = try cognitive.encodeBorrowedDecisionReady(
+        transaction: transaction.cognitiveTransaction, lease: lease, encoder: encoder)
+      let motor = try fastTissue.encodeBorrowedNumanXMotorCandidate(
+        encoder: encoder, commandLease: lease, decisionEvaluation: decisionGate,
+        transaction: transaction.token,
+        candidateDurationMicroseconds: transaction.token.targetTimestamp.rawValue
+          - transaction.token.committedTimestamp.rawValue)
+      let result = BorrowedMotorCommand(substep: motor.fastSystems.substep,
+        candidate: motor.candidate, buffers: motor.buffers,
+        motorReadyGate: motor.evaluation.lease, evaluation: motor.evaluation)
+      transaction.decision = lease.decision
+      transaction.activeSubstep = result.substep
+      transaction.borrowedMotor = result
+      transaction.borrowedDecisionLease = nil
+      transaction.status = .borrowedMotorEncoded
+      return result
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
   private var borrowedHumanMotorWriter: MetalBorrowedHumanMotorWriter?
 
   /// Writes validated protected excitation into native MRMujocoMuscleStateGPU.x
@@ -1382,7 +1439,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     guard activeTransaction === transaction,
-      transaction.status == .borrowedMotorEncoded
+      transaction.status == .borrowedDecisionEncoded
+        || transaction.status == .borrowedMotorEncoded
         || transaction.status == .borrowedConsequenceEncoded
         || transaction.status == .borrowedEncodingFailed else {
       throw TissueError.transaction("borrowed control is not active")
