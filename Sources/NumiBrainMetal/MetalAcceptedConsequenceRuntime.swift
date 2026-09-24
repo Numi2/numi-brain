@@ -1406,7 +1406,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     try dispatch(
       encoder,
       pipeline: pipelines[3],
-      count: 1
+      count: 32
     )
     barrier(encoder)
     try dispatch(

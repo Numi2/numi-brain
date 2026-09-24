@@ -3309,7 +3309,6 @@ kernel void broadcast_accepted_prediction_error(
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
-  if (gid != 0u) return;
   device const float *observations = reinterpret_cast<device const float *>(
     hot_state + uniforms.observation_offset
   );
@@ -3319,26 +3318,142 @@ kernel void broadcast_accepted_prediction_error(
   device const float *world = reinterpret_cast<device const float *>(
     hot_state + uniforms.world_model_offset
   );
-  const float error = max(
-    nb_mean_prediction_error(observations, validity, world, uniforms),
-    nb_mean_sensorimotor_prediction_error(world, uniforms.world_model_count)
-  );
-  const float epistemic = nb_mean_epistemic_disagreement(
-    world, uniforms.world_model_count
-  );
-  const float aleatoric = nb_mean_aleatoric_uncertainty(
-    world, uniforms.world_model_count
-  );
   device const uchar *muscle_bytes = hot_state + uniforms.muscle_belief_offset;
+  // Prepare independent receptor and muscle terms in one SIMD group. Lane zero
+  // still folds every term in the original order, preserving the accepted
+  // neuromodulation and control values bit for bit.
+  const bool prepared = uniforms.muscle_count <= 512u;
+  const bool structured_world = uniforms.world_model_count
+    >= 9u * NB_WORLD_RECEPTOR_DIMENSION;
+  const uint prediction_count = structured_world
+    ? (uniforms.observation_count > 0u ? NB_WORLD_RECEPTOR_DIMENSION : 0u)
+    : min(min(uniforms.observation_count, uniforms.world_model_count), 256u);
+  const bool has_sensorimotor = uniforms.world_model_count
+    >= NB_WORLD_SENSORIMOTOR_BASE + 9u * NB_WORLD_SENSORIMOTOR_DIMENSION;
+  threadgroup float prediction_terms[256];
+  threadgroup uint prediction_valid[256];
+  threadgroup float sensorimotor_terms[NB_WORLD_SENSORIMOTOR_DIMENSION];
+  threadgroup float epistemic_terms[
+    NB_WORLD_RECEPTOR_DIMENSION * NB_WORLD_HEAD_COUNT];
+  threadgroup float aleatoric_terms[NB_WORLD_RECEPTOR_DIMENSION];
+  threadgroup float agency_terms[512];
+  threadgroup float disturbance_terms[512];
+  if (prepared) {
+    for (uint index = gid; index < prediction_count; index += 32u) {
+      float prediction = world[index];
+      if (structured_world) {
+        prediction = 0.0f;
+        for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+          prediction += world[
+            (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+          ] / float(NB_WORLD_HEAD_COUNT);
+        }
+      }
+      bool is_valid = false;
+      const float observed = structured_world
+        ? nb_world_observation(
+            observations, validity, uniforms, index, is_valid
+          )
+        : nb_valid_observation(
+            observations, validity, 0u, uniforms.observation_count,
+            index, is_valid
+          );
+      prediction_valid[index] = is_valid ? 1u : 0u;
+      prediction_terms[index] = is_valid ? abs(observed - prediction) : 0.0f;
+    }
+    if (has_sensorimotor) {
+      const uint error_base = NB_WORLD_SENSORIMOTOR_BASE
+        + NB_WORLD_SENSORIMOTOR_DIMENSION;
+      for (uint index = gid; index < NB_WORLD_SENSORIMOTOR_DIMENSION;
+          index += 32u) {
+        sensorimotor_terms[index] = abs(world[error_base + index]);
+      }
+    }
+    if (structured_world) {
+      for (uint index = gid; index < NB_WORLD_RECEPTOR_DIMENSION;
+          index += 32u) {
+        float mean = 0.0f;
+        for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+          mean += world[(3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index]
+            / float(NB_WORLD_HEAD_COUNT);
+        }
+        for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+          const float difference = world[
+            (3u + head) * NB_WORLD_RECEPTOR_DIMENSION + index
+          ] - mean;
+          epistemic_terms[index * NB_WORLD_HEAD_COUNT + head] =
+            difference * difference / float(NB_WORLD_HEAD_COUNT);
+        }
+        aleatoric_terms[index] = max(
+          world[8u * NB_WORLD_RECEPTOR_DIMENSION + index], 0.0f
+        );
+      }
+    }
+    for (uint index = gid; index < uniforms.muscle_count; index += 32u) {
+      device const float *muscle = reinterpret_cast<device const float *>(
+        muscle_bytes + ulong(index) * 192ul
+      );
+      const float denominator = float(max(uniforms.muscle_count, 1u));
+      agency_terms[index] = muscle[8] / denominator;
+      disturbance_terms[index] = muscle[9] / denominator;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (gid != 0u) return;
+  float error = 0.0f;
+  float epistemic = 0.0f;
+  float aleatoric = 0.0f;
   float mean_agency = 0.0f;
   float mean_external_disturbance = 0.0f;
-  for (uint index = 0u; index < uniforms.muscle_count; ++index) {
-    device const float *muscle = reinterpret_cast<device const float *>(
-      muscle_bytes + ulong(index) * 192ul
+  if (prepared) {
+    float prediction_total = 0.0f;
+    uint valid_count = 0u;
+    for (uint index = 0u; index < prediction_count; ++index) {
+      if (prediction_valid[index] == 0u) continue;
+      prediction_total += prediction_terms[index];
+      valid_count += 1u;
+    }
+    const float prediction_error = valid_count > 0u
+      ? prediction_total / float(valid_count) : 0.0f;
+    float sensorimotor_error = 0.0f;
+    if (has_sensorimotor) {
+      for (uint index = 0u; index < NB_WORLD_SENSORIMOTOR_DIMENSION;
+          ++index) sensorimotor_error += sensorimotor_terms[index];
+      sensorimotor_error /= float(NB_WORLD_SENSORIMOTOR_DIMENSION);
+    }
+    error = max(prediction_error, sensorimotor_error);
+    if (structured_world) {
+      float variance_total = 0.0f;
+      float aleatoric_total = 0.0f;
+      for (uint index = 0u; index < NB_WORLD_RECEPTOR_DIMENSION; ++index) {
+        for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+          variance_total += epistemic_terms[
+            index * NB_WORLD_HEAD_COUNT + head];
+        }
+        aleatoric_total += aleatoric_terms[index];
+      }
+      epistemic = sqrt(variance_total / float(NB_WORLD_RECEPTOR_DIMENSION));
+      aleatoric = sqrt(aleatoric_total / float(NB_WORLD_RECEPTOR_DIMENSION));
+    }
+    for (uint index = 0u; index < uniforms.muscle_count; ++index) {
+      mean_agency += agency_terms[index];
+      mean_external_disturbance += disturbance_terms[index];
+    }
+  } else {
+    error = max(
+      nb_mean_prediction_error(observations, validity, world, uniforms),
+      nb_mean_sensorimotor_prediction_error(world, uniforms.world_model_count)
     );
-    mean_agency += muscle[8] / float(max(uniforms.muscle_count, 1u));
-    mean_external_disturbance += muscle[9]
-      / float(max(uniforms.muscle_count, 1u));
+    epistemic = nb_mean_epistemic_disagreement(world, uniforms.world_model_count);
+    aleatoric = nb_mean_aleatoric_uncertainty(world, uniforms.world_model_count);
+    for (uint index = 0u; index < uniforms.muscle_count; ++index) {
+      device const float *muscle = reinterpret_cast<device const float *>(
+        muscle_bytes + ulong(index) * 192ul
+      );
+      mean_agency += muscle[8] / float(max(uniforms.muscle_count, 1u));
+      mean_external_disturbance += muscle[9]
+        / float(max(uniforms.muscle_count, 1u));
+    }
   }
   device NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device NBNeuromodulatorRecord *>(
