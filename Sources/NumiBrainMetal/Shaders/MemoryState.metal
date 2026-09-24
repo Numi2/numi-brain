@@ -4904,10 +4904,9 @@ kernel void journal_committed_learning_transition(
   threadgroup uint sketch_valid[1024];
   threadgroup float modality_sums[8][3];
   threadgroup uint modality_valid_count[8];
-  // Stage each accepted plasticity site across SIMD lanes, then fold the
-  // prepared terms on lane zero in original source order. This preserves the
-  // learner record's floating-point accumulation while avoiding thousands of
-  // serial device loads and scalar transformations on one GPU lane.
+  // Stage each accepted plasticity site across SIMD lanes. Twelve lanes then
+  // fold independent trace components in original site order, retaining each
+  // learner statistic's exact floating-point accumulation sequence.
   // The modality sketch has completed before the plasticity pass. Its
   // 3,072-float scratch exactly fits 256 sites x 12 prepared terms, so reuse
   // it instead of reserving another 12 KiB of scarce threadgroup memory.
@@ -4982,10 +4981,7 @@ kernel void journal_committed_learning_transition(
     reinterpret_cast<device const NBFastPlasticityRecord *>(
       output_hot_state + uniforms.fast_plasticity_offset
     );
-  if (gid == 0u) {
-    for (uint component = 0u; component < 12u; ++component)
-      plastic_trace[component] = 0.0f;
-  }
+  float component_trace = 0.0f;
   for (uint base = 0u; base < uniforms.fast_plasticity_count;
       base += 256u) {
     const uint count = min(uniforms.fast_plasticity_count - base, 256u);
@@ -5010,14 +5006,13 @@ kernel void journal_committed_learning_transition(
       plastic_terms[12u * local + 11u] = abs(eligibility_delta);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (gid == 0u) {
-      for (uint local = 0u; local < count; ++local) {
-        for (uint component = 0u; component < 12u; ++component)
-          plastic_trace[component] += plastic_terms[12u * local + component];
-      }
-    }
+    if (gid < 12u)
+      for (uint local = 0u; local < count; ++local)
+        component_trace += plastic_terms[12u * local + gid];
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
+  if (gid < 12u) plastic_trace[gid] = component_trace;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
   if (gid != 0u) return;
   // These are the exact accepted cortical somatic-synergy coordinates, not an
   // arbitrary prefix of the decoded muscle excitation vector. The learner's
