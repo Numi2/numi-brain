@@ -1597,7 +1597,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     rawSensors: [MetalRawSensorBufferLease],
     acceptedRegionalRecurrentInput: MetalRegionalRecurrentBufferView,
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease,
-    additionalAllocations: [any MTLAllocation] = []
+    additionalAllocations: [any MTLAllocation] = [],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil
   ) throws {
     lock.lock()
     defer { lock.unlock() }
@@ -1618,12 +1619,21 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       allocations.append(sensor.buffer)
       if let validity = sensor.validityBuffer { allocations.append(validity) }
     }
-    let commands = try borrowedConsequenceEncoder(encoder, allocations: allocations)
+    var activeEncoder = encoder
+    var commands = try borrowedConsequenceEncoder(activeEncoder,
+      allocations: allocations)
+    func advance(_ stage: String) throws {
+      guard let nextPhase else { return }
+      activeEncoder = try nextPhase(stage)
+      commands = try borrowedConsequenceEncoder(activeEncoder,
+        allocations: allocations)
+    }
     commands.barrier()
     try encodeAcceptedFastMotorImport(acceptedFastMotorState, transaction: transaction, encoder: commands)
     let developmentalEvidence: MetalDevelopmentalEvidenceBufferLease? = nil
     let teacherState: MetalTeacherStateBufferLease? = nil
     commands.barrier()
+      try advance("brain_accepted_cognitive_sensory")
       let sensory = try sensoryRuntime.encode(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1636,6 +1646,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         deltaMicroseconds: UInt32(duration)
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_regional")
       try cognitiveRuntime.encodeAcceptedRegionalRecurrentIngest(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1644,6 +1655,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         regionalRecurrentInput: acceptedRegionalRecurrentInput
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_consequence")
       try acceptedConsequenceRuntime.encode(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1653,6 +1665,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         acceptedFastMotorState: acceptedFastMotorState
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_belief")
       try cognitiveRuntime.encodeAcceptedBeliefAssimilation(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1661,6 +1674,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         receptorEventCapacity: sensory.eventCapacity
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_development")
       try developmentalRuntime.encodeAcceptedProgress(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1669,24 +1683,28 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         evidence: developmentalEvidence
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_reconsolidation")
       try memoryRuntime.encodeAcceptedReconsolidation(
         encoder: commands,
         transaction: transaction.agentStateToken,
         timestamp: acceptedPhysicsState.acceptedTimestamp
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_prospective")
       try memoryRuntime.encodeProspectiveLifecycle(
         encoder: commands,
         transaction: transaction.agentStateToken,
         timestamp: acceptedPhysicsState.acceptedTimestamp
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_rest")
       try memoryRuntime.encodeRestConsolidation(
         encoder: commands,
         transaction: transaction.agentStateToken,
         timestamp: acceptedPhysicsState.acceptedTimestamp
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_segmentation")
       try memoryRuntime.encodeEpisodicSegmentation(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1695,6 +1713,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         timestamp: acceptedPhysicsState.acceptedTimestamp
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_transition")
       try memoryRuntime.encodeCommittedTransition(
         encoder: commands,
         transaction: transaction.agentStateToken,
@@ -1705,6 +1724,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         teacherState: teacherState
       )
       commands.barrier()
+      try advance("brain_accepted_cognitive_counterfactual")
       try memoryRuntime.encodeCommittedCounterfactuals(
         encoder: commands,
         transaction: transaction.agentStateToken,

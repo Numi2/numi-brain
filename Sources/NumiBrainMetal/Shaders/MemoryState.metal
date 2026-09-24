@@ -4904,6 +4904,15 @@ kernel void journal_committed_learning_transition(
   threadgroup uint sketch_valid[1024];
   threadgroup float modality_sums[8][3];
   threadgroup uint modality_valid_count[8];
+  // Stage each accepted plasticity site across SIMD lanes, then fold the
+  // prepared terms on lane zero in original source order. This preserves the
+  // learner record's floating-point accumulation while avoiding thousands of
+  // serial device loads and scalar transformations on one GPU lane.
+  // The modality sketch has completed before the plasticity pass. Its
+  // 3,072-float scratch exactly fits 256 sites x 12 prepared terms, so reuse
+  // it instead of reserving another 12 KiB of scarce threadgroup memory.
+  threadgroup float *plastic_terms = &sketch_terms[0][0];
+  threadgroup float plastic_trace[12];
   const uint modality_count = min(uniforms.modality_count, 8u);
   for (uint modality_slot = 0u; modality_slot < modality_count;
       ++modality_slot) {
@@ -4965,6 +4974,50 @@ kernel void journal_committed_learning_transition(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
+  device const NBFastPlasticityRecord *prior_plasticity =
+    reinterpret_cast<device const NBFastPlasticityRecord *>(
+      input_hot_state + uniforms.fast_plasticity_offset
+    );
+  device const NBFastPlasticityRecord *accepted_plasticity =
+    reinterpret_cast<device const NBFastPlasticityRecord *>(
+      output_hot_state + uniforms.fast_plasticity_offset
+    );
+  if (gid == 0u) {
+    for (uint component = 0u; component < 12u; ++component)
+      plastic_trace[component] = 0.0f;
+  }
+  for (uint base = 0u; base < uniforms.fast_plasticity_count;
+      base += 256u) {
+    const uint count = min(uniforms.fast_plasticity_count - base, 256u);
+    for (uint local = gid; local < count; local += 32u) {
+      const NBFastPlasticityRecord prior_site = prior_plasticity[base + local];
+      const NBFastPlasticityRecord accepted_site = accepted_plasticity[base + local];
+      const float coefficient_delta =
+        accepted_site.coefficient - prior_site.coefficient;
+      const float eligibility_delta =
+        accepted_site.eligibility - prior_site.eligibility;
+      plastic_terms[12u * local + 0u] = accepted_site.coefficient;
+      plastic_terms[12u * local + 1u] = abs(accepted_site.coefficient);
+      plastic_terms[12u * local + 2u] = accepted_site.eligibility;
+      plastic_terms[12u * local + 3u] = abs(accepted_site.eligibility);
+      plastic_terms[12u * local + 4u] = accepted_site.coefficient_retention;
+      plastic_terms[12u * local + 5u] = accepted_site.eligibility_retention;
+      plastic_terms[12u * local + 6u] = accepted_site.learning_rate;
+      plastic_terms[12u * local + 7u] = accepted_site.maximum_magnitude;
+      plastic_terms[12u * local + 8u] = coefficient_delta;
+      plastic_terms[12u * local + 9u] = abs(coefficient_delta);
+      plastic_terms[12u * local + 10u] = eligibility_delta;
+      plastic_terms[12u * local + 11u] = abs(eligibility_delta);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      for (uint local = 0u; local < count; ++local) {
+        for (uint component = 0u; component < 12u; ++component)
+          plastic_trace[component] += plastic_terms[12u * local + component];
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   if (gid != 0u) return;
   // These are the exact accepted cortical somatic-synergy coordinates, not an
   // arbitrary prefix of the decoded muscle excitation vector. The learner's
@@ -5023,14 +5076,6 @@ kernel void journal_committed_learning_transition(
   device const NBNeuromodulatorRecord *neuromodulators =
     reinterpret_cast<device const NBNeuromodulatorRecord *>(
       output_hot_state + uniforms.neuromodulation_offset
-    );
-  device const NBFastPlasticityRecord *prior_plasticity =
-    reinterpret_cast<device const NBFastPlasticityRecord *>(
-      input_hot_state + uniforms.fast_plasticity_offset
-    );
-  device const NBFastPlasticityRecord *accepted_plasticity =
-    reinterpret_cast<device const NBFastPlasticityRecord *>(
-      output_hot_state + uniforms.fast_plasticity_offset
     );
   device const NBRegionalPlasticModulationRecord *regional_plasticity =
     reinterpret_cast<device const NBRegionalPlasticModulationRecord *>(
@@ -5484,26 +5529,8 @@ kernel void journal_committed_learning_transition(
   // Compress the accepted local plastic state and its actual within-root
   // change into a fixed meta-learning target. No per-agent coefficient becomes
   // a shared parameter; only these bounded statistics enter the slow learner.
-  for (uint index = 0u; index < uniforms.fast_plasticity_count; ++index) {
-    const NBFastPlasticityRecord prior_site = prior_plasticity[index];
-    const NBFastPlasticityRecord accepted_site = accepted_plasticity[index];
-    record.fast_plasticity_trace[0] += accepted_site.coefficient;
-    record.fast_plasticity_trace[1] += abs(accepted_site.coefficient);
-    record.fast_plasticity_trace[2] += accepted_site.eligibility;
-    record.fast_plasticity_trace[3] += abs(accepted_site.eligibility);
-    record.fast_plasticity_trace[4] += accepted_site.coefficient_retention;
-    record.fast_plasticity_trace[5] += accepted_site.eligibility_retention;
-    record.fast_plasticity_trace[6] += accepted_site.learning_rate;
-    record.fast_plasticity_trace[7] += accepted_site.maximum_magnitude;
-    const float coefficient_delta =
-      accepted_site.coefficient - prior_site.coefficient;
-    const float eligibility_delta =
-      accepted_site.eligibility - prior_site.eligibility;
-    record.fast_plasticity_trace[8] += coefficient_delta;
-    record.fast_plasticity_trace[9] += abs(coefficient_delta);
-    record.fast_plasticity_trace[10] += eligibility_delta;
-    record.fast_plasticity_trace[11] += abs(eligibility_delta);
-  }
+  for (uint component = 0u; component < 12u; ++component)
+    record.fast_plasticity_trace[component] = plastic_trace[component];
   if (uniforms.fast_plasticity_count > 0u) {
     const float inverse_count = 1.0f / float(uniforms.fast_plasticity_count);
     for (uint component = 0u; component < 12u; ++component) {

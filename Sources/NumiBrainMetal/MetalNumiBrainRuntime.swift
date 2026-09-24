@@ -1463,7 +1463,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   @_spi(NumanXInterop)
   public func encodeBorrowedAcceptedCognitive(_ transaction: ControlTransaction,
     encoder: any MTLComputeCommandEncoder,
-    rawSensors: [MetalRawSensorBufferLease]) throws {
+    rawSensors: [MetalRawSensorBufferLease],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .borrowedAcceptedFastEncoded)
@@ -1479,7 +1480,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         transaction: transaction.cognitiveTransaction, encoder: encoder,
         acceptedPhysicsState: accepted, rawSensors: rawSensors,
         acceptedRegionalRecurrentInput: recurrence, acceptedFastMotorState: fastState,
-        additionalAllocations: fastTissue.borrowedResidencyAllocations)
+        additionalAllocations: fastTissue.borrowedResidencyAllocations,
+        nextPhase: nextPhase)
       transaction.activeSubstep = nil
       transaction.status = .borrowedConsequenceEncoded
     } catch {

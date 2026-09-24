@@ -493,14 +493,36 @@ private final class StandingBridge {
   }
 
   func encodeAcceptedCognitive(encoder: any MTLComputeCommandEncoder,
-    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32) throws {
+    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
     guard let pending, let accepted = pendingAccepted,
       accepted.physicsGeneration == brain.committedGeneration + 1 else {
       throw BrainRuntimeError.transaction("standing cognitive consequence lacks accepted fast state")
     }
     let timestamp = epochMicroseconds + accepted.physicsGeneration * UInt64(timestepMicroseconds)
     let input = try sensors(receptors, count: count, timestamp: timestamp)
-    try brain.encodeBorrowedAcceptedCognitive(pending, encoder: encoder, rawSensors: input)
+    try brain.encodeBorrowedAcceptedCognitive(pending, encoder: encoder,
+      rawSensors: input, nextPhase: nextPhase)
+  }
+
+  func encodeAcceptedCognitivePhased(commandBuffer: any MTLCommandBuffer,
+    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32) throws {
+    let step = brain.committedGeneration
+    var active: (any MTLComputeCommandEncoder)? = try timedMotorEncoder(
+      commandBuffer: commandBuffer, stage: "brain_accepted_cognitive_import", step: step)
+    defer { active?.endEncoding() }
+    guard let first = active else {
+      throw BrainRuntimeError.transaction("standing cognitive first encoder is missing")
+    }
+    try encodeAcceptedCognitive(encoder: first, receptors: receptors,
+      count: count, nextPhase: { stage in
+        active?.endEncoding()
+        active = nil
+        let next = try self.timedMotorEncoder(commandBuffer: commandBuffer,
+          stage: stage, step: step)
+        active = next
+        return next
+      })
   }
 
   func publish(start: Double, end: Double) throws {
@@ -704,6 +726,23 @@ public func nbHumanStandingEncodeAcceptedCognitive(_ handle: UnsafeMutableRawPoi
     else { throw BrainRuntimeError.transaction("standing accepted cognitive encoder is missing") }
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeAcceptedCognitive(encoder: metalEncoder, receptors: receptors, count: receptorCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_accepted_cognitive_phased_v1")
+public func nbHumanStandingEncodeAcceptedCognitivePhased(
+  _ handle: UnsafeMutableRawPointer?, _ commandBuffer: UnsafeMutableRawPointer?,
+  _ receptors: UnsafePointer<NBHumanStandingReceptor>?, _ receptorCount: UInt32,
+  _ errorBuffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let commandBuffer,
+      let metalCommand = Unmanaged<AnyObject>.fromOpaque(commandBuffer).takeUnretainedValue() as? any MTLCommandBuffer
+    else { throw BrainRuntimeError.transaction("standing phased cognitive command is missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeAcceptedCognitivePhased(commandBuffer: metalCommand,
+        receptors: receptors, count: receptorCount)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
 }
