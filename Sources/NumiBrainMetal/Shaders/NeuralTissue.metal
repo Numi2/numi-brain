@@ -3353,11 +3353,15 @@ kernel void map_protective_motor_output(
     device const NBSomaticActuatorDescriptorABI *actuatorDescriptors
         [[buffer(18)]],
     device const float *somaticSynergyDecoder [[buffer(19)]],
-    uint threadIndex [[thread_position_in_grid]]
+    uint lane [[thread_index_in_threadgroup]],
+    uint3 lanesPerThreadgroup [[threads_per_threadgroup]]
 ) {
-    if (threadIndex != 0u) {
-        return;
-    }
+    threadgroup NBProtectiveCommandABI sharedCommand;
+    threadgroup uint sharedOscillatorCount;
+    threadgroup uint sharedReflexRuleCount;
+    threadgroup uint sharedHasLocalizedWithdrawalSource;
+    threadgroup uint laneFlags[512];
+    if (lane == 0u) {
     NBProtectiveCommandABI command = commandBuffer[0];
     const uint oscillatorCount = (cpgUniforms->flags & 1u) != 0u
         ? min(cpgUniforms->oscillator_count, 64u)
@@ -3604,18 +3608,28 @@ kernel void map_protective_motor_output(
                 sourceInhibitionMask[sourceIndex] != 0u;
         }
     }
+    sharedCommand = command;
+    sharedOscillatorCount = oscillatorCount;
+    sharedReflexRuleCount = reflexRuleCount;
+    sharedHasLocalizedWithdrawalSource = hasLocalizedWithdrawalSource ? 1u : 0u;
+    }
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    const NBProtectiveCommandABI command = sharedCommand;
+    const uint oscillatorCount = sharedOscillatorCount;
+    const uint reflexRuleCount = sharedReflexRuleCount;
+    const bool hasLocalizedWithdrawalSource =
+        sharedHasLocalizedWithdrawalSource != 0u;
+    const bool emergencyStop =
+        (command.flags & NBProtectiveCommandFlagEmergencyStop) != 0u;
     bool hasLocalizedSourceInhibition = false;
     bool hasInvalidDescendingSource = false;
-    float outputMinimum = actuatorDescriptors[0].output_minimum;
-    float outputMaximum = actuatorDescriptors[0].output_maximum;
-    for (uint index = 0u; index < uniforms->muscle_count; ++index) {
+    for (uint index = lane; index < uniforms->muscle_count;
+         index += lanesPerThreadgroup.x) {
         hasInvalidDescendingSource = hasInvalidDescendingSource ||
             !isfinite(descendingSomaticExcitations[index]);
         const NBMotorChannelDescriptorABI channel = channels[index];
         const NBSomaticActuatorDescriptorABI actuator =
             actuatorDescriptors[index];
-        outputMinimum = min(outputMinimum, actuator.output_minimum);
-        outputMaximum = max(outputMaximum, actuator.output_maximum);
         const NBMuscleAttachmentRecordABI attachment = attachments[index];
         bool sharesLocalizedWithdrawalEndpoint = false;
         if (hasLocalizedWithdrawalSource &&
@@ -3769,6 +3783,26 @@ kernel void map_protective_motor_output(
         muscleExcitations[index] = emergencyStop
             ? actuator.emergency_command
             : (inhibitSource ? actuator.neutral_command : adaptedCommand);
+    }
+    laneFlags[lane] = (hasInvalidDescendingSource ? 1u : 0u) |
+        (hasLocalizedSourceInhibition ? 2u : 0u);
+    threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+    if (lane != 0u) return;
+    hasLocalizedSourceInhibition = false;
+    hasInvalidDescendingSource = false;
+    for (uint index = 0u; index < lanesPerThreadgroup.x; ++index) {
+        hasInvalidDescendingSource = hasInvalidDescendingSource ||
+            (laneFlags[index] & 1u) != 0u;
+        hasLocalizedSourceInhibition = hasLocalizedSourceInhibition ||
+            (laneFlags[index] & 2u) != 0u;
+    }
+    float outputMinimum = actuatorDescriptors[0].output_minimum;
+    float outputMaximum = actuatorDescriptors[0].output_maximum;
+    for (uint index = 0u; index < uniforms->muscle_count; ++index) {
+        const NBSomaticActuatorDescriptorABI actuator =
+            actuatorDescriptors[index];
+        outputMinimum = min(outputMinimum, actuator.output_minimum);
+        outputMaximum = max(outputMaximum, actuator.output_maximum);
     }
     NBMotorOutputHeaderABI header;
     header.format_version = NBMotorOutputVersion;

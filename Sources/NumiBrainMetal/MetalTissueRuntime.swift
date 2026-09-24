@@ -993,6 +993,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let regionalPipeline: any MTLComputePipelineState
   private let protectivePipeline: any MTLComputePipelineState
   private let protectiveMotorPipeline: any MTLComputePipelineState
+  private var protectiveMotorLaneCount: Int {
+    let maximum = protectiveMotorPipeline.maxTotalThreadsPerThreadgroup
+    return protectiveMotorPipeline.threadExecutionWidth == 32 && maximum >= 128
+      ? min(512, maximum - maximum % 32) : 1
+  }
   private let bodyLoadFieldPipeline: any MTLComputePipelineState
   private let bodySchemaPipeline: any MTLComputePipelineState
   private let fastCerebellarPipeline: any MTLComputePipelineState
@@ -4343,8 +4348,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       somaticSynergyDecoderBuffer.gpuAddress, index: 19
     )
     try encoder.dispatch(pipeline: protectiveMotorPipeline, argumentTable: protectiveMotorArgumentTable,
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      threadsPerGrid: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1)
     )
   }
 
@@ -4772,8 +4777,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       encoder.setComputePipelineState(protectiveMotorPipeline)
       encoder.setArgumentTable(protectiveMotorArgumentTable)
       encoder.dispatchThreads(
-        threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-        threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+        threadsPerGrid: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1),
+        threadsPerThreadgroup: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1)
       )
     }
     descendingSomaticTransactionFingerprint = transaction.fingerprint
@@ -9113,8 +9118,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       index: 19
     )
     try encoder.dispatch(pipeline: protectiveMotorPipeline, argumentTable: protectiveMotorArgumentTable,
-      threadsPerGrid: MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
+      threadsPerGrid: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: protectiveMotorLaneCount, height: 1, depth: 1)
     )
     encoder.barrier()
     if boundFastAutonomicChannelCount > 0 {
