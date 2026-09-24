@@ -5013,6 +5013,224 @@ kernel void journal_committed_learning_transition(
   }
   if (gid < 12u) plastic_trace[gid] = component_trace;
   threadgroup_barrier(mem_flags::mem_threadgroup);
+  // Prepare the finite body loads and joint uncertainty on all lanes. The
+  // accepted transition keeps its original ascending body/joint fold below:
+  // only independent per-site normalization moves out of lane zero.
+  const bool prepared_body_joint_trace =
+    uniforms.body_belief_count <= 256u && uniforms.joint_belief_count <= 256u;
+  threadgroup float body_joint_trace[16];
+  threadgroup uint body_joint_counts[4];
+  if (prepared_body_joint_trace) {
+    device const uchar *prior_body_bytes =
+      input_hot_state + uniforms.body_belief_offset;
+    device const uchar *accepted_body_bytes =
+      output_hot_state + uniforms.body_belief_offset;
+    for (uint body_index = gid; body_index < uniforms.body_belief_count;
+        body_index += 32u) {
+      device const float *prior_body = reinterpret_cast<device const float *>(
+        prior_body_bytes + ulong(body_index) * 256ul);
+      device const float *accepted_body = reinterpret_cast<device const float *>(
+        accepted_body_bytes + ulong(body_index) * 256ul);
+      device const ulong *prior_identity = reinterpret_cast<device const ulong *>(
+        prior_body + NB_BODY_IDENTITY_FLOAT_OFFSET);
+      device const ulong *accepted_identity = reinterpret_cast<device const ulong *>(
+        accepted_body + NB_BODY_IDENTITY_FLOAT_OFFSET);
+      const uint term = 8u * body_index;
+      uint valid = 0u;
+      if ((prior_identity[3] & 1ul) != 0ul
+          && isfinite(prior_body[NB_BODY_LOAD])
+          && isfinite(prior_body[NB_BODY_LOAD_VARIANCE])
+          && isfinite(prior_body[NB_BODY_VULNERABILITY])
+          && isfinite(prior_body[NB_BODY_DAMAGE_RISK])) {
+        const float load = max(prior_body[NB_BODY_LOAD], 0.0f);
+        const float uncertainty = sqrt(
+          max(prior_body[NB_BODY_LOAD_VARIANCE], 0.0f));
+        const float vulnerability = clamp(
+          prior_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f);
+        const float damage = clamp(
+          prior_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f);
+        plastic_terms[term + 0u] = load / (1.0f + load);
+        plastic_terms[term + 1u] = uncertainty / (1.0f + uncertainty);
+        plastic_terms[term + 2u] = max(vulnerability, damage);
+        plastic_terms[term + 3u] = damage;
+        valid |= 1u;
+      }
+      if ((accepted_identity[3] & 1ul) != 0ul
+          && isfinite(accepted_body[NB_BODY_LOAD])
+          && isfinite(accepted_body[NB_BODY_LOAD_VARIANCE])
+          && isfinite(accepted_body[NB_BODY_VULNERABILITY])
+          && isfinite(accepted_body[NB_BODY_DAMAGE_RISK])) {
+        const float load = max(accepted_body[NB_BODY_LOAD], 0.0f);
+        const float uncertainty = sqrt(
+          max(accepted_body[NB_BODY_LOAD_VARIANCE], 0.0f));
+        const float vulnerability = clamp(
+          accepted_body[NB_BODY_VULNERABILITY], 0.0f, 1.0f);
+        const float damage = clamp(
+          accepted_body[NB_BODY_DAMAGE_RISK], 0.0f, 1.0f);
+        plastic_terms[term + 4u] = load / (1.0f + load);
+        plastic_terms[term + 5u] = uncertainty / (1.0f + uncertainty);
+        plastic_terms[term + 6u] = max(vulnerability, damage);
+        plastic_terms[term + 7u] = damage;
+        valid |= 2u;
+      }
+      sketch_valid[body_index] = valid;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      for (uint index = 0u; index < 16u; ++index)
+        body_joint_trace[index] = 0.0f;
+      uint prior_body_count = 0u;
+      uint accepted_body_count = 0u;
+      for (uint body_index = 0u;
+          body_index < uniforms.body_belief_count; ++body_index) {
+        const uint valid = sketch_valid[body_index];
+        const uint term = 8u * body_index;
+        if ((valid & 1u) != 0u) {
+          body_joint_trace[0] += plastic_terms[term + 0u];
+          body_joint_trace[1] += plastic_terms[term + 1u];
+          body_joint_trace[4] = max(
+            body_joint_trace[4], plastic_terms[term + 0u]);
+          body_joint_trace[5] = max(
+            body_joint_trace[5], plastic_terms[term + 2u]);
+          body_joint_trace[7] = max(
+            body_joint_trace[7], plastic_terms[term + 3u]);
+          prior_body_count += 1u;
+        }
+        if ((valid & 2u) != 0u) {
+          body_joint_trace[8] += plastic_terms[term + 4u];
+          body_joint_trace[9] += plastic_terms[term + 5u];
+          body_joint_trace[12] = max(
+            body_joint_trace[12], plastic_terms[term + 4u]);
+          body_joint_trace[13] = max(
+            body_joint_trace[13], plastic_terms[term + 6u]);
+          body_joint_trace[15] = max(
+            body_joint_trace[15], plastic_terms[term + 7u]);
+          accepted_body_count += 1u;
+        }
+      }
+      if (prior_body_count > 0u) {
+        const float inverse_count = 1.0f / float(prior_body_count);
+        body_joint_trace[0] *= inverse_count;
+        body_joint_trace[1] *= inverse_count;
+      }
+      if (accepted_body_count > 0u) {
+        const float inverse_count = 1.0f / float(accepted_body_count);
+        body_joint_trace[8] *= inverse_count;
+        body_joint_trace[9] *= inverse_count;
+      }
+      body_joint_counts[0] = prior_body_count;
+      body_joint_counts[1] = accepted_body_count;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    device const uchar *prior_joint_bytes =
+      input_hot_state + uniforms.joint_belief_offset;
+    device const uchar *accepted_joint_bytes =
+      output_hot_state + uniforms.joint_belief_offset;
+    for (uint joint_index = gid; joint_index < uniforms.joint_belief_count;
+        joint_index += 32u) {
+      device const float *prior_joint = reinterpret_cast<device const float *>(
+        prior_joint_bytes + ulong(joint_index) * 256ul);
+      device const float *accepted_joint = reinterpret_cast<device const float *>(
+        accepted_joint_bytes + ulong(joint_index) * 256ul);
+      device const ulong *prior_identity = reinterpret_cast<device const ulong *>(
+        prior_joint + NB_JOINT_IDENTITY_FLOAT_OFFSET);
+      device const ulong *accepted_identity = reinterpret_cast<device const ulong *>(
+        accepted_joint + NB_JOINT_IDENTITY_FLOAT_OFFSET);
+      const uint term = 6u * joint_index;
+      uint valid = 0u;
+      if ((prior_identity[7] & 1ul) != 0ul) {
+        const uint coordinate_count = min(uint(prior_identity[3]), 6u);
+        float limit = 0.0f;
+        float variance = 0.0f;
+        for (uint coordinate = 0u; coordinate < coordinate_count;
+            ++coordinate) {
+          limit = max(limit, clamp(
+            prior_joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f));
+          variance += max(
+            prior_joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f
+          ) + max(
+            prior_joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f);
+        }
+        const float uncertainty = sqrt(
+          variance / max(float(coordinate_count * 2u), 1.0f));
+        const float prediction_error = abs(
+          prior_joint[NB_JOINT_PREDICTION_ERROR]);
+        plastic_terms[term + 0u] = limit;
+        plastic_terms[term + 1u] = uncertainty / (1.0f + uncertainty);
+        plastic_terms[term + 2u] =
+          prediction_error / (1.0f + prediction_error);
+        valid |= 1u;
+      }
+      if ((accepted_identity[7] & 1ul) != 0ul) {
+        const uint coordinate_count = min(uint(accepted_identity[3]), 6u);
+        float limit = 0.0f;
+        float variance = 0.0f;
+        for (uint coordinate = 0u; coordinate < coordinate_count;
+            ++coordinate) {
+          limit = max(limit, clamp(
+            accepted_joint[NB_JOINT_LIMIT_ACTIVATION + coordinate],
+            0.0f, 1.0f));
+          variance += max(
+            accepted_joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f
+          ) + max(
+            accepted_joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f);
+        }
+        const float uncertainty = sqrt(
+          variance / max(float(coordinate_count * 2u), 1.0f));
+        const float prediction_error = abs(
+          accepted_joint[NB_JOINT_PREDICTION_ERROR]);
+        plastic_terms[term + 3u] = limit;
+        plastic_terms[term + 4u] = uncertainty / (1.0f + uncertainty);
+        plastic_terms[term + 5u] =
+          prediction_error / (1.0f + prediction_error);
+        valid |= 2u;
+      }
+      sketch_valid[joint_index] = valid;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      uint prior_joint_count = 0u;
+      uint accepted_joint_count = 0u;
+      for (uint joint_index = 0u;
+          joint_index < uniforms.joint_belief_count; ++joint_index) {
+        const uint valid = sketch_valid[joint_index];
+        const uint term = 6u * joint_index;
+        if ((valid & 1u) != 0u) {
+          body_joint_trace[2] += plastic_terms[term + 0u];
+          body_joint_trace[3] += plastic_terms[term + 1u];
+          body_joint_trace[5] = max(
+            body_joint_trace[5], plastic_terms[term + 0u]);
+          body_joint_trace[6] += plastic_terms[term + 2u];
+          body_joint_trace[7] = max(
+            body_joint_trace[7], plastic_terms[term + 2u]);
+          prior_joint_count += 1u;
+        }
+        if ((valid & 2u) != 0u) {
+          body_joint_trace[10] += plastic_terms[term + 3u];
+          body_joint_trace[11] += plastic_terms[term + 4u];
+          body_joint_trace[13] = max(
+            body_joint_trace[13], plastic_terms[term + 3u]);
+          body_joint_trace[14] += plastic_terms[term + 5u];
+          body_joint_trace[15] = max(
+            body_joint_trace[15], plastic_terms[term + 5u]);
+          accepted_joint_count += 1u;
+        }
+      }
+      if (prior_joint_count > 0u) {
+        const float inverse_count = 1.0f / float(prior_joint_count);
+        body_joint_trace[2] *= inverse_count;
+        body_joint_trace[3] *= inverse_count;
+      }
+      if (accepted_joint_count > 0u) {
+        const float inverse_count = 1.0f / float(accepted_joint_count);
+        body_joint_trace[10] *= inverse_count;
+        body_joint_trace[11] *= inverse_count;
+      }
+      body_joint_counts[2] = prior_joint_count;
+      body_joint_counts[3] = accepted_joint_count;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   // Reuse the completed sketch scratch for up to 512 muscle belief sites.
   // Device loads and normalization are independent per site; lane zero still
   // folds the prepared values in the original ascending muscle order below.
@@ -5293,6 +5511,16 @@ kernel void journal_committed_learning_transition(
   }
   uint prior_body_count = 0u;
   uint accepted_body_count = 0u;
+  uint prior_joint_count = 0u;
+  uint accepted_joint_count = 0u;
+  if (prepared_body_joint_trace) {
+    for (uint index = 0u; index < 16u; ++index)
+      record.body_schema_trace[index] = body_joint_trace[index];
+    prior_body_count = body_joint_counts[0];
+    accepted_body_count = body_joint_counts[1];
+    prior_joint_count = body_joint_counts[2];
+    accepted_joint_count = body_joint_counts[3];
+  } else {
   for (uint body_index = 0u;
       body_index < uniforms.body_belief_count; ++body_index) {
     device const float *prior_body = reinterpret_cast<device const float *>(
@@ -5376,8 +5604,6 @@ kernel void journal_committed_learning_transition(
     record.body_schema_trace[8] *= inverse_count;
     record.body_schema_trace[9] *= inverse_count;
   }
-  uint prior_joint_count = 0u;
-  uint accepted_joint_count = 0u;
   for (uint joint_index = 0u;
       joint_index < uniforms.joint_belief_count; ++joint_index) {
     device const float *prior_joint = reinterpret_cast<device const float *>(
@@ -5464,6 +5690,7 @@ kernel void journal_committed_learning_transition(
     const float inverse_count = 1.0f / float(accepted_joint_count);
     record.body_schema_trace[10] *= inverse_count;
     record.body_schema_trace[11] *= inverse_count;
+  }
   }
   uint prior_muscle_count = 0u;
   uint accepted_muscle_count = 0u;
