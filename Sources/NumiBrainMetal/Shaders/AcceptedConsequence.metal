@@ -2486,6 +2486,54 @@ inline float4 nb_accepted_axis_angle(float3 axis, float angle) {
   );
 }
 
+struct NBAcceptedJointLocalGraph {
+  float4 rotation;
+  float3 translation;
+  float3 linear_velocity;
+  float3 angular_velocity;
+  float mean_variance;
+  float certainty;
+  float proprioceptive_error;
+  uint valid;
+};
+
+inline NBAcceptedJointLocalGraph nb_accepted_joint_local_graph(
+  device const float *joint, const NBJointTopologyRecord topology)
+{
+  NBAcceptedJointLocalGraph local = {};
+  local.rotation = float4(0.0f, 0.0f, 0.0f, 1.0f);
+  local.translation = float3(0.0f);
+  local.linear_velocity = float3(0.0f);
+  local.angular_velocity = float3(0.0f);
+  float joint_variance = 0.0f;
+  const uint coordinate_count = min(topology.identifiers.w, 6u);
+  for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+    const float3 axis = topology.axes[coordinate].xyz;
+    const uint kind = uint(round(topology.axes[coordinate].w));
+    const float position = joint[coordinate];
+    const float displacement = position - topology.limits[coordinate].z;
+    const float velocity = joint[6u + coordinate];
+    joint_variance += max(joint[12u + coordinate], 0.0f)
+      + max(joint[18u + coordinate], 0.0f);
+    if (kind == 1u) {
+      local.rotation = nb_accepted_quaternion_multiply(
+        local.rotation, nb_accepted_axis_angle(axis, displacement));
+      local.angular_velocity += normalize(axis) * velocity;
+    } else if (kind == 2u) {
+      const float3 normalized_axis = normalize(axis);
+      local.translation += normalized_axis * displacement;
+      local.linear_velocity += normalized_axis * velocity;
+    }
+  }
+  local.mean_variance = joint_variance
+    / max(float(coordinate_count * 2u), 1.0f);
+  local.certainty = clamp(joint[30], 0.0f, 1.0f)
+    / (1.0f + sqrt(local.mean_variance));
+  local.proprioceptive_error = joint[31];
+  local.valid = 1u;
+  return local;
+}
+
 /// Reconciles the topologically ordered articulation posterior into the one
 /// compatible body factor. This is belief-space forward kinematics from
 /// receptor estimates, not access to authoritative NumanX pose state.
@@ -2500,7 +2548,7 @@ kernel void reconcile_accepted_articulated_body_graph(
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
-  if (gid != 0u || uniforms.joint_count == 0u) return;
+  if (uniforms.joint_count == 0u) return;
   device const NBJointTopologyRecord *topologies =
     reinterpret_cast<device const NBJointTopologyRecord *>(
       joint_receptor_table + 1
@@ -2513,6 +2561,31 @@ kernel void reconcile_accepted_articulated_body_graph(
     0.0f,
     1.0f
   );
+  const bool prepared_joint_locals = joint_count <= 256u;
+  threadgroup NBAcceptedJointLocalGraph joint_locals[256];
+  if (prepared_joint_locals) {
+    for (uint joint_index = gid; joint_index < joint_count;
+        joint_index += 32u) {
+      const NBJointTopologyRecord topology = topologies[joint_index];
+      NBAcceptedJointLocalGraph local = {};
+      if (topology.identifiers.y < uniforms.body_count
+          && topology.identifiers.z < uniforms.body_count) {
+        device const float *joint = reinterpret_cast<device const float *>(
+          hot_state + uniforms.joint_belief_offset
+            + ulong(joint_index) * 256ul
+        );
+        device const ulong *joint_identity =
+          reinterpret_cast<device const ulong *>(joint + 32u);
+        if ((joint_identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul
+            && joint_identity[6]
+              == joint_receptor_table->topology_fingerprint)
+          local = nb_accepted_joint_local_graph(joint, topology);
+      }
+      joint_locals[joint_index] = local;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (gid != 0u) return;
   for (uint joint_index = 0u; joint_index < joint_count; ++joint_index) {
     const NBJointTopologyRecord topology = topologies[joint_index];
     const uint parent_index = topology.identifiers.y;
@@ -2523,11 +2596,17 @@ kernel void reconcile_accepted_articulated_body_graph(
       hot_state + uniforms.joint_belief_offset
         + ulong(joint_index) * 256ul
     );
-    device const ulong *joint_identity =
-      reinterpret_cast<device const ulong *>(joint + 32u);
-    if ((joint_identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul
-        || joint_identity[6] != joint_receptor_table->topology_fingerprint) {
-      continue;
+    NBAcceptedJointLocalGraph local;
+    if (prepared_joint_locals) {
+      local = joint_locals[joint_index];
+      if (local.valid == 0u) continue;
+    } else {
+      device const ulong *joint_identity =
+        reinterpret_cast<device const ulong *>(joint + 32u);
+      if ((joint_identity[7] & ulong(NB_ACCEPTED_STATE_VALID)) == 0ul
+          || joint_identity[6]
+            != joint_receptor_table->topology_fingerprint) continue;
+      local = nb_accepted_joint_local_graph(joint, topology);
     }
     device float *parent = reinterpret_cast<device float *>(
       hot_state + uniforms.body_belief_offset + ulong(parent_index) * 256ul
@@ -2548,36 +2627,10 @@ kernel void reconcile_accepted_articulated_body_graph(
     );
     parent_orientation = dot(parent_orientation, parent_orientation) > 1.0e-12f
       ? normalize(parent_orientation) : float4(0.0f, 0.0f, 0.0f, 1.0f);
-    float4 coordinate_rotation = float4(0.0f, 0.0f, 0.0f, 1.0f);
-    float3 local_translation = float3(0.0f);
-    float3 local_linear_velocity = float3(0.0f);
-    float3 local_angular_velocity = float3(0.0f);
-    float joint_variance = 0.0f;
-    const uint coordinate_count = min(topology.identifiers.w, 6u);
-    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
-      const float3 axis = topology.axes[coordinate].xyz;
-      const uint kind = uint(round(topology.axes[coordinate].w));
-      const float position = joint[coordinate];
-      const float displacement = position - topology.limits[coordinate].z;
-      const float velocity = joint[6u + coordinate];
-      joint_variance += max(joint[12u + coordinate], 0.0f)
-        + max(joint[18u + coordinate], 0.0f);
-      if (kind == 1u) {
-        coordinate_rotation = nb_accepted_quaternion_multiply(
-          coordinate_rotation,
-          nb_accepted_axis_angle(axis, displacement)
-        );
-        local_angular_velocity += normalize(axis) * velocity;
-      } else if (kind == 2u) {
-        const float3 normalized_axis = normalize(axis);
-        local_translation += normalized_axis * displacement;
-        local_linear_velocity += normalized_axis * velocity;
-      }
-    }
     float4 predicted_orientation = nb_accepted_quaternion_multiply(
       parent_orientation,
       nb_accepted_quaternion_multiply(
-        coordinate_rotation,
+        local.rotation,
         topology.rest_relative_orientation
       )
     );
@@ -2600,7 +2653,7 @@ kernel void reconcile_accepted_articulated_body_graph(
       parent[NB_BODY_ANGULAR_VELOCITY + 2u]
     );
     const float3 parent_joint_offset = nb_accepted_rotate(
-      topology.parent_local_anchor.xyz + local_translation,
+      topology.parent_local_anchor.xyz + local.translation,
       parent_orientation
     );
     const float3 child_anchor_offset = nb_accepted_rotate(
@@ -2610,17 +2663,15 @@ kernel void reconcile_accepted_articulated_body_graph(
     const float3 predicted_position = parent_position + parent_joint_offset
       - child_anchor_offset;
     const float3 predicted_angular_velocity = parent_angular_velocity
-      + nb_accepted_rotate(local_angular_velocity, parent_orientation);
+      + nb_accepted_rotate(local.angular_velocity, parent_orientation);
     const float3 predicted_linear_velocity = parent_linear_velocity
       + cross(parent_angular_velocity, parent_joint_offset)
-      + nb_accepted_rotate(local_linear_velocity, parent_orientation)
+      + nb_accepted_rotate(local.linear_velocity, parent_orientation)
       - cross(predicted_angular_velocity, child_anchor_offset);
     const bool child_valid =
       (child_identity[3] & ulong(NB_ACCEPTED_STATE_VALID)) != 0ul;
-    const float mean_joint_variance = joint_variance
-      / max(float(coordinate_count * 2u), 1.0f);
-    const float certainty = clamp(joint[30], 0.0f, 1.0f)
-      / (1.0f + sqrt(mean_joint_variance));
+    const float mean_joint_variance = local.mean_variance;
+    const float certainty = local.certainty;
     const float graph_gain = child_valid
       ? min(base_gain * certainty, 0.75f) : 1.0f;
     for (uint component = 0u; component < 3u; ++component) {
@@ -2690,7 +2741,7 @@ kernel void reconcile_accepted_articulated_body_graph(
     ), 0.0f, 1.0f);
     child[NB_BODY_PROPRIOCEPTIVE_ERROR] = max(
       child_valid ? child[NB_BODY_PROPRIOCEPTIVE_ERROR] : 0.0f,
-      joint[31]
+      local.proprioceptive_error
     );
     child_identity[0] = ulong(child_index);
     child_identity[1] = uniforms.target_timestamp_microseconds;

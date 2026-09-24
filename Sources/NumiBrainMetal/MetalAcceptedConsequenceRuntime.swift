@@ -1353,7 +1353,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
-    try dispatch(encoder, pipeline: pipelines[12], count: 1)
+    try dispatch(encoder, pipeline: pipelines[12], count: 32)
     barrier(encoder)
     if species.body.muscleCount > 0 {
       try dispatch(
