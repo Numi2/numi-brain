@@ -4872,7 +4872,7 @@ kernel void journal_committed_learning_transition(
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
-  if (gid != 0u || uniforms.recurrent_scalar_count == 0u
+  if (uniforms.recurrent_scalar_count == 0u
       || uniforms.observation_count == 0u || uniforms.action_count == 0u
       || uniforms.transition_capacity == 0u
       || uniforms.regional_transition_capacity == 0u
@@ -4880,7 +4880,7 @@ kernel void journal_committed_learning_transition(
   if (journal->base_generation != uniforms.base_generation
       || journal->shadow_generation != uniforms.shadow_generation
       || journal->memory_byte_count != uniforms.persistent_memory_byte_count) {
-    atomic_fetch_or_explicit(
+    if (gid == 0u) atomic_fetch_or_explicit(
       &journal->status, NB_MEMORY_JOURNAL_STATUS_CAPACITY, memory_order_relaxed
     );
     return;
@@ -4897,6 +4897,75 @@ kernel void journal_committed_learning_transition(
   device const uint *observation_validity = reinterpret_cast<device const uint *>(
     output_hot_state + uniforms.observation_validity_offset
   );
+  // Keep each modality's original floating-point accumulation order. SIMD
+  // lanes prepare its expensive signed samples in parallel; lane zero then
+  // sums those samples in the original ascending source order.
+  threadgroup float sketch_terms[1024][3];
+  threadgroup uint sketch_valid[1024];
+  threadgroup float modality_sums[8][3];
+  threadgroup uint modality_valid_count[8];
+  const uint modality_count = min(uniforms.modality_count, 8u);
+  for (uint modality_slot = 0u; modality_slot < modality_count;
+      ++modality_slot) {
+    const uint scalar_offset = uniforms.modality_offsets[modality_slot];
+    const uint scalar_count = uniforms.modality_scalar_counts[modality_slot];
+    if (uniforms.modality_codes[modality_slot] == 0u
+        || scalar_count == 0u
+        || scalar_offset >= uniforms.observation_count
+        || scalar_count > uniforms.observation_count - scalar_offset) {
+      if (gid == 0u) modality_valid_count[modality_slot] = 0u;
+      continue;
+    }
+    const uint sample_count = min(scalar_count, 1024u);
+    for (uint sample = gid; sample < sample_count; sample += 32u) {
+      const uint local_index = uint(
+        (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
+      );
+      const uint observation_index = scalar_offset + local_index;
+      if (observation_validity[observation_index] == 0u) {
+        sketch_valid[sample] = 0u;
+        continue;
+      }
+      const float value = uniforms.reserved_modality[0] == 1u
+        ? committed_raw_sensor_value(
+          modality_slot, local_index,
+          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+        )
+        : observations[observation_index];
+      if (!isfinite(value)) {
+        sketch_valid[sample] = 0u;
+        continue;
+      }
+      for (uint projection = 0u; projection < 3u; ++projection) {
+        const ulong projection_key =
+          (ulong(uniforms.modality_codes[modality_slot]) << 48u)
+          ^ (ulong(local_index) << 8u)
+          ^ ulong(projection)
+          ^ 0x4e58534b45544348ul; // "NXSKETCH"
+        const float sign = (consolidation_hash(projection_key) & 1ul) != 0ul
+          ? 1.0f : -1.0f;
+        sketch_terms[sample][projection] = sign * value;
+      }
+      sketch_valid[sample] = 1u;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (gid == 0u) {
+      float projection_sums[3] = {};
+      uint valid_sample_count = 0u;
+      for (uint sample = 0u; sample < sample_count; ++sample) {
+        if (sketch_valid[sample] == 0u) continue;
+        for (uint projection = 0u; projection < 3u; ++projection)
+          projection_sums[projection] += sketch_terms[sample][projection];
+        valid_sample_count += 1u;
+      }
+      for (uint projection = 0u; projection < 3u; ++projection)
+        modality_sums[modality_slot][projection] = projection_sums[projection];
+      modality_valid_count[modality_slot] = valid_sample_count;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+  if (gid != 0u) return;
   // These are the exact accepted cortical somatic-synergy coordinates, not an
   // arbitrary prefix of the decoded muscle excitation vector. The learner's
   // sixteen-value policy head is enacted through this same action space.
@@ -5093,52 +5162,18 @@ kernel void journal_committed_learning_transition(
   // 1,024-scalar projection. This keeps the fixed 24-float learner record and
   // constant per-modality work while avoiding v9's global-summary collision
   // on physically distinct support geometries.
-  const uint modality_count = min(uniforms.modality_count, 8u);
   for (uint modality_slot = 0u;
       modality_slot < modality_count; ++modality_slot) {
-    const uint scalar_offset = uniforms.modality_offsets[modality_slot];
-    const uint scalar_count = uniforms.modality_scalar_counts[modality_slot];
-    if (uniforms.modality_codes[modality_slot] == 0u
-        || scalar_count == 0u
-        || scalar_offset >= uniforms.observation_count
-        || scalar_count > uniforms.observation_count - scalar_offset) {
-      continue;
-    }
-    const uint sample_count = min(scalar_count, 1024u);
-    float projection_sums[3] = {};
-    uint valid_sample_count = 0u;
-    for (uint sample = 0u; sample < sample_count; ++sample) {
-      const uint local_index = uint(
-        (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
-      );
-      const uint observation_index = scalar_offset + local_index;
-      if (observation_validity[observation_index] == 0u) continue;
-      const float value = uniforms.reserved_modality[0] == 1u
-        ? committed_raw_sensor_value(
-          modality_slot, local_index,
-          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
-          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
-        )
-        : observations[observation_index];
-      if (!isfinite(value)) continue;
-      for (uint projection = 0u; projection < 3u; ++projection) {
-        const ulong projection_key =
-          (ulong(uniforms.modality_codes[modality_slot]) << 48u)
-          ^ (ulong(local_index) << 8u)
-          ^ ulong(projection)
-          ^ 0x4e58534b45544348ul; // "NXSKETCH"
-        const float sign = (consolidation_hash(projection_key) & 1ul) != 0ul
-          ? 1.0f : -1.0f;
-        projection_sums[projection] += sign * value;
-      }
-      valid_sample_count += 1u;
-    }
+    const uint valid_sample_count = modality_valid_count[modality_slot];
     if (valid_sample_count == 0u) continue;
     const float inverse_count = 1.0f / float(valid_sample_count);
     const uint component = modality_slot * 3u;
-    record.observation[component] = projection_sums[0] * inverse_count;
-    record.observation[component + 1u] = projection_sums[1] * inverse_count;
-    record.observation[component + 2u] = projection_sums[2] * inverse_count;
+    record.observation[component] =
+      modality_sums[modality_slot][0] * inverse_count;
+    record.observation[component + 1u] =
+      modality_sums[modality_slot][1] * inverse_count;
+    record.observation[component + 2u] =
+      modality_sums[modality_slot][2] * inverse_count;
     record.observation_sample_count += 3u;
     record.observation_validity_mask |= 7u << component;
   }

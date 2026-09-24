@@ -984,7 +984,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       }
       argumentTable.setAddress(address, index: 10 + index)
     }
-    try encoder.dispatch(pipeline: committedTransitionPipeline, argumentTable: argumentTable, count: 1)
+    try encoder.dispatch(pipeline: committedTransitionPipeline, argumentTable: argumentTable, count: 32)
   }
 
   /// Journals a bounded risk-balanced subset of the accepted decision's
