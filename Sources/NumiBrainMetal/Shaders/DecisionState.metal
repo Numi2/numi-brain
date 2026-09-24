@@ -749,8 +749,9 @@ inline float nb_policy_raw_sensor_value(
 }
 
 /// Reconstructs the exact deterministic 24-coordinate raw-sensor projection
-/// journaled for the slow learner. One thread owns one projection coordinate;
-/// the second 24-float half is the evaluator's exact validity mask.
+/// journaled for the slow learner. One SIMD group gathers one projection's
+/// samples; lane zero sums them in the original sample order so the learner's
+/// projection and validity mask remain bitwise stable.
 kernel void sketch_policy_observations(
   device const uchar *hot_state [[buffer(0)]],
   device float *policy_observation_sketch [[buffer(14)]],
@@ -763,14 +764,19 @@ kernel void sketch_policy_observations(
   device const float *raw_sensor6 [[buffer(22)]],
   device const float *raw_sensor7 [[buffer(23)]],
   device const uint *metadata [[buffer(24)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[threadgroup_position_in_grid]],
+  uint lane [[thread_index_in_threadgroup]])
 {
   if (gid >= 24u) return;
+  threadgroup float sample_values[32];
+  threadgroup uint sample_validity[32];
   const uint modality_slot = gid / 3u;
   const uint projection = gid % 3u;
   const uint modality_count = min(metadata[0], 8u);
-  policy_observation_sketch[gid] = 0.0f;
-  policy_observation_sketch[24u + gid] = 0.0f;
+  if (lane == 0u) {
+    policy_observation_sketch[gid] = 0.0f;
+    policy_observation_sketch[24u + gid] = 0.0f;
+  }
   if (modality_slot >= modality_count) return;
   const uint range_base = 4u + modality_slot * 3u;
   const uint modality_code = metadata[range_base];
@@ -793,6 +799,7 @@ kernel void sketch_policy_observations(
   // signed hash projections that can make physiological distress increase
   // exertion.
   if (modality_code == 8u && scalar_count % 6u == 0u) {
+    if (lane != 0u) return;
     const uint receptor_count = scalar_count / 6u;
     float burden_sum = 0.0f;
     uint valid_burden_count = 0u;
@@ -862,31 +869,51 @@ kernel void sketch_policy_observations(
   const uint sample_count = min(scalar_count, 1024u);
   float projection_sum = 0.0f;
   uint valid_sample_count = 0u;
-  for (uint sample = 0u; sample < sample_count; ++sample) {
+  for (uint tile = 0u; tile < sample_count; tile += 32u) {
+    const uint sample = tile + lane;
+    float contribution = 0.0f;
+    uint valid = 0u;
+    if (sample < sample_count) {
     const uint local_index = uint(
       (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
     );
-    if (observation_validity[scalar_offset + local_index] == 0u) continue;
-    const float value = nb_policy_raw_sensor_value(
-      modality_slot, local_index,
-      raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
-      raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
-    );
-    if (!isfinite(value)) continue;
-    const ulong projection_key =
-      (ulong(modality_code) << 48u)
-      ^ (ulong(local_index) << 8u)
-      ^ ulong(projection)
-      ^ 0x4e58534b45544348ul;
-    const float sign = (nb_policy_observation_hash(projection_key) & 1ul) != 0ul
-      ? 1.0f : -1.0f;
-    projection_sum += sign * value;
-    valid_sample_count += 1u;
+      if (observation_validity[scalar_offset + local_index] != 0u) {
+        const float value = nb_policy_raw_sensor_value(
+          modality_slot, local_index,
+          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+        );
+        if (isfinite(value)) {
+          const ulong projection_key =
+            (ulong(modality_code) << 48u)
+            ^ (ulong(local_index) << 8u)
+            ^ ulong(projection)
+            ^ 0x4e58534b45544348ul;
+          const float sign = (nb_policy_observation_hash(projection_key) & 1ul) != 0ul
+            ? 1.0f : -1.0f;
+          contribution = sign * value;
+          valid = 1u;
+        }
+      }
+    }
+    sample_values[lane] = contribution;
+    sample_validity[lane] = valid;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lane == 0u) {
+      const uint tile_count = min(32u, sample_count - tile);
+      for (uint index = 0u; index < tile_count; ++index) {
+        if (sample_validity[index] == 0u) continue;
+        projection_sum += sample_values[index];
+        valid_sample_count += 1u;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  if (valid_sample_count == 0u) return;
-  policy_observation_sketch[gid] = projection_sum
-    / float(valid_sample_count);
-  policy_observation_sketch[24u + gid] = 1.0f;
+  if (lane == 0u && valid_sample_count != 0u) {
+    policy_observation_sketch[gid] = projection_sum
+      / float(valid_sample_count);
+    policy_observation_sketch[24u + gid] = 1.0f;
+  }
 }
 
 inline float nb_normalized_body_feature_value(float value, uint feature) {

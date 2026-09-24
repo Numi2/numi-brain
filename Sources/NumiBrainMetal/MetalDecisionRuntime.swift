@@ -854,7 +854,12 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     }
     argumentTable.setAddress(policyObservationMetadataBuffer.gpuAddress, index: 24)
     argumentTable.setAddress(connectomeMotor?.logits.gpuAddress ?? policyObservationFallbackBuffer.gpuAddress, index: 25)
-    try dispatch(encoder, pipeline: policyObservationPipeline, count: 24)
+    try encoder.dispatch(
+      pipeline: policyObservationPipeline,
+      argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(width: 24 * 32, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1)
+    )
     barrier(encoder)
     try advance("brain_policy_goal")
     try dispatch(encoder, pipeline: goalPipeline, count: 1)
