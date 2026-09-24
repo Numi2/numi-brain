@@ -195,6 +195,7 @@ private final class StandingBridge {
   let epochMicroseconds: UInt64
   var pending: MetalNumiBrainRuntime.ControlTransaction?
   var pendingMotor: MetalNumiBrainRuntime.BorrowedMotorCommand?
+  var pendingAccepted: AcceptedPhysicsStateToken?
   var lastCommitFingerprint: UInt64 = 0
 
   init(device: any MTLDevice, sourceJSON: String, programJSON: String?,
@@ -337,6 +338,32 @@ private final class StandingBridge {
       accepted: accepted, rawSensors: input)
   }
 
+  func encodeAcceptedFast(encoder: any MTLComputeCommandEncoder,
+    physicalFingerprint: UInt64, completedStepCount: UInt32) throws {
+    guard let pending, let motor = pendingMotor,
+      pendingAccepted == nil,
+      physicalFingerprint != 0,
+      UInt64(completedStepCount) == brain.committedGeneration + 1 else {
+      throw BrainRuntimeError.transaction("standing accepted endpoint is unpaired")
+    }
+    let accepted = try AcceptedPhysicsStateToken(transaction: pending.token,
+      substep: motor.substep, physicsStateFingerprint: physicalFingerprint,
+      physicsGeneration: UInt64(completedStepCount))
+    try brain.encodeBorrowedAcceptedFast(pending, encoder: encoder, accepted: accepted)
+    pendingAccepted = accepted
+  }
+
+  func encodeAcceptedCognitive(encoder: any MTLComputeCommandEncoder,
+    receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32) throws {
+    guard let pending, let accepted = pendingAccepted,
+      accepted.physicsGeneration == brain.committedGeneration + 1 else {
+      throw BrainRuntimeError.transaction("standing cognitive consequence lacks accepted fast state")
+    }
+    let timestamp = epochMicroseconds + accepted.physicsGeneration * UInt64(timestepMicroseconds)
+    let input = try sensors(receptors, count: count, timestamp: timestamp)
+    try brain.encodeBorrowedAcceptedCognitive(pending, encoder: encoder, rawSensors: input)
+  }
+
   func publish(start: Double, end: Double) throws {
     guard let pending, start.isFinite, end.isFinite, end > start else {
       throw BrainRuntimeError.transaction("standing owner completion timing is invalid")
@@ -346,6 +373,7 @@ private final class StandingBridge {
     lastCommitFingerprint = commit.fingerprint
     self.pending = nil
     pendingMotor = nil
+    pendingAccepted = nil
   }
 
   func abort() throws {
@@ -353,6 +381,7 @@ private final class StandingBridge {
     try brain.abortBorrowedControl(pending)
     self.pending = nil
     pendingMotor = nil
+    pendingAccepted = nil
   }
 }
 
@@ -450,6 +479,39 @@ public func nbHumanStandingEncodeAccepted(_ handle: UnsafeMutableRawPointer?,
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeAccepted(encoder: metalEncoder, physicalFingerprint: physicalFingerprint,
         completedStepCount: completedStepCount, receptors: receptors, count: receptorCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_accepted_fast_v1")
+public func nbHumanStandingEncodeAcceptedFast(_ handle: UnsafeMutableRawPointer?,
+  _ encoder: UnsafeMutableRawPointer?, _ physicalFingerprint: UInt64,
+  _ completedStepCount: UInt32, _ errorBuffer: UnsafeMutablePointer<CChar>?,
+  _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let encoder,
+      let metalEncoder = Unmanaged<AnyObject>.fromOpaque(encoder).takeUnretainedValue() as? any MTLComputeCommandEncoder
+    else { throw BrainRuntimeError.transaction("standing accepted fast encoder is missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeAcceptedFast(encoder: metalEncoder, physicalFingerprint: physicalFingerprint,
+        completedStepCount: completedStepCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_accepted_cognitive_v1")
+public func nbHumanStandingEncodeAcceptedCognitive(_ handle: UnsafeMutableRawPointer?,
+  _ encoder: UnsafeMutableRawPointer?,
+  _ receptors: UnsafePointer<NBHumanStandingReceptor>?, _ receptorCount: UInt32,
+  _ errorBuffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let encoder,
+      let metalEncoder = Unmanaged<AnyObject>.fromOpaque(encoder).takeUnretainedValue() as? any MTLComputeCommandEncoder
+    else { throw BrainRuntimeError.transaction("standing accepted cognitive encoder is missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeAcceptedCognitive(encoder: metalEncoder, receptors: receptors, count: receptorCount)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
 }

@@ -584,6 +584,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       case acceptedConsequenceSubmitted
       case borrowedDecisionEncoded
       case borrowedMotorEncoded
+      case borrowedAcceptedFastEncoded
       case borrowedConsequenceEncoded
       case borrowedEncodingFailed
       case committed
@@ -1373,6 +1374,19 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     encoder: any MTLComputeCommandEncoder, accepted: AcceptedPhysicsStateToken,
     rawSensors: [MetalRawSensorBufferLease], receptorEvents: [BrainInterruptEvent] = [],
     localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []) throws {
+    try encodeBorrowedAcceptedFast(transaction, encoder: encoder, accepted: accepted,
+      receptorEvents: receptorEvents,
+      localizedMuscleLoadObservations: localizedMuscleLoadObservations)
+    try encodeBorrowedAcceptedCognitive(transaction, encoder: encoder, rawSensors: rawSensors)
+  }
+
+  /// Encodes the accepted fast-system consequence on the native owner's command.
+  /// A following cognitive encoder must consume the same accepted transaction.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedAcceptedFast(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder, accepted: AcceptedPhysicsStateToken,
+    receptorEvents: [BrainInterruptEvent] = [],
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []) throws {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .borrowedMotorEncoded)
@@ -1387,6 +1401,30 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       try fastTissue.encodeBorrowedAcceptedPhysicsSubstep(encoder: encoder,
         accepted: accepted, for: substep, receptorEvents: receptorEvents,
         localizedMuscleLoadObservations: localizedMuscleLoadObservations)
+      transaction.lastAcceptedSubstep = substep
+      transaction.lastAcceptedPhysicsState = accepted
+      transaction.status = .borrowedAcceptedFastEncoded
+    } catch {
+      transaction.status = .borrowedEncodingFailed
+      throw error
+    }
+  }
+
+  /// Completes accepted cognition after the fast-system consequence, still on
+  /// the physical owner's command buffer and before neural publication.
+  @_spi(NumanXInterop)
+  public func encodeBorrowedAcceptedCognitive(_ transaction: ControlTransaction,
+    encoder: any MTLComputeCommandEncoder,
+    rawSensors: [MetalRawSensorBufferLease]) throws {
+    lock.lock()
+    defer { lock.unlock() }
+    try requireActive(transaction, status: .borrowedAcceptedFastEncoded)
+    guard let accepted = transaction.lastAcceptedPhysicsState,
+      transaction.lastAcceptedSubstep?.fingerprint == accepted.substepFingerprint else {
+      transaction.status = .borrowedEncodingFailed
+      throw TissueError.transaction("borrowed cognitive consequence lacks accepted fast state")
+    }
+    do {
       let fastState = try fastTissue.borrowBorrowedAcceptedFastMotorState(for: transaction.token)
       let recurrence = try fastTissue.borrowedAcceptedRegionalRecurrentBufferView(for: transaction.token)
       try cognitive.encodeBorrowedAcceptedConsequence(
@@ -1394,8 +1432,6 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         acceptedPhysicsState: accepted, rawSensors: rawSensors,
         acceptedRegionalRecurrentInput: recurrence, acceptedFastMotorState: fastState,
         additionalAllocations: fastTissue.borrowedResidencyAllocations)
-      transaction.lastAcceptedSubstep = substep
-      transaction.lastAcceptedPhysicsState = accepted
       transaction.activeSubstep = nil
       transaction.status = .borrowedConsequenceEncoded
     } catch {
@@ -1441,6 +1477,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     guard activeTransaction === transaction,
       transaction.status == .borrowedDecisionEncoded
         || transaction.status == .borrowedMotorEncoded
+        || transaction.status == .borrowedAcceptedFastEncoded
         || transaction.status == .borrowedConsequenceEncoded
         || transaction.status == .borrowedEncodingFailed else {
       throw TissueError.transaction("borrowed control is not active")
