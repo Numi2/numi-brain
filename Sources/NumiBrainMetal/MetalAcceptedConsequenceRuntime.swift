@@ -807,11 +807,11 @@ private func makeAcceptedConsequenceProgramResources(
   immutableBuffers: AcceptedConsequenceImmutableBuffers
 ) throws -> AcceptedConsequenceProgramResources {
   let sourceURL =
-    Bundle.module.url(
+    MetalBrainResourceBundle.bundle.url(
       forResource: "AcceptedConsequence",
       withExtension: "metal",
       subdirectory: "Shaders"
-    ) ?? Bundle.module.url(
+    ) ?? MetalBrainResourceBundle.bundle.url(
       forResource: "AcceptedConsequence",
       withExtension: "metal"
     )

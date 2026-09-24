@@ -1889,6 +1889,73 @@ inline float cohort_regional_route_message_value(
 /// Executable dense-local recurrent token operator. Exactly one threadgroup owns
 /// an agent. All due modules at one timestamp read the same pre-timestamp state,
 /// then publish together, preventing route cycles from observing partial peers.
+inline bool regional_program_contract_valid(
+    device const NBRegionalProgramHeaderABI *header,
+    device const NBParameterVersionBindingABI *parameterVersion,
+    device const NBRegionalPlasticBasisUniformsABI *plasticBasisUniforms
+) {
+    constexpr ulong plasticityHyperparameterCount = 8ul;
+    constexpr uint maximumActivePlasticBases = 4u;
+    const ulong plasticityBasisScalarCount =
+        ulong(header->module_count)
+        * ulong(plasticBasisUniforms->basis_capacity_per_region)
+        * ulong(plasticBasisUniforms->basis_stride);
+    return parameterVersion->regional_program_fingerprint
+                == header->program_fingerprint
+        && parameterVersion->schedule_fingerprint != 0ul
+        && header->dense_parameter_count != 0u
+        && header->reserved == 0u
+        && (plasticBasisUniforms->flags & 1u) != 0u
+        && plasticBasisUniforms->basis_capacity_per_region != 0u
+        && plasticBasisUniforms->operator_channel_count != 0u
+        && plasticBasisUniforms->maximum_feature_count != 0u
+        && plasticBasisUniforms->basis_stride
+            == plasticBasisUniforms->operator_channel_count
+                + 2u * plasticBasisUniforms->maximum_feature_count
+        && plasticBasisUniforms->active_basis_count != 0u
+        && plasticBasisUniforms->active_basis_count <= maximumActivePlasticBases
+        && plasticBasisUniforms->fast_plasticity_count
+            >= header->module_count
+                * plasticBasisUniforms->basis_capacity_per_region
+        && ulong(plasticBasisUniforms->plasticity_parameter_count)
+            >= plasticityHyperparameterCount + plasticityBasisScalarCount;
+}
+
+// Preserve the input generation before the one-group, time-ordered regional
+// transition. The route-history arena can exceed 20 MiB for the full Human
+// graph; copying it with the transition's single group serializes bandwidth.
+kernel void copy_regional_route_history_values(
+    device const NBRegionalProgramHeaderABI *header [[buffer(0)]],
+    device const NBSchedulerResultABI *schedulerResult [[buffer(1)]],
+    device const NBParameterVersionBindingABI *parameterVersion [[buffer(2)]],
+    device const uchar *fastPlasticityState [[buffer(3)]],
+    device const uint *inputHistoryBits [[buffer(4)]],
+    device uint *outputHistoryBits [[buffer(5)]],
+    uint vectorIndex [[thread_position_in_grid]]
+) {
+    device const NBRegionalPlasticBasisUniformsABI *plasticBasisUniforms =
+        reinterpret_cast<device const NBRegionalPlasticBasisUniformsABI *>(
+            fastPlasticityState
+        );
+    if (schedulerResult->status != NBSchedulerStatusValid
+        || !regional_program_contract_valid(
+            header, parameterVersion, plasticBasisUniforms)) return;
+    const uint scalarBase = 4u * vectorIndex;
+    if (scalarBase + 3u < header->history_scalar_count) {
+        device const uint4 *source =
+            reinterpret_cast<device const uint4 *>(inputHistoryBits);
+        device uint4 *destination =
+            reinterpret_cast<device uint4 *>(outputHistoryBits);
+        destination[vectorIndex] = source[vectorIndex];
+    } else {
+        for (uint scalar = scalarBase;
+             scalar < header->history_scalar_count;
+             ++scalar) {
+            outputHistoryBits[scalar] = inputHistoryBits[scalar];
+        }
+    }
+}
+
 kernel void advance_due_regional_tokens(
     device const NBRegionalProgramHeaderABI *header [[buffer(0)]],
     device const NBModuleDescriptorABI *modules [[buffer(1)]],
@@ -1936,32 +2003,8 @@ kernel void advance_due_regional_tokens(
         );
     constexpr ulong plasticityHyperparameterCount = 8ul;
     constexpr uint maximumActivePlasticBases = 4u;
-    const ulong plasticityBasisScalarCount =
-        ulong(header->module_count)
-        * ulong(plasticBasisUniforms->basis_capacity_per_region)
-        * ulong(plasticBasisUniforms->basis_stride);
-    const bool invalidPlasticBasis =
-        (plasticBasisUniforms->flags & 1u) == 0u
-        || plasticBasisUniforms->basis_capacity_per_region == 0u
-        || plasticBasisUniforms->operator_channel_count == 0u
-        || plasticBasisUniforms->maximum_feature_count == 0u
-        || plasticBasisUniforms->basis_stride
-            != plasticBasisUniforms->operator_channel_count
-                + 2u * plasticBasisUniforms->maximum_feature_count
-        || plasticBasisUniforms->active_basis_count == 0u
-        || plasticBasisUniforms->active_basis_count > maximumActivePlasticBases
-        || plasticBasisUniforms->fast_plasticity_count
-            < header->module_count
-                * plasticBasisUniforms->basis_capacity_per_region
-        || ulong(plasticBasisUniforms->plasticity_parameter_count)
-            < plasticityHyperparameterCount + plasticityBasisScalarCount;
-    if (lane == 0u
-        && (parameterVersion->regional_program_fingerprint
-                != header->program_fingerprint
-            || parameterVersion->schedule_fingerprint == 0ul
-            || header->dense_parameter_count == 0u
-            || header->reserved != 0u
-            || invalidPlasticBasis)) {
+    if (lane == 0u && !regional_program_contract_valid(
+            header, parameterVersion, plasticBasisUniforms)) {
         schedulerResult->status = NBSchedulerStatusRegionalProgram;
     }
     threadgroup_barrier(mem_flags::mem_device);
@@ -1989,12 +2032,6 @@ kernel void advance_due_regional_tokens(
          timestampIndex += laneCount) {
         outputRouteHistoryTimestamps[timestampIndex] =
             inputRouteHistoryTimestamps[timestampIndex];
-    }
-    for (uint historyScalarIndex = lane;
-         historyScalarIndex < header->history_scalar_count;
-         historyScalarIndex += laneCount) {
-        outputRouteHistoryValues[historyScalarIndex] =
-            inputRouteHistoryValues[historyScalarIndex];
     }
     for (uint routeIndex = lane;
          routeIndex < header->route_count;

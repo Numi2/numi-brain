@@ -504,11 +504,11 @@ public enum MetalDispatchPlanRuntime {
       throw TissueError.metal("device does not provide the required Metal 4 command objects")
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "NeuralTissue",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "NeuralTissue", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "NeuralTissue", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("NeuralTissue.metal is missing from package resources")
     }

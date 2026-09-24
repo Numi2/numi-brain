@@ -990,6 +990,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let eventCompactionPipeline: any MTLComputePipelineState
   private let receptorInterruptTransductionPipeline: any MTLComputePipelineState
   private let schedulerPipeline: any MTLComputePipelineState
+  private let regionalHistoryCopyPipeline: any MTLComputePipelineState
   private let regionalPipeline: any MTLComputePipelineState
   private let protectivePipeline: any MTLComputePipelineState
   private let protectiveMotorPipeline: any MTLComputePipelineState
@@ -1007,6 +1008,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   private let eventArgumentTable: any MTL4ArgumentTable
   private let receptorInterruptArgumentTable: any MTL4ArgumentTable
   private let schedulerArgumentTable: any MTL4ArgumentTable
+  private let regionalHistoryCopyArgumentTable: any MTL4ArgumentTable
   private let regionalArgumentTable: any MTL4ArgumentTable
   private let protectiveArgumentTable: any MTL4ArgumentTable
   private let protectiveMotorArgumentTable: any MTL4ArgumentTable
@@ -1238,8 +1240,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       throw TissueError.transaction("borrowed tissue encoder belongs to a foreign device")
     }
     if borrowedCopyPipeline == nil {
-      guard let url = Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
-        ?? Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
+      guard let url = MetalBrainResourceBundle.bundle.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
+        ?? MetalBrainResourceBundle.bundle.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
         throw TissueError.metal("borrowed brain transport shader is missing")
       }
       let options = MTLCompileOptions()
@@ -1494,11 +1496,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
 
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "NeuralTissue",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "NeuralTissue", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "NeuralTissue", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("NeuralTissue.metal is missing from package resources")
     }
@@ -1559,6 +1561,10 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard let schedulerFunction = library.makeFunction(name: "schedule_due_modules") else {
       throw TissueError.metal("schedule_due_modules is missing from the Metal library")
     }
+    guard let regionalHistoryCopyFunction = library.makeFunction(
+      name: "copy_regional_route_history_values") else {
+      throw TissueError.metal("copy_regional_route_history_values is missing from the Metal library loaded at \(sourceURL.path)")
+    }
     guard let regionalFunction = library.makeFunction(name: "advance_due_regional_tokens") else {
       throw TissueError.metal("advance_due_regional_tokens is missing from the Metal library")
     }
@@ -1596,6 +1602,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     let eventCompactionPipeline: any MTLComputePipelineState
     let receptorInterruptTransductionPipeline: any MTLComputePipelineState
     let schedulerPipeline: any MTLComputePipelineState
+    let regionalHistoryCopyPipeline: any MTLComputePipelineState
     let regionalPipeline: any MTLComputePipelineState
     let protectivePipeline: any MTLComputePipelineState
     let protectiveMotorPipeline: any MTLComputePipelineState
@@ -1612,6 +1619,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
         function: receptorInterruptTransductionFunction
       )
       schedulerPipeline = try device.makeComputePipelineState(function: schedulerFunction)
+      regionalHistoryCopyPipeline = try device.makeComputePipelineState(
+        function: regionalHistoryCopyFunction)
       regionalPipeline = try device.makeComputePipelineState(function: regionalFunction)
       protectivePipeline = try device.makeComputePipelineState(function: protectiveFunction)
       protectiveMotorPipeline = try device.makeComputePipelineState(
@@ -1674,6 +1683,14 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       )
     else {
       throw TissueError.metal("failed to create the scheduler argument table")
+    }
+    let regionalHistoryCopyArgumentDescriptor = MTL4ArgumentTableDescriptor()
+    regionalHistoryCopyArgumentDescriptor.label = "NumiBrain regional history copy arguments"
+    regionalHistoryCopyArgumentDescriptor.maxBufferBindCount = 6
+    regionalHistoryCopyArgumentDescriptor.initializeBindings = true
+    guard let regionalHistoryCopyArgumentTable = try? device.makeArgumentTable(
+      descriptor: regionalHistoryCopyArgumentDescriptor) else {
+      throw TissueError.metal("failed to create the regional history copy argument table")
     }
     let regionalArgumentDescriptor = MTL4ArgumentTableDescriptor()
     regionalArgumentDescriptor.label = "NumiBrain regional-token arguments"
@@ -2824,6 +2841,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.eventCompactionPipeline = eventCompactionPipeline
     self.receptorInterruptTransductionPipeline = receptorInterruptTransductionPipeline
     self.schedulerPipeline = schedulerPipeline
+    self.regionalHistoryCopyPipeline = regionalHistoryCopyPipeline
     self.regionalPipeline = regionalPipeline
     self.protectivePipeline = protectivePipeline
     self.protectiveMotorPipeline = protectiveMotorPipeline
@@ -2835,6 +2853,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     self.eventArgumentTable = eventArgumentTable
     self.receptorInterruptArgumentTable = receptorInterruptArgumentTable
     self.schedulerArgumentTable = schedulerArgumentTable
+    self.regionalHistoryCopyArgumentTable = regionalHistoryCopyArgumentTable
     self.regionalArgumentTable = regionalArgumentTable
     self.protectiveArgumentTable = protectiveArgumentTable
     self.protectiveMotorArgumentTable = protectiveMotorArgumentTable
@@ -5793,7 +5812,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     accepted: AcceptedPhysicsStateToken,
     for substep: BrainJointSubstepToken,
     receptorEvents: [BrainInterruptEvent] = [],
-    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = [],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil
   ) throws {
     guard !borrowedEncodingFailed, !borrowedAcceptedStatePending else {
       throw TissueError.transaction("borrowed fast acceptance is failed or still pending completion")
@@ -5866,7 +5886,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       size: activeSensingCommandByteCount
     )
     encoder.barrier()
-    try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    if let nextPhase {
+      let rootEncoder = try borrowedEncoder(nextPhase("brain_accepted_fast_receptor"))
+      try encodeRootFinalization(rootEncoder, schedulerWindow: schedulerWindow,
+        nextPhase: { label in try self.borrowedEncoder(nextPhase(label)) })
+    } else {
+      try encodeRootFinalization(encoder, schedulerWindow: schedulerWindow)
+    }
     root.transaction = transaction
     root.rootShadowIndex = candidate.destinationIndex
     root.historyOwnerMask = settingHistoryOwner(
@@ -8856,9 +8882,11 @@ public final class MetalTissueRuntime: @unchecked Sendable {
   }
 
   private func encodeRootFinalization(
-    _ encoder: MetalBrainCommandEncoder,
-    schedulerWindow: PreparedSchedulerWindow
+    _ initialEncoder: MetalBrainCommandEncoder,
+    schedulerWindow: PreparedSchedulerWindow,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws {
+    var encoder = initialEncoder
     let bodyLoadFieldArgumentTable = MetalBrainArgumentTable(self.bodyLoadFieldArgumentTable)
     let bodySchemaArgumentTable = MetalBrainArgumentTable(self.bodySchemaArgumentTable)
     let fastAutonomicArgumentTable = MetalBrainArgumentTable(self.fastAutonomicArgumentTable)
@@ -8900,6 +8928,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_scheduler") }
     schedulerArgumentTable.setAddress(schedulerUniformBuffer.gpuAddress, index: 0)
     schedulerArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
     schedulerArgumentTable.setAddress(
@@ -8935,6 +8964,33 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    let fastPlasticityBuffer =
+      descendingSomaticTransactionFingerprint
+        == interactiveJointRoot?.transaction.token.fingerprint
+      ? stagedFastPlasticityBuffer
+      : defaultFastPlasticityBuffer
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_history_copy") }
+    let regionalHistoryCopyArgumentTable = MetalBrainArgumentTable(
+      self.regionalHistoryCopyArgumentTable)
+    regionalHistoryCopyArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
+    regionalHistoryCopyArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 1)
+    regionalHistoryCopyArgumentTable.setAddress(parameterVersionBindingBuffer.gpuAddress, index: 2)
+    regionalHistoryCopyArgumentTable.setAddress(fastPlasticityBuffer.gpuAddress, index: 3)
+    regionalHistoryCopyArgumentTable.setAddress(
+      regionalRouteHistoryValueBuffers[committedRegionalStateIndex].gpuAddress, index: 4)
+    regionalHistoryCopyArgumentTable.setAddress(
+      regionalRouteHistoryValueBuffers[schedulerWindow.outputClockIndex].gpuAddress, index: 5)
+    try encoder.dispatch(pipeline: regionalHistoryCopyPipeline,
+      argumentTable: regionalHistoryCopyArgumentTable,
+      threadsPerGrid: MTLSize(
+        width: max(1, (regionalTokenProgram.routeHistoryScalarCount + 3) / 4),
+        height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(
+        width: max(1, min(256, regionalHistoryCopyPipeline.maxTotalThreadsPerThreadgroup)),
+        height: 1, depth: 1)
+    )
+    encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_regional") }
     regionalArgumentTable.setAddress(regionalProgramHeaderBuffer.gpuAddress, index: 0)
     regionalArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 1)
     regionalArgumentTable.setAddress(regionalLayoutBuffer.gpuAddress, index: 2)
@@ -9010,17 +9066,13 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       regionalOutgoingRouteIndexBuffer.gpuAddress,
       index: 28
     )
-    let fastPlasticityBuffer =
-      descendingSomaticTransactionFingerprint
-        == interactiveJointRoot?.transaction.token.fingerprint
-      ? stagedFastPlasticityBuffer
-      : defaultFastPlasticityBuffer
     regionalArgumentTable.setAddress(fastPlasticityBuffer.gpuAddress, index: 29)
     try encoder.dispatch(pipeline: regionalPipeline, argumentTable: regionalArgumentTable,
       threadsPerGrid: regionalThreadgroupSize(),
       threadsPerThreadgroup: regionalThreadgroupSize()
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_protective") }
     protectiveArgumentTable.setAddress(schedulerResultBuffer.gpuAddress, index: 0)
     protectiveArgumentTable.setAddress(schedulerInvocationBuffer.gpuAddress, index: 1)
     protectiveArgumentTable.setAddress(schedulerDescriptorBuffer.gpuAddress, index: 2)
@@ -9038,6 +9090,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_body_load") }
     bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
     bodyLoadFieldArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
     bodyLoadFieldArgumentTable.setAddress(
@@ -9053,6 +9106,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_cerebellar") }
     fastCerebellarArgumentTable.setAddress(bodyLoadFieldUniformBuffer.gpuAddress, index: 0)
     fastCerebellarArgumentTable.setAddress(bodyLoadFieldUpdateBuffer.gpuAddress, index: 1)
     fastCerebellarArgumentTable.setAddress(stagedMotorCommandBuffer.gpuAddress, index: 2)
@@ -9075,6 +9129,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_body_schema") }
     bodySchemaArgumentTable.setAddress(bodySchemaUniformBuffer.gpuAddress, index: 0)
     bodySchemaArgumentTable.setAddress(
       bodyLoadFieldStateBuffers[schedulerWindow.outputClockIndex].gpuAddress,
@@ -9097,6 +9152,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1)
     )
     encoder.barrier()
+    if let nextPhase { encoder = try nextPhase("brain_accepted_fast_motor") }
     protectiveMotorArgumentTable.setAddress(
       protectiveCommandBuffers[schedulerWindow.outputClockIndex].gpuAddress,
       index: 0
@@ -9161,6 +9217,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     )
     encoder.barrier()
     if boundFastAutonomicChannelCount > 0 {
+      if let nextPhase { encoder = try nextPhase("brain_accepted_fast_autonomic") }
       fastAutonomicArgumentTable.setAddress(
         fastAutonomicUniformBuffer.gpuAddress,
         index: 0

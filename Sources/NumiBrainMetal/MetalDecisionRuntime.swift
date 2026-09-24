@@ -327,11 +327,11 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       )
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "DecisionState",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "DecisionState", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "DecisionState", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("DecisionState.metal is missing from package resources")
     }

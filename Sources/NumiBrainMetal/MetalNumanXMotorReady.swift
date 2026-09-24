@@ -834,11 +834,11 @@ final class MetalNumanXMotorReadyRuntime {
   private let motorArguments: any MTL4ArgumentTable
 
   init(device: any MTLDevice) throws {
-    guard let sourceURL = Bundle.module.url(
+    guard let sourceURL = MetalBrainResourceBundle.bundle.url(
       forResource: "NumanXMotorReady",
       withExtension: "metal",
       subdirectory: "Shaders"
-    ) ?? Bundle.module.url(
+    ) ?? MetalBrainResourceBundle.bundle.url(
       forResource: "NumanXMotorReady", withExtension: "metal"
     ) else {
       throw TissueError.metal("NumanXMotorReady.metal is missing")

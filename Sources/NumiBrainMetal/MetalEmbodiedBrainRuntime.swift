@@ -2857,8 +2857,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
   private func borrowedConsequenceEncoder(_ encoder: any MTLComputeCommandEncoder,
     allocations: [any MTLAllocation]) throws -> MetalBrainCommandEncoder {
     if borrowedFastImportPipeline == nil {
-      guard let url = Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
-        ?? Bundle.module.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
+      guard let url = MetalBrainResourceBundle.bundle.url(forResource: "BorrowedBrainCopy", withExtension: "metal", subdirectory: "Shaders")
+        ?? MetalBrainResourceBundle.bundle.url(forResource: "BorrowedBrainCopy", withExtension: "metal") else {
         throw TissueError.metal("borrowed brain transport shader is missing")
       }
       let options = MTLCompileOptions()

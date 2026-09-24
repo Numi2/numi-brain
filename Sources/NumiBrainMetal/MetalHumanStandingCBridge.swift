@@ -248,6 +248,13 @@ private final class StandingBridge {
         ? source.jointPathCalibration : nil)
     brain = try MetalNumiBrainRuntime.makeRuntime(configuration: configuration,
       publication: publication, device: device)
+    if ProcessInfo.processInfo.environment["NUMI_HUMAN_BRAIN_INNER_PHASE_TIMING"] == "1" {
+      let regional = try template.species.regionalProgram()
+      let periods = Dictionary(grouping: template.species.regionGraph.schedule.modules,
+        by: \.periodMicroseconds).mapValues(\.count)
+      let record = "brain_regional_shape modules=\(regional.layouts.count) routes=\(regional.routes.count) scalars=\(regional.scalarCount) history_capacity=\(regional.compiledRouteHistoryCapacity) history_scalars=\(regional.routeHistoryScalarCount) periods=\(periods)\n"
+      FileHandle.standardError.write(Data(record.utf8))
+    }
   }
 
   func sensors(_ receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
@@ -431,6 +438,37 @@ private final class StandingBridge {
     pendingAccepted = accepted
   }
 
+  /// Diagnostic phase attribution. Every encoder remains on the native
+  /// physical owner's command buffer and preserves the accepted transaction.
+  func encodeAcceptedFastPhased(commandBuffer: any MTLCommandBuffer,
+    physicalFingerprint: UInt64, completedStepCount: UInt32) throws {
+    guard let pending, let motor = pendingMotor,
+      pendingAccepted == nil, physicalFingerprint != 0,
+      UInt64(completedStepCount) == brain.committedGeneration + 1 else {
+      throw BrainRuntimeError.transaction("standing accepted endpoint is unpaired")
+    }
+    let accepted = try AcceptedPhysicsStateToken(transaction: pending.token,
+      substep: motor.substep, physicsStateFingerprint: physicalFingerprint,
+      physicsGeneration: UInt64(completedStepCount))
+    let step = brain.committedGeneration
+    var active: (any MTLComputeCommandEncoder)? = try timedMotorEncoder(
+      commandBuffer: commandBuffer, stage: "brain_accepted_fast_copy", step: step)
+    defer { active?.endEncoding() }
+    guard let first = active else {
+      throw BrainRuntimeError.transaction("standing accepted first encoder is missing")
+    }
+    try brain.encodeBorrowedAcceptedFast(pending, encoder: first,
+      accepted: accepted, nextPhase: { stage in
+        active?.endEncoding()
+        active = nil
+        let next = try self.timedMotorEncoder(commandBuffer: commandBuffer,
+          stage: stage, step: step)
+        active = next
+        return next
+      })
+    pendingAccepted = accepted
+  }
+
   func encodeAcceptedCognitive(encoder: any MTLComputeCommandEncoder,
     receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32) throws {
     guard let pending, let accepted = pendingAccepted,
@@ -591,6 +629,24 @@ public func nbHumanStandingEncodeAcceptedFast(_ handle: UnsafeMutableRawPointer?
     else { throw BrainRuntimeError.transaction("standing accepted fast encoder is missing") }
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeAcceptedFast(encoder: metalEncoder, physicalFingerprint: physicalFingerprint,
+        completedStepCount: completedStepCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_accepted_fast_phased_v1")
+public func nbHumanStandingEncodeAcceptedFastPhased(_ handle: UnsafeMutableRawPointer?,
+  _ commandBuffer: UnsafeMutableRawPointer?, _ physicalFingerprint: UInt64,
+  _ completedStepCount: UInt32, _ errorBuffer: UnsafeMutablePointer<CChar>?,
+  _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let commandBuffer,
+      let metalCommand = Unmanaged<AnyObject>.fromOpaque(commandBuffer).takeUnretainedValue() as? any MTLCommandBuffer
+    else { throw BrainRuntimeError.transaction("standing phased accepted command is missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeAcceptedFastPhased(commandBuffer: metalCommand,
+        physicalFingerprint: physicalFingerprint,
         completedStepCount: completedStepCount)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }

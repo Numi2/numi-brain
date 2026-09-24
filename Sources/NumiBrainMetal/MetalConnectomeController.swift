@@ -91,8 +91,8 @@ final class MetalConnectomeController: @unchecked Sendable {
     logits = try upload([Float](repeating: 0, count: Int(program.actuatorCount)))
     uniforms = try upload([program.binding.channelCount, program.actuatorCount,
       program.spec.maximumLogit.bitPattern, UInt32(0)])
-    guard let url = Bundle.module.url(forResource: "ConnectomeDecoder", withExtension: "metal", subdirectory: "Shaders")
-      ?? Bundle.module.url(forResource: "ConnectomeDecoder", withExtension: "metal") else {
+    guard let url = MetalBrainResourceBundle.bundle.url(forResource: "ConnectomeDecoder", withExtension: "metal", subdirectory: "Shaders")
+      ?? MetalBrainResourceBundle.bundle.url(forResource: "ConnectomeDecoder", withExtension: "metal") else {
       throw ConnectomeError.invalid("connectome decoder shader missing")
     }
     let options = MTLCompileOptions(); options.mathMode = .safe

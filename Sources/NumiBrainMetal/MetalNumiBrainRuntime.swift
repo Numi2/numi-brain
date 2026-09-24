@@ -1430,7 +1430,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   public func encodeBorrowedAcceptedFast(_ transaction: ControlTransaction,
     encoder: any MTLComputeCommandEncoder, accepted: AcceptedPhysicsStateToken,
     receptorEvents: [BrainInterruptEvent] = [],
-    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = []) throws {
+    localizedMuscleLoadObservations: [LocalizedMuscleLoadReceptorObservation] = [],
+    nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
     lock.lock()
     defer { lock.unlock() }
     try requireActive(transaction, status: .borrowedMotorEncoded)
@@ -1444,7 +1445,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     do {
       try fastTissue.encodeBorrowedAcceptedPhysicsSubstep(encoder: encoder,
         accepted: accepted, for: substep, receptorEvents: receptorEvents,
-        localizedMuscleLoadObservations: localizedMuscleLoadObservations)
+        localizedMuscleLoadObservations: localizedMuscleLoadObservations,
+        nextPhase: nextPhase)
       transaction.lastAcceptedSubstep = substep
       transaction.lastAcceptedPhysicsState = accepted
       transaction.status = .borrowedAcceptedFastEncoded

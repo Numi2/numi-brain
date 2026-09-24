@@ -136,11 +136,11 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       "NumiBrain archive page-residency uniforms"
 
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "AgentStateArena",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "AgentStateArena", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "AgentStateArena", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("AgentStateArena.metal is missing from package resources")
     }

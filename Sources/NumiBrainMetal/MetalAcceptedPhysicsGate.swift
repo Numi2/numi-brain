@@ -235,11 +235,11 @@ final class MetalAcceptedPhysicsGateRuntime {
   private let argumentTable: any MTL4ArgumentTable
 
   init(device: any MTLDevice) throws {
-    guard let sourceURL = Bundle.module.url(
+    guard let sourceURL = MetalBrainResourceBundle.bundle.url(
       forResource: "AcceptedPhysicsGate",
       withExtension: "metal",
       subdirectory: "Shaders"
-    ) ?? Bundle.module.url(
+    ) ?? MetalBrainResourceBundle.bundle.url(
       forResource: "AcceptedPhysicsGate", withExtension: "metal"
     ) else {
       throw TissueError.metal("AcceptedPhysicsGate.metal is missing")

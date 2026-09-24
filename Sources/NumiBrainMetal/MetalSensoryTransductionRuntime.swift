@@ -275,11 +275,11 @@ public final class MetalSensoryTransductionRuntime: @unchecked Sendable {
       )
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "SensoryTransduction",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "SensoryTransduction", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "SensoryTransduction", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("SensoryTransduction.metal is missing from resources")
     }

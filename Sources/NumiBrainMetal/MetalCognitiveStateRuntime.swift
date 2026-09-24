@@ -194,11 +194,11 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       throw TissueError.metal("cognitive-state layout or uniform ABI drift")
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "CognitiveState",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "CognitiveState", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "CognitiveState", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("CognitiveState.metal is missing from package resources")
     }

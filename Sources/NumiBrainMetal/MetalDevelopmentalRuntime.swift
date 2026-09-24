@@ -351,11 +351,11 @@ public final class MetalDevelopmentalRuntime: @unchecked Sendable {
       throw TissueError.metal("developmental stage table does not match the hot arena")
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "DevelopmentalState",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "DevelopmentalState", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "DevelopmentalState", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("DevelopmentalState.metal is missing from resources")
     }

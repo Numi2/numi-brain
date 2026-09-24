@@ -1271,9 +1271,9 @@ final class MetalNumanXHumanMatterBrainRuntime: @unchecked Sendable {
     var shaderSources: [(String, Data)] = []
     shaderSources.reserveCapacity(Self.shaderResourceNames.count)
     for name in Self.shaderResourceNames {
-      guard let url = Bundle.module.url(
+      guard let url = MetalBrainResourceBundle.bundle.url(
         forResource: name, withExtension: "metal", subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: name, withExtension: "metal") else {
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: name, withExtension: "metal") else {
         throw TissueError.metal("\(name).metal is missing from bundled Brain program")
       }
       shaderSources.append((name, try Data(contentsOf: url)))

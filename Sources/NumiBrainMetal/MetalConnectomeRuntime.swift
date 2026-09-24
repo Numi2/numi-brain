@@ -18,8 +18,8 @@ public final class MetalConnectomeGraph: @unchecked Sendable {
       graph.bytes.count <= device.maxBufferLength,
       let buffer = graph.bytes.withUnsafeBytes({ bytes in
         device.makeBuffer(bytes: bytes.baseAddress!, length: bytes.count, options: .storageModeShared)
-      }), let url = Bundle.module.url(forResource: "ConnectomeRate", withExtension: "metal", subdirectory: "Shaders")
-        ?? Bundle.module.url(forResource: "ConnectomeRate", withExtension: "metal") else {
+      }), let url = MetalBrainResourceBundle.bundle.url(forResource: "ConnectomeRate", withExtension: "metal", subdirectory: "Shaders")
+        ?? MetalBrainResourceBundle.bundle.url(forResource: "ConnectomeRate", withExtension: "metal") else {
       throw ConnectomeError.invalid("graph allocation budget or Metal shader resource is unavailable")
     }
     let options = MTLCompileOptions()

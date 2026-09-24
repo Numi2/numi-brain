@@ -464,11 +464,11 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       )
     }
     let sourceURL =
-      Bundle.module.url(
+      MetalBrainResourceBundle.bundle.url(
         forResource: "MemoryState",
         withExtension: "metal",
         subdirectory: "Shaders"
-      ) ?? Bundle.module.url(forResource: "MemoryState", withExtension: "metal")
+      ) ?? MetalBrainResourceBundle.bundle.url(forResource: "MemoryState", withExtension: "metal")
     guard let sourceURL else {
       throw TissueError.metal("MemoryState.metal is missing from package resources")
     }

@@ -118,8 +118,8 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     self.balanceController = balanceController
   }
   static func makeLibrary(device: any MTLDevice) throws -> any MTLLibrary {
-    guard let url = Bundle.module.url(forResource: "MuscleLocomotor", withExtension: "metal", subdirectory: "Shaders")
-      ?? Bundle.module.url(forResource: "MuscleLocomotor", withExtension: "metal") else {
+    guard let url = MetalBrainResourceBundle.bundle.url(forResource: "MuscleLocomotor", withExtension: "metal", subdirectory: "Shaders")
+      ?? MetalBrainResourceBundle.bundle.url(forResource: "MuscleLocomotor", withExtension: "metal") else {
       throw TissueError.metal("locomotor shader resource missing")
     }
     let options = MTLCompileOptions()

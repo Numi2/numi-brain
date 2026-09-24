@@ -9,8 +9,8 @@ final class MetalBorrowedHumanMotorWriter {
 
   init(device: any MTLDevice) throws {
     func source(_ name: String) throws -> String {
-      guard let url = Bundle.module.url(forResource: name, withExtension: "metal", subdirectory: "Shaders")
-        ?? Bundle.module.url(forResource: name, withExtension: "metal") else {
+      guard let url = MetalBrainResourceBundle.bundle.url(forResource: name, withExtension: "metal", subdirectory: "Shaders")
+        ?? MetalBrainResourceBundle.bundle.url(forResource: name, withExtension: "metal") else {
         throw TissueError.metal("\(name).metal is missing from package resources")
       }
       return try String(contentsOf: url, encoding: .utf8)
