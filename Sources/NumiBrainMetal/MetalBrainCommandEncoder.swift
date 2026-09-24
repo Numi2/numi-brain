@@ -1,13 +1,61 @@
 @preconcurrency import Metal
 import NumiBrainCore
 
+@available(macOS 26.0, *)
+final class MetalBrainBorrowedBufferResolver {
+  struct Resolution {
+    let buffer: any MTLBuffer
+    let offset: Int
+  }
+
+  // Retain the complete borrowed lease set while the owner's encoder is open.
+  // Shader stages reuse the same GPU addresses throughout one borrowed pass.
+  let allocations: [any MTLAllocation]
+  private let buffers: [any MTLBuffer]
+  private let bufferIdentities: Set<ObjectIdentifier>
+  private var resolutions: [UInt64: Resolution] = [:]
+
+  init(allocations: [any MTLAllocation]) {
+    self.allocations = allocations
+    buffers = allocations.compactMap { $0 as? any MTLBuffer }
+    bufferIdentities = Set(buffers.map { ObjectIdentifier($0 as AnyObject) })
+  }
+
+  func contains(_ buffer: any MTLBuffer) -> Bool {
+    bufferIdentities.contains(ObjectIdentifier(buffer as AnyObject))
+  }
+
+  func resolve(_ address: UInt64, deviceRegistryID: UInt64) throws -> Resolution {
+    if let cached = resolutions[address] { return cached }
+    guard let buffer = buffers.first(where: {
+      address >= $0.gpuAddress && address - $0.gpuAddress < UInt64($0.length)
+    }), buffer.device.registryID == deviceRegistryID,
+      let offset = Int(exactly: address - buffer.gpuAddress)
+    else {
+      throw TissueError.transaction("borrowed neural argument has no matching device buffer lease")
+    }
+    let result = Resolution(buffer: buffer, offset: offset)
+    resolutions[address] = result
+    return result
+  }
+}
+
 /// Appends the same neural kernels to either Brain's Metal 4 encoder or the
 /// native physical owner's ordinary encoder. It never submits or waits.
 @available(macOS 26.0, *)
 enum MetalBrainCommandEncoder {
   case metal4(any MTL4ComputeCommandEncoder)
-  case borrowed(any MTLComputeCommandEncoder, allocations: [any MTLAllocation],
-    copyPipeline: (any MTLComputePipelineState)? = nil)
+  case borrowedResolved(any MTLComputeCommandEncoder,
+    resolver: MetalBrainBorrowedBufferResolver,
+    copyPipeline: (any MTLComputePipelineState)?)
+
+  static func borrowed(_ encoder: any MTLComputeCommandEncoder,
+    allocations: [any MTLAllocation],
+    copyPipeline: (any MTLComputePipelineState)? = nil) -> Self {
+    .borrowedResolved(encoder,
+      resolver: MetalBrainBorrowedBufferResolver(allocations: allocations),
+      copyPipeline: copyPipeline)
+  }
 
   func bind(argumentTable: any MTL4ArgumentTable, addresses: [UInt64]) throws {
     try bind(argumentTable: argumentTable,
@@ -19,20 +67,14 @@ enum MetalBrainCommandEncoder {
     case let .metal4(encoder):
       for (index, address) in bindings { argumentTable.setAddress(address, index: index) }
       encoder.setArgumentTable(argumentTable)
-    case let .borrowed(encoder, allocations, _):
-      let buffers = allocations.compactMap { $0 as? any MTLBuffer }
+    case let .borrowedResolved(encoder, resolver, _):
       // Validate every address before changing the owner's encoder bindings.
       let resolved = try bindings.map { index, address -> (Int, (any MTLBuffer)?, Int) in
         guard index >= 0 else { throw TissueError.transaction("negative borrowed neural buffer slot") }
         if address == 0 { return (index, nil, 0) }
-        guard let buffer = buffers.first(where: {
-          address >= $0.gpuAddress && address - $0.gpuAddress < UInt64($0.length)
-        }), buffer.device.registryID == encoder.device.registryID,
-          let offset = Int(exactly: address - buffer.gpuAddress)
-        else {
-          throw TissueError.transaction("borrowed neural argument has no matching device buffer lease")
-        }
-        return (index, buffer, offset)
+        let value = try resolver.resolve(address,
+          deviceRegistryID: encoder.device.registryID)
+        return (index, value.buffer, value.offset)
       }
       for (index, buffer, offset) in resolved { encoder.setBuffer(buffer, offset: offset, index: index) }
     }
@@ -52,7 +94,7 @@ enum MetalBrainCommandEncoder {
     case let .metal4(encoder):
       encoder.setComputePipelineState(pipeline)
       encoder.dispatchThreads(threadsPerGrid: threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
-    case let .borrowed(encoder, _, _):
+    case let .borrowedResolved(encoder, _, _):
       encoder.setComputePipelineState(pipeline)
       encoder.dispatchThreads(threadsPerGrid, threadsPerThreadgroup: threadsPerThreadgroup)
     }
@@ -68,7 +110,7 @@ enum MetalBrainCommandEncoder {
       encoder.setComputePipelineState(pipeline)
       encoder.setArgumentTable(argumentTable)
       encoder.dispatchThreads(threadsPerGrid: grid, threadsPerThreadgroup: group)
-    case let .borrowed(encoder, _, _):
+    case let .borrowedResolved(encoder, _, _):
       encoder.setComputePipelineState(pipeline)
       encoder.dispatchThreads(grid, threadsPerThreadgroup: group)
     }
@@ -79,7 +121,7 @@ enum MetalBrainCommandEncoder {
     case let .metal4(encoder):
       encoder.barrier(afterEncoderStages: [.dispatch, .blit], beforeEncoderStages: [.dispatch, .blit],
         visibilityOptions: .device)
-    case let .borrowed(encoder, _, _): encoder.memoryBarrier(scope: .buffers)
+    case let .borrowedResolved(encoder, _, _): encoder.memoryBarrier(scope: .buffers)
     }
   }
 
@@ -94,13 +136,13 @@ enum MetalBrainCommandEncoder {
     case let .metal4(encoder):
       encoder.copy(sourceBuffer: sourceBuffer, sourceOffset: sourceOffset,
         destinationBuffer: destinationBuffer, destinationOffset: destinationOffset, size: size)
-    case let .borrowed(encoder, allocations, pipeline):
+    case let .borrowedResolved(encoder, resolver, pipeline):
       guard let pipeline,
         pipeline.device.registryID == encoder.device.registryID,
         sourceBuffer.device.registryID == encoder.device.registryID,
         destinationBuffer.device.registryID == encoder.device.registryID,
-        allocations.contains(where: { ($0 as AnyObject) === (sourceBuffer as AnyObject) }),
-        allocations.contains(where: { ($0 as AnyObject) === (destinationBuffer as AnyObject) }),
+        resolver.contains(sourceBuffer),
+        resolver.contains(destinationBuffer),
         let byteCount = UInt32(exactly: size)
       else { throw TissueError.transaction("borrowed neural copy lacks its pipeline or exact buffer leases") }
       if (sourceBuffer as AnyObject) === (destinationBuffer as AnyObject) {
