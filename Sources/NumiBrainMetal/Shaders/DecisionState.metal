@@ -4821,7 +4821,8 @@ kernel void predict_delayed_cerebellar_consequences(
   device uchar *hot_state [[buffer(0)]],
   constant NBDecisionUniforms &uniforms [[buffer(1)]],
   device const float *cerebellar_parameters [[buffer(5)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[threadgroup_position_in_grid]],
+  uint sample [[thread_index_in_threadgroup]])
 {
   if (gid >= uniforms.active_cerebellar_expert_count) return;
   device NBCerebellarExpertRecord *experts =
@@ -4859,17 +4860,18 @@ kernel void predict_delayed_cerebellar_consequences(
     }
   }
   if (body == nullptr) {
-    expert.prediction_count = 0u;
-    expert.flags &= ~NB_CEREBELLAR_PREDICTION_VALID;
-    experts[gid] = expert;
+    if (sample == 0u) {
+      experts[gid].prediction_count = 0u;
+      experts[gid].flags &= ~NB_CEREBELLAR_PREDICTION_VALID;
+    }
     return;
   }
   device const float *somatic_output = reinterpret_cast<device const float *>(
     hot_state + uniforms.somatic_output_offset
   );
   const uint prediction_count = 8u;
-  float mean_command = 0.0f;
-  for (uint sample = 0u; sample < prediction_count; ++sample) {
+  threadgroup float command_features[8];
+  {
     uint feature_code =
       (expert.expert_identifier * 17u + sample * 31u)
         % NB_BODY_SENSORIMOTOR_FEATURE_COUNT;
@@ -4994,22 +4996,26 @@ kernel void predict_delayed_cerebellar_consequences(
       -1.0f,
       1.0f
     );
-    expert.state[4u + sample] = baseline
+    experts[gid].state[4u + sample] = baseline
       + clamp(command_feature * learned_effect, -1.0f, 1.0f);
-    expert.state[20u + sample] = command_feature;
-    expert.state[36u + sample] = as_type<float>(
+    experts[gid].state[20u + sample] = command_feature;
+    experts[gid].state[36u + sample] = as_type<float>(
       (actuator_index << NB_CEREBELLAR_ACTUATOR_SHIFT)
         | (feature_code & NB_CEREBELLAR_FEATURE_MASK)
     );
-    expert.state[44u + sample] = float(source_index);
-    mean_command += command_feature;
+    experts[gid].state[44u + sample] = float(source_index);
+    command_features[sample] = command_feature;
   }
-  expert.state[3] = prediction_count == 0u
-    ? 0.0f : mean_command / float(prediction_count);
-  expert.prediction_timestamp_microseconds =
-    uniforms.target_timestamp_microseconds;
-  expert.prediction_count = prediction_count;
-  expert.reserved = motor_goal->target_body_identifier;
-  expert.flags |= NB_CEREBELLAR_PREDICTION_VALID;
-  experts[gid] = expert;
+  threadgroup_barrier(mem_flags::mem_device | mem_flags::mem_threadgroup);
+  if (sample == 0u) {
+    float mean_command = 0.0f;
+    for (uint index = 0u; index < prediction_count; ++index)
+      mean_command += command_features[index];
+    experts[gid].state[3] = mean_command / float(prediction_count);
+    experts[gid].prediction_timestamp_microseconds =
+      uniforms.target_timestamp_microseconds;
+    experts[gid].prediction_count = prediction_count;
+    experts[gid].reserved = motor_goal->target_body_identifier;
+    experts[gid].flags |= NB_CEREBELLAR_PREDICTION_VALID;
+  }
 }

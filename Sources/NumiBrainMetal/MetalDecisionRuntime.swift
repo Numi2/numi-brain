@@ -921,10 +921,15 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     try advance("brain_policy_prediction")
-    try dispatch(
-      encoder,
+    try encoder.dispatch(
       pipeline: cerebellarPredictionPipeline,
-      count: Int(species.capacities.activeCerebellarExpertCapacity)
+      argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(
+        width: Int(species.capacities.activeCerebellarExpertCapacity) * 8,
+        height: 1,
+        depth: 1
+      ),
+      threadsPerThreadgroup: MTLSize(width: 8, height: 1, depth: 1)
     )
     let header = controlLayout.section(.header)
     let motorGoal = controlLayout.section(.motorGoal)
