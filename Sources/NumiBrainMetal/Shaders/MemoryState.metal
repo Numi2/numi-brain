@@ -5013,6 +5013,57 @@ kernel void journal_committed_learning_transition(
   }
   if (gid < 12u) plastic_trace[gid] = component_trace;
   threadgroup_barrier(mem_flags::mem_threadgroup);
+  // Reuse the completed sketch scratch for up to 512 muscle belief sites.
+  // Device loads and normalization are independent per site; lane zero still
+  // folds the prepared values in the original ascending muscle order below.
+  const bool prepared_muscle_trace = uniforms.muscle_belief_count <= 512u;
+  if (prepared_muscle_trace) {
+    device const uchar *prior_muscle_bytes =
+      input_hot_state + uniforms.muscle_belief_offset;
+    device const uchar *accepted_muscle_bytes =
+      output_hot_state + uniforms.muscle_belief_offset;
+    for (uint muscle_index = gid;
+        muscle_index < uniforms.muscle_belief_count;
+        muscle_index += 32u) {
+      device const float *prior_muscle = reinterpret_cast<device const float *>(
+        prior_muscle_bytes + ulong(muscle_index) * 192ul);
+      device const float *accepted_muscle = reinterpret_cast<device const float *>(
+        accepted_muscle_bytes + ulong(muscle_index) * 192ul);
+      device const ulong *prior_identity = reinterpret_cast<device const ulong *>(
+        prior_muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET);
+      device const ulong *accepted_identity = reinterpret_cast<device const ulong *>(
+        accepted_muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET);
+      uint valid = 0u;
+      const uint term = 6u * muscle_index;
+      if ((prior_identity[3] & 1ul) != 0ul) {
+        const float fatigue = clamp(prior_muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f);
+        const float disturbance = clamp(
+          prior_muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f);
+        const float prediction_error = abs(
+          prior_muscle[NB_MUSCLE_PREDICTION_ERROR]);
+        plastic_terms[term + 0u] = fatigue;
+        plastic_terms[term + 1u] = disturbance;
+        plastic_terms[term + 2u] =
+          prediction_error / (1.0f + prediction_error);
+        valid |= 1u;
+      }
+      if ((accepted_identity[3] & 1ul) != 0ul) {
+        const float fatigue = clamp(
+          accepted_muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f);
+        const float disturbance = clamp(
+          accepted_muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f);
+        const float prediction_error = abs(
+          accepted_muscle[NB_MUSCLE_PREDICTION_ERROR]);
+        plastic_terms[term + 3u] = fatigue;
+        plastic_terms[term + 4u] = disturbance;
+        plastic_terms[term + 5u] =
+          prediction_error / (1.0f + prediction_error);
+        valid |= 2u;
+      }
+      sketch_valid[muscle_index] = valid;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
   if (gid != 0u) return;
   // These are the exact accepted cortical somatic-synergy coordinates, not an
   // arbitrary prefix of the decoded muscle excitation vector. The learner's
@@ -5416,6 +5467,37 @@ kernel void journal_committed_learning_transition(
   }
   uint prior_muscle_count = 0u;
   uint accepted_muscle_count = 0u;
+  if (prepared_muscle_trace) {
+    for (uint muscle_index = 0u;
+        muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+      const uint valid = sketch_valid[muscle_index];
+      const uint term = 6u * muscle_index;
+      if ((valid & 1u) != 0u) {
+        const float fatigue = plastic_terms[term + 0u];
+        const float disturbance = plastic_terms[term + 1u];
+        const float normalized_error = plastic_terms[term + 2u];
+        record.body_schema_trace[4] = max(record.body_schema_trace[4], fatigue);
+        record.body_schema_trace[5] = max(
+          record.body_schema_trace[5], max(fatigue, disturbance));
+        record.body_schema_trace[6] += normalized_error;
+        record.body_schema_trace[7] = max(
+          record.body_schema_trace[7], max(normalized_error, disturbance));
+        prior_muscle_count += 1u;
+      }
+      if ((valid & 2u) != 0u) {
+        const float fatigue = plastic_terms[term + 3u];
+        const float disturbance = plastic_terms[term + 4u];
+        const float normalized_error = plastic_terms[term + 5u];
+        record.body_schema_trace[12] = max(record.body_schema_trace[12], fatigue);
+        record.body_schema_trace[13] = max(
+          record.body_schema_trace[13], max(fatigue, disturbance));
+        record.body_schema_trace[14] += normalized_error;
+        record.body_schema_trace[15] = max(
+          record.body_schema_trace[15], max(normalized_error, disturbance));
+        accepted_muscle_count += 1u;
+      }
+    }
+  } else {
   for (uint muscle_index = 0u;
       muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
     device const float *prior_muscle = reinterpret_cast<device const float *>(
@@ -5472,6 +5554,7 @@ kernel void journal_committed_learning_transition(
       );
       accepted_muscle_count += 1u;
     }
+  }
   }
   const uint prior_effect_count = prior_joint_count + prior_muscle_count;
   const uint accepted_effect_count = accepted_joint_count
