@@ -1124,6 +1124,62 @@ inline float nb_articulated_joint_risk(
   return clamp(risk, 0.0f, 1.0f);
 }
 
+// The motor kernel has one SIMD group per 32 actuators. Each joint's risk is
+// independent, so split the belief scan across those lanes and reduce only
+// the two maxima that the serial scan would have produced.
+inline float nb_articulated_joint_risk_simd(
+  device const uchar *hot_state,
+  constant NBDecisionUniforms &uniforms,
+  thread float &uncertainty,
+  uint simd_lane,
+  uint simd_width)
+{
+  float risk = 0.0f;
+  uncertainty = 0.0f;
+  device const uchar *joint_belief = hot_state + uniforms.joint_belief_offset;
+  for (uint joint_index = simd_lane;
+      joint_index < uniforms.joint_belief_count; joint_index += simd_width) {
+    device const float *joint = reinterpret_cast<device const float *>(
+      joint_belief + ulong(joint_index) * 256ul
+    );
+    device const ulong *identity = reinterpret_cast<device const ulong *>(
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+    );
+    if ((identity[7] & 1ul) == 0ul) continue;
+    const uint coordinate_count = min(uint(identity[3]), 6u);
+    if (coordinate_count == 0u) continue;
+    float variance = 0.0f;
+    float limit_activation = 0.0f;
+    for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
+      variance += max(joint[NB_JOINT_POSITION_VARIANCE + coordinate], 0.0f)
+        + max(joint[NB_JOINT_VELOCITY_VARIANCE + coordinate], 0.0f);
+      limit_activation = max(
+        limit_activation,
+        clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f)
+      );
+    }
+    const float normalized_uncertainty = sqrt(
+      variance / max(float(coordinate_count * 2u), 1.0f)
+    );
+    const float unsupported = normalized_uncertainty
+      / (1.0f + normalized_uncertainty);
+    uncertainty = max(
+      uncertainty,
+      max(unsupported, 1.0f - clamp(joint[NB_JOINT_OWNERSHIP], 0.0f, 1.0f))
+    );
+    risk = max(
+      risk,
+      max(
+        limit_activation,
+        abs(joint[NB_JOINT_PREDICTION_ERROR])
+          / (1.0f + abs(joint[NB_JOINT_PREDICTION_ERROR]))
+      )
+    );
+  }
+  uncertainty = simd_max(uncertainty);
+  return clamp(simd_max(risk), 0.0f, 1.0f);
+}
+
 inline float nb_embodied_self_risk(
   device const uchar *hot_state,
   constant NBDecisionUniforms &uniforms)
@@ -3930,7 +3986,10 @@ kernel void generate_motor_spinal_autonomic_state(
   device const float *policy_observation_sketch [[buffer(14)]],
   device const float *belief_parameters [[buffer(15)]],
   device const float *connectome_motor_logits [[buffer(25)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[thread_position_in_grid]],
+  uint simd_lane [[thread_index_in_simdgroup]],
+  uint simd_width [[threads_per_simdgroup]],
+  uint thread_count [[threads_per_threadgroup]])
 {
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
@@ -3967,6 +4026,8 @@ kernel void generate_motor_spinal_autonomic_state(
       && motor_goal->option_identifier == header->active_option_identifier;
   const bool anatomical_body_task = motor_goal_valid
     && (motor_goal->flags & NB_MOTOR_GOAL_ANATOMICAL_BODY_TASK) != 0u;
+  threadgroup uint motor_ancestor_path[256];
+  threadgroup uint motor_ancestor_count;
   const bool communication_selected = development->stage >= 10u
     && candidate.source_module == 51u;
   const bool rest_selected = header->active_option_identifier
@@ -4027,8 +4088,17 @@ kernel void generate_motor_spinal_autonomic_state(
     uint body_evidence_count = 0u;
     uint target_body_index = 0u;
     bool target_body_found = false;
-    for (uint body_index = 0u;
-        body_index < uniforms.body_belief_count; ++body_index) {
+    // Full SIMD groups cover canonical actuator lanes. Their belief scans
+    // can partition independent records; a partial final group keeps the
+    // scalar path so no collective executes across inactive actuator lanes.
+    const bool full_simd_motor_group = simd_width == 32u
+      && thread_count == simd_width
+      && gid - simd_lane + simd_width <= uniforms.actuator_count;
+    const uint body_scan_begin = full_simd_motor_group ? simd_lane : 0u;
+    const uint body_scan_stride = full_simd_motor_group ? simd_width : 1u;
+    for (uint body_index = body_scan_begin;
+        body_index < uniforms.body_belief_count;
+        body_index += body_scan_stride) {
       device const float *body = reinterpret_cast<device const float *>(
         body_belief + ulong(body_index) * 256ul
       );
@@ -4052,6 +4122,16 @@ kernel void generate_motor_spinal_autonomic_state(
         target_body_found = true;
       }
       body_evidence_count += 1u;
+    }
+    if (full_simd_motor_group) {
+      body_risk = simd_max(body_risk);
+      support_confidence = simd_max(support_confidence);
+      body_evidence_count = simd_sum(body_evidence_count);
+      const uint target_plus_one = simd_max(
+        target_body_found ? target_body_index + 1u : 0u
+      );
+      target_body_found = target_plus_one != 0u;
+      target_body_index = target_plus_one == 0u ? 0u : target_plus_one - 1u;
     }
     device const float *effector = nullptr;
     device const ulong *effector_identity = nullptr;
@@ -4085,9 +4165,11 @@ kernel void generate_motor_spinal_autonomic_state(
       && (motor_goal->identification_flags & NB_CONTROL_FLAG_VALID) != 0u
       && gid == motor_goal->identification_actuator_identifier;
     float joint_uncertainty = 0.0f;
-    const float joint_limit_risk = nb_articulated_joint_risk(
-      hot_state, uniforms, joint_uncertainty
-    );
+    const float joint_limit_risk = full_simd_motor_group
+      ? nb_articulated_joint_risk_simd(
+          hot_state, uniforms, joint_uncertainty, simd_lane, simd_width)
+      : nb_articulated_joint_risk(
+          hot_state, uniforms, joint_uncertainty);
     const float embodied_risk = clamp(
       body_risk * max(motor_parameters[11], 0.0f)
         // The one explicitly selected bounded probe exists to measure this
@@ -4120,18 +4202,72 @@ kernel void generate_motor_spinal_autonomic_state(
       ? uint(effector_identity[7]) : 0u;
     const uint terminal_body_identifier = anatomical_effector
       ? uint(effector_identity[7] >> 32u) : 0u;
-    const uint first_target_distance = motor_goal_valid
-      ? nb_body_ancestor_distance(
+    const bool cache_motor_ancestry = full_simd_motor_group
+      && motor_goal_valid && uniforms.joint_belief_count < 256u;
+    if (cache_motor_ancestry) {
+      // Every actuator asks about the same target ancestry. Build its path
+      // once per SIMD group, preserving the first matching joint in source
+      // order when several records claim one child.
+      uint current_body = motor_goal->target_body_identifier;
+      uint path_count = 1u;
+      if (simd_lane == 0u) motor_ancestor_path[0] = current_body;
+      for (uint depth = 1u; depth <= uniforms.joint_belief_count; ++depth) {
+        uint first_joint = 0xffffffffu;
+        for (uint joint_index = simd_lane;
+            joint_index < uniforms.joint_belief_count;
+            joint_index += simd_width) {
+          device const float *joint = reinterpret_cast<device const float *>(
+            hot_state + uniforms.joint_belief_offset
+              + ulong(joint_index) * 256ul
+          );
+          device const ulong *identity = reinterpret_cast<device const ulong *>(
+            joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+          );
+          if ((identity[7] & ulong(NB_CONTROL_FLAG_VALID)) != 0ul
+              && uint(identity[2]) == current_body)
+            first_joint = min(first_joint, joint_index);
+        }
+        first_joint = simd_min(first_joint);
+        if (first_joint == 0xffffffffu) break;
+        device const float *parent_joint = reinterpret_cast<device const float *>(
+          hot_state + uniforms.joint_belief_offset
+            + ulong(first_joint) * 256ul
+        );
+        device const ulong *parent_identity =
+          reinterpret_cast<device const ulong *>(
+            parent_joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
+          );
+        current_body = uint(parent_identity[1]);
+        if (simd_lane == 0u) motor_ancestor_path[depth] = current_body;
+        path_count = depth + 1u;
+      }
+      if (simd_lane == 0u) motor_ancestor_count = path_count;
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    uint first_target_distance = 0xffffffffu;
+    uint terminal_target_distance = 0xffffffffu;
+    if (motor_goal_valid) {
+      if (cache_motor_ancestry) {
+        for (uint depth = 0u; depth < motor_ancestor_count; ++depth) {
+          const uint ancestor = motor_ancestor_path[depth];
+          if (ancestor == first_body_identifier
+              && first_target_distance == 0xffffffffu)
+            first_target_distance = depth;
+          if (ancestor == terminal_body_identifier
+              && terminal_target_distance == 0xffffffffu)
+            terminal_target_distance = depth;
+        }
+      } else {
+        first_target_distance = nb_body_ancestor_distance(
           hot_state, uniforms, first_body_identifier,
           motor_goal->target_body_identifier
-        )
-      : 0xffffffffu;
-    const uint terminal_target_distance = motor_goal_valid
-      ? nb_body_ancestor_distance(
+        );
+        terminal_target_distance = nb_body_ancestor_distance(
           hot_state, uniforms, terminal_body_identifier,
           motor_goal->target_body_identifier
-        )
-      : 0xffffffffu;
+        );
+      }
+    }
     const bool effector_targets_body = motor_goal_valid
       && min(first_target_distance, terminal_target_distance) != 0xffffffffu
       && first_target_distance != terminal_target_distance;
