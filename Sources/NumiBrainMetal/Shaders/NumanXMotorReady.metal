@@ -199,12 +199,7 @@ static_assert(sizeof(NBNumanXMotorCandidateGPU) == 152);
 static_assert(sizeof(NBMotorOutputHeaderGPU) == 80);
 
 inline void nb_mix_byte(thread ulong &hash, uchar value) {
-  const uint low = uint(hash) ^ uint(value);
-  const uint high = uint(hash >> 32u);
-  // FNV prime is 2^40 + 435. Form the product modulo 2^64 from native
-  // 32-bit products, including the carry from low * 435.
-  hash = (ulong(high * 435u + (low << 8u) + mulhi(low, 435u)) << 32u)
-    | ulong(low * 435u);
+  hash = (hash ^ ulong(value)) * NB_FNV_PRIME;
 }
 
 inline void nb_mix_uint(thread ulong &hash, uint value) {
