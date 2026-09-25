@@ -33,5 +33,22 @@ step 104; its 500-step physical and sensor traces matched the off arm exactly
 
 An independent repeat of the +50 N on arm reproduced every accepted physical
 row and sensor packet (`force50-replay-audit.json`). Both rendered MRV packs
-also have the same SHA-256 (`replay-pack-sha256.txt`). The paired 10,000-step
-no-push standing check is still running and has no verdict here.
+also have the same SHA-256 (`replay-pack-sha256.txt`).
+
+The paired 10-second no-push check passed (`no-push-10000-audit.json`). Both
+arms completed 10,000 accepted physical and sensor steps with clean exits,
+source-bound Brain ownership, and exact physical and measured sensor trace
+equality. Both had at least six contacts, maximum horizontal drift 8.244 mm,
+vertical drift 0.094 mm, root speed 0.00561 m/s, and peak penetration
+2.189 µm. The rendered MRV packs were byte-identical
+(`no-push-pack-sha256.txt`). The Mac mini finished with 30 GiB free and
+160.62 MiB swap used.
+
+Native horizon time was 2,355.26 s off and 2,356.72 s on, about 15.3
+accepted simulated seconds per wall hour for one Human. This result does not
+meet the separate learning-throughput objective.
+
+This establishes a bounded positive-direction receptor-to-muscle-to-physical
+recovery result and safe no-push standing. It does not establish
+negative-direction recovery, physiological calibration, loaded-knee
+qualification, or general whole-Human capability.

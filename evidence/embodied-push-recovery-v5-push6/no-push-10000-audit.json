@@ -1,0 +1,20 @@
+{
+  "errors": [],
+  "first_difference_step": null,
+  "off": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-push6-20260925/off-no-push-10000",
+  "off_standing_envelope": {
+    "maximum_horizontal_m": 0.008244431515547542,
+    "maximum_penetration_m": 2.18895729631e-06,
+    "maximum_speed_m_s": 0.00560670681253,
+    "maximum_vertical_m": 9.381771000005479e-05
+  },
+  "on": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-push6-20260925/on-no-push-10000",
+  "on_standing_envelope": {
+    "maximum_horizontal_m": 0.008244431515547542,
+    "maximum_penetration_m": 2.18895729631e-06,
+    "maximum_speed_m_s": 0.00560670681253,
+    "maximum_vertical_m": 9.381771000005479e-05
+  },
+  "passed": true,
+  "schema": "numi.brain.embodied-push-pair-audit.v1"
+}
