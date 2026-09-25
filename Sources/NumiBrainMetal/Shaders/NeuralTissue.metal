@@ -2045,9 +2045,20 @@ kernel void advance_due_regional_tokens(
     }
 
     const ulong neverUpdated = ~0ul;
-    threadgroup uint activePlasticBasisIdentifiers[maximumActivePlasticBases];
-    threadgroup float activePlasticBasisCoefficients[maximumActivePlasticBases];
-    threadgroup uint activePlasticBasisCount;
+    constexpr uint parallelDueCapacity = 32u;
+    threadgroup uint activePlasticBasisIdentifiers[
+        parallelDueCapacity * maximumActivePlasticBases
+    ];
+    threadgroup float activePlasticBasisCoefficients[
+        parallelDueCapacity * maximumActivePlasticBases
+    ];
+    threadgroup uint activePlasticBasisCounts[parallelDueCapacity];
+    threadgroup uint activeModuleIndices[parallelDueCapacity];
+    threadgroup uint activeScalarOffsets[parallelDueCapacity + 1u];
+    threadgroup float activeAlpha[parallelDueCapacity];
+    threadgroup float activeDrive[parallelDueCapacity];
+    threadgroup uint activeMaturationFlags[parallelDueCapacity];
+    threadgroup uint activePlasticFlags[parallelDueCapacity];
     uint cursor = 0u;
     while (cursor < schedulerResult->invocation_count) {
         const ulong timestamp = invocations[cursor].timestamp_microseconds;
@@ -2292,64 +2303,75 @@ kernel void advance_due_regional_tokens(
         }
         threadgroup_barrier(mem_flags::mem_device);
 
-        // Canonical invocations are unique by module and timestamp. Iterate the
-        // compact due set so inactive regional scalars consume no operator work.
-        for (uint invocationIndex = cursor;
-             invocationIndex < groupEnd;
-             ++invocationIndex) {
-            const NBDueInvocationABI invocation = invocations[invocationIndex];
-            const uint moduleIndex = regional_module_index(
-                layouts,
-                header->module_count,
-                invocation.module_id
-            );
-            if (moduleIndex == ~0u) {
-                continue;
-            }
-            const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
-            const NBModuleDescriptorABI module = modules[moduleIndex];
-            const NBRegionalMaturationRecordABI maturationRecord =
-                maturation[moduleIndex];
-            const NBRegionalPlasticModulationRecordABI plastic =
-                plasticModulation[moduleIndex];
-            const bool validMaturation = maturationRecord.module_identifier
-                    == uint(module.module_id)
-                && maturationRecord.unlocked != 0u;
-            const bool validPlastic = plastic.module_identifier
-                    == uint(module.module_id)
-                && plastic.coefficient_count > 0u
-                && (plastic.flags & 1u) != 0u;
-            const NBRegionalModuleStateABI diagnostic = outputDiagnostics[moduleIndex];
-            const ulong elapsedMicroseconds = diagnostic.last_update_microseconds == neverUpdated
-                ? ulong(module.period_microseconds)
-                : invocation.timestamp_microseconds - diagnostic.last_update_microseconds;
-            const float effectiveTimescaleMultiplier = max(
-                (validMaturation
-                    ? maturationRecord.timescale_multiplier
-                    : 1.0f)
-                    * (validPlastic ? plastic.timescale_multiplier : 1.0f),
-                0.05f
-            );
-            const float alpha = clamp(
-                (1.0f - exp(
-                -float(elapsedMicroseconds) /
-                    (float(module.intrinsic_timescale_microseconds)
-                        * effectiveTimescaleMultiplier)
-                )) * (validPlastic ? plastic.update_gain_multiplier : 1.0f),
-                0.0f,
-                1.0f
-            );
-            const float periodicDrive =
-                (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
-            const float interruptDrive = min(
-                float(popcount(invocation.interrupt_mask)) * 0.125f,
-                1.0f
-            );
-            const float drive = periodicDrive + interruptDrive;
-            const uint dimension = uint(layout.token_dimension);
-            const uint selectedCount = selectedRouteCounts[moduleIndex];
-            if (lane == 0u) {
-                activePlasticBasisCount = 0u;
+        // Same-timestamp modules read one prior generation and own disjoint
+        // scalar ranges. Build one compact work range per due module, then
+        // spread its scalar responses across the whole threadgroup.
+        for (uint chunkBegin = cursor;
+             chunkBegin < groupEnd;
+             chunkBegin += parallelDueCapacity) {
+            const uint chunkCount = min(groupEnd - chunkBegin, parallelDueCapacity);
+            for (uint localInvocation = lane;
+                 localInvocation < chunkCount;
+                 localInvocation += laneCount) {
+                const uint invocationIndex = chunkBegin + localInvocation;
+                const NBDueInvocationABI invocation = invocations[invocationIndex];
+                const uint moduleIndex = regional_module_index(
+                    layouts,
+                    header->module_count,
+                    invocation.module_id
+                );
+                activeModuleIndices[localInvocation] = moduleIndex;
+                if (moduleIndex == ~0u) {
+                    activeScalarOffsets[localInvocation] = 0u;
+                    continue;
+                }
+                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+                const NBModuleDescriptorABI module = modules[moduleIndex];
+                const NBRegionalMaturationRecordABI maturationRecord =
+                    maturation[moduleIndex];
+                const NBRegionalPlasticModulationRecordABI plastic =
+                    plasticModulation[moduleIndex];
+                const bool validMaturation = maturationRecord.module_identifier
+                        == uint(module.module_id)
+                    && maturationRecord.unlocked != 0u;
+                const bool validPlastic = plastic.module_identifier
+                        == uint(module.module_id)
+                    && plastic.coefficient_count > 0u
+                    && (plastic.flags & 1u) != 0u;
+                const NBRegionalModuleStateABI diagnostic = outputDiagnostics[moduleIndex];
+                const ulong elapsedMicroseconds = diagnostic.last_update_microseconds == neverUpdated
+                    ? ulong(module.period_microseconds)
+                    : invocation.timestamp_microseconds - diagnostic.last_update_microseconds;
+                const float effectiveTimescaleMultiplier = max(
+                    (validMaturation
+                        ? maturationRecord.timescale_multiplier
+                        : 1.0f)
+                        * (validPlastic ? plastic.timescale_multiplier : 1.0f),
+                    0.05f
+                );
+                const float alpha = clamp(
+                    (1.0f - exp(
+                    -float(elapsedMicroseconds) /
+                        (float(module.intrinsic_timescale_microseconds)
+                            * effectiveTimescaleMultiplier)
+                    )) * (validPlastic ? plastic.update_gain_multiplier : 1.0f),
+                    0.0f,
+                    1.0f
+                );
+                const float periodicDrive =
+                    (invocation.reason_flags & NBSchedulerReasonPeriodic) != 0u ? 0.25f : 0.0f;
+                const float interruptDrive = min(
+                    float(popcount(invocation.interrupt_mask)) * 0.125f,
+                    1.0f
+                );
+                const float drive = periodicDrive + interruptDrive;
+                activeScalarOffsets[localInvocation] = layout.scalar_count;
+                activeAlpha[localInvocation] = alpha;
+                activeDrive[localInvocation] = drive;
+                activeMaturationFlags[localInvocation] = validMaturation ? 1u : 0u;
+                activePlasticFlags[localInvocation] = validPlastic ? 1u : 0u;
+                const uint basisBase = localInvocation * maximumActivePlasticBases;
+                activePlasticBasisCounts[localInvocation] = 0u;
                 const uint activeLimit = min(
                     plasticBasisUniforms->active_basis_count,
                     maximumActivePlasticBases
@@ -2373,12 +2395,12 @@ kernel void advance_due_regional_tokens(
                     const uint basisIdentifier = uint(site.basis_identifier)
                         % plasticBasisUniforms->basis_capacity_per_region;
                     const float magnitude = abs(site.coefficient);
-                    uint insertionIndex = activePlasticBasisCount;
-                    if (activePlasticBasisCount < activeLimit) {
-                        activePlasticBasisCount += 1u;
+                    uint insertionIndex = activePlasticBasisCounts[localInvocation];
+                    if (activePlasticBasisCounts[localInvocation] < activeLimit) {
+                        activePlasticBasisCounts[localInvocation] += 1u;
                     } else {
                         if (magnitude <= abs(
-                            activePlasticBasisCoefficients[activeLimit - 1u]
+                            activePlasticBasisCoefficients[basisBase + activeLimit - 1u]
                         )) {
                             continue;
                         }
@@ -2386,23 +2408,53 @@ kernel void advance_due_regional_tokens(
                     }
                     while (insertionIndex > 0u
                            && magnitude > abs(
-                               activePlasticBasisCoefficients[insertionIndex - 1u]
+                               activePlasticBasisCoefficients[basisBase + insertionIndex - 1u]
                            )) {
-                        activePlasticBasisIdentifiers[insertionIndex] =
-                            activePlasticBasisIdentifiers[insertionIndex - 1u];
-                        activePlasticBasisCoefficients[insertionIndex] =
-                            activePlasticBasisCoefficients[insertionIndex - 1u];
+                        activePlasticBasisIdentifiers[basisBase + insertionIndex] =
+                            activePlasticBasisIdentifiers[basisBase + insertionIndex - 1u];
+                        activePlasticBasisCoefficients[basisBase + insertionIndex] =
+                            activePlasticBasisCoefficients[basisBase + insertionIndex - 1u];
                         insertionIndex -= 1u;
                     }
-                    activePlasticBasisIdentifiers[insertionIndex] = basisIdentifier;
-                    activePlasticBasisCoefficients[insertionIndex] =
+                    activePlasticBasisIdentifiers[basisBase + insertionIndex] = basisIdentifier;
+                    activePlasticBasisCoefficients[basisBase + insertionIndex] =
                         site.coefficient;
                 }
             }
             threadgroup_barrier(mem_flags::mem_threadgroup);
-            for (uint localScalar = lane;
-                 localScalar < layout.scalar_count;
-                 localScalar += laneCount) {
+            if (lane == 0u) {
+                uint scalarCount = 0u;
+                for (uint localInvocation = 0u;
+                     localInvocation < chunkCount;
+                     ++localInvocation) {
+                    const uint moduleScalarCount = activeScalarOffsets[localInvocation];
+                    activeScalarOffsets[localInvocation] = scalarCount;
+                    scalarCount += moduleScalarCount;
+                }
+                activeScalarOffsets[chunkCount] = scalarCount;
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+            for (uint workIndex = lane;
+                 workIndex < activeScalarOffsets[chunkCount];
+                 workIndex += laneCount) {
+                uint localInvocation = 0u;
+                while (workIndex >= activeScalarOffsets[localInvocation + 1u]) {
+                    localInvocation += 1u;
+                }
+                const uint moduleIndex = activeModuleIndices[localInvocation];
+                const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
+                const NBRegionalMaturationRecordABI maturationRecord =
+                    maturation[moduleIndex];
+                const NBRegionalPlasticModulationRecordABI plastic =
+                    plasticModulation[moduleIndex];
+                const bool validMaturation = activeMaturationFlags[localInvocation] != 0u;
+                const bool validPlastic = activePlasticFlags[localInvocation] != 0u;
+                const float alpha = activeAlpha[localInvocation];
+                const float drive = activeDrive[localInvocation];
+                const uint dimension = uint(layout.token_dimension);
+                const uint selectedCount = selectedRouteCounts[moduleIndex];
+                const uint basisBase = localInvocation * maximumActivePlasticBases;
+                const uint localScalar = workIndex - activeScalarOffsets[localInvocation];
                 const uint scalarIndex = layout.scalar_offset + localScalar;
                 const uint tokenStart = layout.scalar_offset
                     + (localScalar / dimension) * dimension;
@@ -2419,12 +2471,12 @@ kernel void advance_due_regional_tokens(
                 float plasticDenseResidual = 0.0f;
                 if (dimension <= plasticBasisUniforms->maximum_feature_count) {
                     for (uint activeBasis = 0u;
-                         activeBasis < activePlasticBasisCount;
+                         activeBasis < activePlasticBasisCounts[localInvocation];
                          ++activeBasis) {
                         const uint basisOffset = uint(plasticityHyperparameterCount)
                             + (moduleIndex
                                 * plasticBasisUniforms->basis_capacity_per_region
-                                + activePlasticBasisIdentifiers[activeBasis])
+                                + activePlasticBasisIdentifiers[basisBase + activeBasis])
                                 * plasticBasisUniforms->basis_stride;
                         const uint leftOffset = basisOffset
                             + plasticBasisUniforms->operator_channel_count;
@@ -2439,7 +2491,7 @@ kernel void advance_due_regional_tokens(
                             ] * outputTokens[tokenStart + localFeature];
                         }
                         plasticDenseResidual +=
-                            activePlasticBasisCoefficients[activeBasis]
+                            activePlasticBasisCoefficients[basisBase + activeBasis]
                             * plasticityParameters[leftOffset + feature]
                             * rightProjection / sqrt(float(dimension));
                     }
