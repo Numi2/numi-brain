@@ -1,0 +1,9 @@
+{
+  "consecutive_accepted_receptor_samples": 3,
+  "event_threshold_m_s": 0.01,
+  "measured_max_abs_x_velocity_m_s": 0.00312943872996,
+  "qualification_note": "Prior 10000-step run had physical motion within standing bounds; its original prospective joint-witness verifier rejected a logging count and was not retroactively promoted.",
+  "schema": "numi.brain.push-recovery-event-calibration.v1",
+  "standing_log_sha256": "0fed4417af5e66f216ab50d3fb3d3b6c1af00db4abe5cd037924ebc763289592",
+  "standing_run": "/Users/n/NumiHumanBrainRuns/brain-v4-behavior-20260923/on10000-exact-mini"
+}

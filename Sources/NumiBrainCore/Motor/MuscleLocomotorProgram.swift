@@ -49,7 +49,7 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
     balanceFeedback: MuscleBalanceFeedbackProgram? = nil,
     spindleFeedbackOnsetMicroseconds: UInt64? = nil,
     jointPathFeedback: MuscleJointPathFeedbackProgram? = nil) {
-    version = jointPathFeedback != nil ? 4 :
+    version = jointPathFeedback != nil ? (balanceFeedback != nil ? 5 : 4) :
       (spindleFeedbackOnsetMicroseconds != nil ? 3 : (balanceFeedback == nil ? 1 : 2))
     self.modelSourceFingerprint = modelSourceFingerprint
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
@@ -110,17 +110,29 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
         && jointPathFeedback == nil)
       || (version == 4 && balanceFeedback == nil && spindleFeedbackOnsetMicroseconds == nil
         && jointPathFeedback != nil)
+      || (version == 5 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil
+        && jointPathFeedback != nil)
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "locomotor program version does not match its whole-body feedback layer"
       )
     }
     try validateBaseline(template: template)
+    if version == 5, let balanceFeedback {
+      guard balanceFeedback.sources.count == 1,
+        balanceFeedback.routes.isEmpty,
+        balanceFeedback.sources[0].eventThreshold != nil,
+        balanceFeedback.sources[0].eventConsecutiveSamples == 3 else {
+        throw BrainRuntimeError.invalidDescriptor(
+          "joint-path push recovery requires a three-sample physical receptor event"
+        )
+      }
+    }
     if let jointPathFeedback {
       try jointPathFeedback.validate()
       guard periodMicroseconds == 0,
         channels.allSatisfy({
-          $0.lengthGain == 0 && $0.velocityGainSeconds == 0 &&
+          (version == 5 || ($0.lengthGain == 0 && $0.velocityGainSeconds == 0)) &&
           $0.gaitSine == 0 && $0.gaitCosine == 0 && $0.maximumExcitation == 1
         }),
         let kinesthesia = template.species.senses.first(where: {
@@ -167,6 +179,23 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
 
   /// Canonical ordered bytes retain v1/v2 identity and bind the v3 onset.
   public var fingerprint: UInt64 {
+    if version == 5, let jointPathFeedback, let balanceFeedback {
+      var hash: UInt64 = 0xcbf29ce484222325
+      func bytes(_ values: [UInt8]) {
+        for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+      }
+      func integer(_ value: UInt64) {
+        bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+      }
+      bytes(Array("NBMUSCLELOCOMOTOR5PUSH6".utf8))
+      integer(baselineFingerprint)
+      for value in [jointPathFeedback.lengthGain,
+        jointPathFeedback.velocityGainSeconds, jointPathFeedback.maximumCorrection] {
+        integer(UInt64(value.bitPattern))
+      }
+      integer(balanceFeedback.fingerprint)
+      return hash
+    }
     if let jointPathFeedback {
       var hash: UInt64 = 0xcbf29ce484222325
       func bytes(_ values: [UInt8]) {

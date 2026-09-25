@@ -218,9 +218,9 @@ private final class StandingBridge {
       program = source.baseline(template: template, sourceHash: sourceHash,
         epochMicroseconds: epochMicroseconds)
     }
-    guard (program.version == 4 && source.version == 3 &&
+    guard ((program.version == 4 || program.version == 5) && source.version == 3 &&
         source.jointPathCalibration != nil)
-      || (program.version != 4 && source.version != 3) else {
+      || (program.version != 4 && program.version != 5 && source.version != 3) else {
       throw BrainRuntimeError.invalidDescriptor(
         "standing joint-path program requires the version 3 prepared physical source")
     }
@@ -244,7 +244,7 @@ private final class StandingBridge {
         environmentIdentifier: 1, episodeIdentifier: 1),
       schedulerEnvironmentIdentifier: 1, maximumEncodedSubsteps: 1,
       muscleLocomotor: program,
-      jointPathCalibration: program.version == 4
+      jointPathCalibration: program.jointPathFeedback != nil
         ? source.jointPathCalibration : nil)
     brain = try MetalNumiBrainRuntime.makeRuntime(configuration: configuration,
       publication: publication, device: device)

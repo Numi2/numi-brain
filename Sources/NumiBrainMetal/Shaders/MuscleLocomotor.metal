@@ -24,6 +24,8 @@ struct NBMuscleBalanceRange {
 struct NBMuscleBalanceHistorySource {
   uint delay_microseconds;
   float filter_time_constant_seconds;
+  float event_threshold;
+  uint event_consecutive_samples;
   uint reserved0, reserved1;
 };
 
@@ -172,6 +174,72 @@ kernel void nb_muscle_locomotor_joint_path(
   logits[gid] = excitation == 1.0f ? 10.0f : atanh(excitation);
 }
 
+// v5 retains the qualified joint-proprioception standing command and adds
+// only bounded, accepted-history-gated body-receptor correction. The event
+// detector and route kernels precede this dispatch on the same command buffer.
+kernel void nb_muscle_locomotor_joint_path_recovery(
+  device const float *spindles [[buffer(0)]],
+  device const uint *spindle_validity [[buffer(1)]],
+  device const float *kinesthesia [[buffer(2)]],
+  device const uint *joint_validity [[buffer(3)]],
+  device const NBMuscleLocomotorChannel *channels [[buffer(4)]],
+  device float *logits [[buffer(5)]],
+  constant uint4 &uniforms [[buffer(6)]],
+  device const float *reference_position [[buffer(7)]],
+  device const float *optimal_length [[buffer(8)]],
+  device const float *path_jacobian [[buffer(9)]],
+  device const float *recovery_event_error [[buffer(10)]],
+  uint gid [[thread_position_in_grid]]) {
+  if (gid >= uniforms.x) return;
+  const auto c = channels[gid];
+  float spindle_length = 0.0f, spindle_velocity = 0.0f;
+  if (!nb_muscle_locomotor_inputs(spindles, spindle_validity, c,
+      spindle_length, spindle_velocity)) {
+    logits[gid] = NAN;
+    return;
+  }
+  float length_error = 0.0f;
+  float velocity = 0.0f;
+  for (uint local = 0u; local < 122u; ++local) {
+    const uint row = local + 6u;
+    if ((joint_validity[row] & 3u) != 3u) {
+      logits[gid] = NAN;
+      return;
+    }
+    const float q = kinesthesia[row * 7u];
+    const float v = kinesthesia[row * 7u + 1u];
+    const float derivative = path_jacobian[gid * 122u + local];
+    if (!isfinite(q) || !isfinite(v) || !isfinite(reference_position[local])
+        || !isfinite(derivative)) {
+      logits[gid] = NAN;
+      return;
+    }
+    length_error += derivative * (q - reference_position[local]);
+    velocity += derivative * v;
+  }
+  const float length = optimal_length[gid];
+  const float error = as_type<float>(uniforms.y) * length_error / length
+    + as_type<float>(uniforms.z) * velocity / length;
+  const float spindle_feedback = c.length_gain
+      * (spindle_length / c.reference_length - 1.0f)
+    + c.velocity_gain * spindle_velocity / c.reference_length;
+  const float event_error = recovery_event_error[0];
+  // The opposite direction has not passed a physical recovery comparison.
+  // Keep the established joint-path standing command for that event.
+  const float correction = event_error > 0.0f
+    ? clamp(spindle_feedback, -0.2f, 0.2f) : 0.0f;
+  if (!isfinite(length) || length <= 0.0f || !isfinite(error)
+      || !isfinite(spindle_feedback) || !isfinite(event_error)
+      || !isfinite(correction)) {
+    logits[gid] = NAN;
+    return;
+  }
+  const float excitation = clamp(c.tonic +
+    clamp(error, -as_type<float>(uniforms.w), as_type<float>(uniforms.w))
+    + correction, 0.0f, 1.0f);
+  logits[gid] = excitation == 1.0f ? 10.0f : atanh(excitation);
+}
+
 // Reads only the exact body-receptor rows named by the immutable feedback
 // program. Invalid receptor evidence is recorded as invalid and is never
 // interpreted as a measured zero error. Extraction continues during baseline
@@ -259,11 +327,74 @@ kernel void nb_muscle_balance_history(
   shadow_values[write_index] = observation_valid ? observed : 0.0f;
   shadow_timestamps[write_index] = uniforms.sample_timestamp_microseconds;
   shadow_validity[write_index] = observation_valid ? 1u : 0u;
+  const auto config = source_config[gid];
   // A valid delayed sample cannot authorize actuation when this root's
   // physical receptor is absent. Keep the invalid shadow for accepted roots.
-  if (!observation_valid) return;
+  if (!observation_valid) {
+    if (config.event_consecutive_samples != 0u) {
+      shadow_filtered_values[gid] = 0.0f;
+      shadow_filtered_timestamps[gid] = 0u;
+      shadow_filtered_validity[gid] = 0u;
+    }
+    return;
+  }
 
-  const auto config = source_config[gid];
+  if (config.event_consecutive_samples != 0u) {
+    if (config.event_consecutive_samples != 3u || capacity < 3u
+        || !isfinite(config.event_threshold) || config.event_threshold <= 0.0f
+        || uniforms.reserved0 == 0u) return;
+    float direction = 0.0f;
+    const ulong now = uniforms.sample_timestamp_microseconds;
+    if (committed_filtered_validity[gid] != 0u) {
+      direction = committed_filtered_values[gid];
+      const ulong last_motion = committed_filtered_timestamps[gid];
+      if (!isfinite(direction) || abs(direction) != 1.0f
+          || last_motion > now) return;
+      if (abs(observed) >= 0.5f * config.event_threshold) {
+        shadow_filtered_timestamps[gid] = now;
+      } else if (now - last_motion >= 50000ul) {
+        direction = 0.0f;
+        shadow_filtered_values[gid] = 0.0f;
+        shadow_filtered_timestamps[gid] = 0ul;
+        shadow_filtered_validity[gid] = 0u;
+      }
+    }
+    if (direction == 0.0f) {
+      const float candidate_direction = observed > 0.0f ? 1.0f : -1.0f;
+      bool triggered = true;
+      for (uint prior = 0u; prior < 3u && triggered; ++prior) {
+        if (now < ulong(prior) * ulong(uniforms.reserved0)) {
+          triggered = false;
+          break;
+        }
+        const ulong target = now - ulong(prior) * ulong(uniforms.reserved0);
+        bool found = false;
+        for (uint slot = 0u; slot < capacity; ++slot) {
+          const uint index = base + slot;
+          if (shadow_validity[index] != 0u
+              && shadow_timestamps[index] == target
+              && isfinite(shadow_values[index])
+              && shadow_values[index] * candidate_direction >= config.event_threshold) {
+            found = true;
+            break;
+          }
+        }
+        triggered = triggered && found;
+      }
+      if (triggered) {
+        direction = candidate_direction;
+        shadow_filtered_values[gid] = direction;
+        shadow_filtered_timestamps[gid] = now;
+        shadow_filtered_validity[gid] = 1u;
+      }
+    }
+    if (uniforms.correction_enabled != 0u) {
+      output_errors[gid] = direction > 0.0f && observed <= 0.0f
+        ? 0.0f : direction;
+      output_validity[gid] = direction != 0.0f ? 1u : 0u;
+    }
+    return;
+  }
   if (uniforms.sample_timestamp_microseconds
       < ulong(config.delay_microseconds)) return;
   const ulong target_timestamp = uniforms.sample_timestamp_microseconds

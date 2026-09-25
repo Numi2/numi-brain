@@ -1,0 +1,58 @@
+{
+  "candidate_program_sha256": "82e44f4ddf49e5a98f7111dd810e24c88a8a230eb315efa839d329563ffc7b23",
+  "contact_sweeps": 64,
+  "controller": "joint-path v4 standing baseline plus v5 three-delivery vestibular event gate and bounded spindle correction",
+  "discovery": {
+    "force_x_n": 50,
+    "push_duration_steps": 20,
+    "push_start_step": 100,
+    "score_improvement_fraction": 0.3050960230474845,
+    "seed": 1314213193,
+    "steps": 500
+  },
+  "event_consecutive_samples": 3,
+  "event_threshold_m_s": 0.01,
+  "frozen_before_heldout": true,
+  "heldout": [
+    {
+      "force_x_n": 60,
+      "name": "force60",
+      "push_duration_steps": 20,
+      "push_start_step": 100,
+      "seed": 1314213194,
+      "steps": 500
+    },
+    {
+      "force_x_n": 50,
+      "name": "shifted200",
+      "push_duration_steps": 20,
+      "push_start_step": 200,
+      "seed": 1314213195,
+      "steps": 600
+    },
+    {
+      "force_x_n": -50,
+      "name": "opposite50",
+      "push_duration_steps": 20,
+      "push_start_step": 100,
+      "seed": 1314213196,
+      "steps": 500
+    }
+  ],
+  "no_push": {
+    "both_arms": true,
+    "seed": 1314213193,
+    "steps": 10000
+  },
+  "pass_conditions": [
+    "exact paired native source, binary, library, seed, timestep and push except selected motor program",
+    "all requested sequential physical, sensor, and Brain roots accepted; zero recorded failures, rejected steps and root assistance",
+    "minimum six contacts, root speed at most 1 m/s and penetration at most 2 mm at every accepted step",
+    "first muscle divergence equals one step after third consecutive qualifying delivered receptor, physical motion diverges later",
+    "event-relative score |x_end-x_push_start|+0.2s*|vx_end| improves at least 10% in each heldout pair",
+    "terminal absolute x speed, minimum contact count, and peak penetration do not worsen",
+    "10-second no-push arms keep at least six contacts, bounded standing motion and no event-induced divergence"
+  ],
+  "schema": "numi.brain.autonomous-push-recovery-protocol.v1",
+  "timestep_microseconds": 1000
+}

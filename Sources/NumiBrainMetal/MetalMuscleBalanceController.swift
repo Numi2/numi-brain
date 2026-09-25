@@ -38,6 +38,7 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
     let root: BrainJointTransactionToken
     let corrections: any MTLBuffer
     let historyCandidate: MetalMuscleBalanceHistoryRuntime.Candidate?
+    let eventError: (any MTLBuffer)?
 
     fileprivate init(
       owner: MetalMuscleBalanceController,
@@ -49,6 +50,7 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
       self.root = root
       self.corrections = corrections
       self.historyCandidate = historyCandidate
+      eventError = historyCandidate?.outputBuffers[0]
     }
 
     func validateCommit(_ receipt: BrainJointCommitToken) throws {
@@ -267,7 +269,7 @@ final class MetalMuscleBalanceController: @unchecked Sendable {
       label: "NumiBrain muscle balance sources"
     )
     routes = try upload(
-      routeRecords,
+      routeRecords.isEmpty ? [MetalMuscleBalanceRouteRecord()] : routeRecords,
       label: "NumiBrain muscle balance routes"
     )
     ranges = try upload(

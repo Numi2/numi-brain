@@ -8,6 +8,8 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
   private struct HistorySource {
     var delayMicroseconds: UInt32
     var filterTimeConstantSeconds: Float
+    var eventThreshold: Float = 0
+    var eventConsecutiveSamples: UInt32 = 0
     var reserved0: UInt32 = 0
     var reserved1: UInt32 = 0
   }
@@ -18,7 +20,7 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     var historyCapacity: UInt32
     var writeIndex: UInt32
     var correctionEnabled: UInt32
-    var reserved0: UInt32 = 0
+    var reserved0: UInt32 = 1_000
     var reserved1: UInt32 = 0
   }
 
@@ -132,7 +134,7 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
   }
 
   func testDelayedHistoryIsShadowedAndBecomesReadyExactly() throws {
-    XCTAssertEqual(MemoryLayout<HistorySource>.stride, 16)
+    XCTAssertEqual(MemoryLayout<HistorySource>.stride, 24)
     XCTAssertEqual(MemoryLayout<HistoryUniforms>.stride, 32)
     let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
     let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
@@ -493,5 +495,127 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     XCTAssertGreaterThan(corrected[0], 0)
     XCTAssertGreaterThan(corrected[1], 0)
     XCTAssertEqual(corrected[0].bitPattern, corrected[1].bitPattern)
+  }
+
+  func testPushEventNeedsThreeAcceptedSamplesAndRejectedCandidateDoesNotAdvanceIt() throws {
+    XCTAssertEqual(MemoryLayout<HistorySource>.stride, 24)
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let pipeline = try device.makeComputePipelineState(
+      function: XCTUnwrap(library.makeFunction(name: "nb_muscle_balance_history")))
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    let capacity: UInt32 = 3
+    let zeroValues = try upload([Float](repeating: 0, count: 3), device: device)
+    let zeroTimestamps = try upload([UInt64](repeating: 0, count: 3), device: device)
+    let zeroValidity = try upload([UInt32](repeating: 0, count: 3), device: device)
+    let zeroFiltered = try upload([Float(0)], device: device)
+    let zeroFilteredTime = try upload([UInt64(0)], device: device)
+    let zeroFilteredValidity = try upload([UInt32(0)], device: device)
+    let config = HistorySource(delayMicroseconds: 0,
+      filterTimeConstantSeconds: 0, eventThreshold: 0.01,
+      eventConsecutiveSamples: 3)
+    let first = try run(pipeline: pipeline, queue: queue, observed: 0.02,
+      observedValidity: 1, config: config,
+      committedValues: zeroValues, committedTimestamps: zeroTimestamps,
+      committedValidity: zeroValidity,
+      committedFilteredValues: zeroFiltered,
+      committedFilteredTimestamps: zeroFilteredTime,
+      committedFilteredValidity: zeroFilteredValidity,
+      timestamp: 1_000, capacity: capacity, writeIndex: 0,
+      correctionEnabled: 1, device: device)
+    XCTAssertEqual(first.outputValidity, 0)
+    XCTAssertEqual(zeroValidity.contents().load(as: UInt32.self), 0)
+    let second = try run(pipeline: pipeline, queue: queue, observed: 0.03,
+      observedValidity: 1, config: config,
+      committedValues: first.values, committedTimestamps: first.timestamps,
+      committedValidity: first.validity,
+      committedFilteredValues: first.filteredValues,
+      committedFilteredTimestamps: first.filteredTimestamps,
+      committedFilteredValidity: first.filteredValidity,
+      timestamp: 2_000, capacity: capacity, writeIndex: 1,
+      correctionEnabled: 1, device: device)
+    XCTAssertEqual(second.outputValidity, 0)
+    func third(_ valid: UInt32, _ value: Float) throws -> (Float, UInt32) {
+      let result = try run(pipeline: pipeline, queue: queue, observed: value,
+        observedValidity: valid, config: config,
+        committedValues: second.values, committedTimestamps: second.timestamps,
+        committedValidity: second.validity,
+        committedFilteredValues: second.filteredValues,
+        committedFilteredTimestamps: second.filteredTimestamps,
+        committedFilteredValidity: second.filteredValidity,
+        timestamp: 3_000, capacity: capacity, writeIndex: 2,
+        correctionEnabled: 1, device: device)
+      return (result.output, result.outputValidity)
+    }
+    XCTAssertEqual(try third(0, 0.04).1, 0)
+    XCTAssertEqual(try third(1, 0.005).1, 0)
+    let accepted = try third(1, 0.04)
+    XCTAssertEqual(accepted.1, 1)
+    XCTAssertEqual(accepted.0, 1)
+    let retried = try third(1, 0.04)
+    XCTAssertEqual(retried.0.bitPattern, accepted.0.bitPattern)
+    XCTAssertEqual(retried.1, accepted.1)
+
+    let latched = try run(pipeline: pipeline, queue: queue, observed: -0.03,
+      observedValidity: 1, config: config,
+      committedValues: second.values, committedTimestamps: second.timestamps,
+      committedValidity: second.validity,
+      committedFilteredValues: try run(pipeline: pipeline, queue: queue,
+        observed: 0.04, observedValidity: 1, config: config,
+        committedValues: second.values, committedTimestamps: second.timestamps,
+        committedValidity: second.validity,
+        committedFilteredValues: second.filteredValues,
+        committedFilteredTimestamps: second.filteredTimestamps,
+        committedFilteredValidity: second.filteredValidity,
+        timestamp: 3_000, capacity: capacity, writeIndex: 2,
+        correctionEnabled: 1, device: device).filteredValues,
+      committedFilteredTimestamps: try upload([UInt64(3_000)], device: device),
+      committedFilteredValidity: try upload([UInt32(1)], device: device),
+      timestamp: 4_000, capacity: capacity, writeIndex: 0,
+      correctionEnabled: 1, device: device)
+    XCTAssertEqual(latched.output, 0,
+      "a positive event stops correction when its velocity reverses")
+    XCTAssertEqual(latched.outputValidity, 1)
+  }
+
+  func testOppositePushDirectionSurvivesVelocityReversal() throws {
+    let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+    let library = try MetalMuscleLocomotorController.makeLibrary(device: device)
+    let pipeline = try device.makeComputePipelineState(
+      function: XCTUnwrap(library.makeFunction(name: "nb_muscle_balance_history")))
+    let queue = try XCTUnwrap(device.makeCommandQueue())
+    var values = try upload([Float](repeating: 0, count: 3), device: device)
+    var timestamps = try upload([UInt64](repeating: 0, count: 3), device: device)
+    var validity = try upload([UInt32](repeating: 0, count: 3), device: device)
+    var filteredValues = try upload([Float(0)], device: device)
+    var filteredTimestamps = try upload([UInt64(0)], device: device)
+    var filteredValidity = try upload([UInt32(0)], device: device)
+    let config = HistorySource(delayMicroseconds: 0,
+      filterTimeConstantSeconds: 0, eventThreshold: 0.01,
+      eventConsecutiveSamples: 3)
+    for (index, observed) in [Float(-0.02), -0.03, -0.04, 0.03].enumerated() {
+      let candidate = try run(pipeline: pipeline, queue: queue,
+        observed: observed, observedValidity: 1, config: config,
+        committedValues: values, committedTimestamps: timestamps,
+        committedValidity: validity,
+        committedFilteredValues: filteredValues,
+        committedFilteredTimestamps: filteredTimestamps,
+        committedFilteredValidity: filteredValidity,
+        timestamp: UInt64(index + 1) * 1_000,
+        capacity: 3, writeIndex: UInt32(index % 3),
+        correctionEnabled: 1, device: device)
+      if index < 2 {
+        XCTAssertEqual(candidate.outputValidity, 0)
+      } else {
+        XCTAssertEqual(candidate.outputValidity, 1)
+        XCTAssertEqual(candidate.output, -1)
+      }
+      values = candidate.values
+      timestamps = candidate.timestamps
+      validity = candidate.validity
+      filteredValues = candidate.filteredValues
+      filteredTimestamps = candidate.filteredTimestamps
+      filteredValidity = candidate.filteredValidity
+    }
   }
 }

@@ -1,0 +1,9 @@
+{
+  "errors": [],
+  "first_difference_step": null,
+  "first_qualifying_three_sensor_step": 104,
+  "off": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-push6-20260925/off-opposite50-500ms",
+  "on": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-push6-20260925/on-opposite50-500ms",
+  "passed": true,
+  "schema": "numi.brain.embodied-push-pair-audit.v1"
+}

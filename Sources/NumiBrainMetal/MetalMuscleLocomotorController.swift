@@ -30,7 +30,7 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     parameterVersion: UInt64, device: any MTLDevice,
     jointPathCalibration: MuscleJointPathCalibration? = nil) throws {
     try program.validate(template: template)
-    guard (program.version == 4) == (jointPathCalibration != nil) else {
+    guard (program.jointPathFeedback != nil) == (jointPathCalibration != nil) else {
       throw TissueError.metal("joint-path controller lacks its prepared physical calibration")
     }
     if let jointPathCalibration {
@@ -103,7 +103,8 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
       )
     }
     let functionName = program.jointPathFeedback != nil
-      ? "nb_muscle_locomotor_joint_path"
+      ? (program.version == 5 ? "nb_muscle_locomotor_joint_path_recovery"
+          : "nb_muscle_locomotor_joint_path")
       : (program.spindleFeedbackOnsetMicroseconds != nil
         ? "nb_muscle_locomotor_delayed"
         : (balanceController == nil ? "nb_muscle_locomotor" : "nb_muscle_locomotor_balanced"))
@@ -112,7 +113,8 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     }
     pipeline = try device.makeComputePipelineState(function: function)
     let descriptor = MTL4ArgumentTableDescriptor()
-    descriptor.maxBufferBindCount = program.version == 4 ? 10 : 6
+    descriptor.maxBufferBindCount = program.version == 5 ? 11 :
+      (program.version == 4 ? 10 : 6)
     descriptor.initializeBindings = true
     arguments = try device.makeArgumentTable(descriptor: descriptor)
     self.balanceController = balanceController
@@ -197,7 +199,7 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     }
     words.withUnsafeBytes { uniforms.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
     let kinesthesia: MetalRawSensorBufferView?
-    if program.version == 4 {
+    if program.jointPathFeedback != nil {
       let kinesthesiaTopology = template.species.senses.first {
         $0.enabled && $0.modality == .kinesthesia
       }
@@ -226,7 +228,7 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
       )
     }
     var addresses: [UInt64]
-    if program.version == 4 {
+    if program.jointPathFeedback != nil {
       guard let kinesthesia,
         let jointReferencePositions, let jointOptimalLengths,
         let jointPathJacobians else {
@@ -237,6 +239,12 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
         channels.gpuAddress, logits.gpuAddress, uniforms.gpuAddress,
         jointReferencePositions.gpuAddress, jointOptimalLengths.gpuAddress,
         jointPathJacobians.gpuAddress]
+      if program.version == 5 {
+        guard let eventError = balanceCandidate?.eventError else {
+          throw TissueError.transaction("push recovery lacks its receptor candidate")
+        }
+        addresses.append(eventError.gpuAddress)
+      }
     } else {
       addresses = [view.gpuAddress, view.validityGPUAddress, channels.gpuAddress,
         logits.gpuAddress, uniforms.gpuAddress]
@@ -248,7 +256,7 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
       jointPathJacobians].compactMap { $0 }
     try encoder.dispatch(pipeline: pipeline, arguments: arguments, addresses: addresses,
       ownedBuffers: [channels, logits, uniforms] + jointBuffers
-        + (balanceCandidate.map { [$0.corrections] } ?? []),
+        + (balanceCandidate.map { [$0.corrections] + [$0.eventError].compactMap { $0 } } ?? []),
       count: program.channels.count)
     return MetalDescendingMotorView(kind: .muscleLocomotor, transactionFingerprint: root.fingerprint, shadowGeneration: root.shadowGeneration,
       speciesFingerprint: template.species.fingerprint, parameterVersionFingerprint: version,

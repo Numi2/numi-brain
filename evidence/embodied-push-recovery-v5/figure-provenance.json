@@ -1,0 +1,14 @@
+{
+  "brain_dylib_sha256": "b26b2a97d6bfb0d06aff132c0e4fed1072b6e0ebdf056c6bab2d07853caebac6",
+  "figure_sha256": "b04f8c134888a4284dae5136c648e26c9f84ab39dd77936f203867328515b499",
+  "log_sha256": {
+    "off50": "1f9000d85114a05f9d096b872f86f6451b8109fa5c4fb38e785e3476acd7f1bf",
+    "off60": "b66af4ea2040447c4f0061d96ab5c9f348d2e1c91ef129e232b8f60c1d1078c4",
+    "on50": "eb61fc08f1d6d6be2aae872a8768f383577bfe2d48f3dbe0021e2b315ef1e9d8",
+    "on60": "e9d18c0acd45dc1a1f292de59ce138341a3ecbd51934f94d3cd9a50e201e91c5"
+  },
+  "native_lab_binary_sha256": "b976b85539f7329c55ef03afdcfd6efd84c8d333b3310e2f3b127c15b4cbd8e9",
+  "run_root": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-20260925",
+  "schema": "numi.brain.embodied-push-figure-provenance.v1",
+  "selected_program_sha256": "82e44f4ddf49e5a98f7111dd810e24c88a8a230eb315efa839d329563ffc7b23"
+}

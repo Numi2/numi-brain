@@ -163,6 +163,49 @@ final class MuscleLocomotorProgramTests: XCTestCase {
     XCTAssertThrowsError(try program(limited).validate(template: template))
   }
 
+  func testPushRecoveryV5RequiresThreeAcceptedVestibularVelocitySamples() throws {
+    let template = try fixture()
+    let velocity = try XCTUnwrap(template.sensoryProfile.bodyReceptorBindings.first {
+      $0.modality == .vestibular && $0.signal == .velocity && $0.component == 0
+    })
+    let channels = (UInt32(0)..<416).map {
+      MuscleLocomotorChannel(muscleIdentifier: $0, referenceLengthMeters: 0.25,
+        tonicExcitation: 0.03, lengthGain: 1, velocityGainSeconds: 0.02,
+        maximumExcitation: 1)
+    }
+    let base = MuscleLocomotorProgram(modelSourceFingerprint: 123,
+      sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+      calibrationArtifactSHA256: String(repeating: "a", count: 64), channels: channels)
+    func program(threshold: Float = 0.01, samples: UInt32 = 3) -> MuscleLocomotorProgram {
+      let event = MuscleBalanceFeedbackProgram(
+        locomotorProgramFingerprint: base.baselineFingerprint,
+        modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "b", count: 64),
+        mode: .posture, updatePeriodMicroseconds: 1_000,
+        sources: [.init(identifier: 1,
+          bodyReceptorBindingIdentifier: velocity.identifier, referenceValue: 0,
+          eventThreshold: threshold, eventConsecutiveSamples: samples)],
+        routes: [])
+      return MuscleLocomotorProgram(modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "a", count: 64),
+        channels: channels, balanceFeedback: event,
+        jointPathFeedback: .init(lengthGain: 10,
+          velocityGainSeconds: 1, maximumCorrection: 0.2))
+    }
+    let candidate = program()
+    XCTAssertEqual(candidate.version, 5)
+    try candidate.validate(template: template)
+    XCTAssertEqual(candidate.balanceFeedback?.historyCapacity, 3)
+    XCTAssertTrue(candidate.balanceFeedback?.requiresTransactionalHistory == true)
+    XCTAssertEqual(candidate, try JSONDecoder().decode(MuscleLocomotorProgram.self,
+      from: JSONEncoder().encode(candidate)))
+    XCTAssertNotEqual(candidate.fingerprint, program(threshold: 0.02).fingerprint)
+    XCTAssertThrowsError(try program(threshold: 0.0001).validate(template: template))
+    XCTAssertThrowsError(try program(samples: 2).validate(template: template))
+  }
+
   func testJointPathCalibrationRejectsPartialAndNonfiniteSourceValues() throws {
     func calibration(reference: [UInt32], optimal: [UInt32],
       jacobian: [UInt32]) -> MuscleJointPathCalibration {

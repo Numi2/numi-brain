@@ -391,7 +391,7 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
         parameterVersion: parameterVersion.fingerprint, device: device,
         jointPathCalibration: jointPathCalibration)
     }
-    let exactJointKinesthesia = muscleLocomotor?.version == 4
+    let exactJointKinesthesia = muscleLocomotor?.jointPathFeedback != nil
       && jointPathCalibration != nil
     let connectomeController = try connectome.map {
       try MetalConnectomeController(seed: $0, template: compiledSpeciesTemplate, device: device)

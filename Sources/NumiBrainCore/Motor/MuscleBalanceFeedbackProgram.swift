@@ -23,19 +23,27 @@ public struct MuscleBalanceFeedbackSource: Codable, Equatable, Hashable, Sendabl
   public let referenceValue: Float
   public let filterTimeConstantSeconds: Float
   public let conductionDelayMicroseconds: UInt32
+  /// A physical-velocity excursion must persist for this many accepted
+  /// receptor deliveries before this source may route a correction.
+  public let eventThreshold: Float?
+  public let eventConsecutiveSamples: UInt32?
 
   public init(
     identifier: UInt32,
     bodyReceptorBindingIdentifier: UInt32,
     referenceValue: Float,
     filterTimeConstantSeconds: Float = 0,
-    conductionDelayMicroseconds: UInt32 = 0
+    conductionDelayMicroseconds: UInt32 = 0,
+    eventThreshold: Float? = nil,
+    eventConsecutiveSamples: UInt32? = nil
   ) {
     self.identifier = identifier
     self.bodyReceptorBindingIdentifier = bodyReceptorBindingIdentifier
     self.referenceValue = referenceValue
     self.filterTimeConstantSeconds = filterTimeConstantSeconds
     self.conductionDelayMicroseconds = conductionDelayMicroseconds
+    self.eventThreshold = eventThreshold
+    self.eventConsecutiveSamples = eventConsecutiveSamples
   }
 }
 
@@ -119,6 +127,7 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     sources.contains {
       $0.conductionDelayMicroseconds > 0
         || $0.filterTimeConstantSeconds > 0
+        || $0.eventConsecutiveSamples != nil
     }
   }
 
@@ -129,7 +138,8 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
     let quotient = maximumConductionDelayMicroseconds
       / updatePeriodMicroseconds
     let (capacity, overflow) = quotient.addingReportingOverflow(1)
-    return overflow ? .max : capacity
+    return overflow ? .max : max(capacity,
+      sources.map { $0.eventConsecutiveSamples ?? 1 }.max() ?? 1)
   }
 
   /// A stateful controller must remain on its prepared baseline until delayed
@@ -163,7 +173,8 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
         >= minimumInitializationDurationMicroseconds,
       historyCapacity > 0, historyCapacity <= 501,
       !sources.isEmpty, sources.count <= 64,
-      !routes.isEmpty, routes.count <= 65_536
+      (!routes.isEmpty || locomotorProgram.version == 5),
+      routes.count <= 65_536
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "balance feedback requires one exact locomotor baseline, sensor generation, and bounded clock"
@@ -200,6 +211,23 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
           "balance feedback source calibration or physical receptor provenance is invalid"
         )
       }
+      if let threshold = source.eventThreshold {
+        guard threshold.isFinite, (0.001...1).contains(threshold),
+          source.eventConsecutiveSamples == 3,
+          source.conductionDelayMicroseconds == 0,
+          source.filterTimeConstantSeconds == 0,
+          binding.modality == .vestibular,
+          binding.signal == .velocity
+        else {
+          throw BrainRuntimeError.invalidDescriptor(
+            "push event requires three fresh physical vestibular velocity samples"
+          )
+        }
+      } else if source.eventConsecutiveSamples != nil {
+        throw BrainRuntimeError.invalidDescriptor(
+          "push event sample count lacks a threshold"
+        )
+      }
       resolvedBindings[source.identifier] = binding
     }
 
@@ -233,9 +261,10 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
       routedSourceIdentifiers.insert(route.sourceIdentifier)
       routedSignals.insert(binding.signal)
     }
-    guard routedSourceIdentifiers == Set(sourceIdentifiers),
-      !routedSignals.isDisjoint(with: kinematicSignals),
-      mode != .supportAware || !routedSignals.isDisjoint(with: supportSignals)
+    let eventOnly = locomotorProgram.version == 5 && routes.isEmpty
+    guard eventOnly || (routedSourceIdentifiers == Set(sourceIdentifiers)
+      && !routedSignals.isDisjoint(with: kinematicSignals)
+      && (mode != .supportAware || !routedSignals.isDisjoint(with: supportSignals)))
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "balance feedback requires every declared source to be routed and causal kinematic evidence; support-aware feedback also requires routed support/load evidence"
@@ -272,6 +301,12 @@ public struct MuscleBalanceFeedbackProgram: Codable, Equatable, Sendable {
       integer(UInt64(source.referenceValue.bitPattern))
       integer(UInt64(source.filterTimeConstantSeconds.bitPattern))
       integer(UInt64(source.conductionDelayMicroseconds))
+      if let threshold = source.eventThreshold,
+        let count = source.eventConsecutiveSamples {
+        integer(0x50555348)
+        integer(UInt64(threshold.bitPattern))
+        integer(UInt64(count))
+      }
     }
     integer(UInt64(routes.count))
     for route in routes.sorted(by: {

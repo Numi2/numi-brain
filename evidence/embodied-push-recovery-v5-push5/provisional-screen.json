@@ -1,0 +1,22 @@
+{
+  "errors": [
+    "paired native binary, source, seed, or timestep differs",
+    "paired native invocation differs beyond output and motor program",
+    "frozen recovery score improvement gate failed",
+    "terminal x velocity worsened"
+  ],
+  "first_command_difference_step": 105,
+  "first_motion_difference_step": 106,
+  "first_qualifying_three_sensor_step": 104,
+  "improvement_fraction": -0.4743358975194678,
+  "off": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-20260925/off-opposite50-500ms",
+  "off_min_contacts": 6,
+  "off_peak_penetration_m": 1.9488363705e-06,
+  "off_score_m": 0.0010112651623680028,
+  "on": "/Users/n/NumiHumanBrainRuns/embodied-push-recovery-v5-push5-20260925/on-opposite50-screen",
+  "on_min_contacts": 6,
+  "on_peak_penetration_m": 1.31670810788e-06,
+  "on_score_m": 0.0014909445307899998,
+  "passed": false,
+  "schema": "numi.brain.embodied-push-pair-audit.v1"
+}

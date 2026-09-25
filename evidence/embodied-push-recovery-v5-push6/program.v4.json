@@ -1,0 +1,4175 @@
+{
+  "calibrationArtifactSHA256": "857d6982be6f1f191efdda7c6ad21596032b796567094e803f35aaa97f89ca35",
+  "channels": [
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 0,
+      "referenceLengthMeters": 0.255442321,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 1,
+      "referenceLengthMeters": 0.252432257,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 2,
+      "referenceLengthMeters": 0.234179094,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 3,
+      "referenceLengthMeters": 0.221624851,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 4,
+      "referenceLengthMeters": 0.202723682,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 5,
+      "referenceLengthMeters": 0.193480849,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 6,
+      "referenceLengthMeters": 0.17207776,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 7,
+      "referenceLengthMeters": 0.165943235,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 8,
+      "referenceLengthMeters": 0.140814677,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 9,
+      "referenceLengthMeters": 0.143648461,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 10,
+      "referenceLengthMeters": 0.125313103,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 11,
+      "referenceLengthMeters": 0.255146563,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 12,
+      "referenceLengthMeters": 0.252085537,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 13,
+      "referenceLengthMeters": 0.233909652,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 14,
+      "referenceLengthMeters": 0.221329853,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 15,
+      "referenceLengthMeters": 0.20251663,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 16,
+      "referenceLengthMeters": 0.193178162,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 17,
+      "referenceLengthMeters": 0.171920255,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 18,
+      "referenceLengthMeters": 0.165701106,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 19,
+      "referenceLengthMeters": 0.14070946,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 20,
+      "referenceLengthMeters": 0.143428579,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 21,
+      "referenceLengthMeters": 0.125220552,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 22,
+      "referenceLengthMeters": 0.38194567,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 23,
+      "referenceLengthMeters": 0.382056594,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 24,
+      "referenceLengthMeters": 0.158436343,
+      "tonicExcitation": 0.667645395,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 25,
+      "referenceLengthMeters": 0.110532217,
+      "tonicExcitation": 0.459784448,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 26,
+      "referenceLengthMeters": 0.0726336315,
+      "tonicExcitation": 0.393595785,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 27,
+      "referenceLengthMeters": 0.0498324707,
+      "tonicExcitation": 0.468028218,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 28,
+      "referenceLengthMeters": 0.158322304,
+      "tonicExcitation": 0.750850558,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 29,
+      "referenceLengthMeters": 0.11043331,
+      "tonicExcitation": 0.788998187,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 30,
+      "referenceLengthMeters": 0.0725363493,
+      "tonicExcitation": 0.623559594,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 31,
+      "referenceLengthMeters": 0.0498318374,
+      "tonicExcitation": 0.206822708,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 32,
+      "referenceLengthMeters": 0.357322216,
+      "tonicExcitation": 0.0843849853,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 33,
+      "referenceLengthMeters": 0.316914529,
+      "tonicExcitation": 0.104464628,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 34,
+      "referenceLengthMeters": 0.290673047,
+      "tonicExcitation": 0.197894663,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 35,
+      "referenceLengthMeters": 0.255411655,
+      "tonicExcitation": 0.0930176973,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 36,
+      "referenceLengthMeters": 0.219695777,
+      "tonicExcitation": 0.40791595,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 37,
+      "referenceLengthMeters": 0.185196117,
+      "tonicExcitation": 0.4117015,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 38,
+      "referenceLengthMeters": 0.154028744,
+      "tonicExcitation": 0.18436569,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 39,
+      "referenceLengthMeters": 0.11802762,
+      "tonicExcitation": 0.27447781,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 40,
+      "referenceLengthMeters": 0.357223064,
+      "tonicExcitation": 0.0892130286,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 41,
+      "referenceLengthMeters": 0.316758513,
+      "tonicExcitation": 0.111793853,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 42,
+      "referenceLengthMeters": 0.290443093,
+      "tonicExcitation": 0.402381301,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 43,
+      "referenceLengthMeters": 0.25517413,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 44,
+      "referenceLengthMeters": 0.219430536,
+      "tonicExcitation": 0.249981269,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 45,
+      "referenceLengthMeters": 0.184901223,
+      "tonicExcitation": 0.570077181,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 46,
+      "referenceLengthMeters": 0.153701335,
+      "tonicExcitation": 0.289566219,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 47,
+      "referenceLengthMeters": 0.117714025,
+      "tonicExcitation": 0.294151545,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 48,
+      "referenceLengthMeters": 0.323053896,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 49,
+      "referenceLengthMeters": 0.338027507,
+      "tonicExcitation": 0.0341768116,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 50,
+      "referenceLengthMeters": 0.341276556,
+      "tonicExcitation": 0.0767458081,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 51,
+      "referenceLengthMeters": 0.342945039,
+      "tonicExcitation": 0.0213371869,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 52,
+      "referenceLengthMeters": 0.323903233,
+      "tonicExcitation": 0.0236155931,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 53,
+      "referenceLengthMeters": 0.321726292,
+      "tonicExcitation": 0.0535811745,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 54,
+      "referenceLengthMeters": 0.322548449,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 55,
+      "referenceLengthMeters": 0.304882228,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 56,
+      "referenceLengthMeters": 0.315007061,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 57,
+      "referenceLengthMeters": 0.286476254,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 58,
+      "referenceLengthMeters": 0.248673379,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 59,
+      "referenceLengthMeters": 0.197263658,
+      "tonicExcitation": 0.354919374,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 60,
+      "referenceLengthMeters": 0.339708388,
+      "tonicExcitation": 0.0898354873,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 61,
+      "referenceLengthMeters": 0.318394244,
+      "tonicExcitation": 0.051294148,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 62,
+      "referenceLengthMeters": 0.319006741,
+      "tonicExcitation": 0.463531226,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 63,
+      "referenceLengthMeters": 0.322861135,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 64,
+      "referenceLengthMeters": 0.305231333,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 65,
+      "referenceLengthMeters": 0.302863449,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 66,
+      "referenceLengthMeters": 0.275943071,
+      "tonicExcitation": 0.325434059,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 67,
+      "referenceLengthMeters": 0.238216519,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 68,
+      "referenceLengthMeters": 0.187475324,
+      "tonicExcitation": 0.491861403,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 69,
+      "referenceLengthMeters": 0.323053896,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 70,
+      "referenceLengthMeters": 0.338025272,
+      "tonicExcitation": 0.0453124121,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 71,
+      "referenceLengthMeters": 0.341271996,
+      "tonicExcitation": 0.0398422331,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 72,
+      "referenceLengthMeters": 0.34293884,
+      "tonicExcitation": 0.0656744167,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 73,
+      "referenceLengthMeters": 0.323898613,
+      "tonicExcitation": 0.0841195136,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 74,
+      "referenceLengthMeters": 0.321718872,
+      "tonicExcitation": 0.118145257,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 75,
+      "referenceLengthMeters": 0.322563648,
+      "tonicExcitation": 0.206209615,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 76,
+      "referenceLengthMeters": 0.304899216,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 77,
+      "referenceLengthMeters": 0.315036088,
+      "tonicExcitation": 0.525801718,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 78,
+      "referenceLengthMeters": 0.28647083,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 79,
+      "referenceLengthMeters": 0.248628944,
+      "tonicExcitation": 0.410370767,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 80,
+      "referenceLengthMeters": 0.197263658,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 81,
+      "referenceLengthMeters": 0.339698017,
+      "tonicExcitation": 0.0258008465,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 82,
+      "referenceLengthMeters": 0.318384022,
+      "tonicExcitation": 0.0261260457,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 83,
+      "referenceLengthMeters": 0.318994522,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 84,
+      "referenceLengthMeters": 0.322881043,
+      "tonicExcitation": 0.278157324,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 85,
+      "referenceLengthMeters": 0.305268288,
+      "tonicExcitation": 0.230805397,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 86,
+      "referenceLengthMeters": 0.302920103,
+      "tonicExcitation": 0.531986237,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 87,
+      "referenceLengthMeters": 0.275962144,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 88,
+      "referenceLengthMeters": 0.238197058,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 89,
+      "referenceLengthMeters": 0.18742013,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 90,
+      "referenceLengthMeters": 0.0425928049,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 91,
+      "referenceLengthMeters": 0.0742940456,
+      "tonicExcitation": 0.186424226,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 92,
+      "referenceLengthMeters": 0.100959621,
+      "tonicExcitation": 0.20922707,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 93,
+      "referenceLengthMeters": 0.129585847,
+      "tonicExcitation": 0.399128824,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 94,
+      "referenceLengthMeters": 0.160490364,
+      "tonicExcitation": 0.554858863,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 95,
+      "referenceLengthMeters": 0.0426903069,
+      "tonicExcitation": 0.372647852,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 96,
+      "referenceLengthMeters": 0.0743270442,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 97,
+      "referenceLengthMeters": 0.100905612,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 98,
+      "referenceLengthMeters": 0.129481718,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 99,
+      "referenceLengthMeters": 0.160336405,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 100,
+      "referenceLengthMeters": 0.0648638085,
+      "tonicExcitation": 0.0277345702,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 101,
+      "referenceLengthMeters": 0.0375350639,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 102,
+      "referenceLengthMeters": 0.058774326,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 103,
+      "referenceLengthMeters": 0.0848134011,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 104,
+      "referenceLengthMeters": 0.116966829,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 105,
+      "referenceLengthMeters": 0.0850729123,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 106,
+      "referenceLengthMeters": 0.0608655065,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 107,
+      "referenceLengthMeters": 0.064659521,
+      "tonicExcitation": 0.0449004173,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 108,
+      "referenceLengthMeters": 0.0372878909,
+      "tonicExcitation": 0.0582730621,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 109,
+      "referenceLengthMeters": 0.0584598333,
+      "tonicExcitation": 0.0309415571,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 110,
+      "referenceLengthMeters": 0.0844530985,
+      "tonicExcitation": 0.145665854,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 111,
+      "referenceLengthMeters": 0.116470799,
+      "tonicExcitation": 0.0966868252,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 112,
+      "referenceLengthMeters": 0.0846222341,
+      "tonicExcitation": 0.0985882953,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 113,
+      "referenceLengthMeters": 0.0604650714,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 114,
+      "referenceLengthMeters": 0.0745374709,
+      "tonicExcitation": 0.0115328329,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 115,
+      "referenceLengthMeters": 0.0790288448,
+      "tonicExcitation": 0.000370532769,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 116,
+      "referenceLengthMeters": 0.0860016868,
+      "tonicExcitation": 0.0320019089,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 117,
+      "referenceLengthMeters": 0.0555950254,
+      "tonicExcitation": 0.00331312837,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 118,
+      "referenceLengthMeters": 0.0994410515,
+      "tonicExcitation": 0.0164814293,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 119,
+      "referenceLengthMeters": 0.0745022595,
+      "tonicExcitation": 0.00638454175,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 120,
+      "referenceLengthMeters": 0.0789945498,
+      "tonicExcitation": 0.000593087985,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 121,
+      "referenceLengthMeters": 0.0859693959,
+      "tonicExcitation": 0.0117331082,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 122,
+      "referenceLengthMeters": 0.0555830151,
+      "tonicExcitation": 0.00396183692,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 123,
+      "referenceLengthMeters": 0.0993872136,
+      "tonicExcitation": 0.0222043023,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 124,
+      "referenceLengthMeters": 0.14275296,
+      "tonicExcitation": 0.0267931093,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 125,
+      "referenceLengthMeters": 0.141058892,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 126,
+      "referenceLengthMeters": 0.136479631,
+      "tonicExcitation": 0.00472824648,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 127,
+      "referenceLengthMeters": 0.134741589,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 128,
+      "referenceLengthMeters": 0.126844436,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 129,
+      "referenceLengthMeters": 0.118762426,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 130,
+      "referenceLengthMeters": 0.142463192,
+      "tonicExcitation": 0.0315764137,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 131,
+      "referenceLengthMeters": 0.140705764,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 132,
+      "referenceLengthMeters": 0.136080697,
+      "tonicExcitation": 0.0374426283,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 133,
+      "referenceLengthMeters": 0.134246692,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 134,
+      "referenceLengthMeters": 0.12633884,
+      "tonicExcitation": 0.0556022674,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 135,
+      "referenceLengthMeters": 0.118257947,
+      "tonicExcitation": 0.0597958267,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 136,
+      "referenceLengthMeters": 0.0576273687,
+      "tonicExcitation": 0.059677247,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 137,
+      "referenceLengthMeters": 0.0837195516,
+      "tonicExcitation": 0.463793874,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 138,
+      "referenceLengthMeters": 0.105195709,
+      "tonicExcitation": 0.190076932,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 139,
+      "referenceLengthMeters": 0.115111865,
+      "tonicExcitation": 0.452286124,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 140,
+      "referenceLengthMeters": 0.0545147434,
+      "tonicExcitation": 0.0284995791,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 141,
+      "referenceLengthMeters": 0.0715863705,
+      "tonicExcitation": 0.00146228471,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 142,
+      "referenceLengthMeters": 0.0907522291,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 143,
+      "referenceLengthMeters": 0.102759689,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 144,
+      "referenceLengthMeters": 0.0489138849,
+      "tonicExcitation": 0.0583726875,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 145,
+      "referenceLengthMeters": 0.118216418,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 146,
+      "referenceLengthMeters": 0.0980914608,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 147,
+      "referenceLengthMeters": 0.0980914608,
+      "tonicExcitation": 0.021596903,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 148,
+      "referenceLengthMeters": 0.054059878,
+      "tonicExcitation": 0.00438922131,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 149,
+      "referenceLengthMeters": 0.0668998361,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 150,
+      "referenceLengthMeters": 0.089577958,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 151,
+      "referenceLengthMeters": 0.103479333,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 152,
+      "referenceLengthMeters": 0.0215251986,
+      "tonicExcitation": 0.00167733105,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 153,
+      "referenceLengthMeters": 0.0926019773,
+      "tonicExcitation": 0.0771285594,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 154,
+      "referenceLengthMeters": 0.069326736,
+      "tonicExcitation": 0.0549261384,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 155,
+      "referenceLengthMeters": 0.0497982539,
+      "tonicExcitation": 0.0312347617,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 156,
+      "referenceLengthMeters": 0.0373651646,
+      "tonicExcitation": 0.0115117859,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 157,
+      "referenceLengthMeters": 0.0321467966,
+      "tonicExcitation": 0.0209033191,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 158,
+      "referenceLengthMeters": 0.0312280972,
+      "tonicExcitation": 0.00886061694,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 159,
+      "referenceLengthMeters": 0.0343269259,
+      "tonicExcitation": 0.00201317016,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 160,
+      "referenceLengthMeters": 0.030762421,
+      "tonicExcitation": 0.0323317796,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 161,
+      "referenceLengthMeters": 0.0576042719,
+      "tonicExcitation": 0.0974254906,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 162,
+      "referenceLengthMeters": 0.0836908743,
+      "tonicExcitation": 0.449707061,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 163,
+      "referenceLengthMeters": 0.105048448,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 164,
+      "referenceLengthMeters": 0.114839137,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 165,
+      "referenceLengthMeters": 0.0544933714,
+      "tonicExcitation": 0.0784477144,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 166,
+      "referenceLengthMeters": 0.0714265108,
+      "tonicExcitation": 0.00172322989,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 167,
+      "referenceLengthMeters": 0.090527609,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 168,
+      "referenceLengthMeters": 0.102571756,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 169,
+      "referenceLengthMeters": 0.0487757437,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 170,
+      "referenceLengthMeters": 0.118153416,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 171,
+      "referenceLengthMeters": 0.0979956388,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 172,
+      "referenceLengthMeters": 0.0979956388,
+      "tonicExcitation": 0.0326068699,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 173,
+      "referenceLengthMeters": 0.0539754927,
+      "tonicExcitation": 0.00888209511,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 174,
+      "referenceLengthMeters": 0.0668268129,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 175,
+      "referenceLengthMeters": 0.0895239785,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 176,
+      "referenceLengthMeters": 0.103442483,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 177,
+      "referenceLengthMeters": 0.0214219596,
+      "tonicExcitation": 0.00169507205,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 178,
+      "referenceLengthMeters": 0.0925794691,
+      "tonicExcitation": 0.0700387955,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 179,
+      "referenceLengthMeters": 0.0692853406,
+      "tonicExcitation": 0.0344730057,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 180,
+      "referenceLengthMeters": 0.0497375913,
+      "tonicExcitation": 0.0368798859,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 181,
+      "referenceLengthMeters": 0.0373491645,
+      "tonicExcitation": 0.0102705024,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 182,
+      "referenceLengthMeters": 0.032127481,
+      "tonicExcitation": 0.0370867439,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 183,
+      "referenceLengthMeters": 0.0312092565,
+      "tonicExcitation": 0.0149716027,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 184,
+      "referenceLengthMeters": 0.0342038609,
+      "tonicExcitation": 0.00297015649,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 185,
+      "referenceLengthMeters": 0.0307063852,
+      "tonicExcitation": 0.0389668643,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 186,
+      "referenceLengthMeters": 0.108258873,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 187,
+      "referenceLengthMeters": 0.107943013,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 188,
+      "referenceLengthMeters": 0.0991925374,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 189,
+      "referenceLengthMeters": 0.0988107622,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 190,
+      "referenceLengthMeters": 0.114199713,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 191,
+      "referenceLengthMeters": 0.0991499722,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 192,
+      "referenceLengthMeters": 0.0964528546,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 193,
+      "referenceLengthMeters": 0.0999099612,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 194,
+      "referenceLengthMeters": 0.12012808,
+      "tonicExcitation": 0.365561217,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 195,
+      "referenceLengthMeters": 0.116958991,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 196,
+      "referenceLengthMeters": 0.0956897512,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 197,
+      "referenceLengthMeters": 0.0918339863,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 198,
+      "referenceLengthMeters": 0.108183004,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 199,
+      "referenceLengthMeters": 0.107824035,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 200,
+      "referenceLengthMeters": 0.0990382135,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 201,
+      "referenceLengthMeters": 0.0986354202,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 202,
+      "referenceLengthMeters": 0.113448516,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 203,
+      "referenceLengthMeters": 0.0983475,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 204,
+      "referenceLengthMeters": 0.097271733,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 205,
+      "referenceLengthMeters": 0.100665309,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 206,
+      "referenceLengthMeters": 0.120765142,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 207,
+      "referenceLengthMeters": 0.116854198,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 208,
+      "referenceLengthMeters": 0.0955243707,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 209,
+      "referenceLengthMeters": 0.0917229354,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 210,
+      "referenceLengthMeters": 0.208967566,
+      "tonicExcitation": 0.00127767154,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 211,
+      "referenceLengthMeters": 0.210224107,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 212,
+      "referenceLengthMeters": 0.154537827,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 213,
+      "referenceLengthMeters": 0.119664788,
+      "tonicExcitation": 0.199525639,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 214,
+      "referenceLengthMeters": 0.101982273,
+      "tonicExcitation": 0.000755445915,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 215,
+      "referenceLengthMeters": 0.109678939,
+      "tonicExcitation": 0.00524199894,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 216,
+      "referenceLengthMeters": 0.125708237,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 217,
+      "referenceLengthMeters": 0.156414494,
+      "tonicExcitation": 0.00339810643,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 218,
+      "referenceLengthMeters": 0.155304968,
+      "tonicExcitation": 0.011531448,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 219,
+      "referenceLengthMeters": 0.163861811,
+      "tonicExcitation": 0.00997196045,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 220,
+      "referenceLengthMeters": 0.17101866,
+      "tonicExcitation": 0.00279119867,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 221,
+      "referenceLengthMeters": 0.260365307,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 222,
+      "referenceLengthMeters": 0.318388283,
+      "tonicExcitation": 0.0115353139,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 223,
+      "referenceLengthMeters": 0.338216543,
+      "tonicExcitation": 0.0180664994,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 224,
+      "referenceLengthMeters": 0.147604898,
+      "tonicExcitation": 0.000296793034,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 225,
+      "referenceLengthMeters": 0.282730997,
+      "tonicExcitation": 0.0173074491,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 226,
+      "referenceLengthMeters": 0.166610524,
+      "tonicExcitation": 0.00553941494,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 227,
+      "referenceLengthMeters": 0.154238328,
+      "tonicExcitation": 0.00534449797,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 228,
+      "referenceLengthMeters": 0.021504866,
+      "tonicExcitation": 8.11788632e-05,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 229,
+      "referenceLengthMeters": 0.0640166551,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 230,
+      "referenceLengthMeters": 0.428853244,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 231,
+      "referenceLengthMeters": 0.348504633,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 232,
+      "referenceLengthMeters": 0.142450094,
+      "tonicExcitation": 0.255115449,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 233,
+      "referenceLengthMeters": 0.331051081,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 234,
+      "referenceLengthMeters": 0.332564533,
+      "tonicExcitation": 0.0191331618,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 235,
+      "referenceLengthMeters": 0.285762906,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 236,
+      "referenceLengthMeters": 0.290470868,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 237,
+      "referenceLengthMeters": 0.310771376,
+      "tonicExcitation": 0.0326300152,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 238,
+      "referenceLengthMeters": 0.311379641,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 239,
+      "referenceLengthMeters": 0.336362988,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 240,
+      "referenceLengthMeters": 0.154998317,
+      "tonicExcitation": 0.0628794134,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 241,
+      "referenceLengthMeters": 0.0312026031,
+      "tonicExcitation": 0.00949697755,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 242,
+      "referenceLengthMeters": 0.406980306,
+      "tonicExcitation": 0.0225336291,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 243,
+      "referenceLengthMeters": 0.408890575,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 244,
+      "referenceLengthMeters": 0.372490853,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 245,
+      "referenceLengthMeters": 0.373777151,
+      "tonicExcitation": 0.000807856384,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 246,
+      "referenceLengthMeters": 0.379821151,
+      "tonicExcitation": 0.143310219,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 247,
+      "referenceLengthMeters": 0.400925577,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 248,
+      "referenceLengthMeters": 0.38735044,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 249,
+      "referenceLengthMeters": 0.38887316,
+      "tonicExcitation": 0.015517896,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 250,
+      "referenceLengthMeters": 0.396138966,
+      "tonicExcitation": 0.00214693113,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 251,
+      "referenceLengthMeters": 0.413894415,
+      "tonicExcitation": 0.0136857452,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 252,
+      "referenceLengthMeters": 0.418088794,
+      "tonicExcitation": 0.0140540926,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 253,
+      "referenceLengthMeters": 0.416449457,
+      "tonicExcitation": 0.0797641575,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 254,
+      "referenceLengthMeters": 0.390636653,
+      "tonicExcitation": 0.455030352,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 255,
+      "referenceLengthMeters": 0.258529633,
+      "tonicExcitation": 0.0139770396,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 256,
+      "referenceLengthMeters": 0.285200298,
+      "tonicExcitation": 0.00840444025,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 257,
+      "referenceLengthMeters": 0.176370397,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 258,
+      "referenceLengthMeters": 0.26510784,
+      "tonicExcitation": 0.00268570683,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 259,
+      "referenceLengthMeters": 0.202228725,
+      "tonicExcitation": 0.0461337604,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 260,
+      "referenceLengthMeters": 0.0446997881,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 261,
+      "referenceLengthMeters": 0.041013971,
+      "tonicExcitation": 0.00212217635,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 262,
+      "referenceLengthMeters": 0.0973111466,
+      "tonicExcitation": 0.0021451083,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 263,
+      "referenceLengthMeters": 0.097350046,
+      "tonicExcitation": 0.0107305776,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 264,
+      "referenceLengthMeters": 0.0492294915,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 265,
+      "referenceLengthMeters": 0.0933333412,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 266,
+      "referenceLengthMeters": 0.092520155,
+      "tonicExcitation": 0.00687224744,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 267,
+      "referenceLengthMeters": 0.0567965508,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 268,
+      "referenceLengthMeters": 0.0770840272,
+      "tonicExcitation": 0.000444958918,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 269,
+      "referenceLengthMeters": 0.0786570162,
+      "tonicExcitation": 0.0370667651,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 270,
+      "referenceLengthMeters": 0.0411304533,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 271,
+      "referenceLengthMeters": 0.0975710377,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 272,
+      "referenceLengthMeters": 0.0968911275,
+      "tonicExcitation": 0.160376161,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 273,
+      "referenceLengthMeters": 0.208967492,
+      "tonicExcitation": 0.00176011969,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 274,
+      "referenceLengthMeters": 0.210224345,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 275,
+      "referenceLengthMeters": 0.154538572,
+      "tonicExcitation": 0.0248434879,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 276,
+      "referenceLengthMeters": 0.119664676,
+      "tonicExcitation": 0.211857438,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 277,
+      "referenceLengthMeters": 0.101984039,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 278,
+      "referenceLengthMeters": 0.109677553,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 279,
+      "referenceLengthMeters": 0.125709668,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 280,
+      "referenceLengthMeters": 0.156413749,
+      "tonicExcitation": 0.00517520308,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 281,
+      "referenceLengthMeters": 0.155303389,
+      "tonicExcitation": 0.0133127803,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 282,
+      "referenceLengthMeters": 0.163860083,
+      "tonicExcitation": 0.0110473325,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 283,
+      "referenceLengthMeters": 0.171017736,
+      "tonicExcitation": 0.00418480672,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 284,
+      "referenceLengthMeters": 0.260364503,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 285,
+      "referenceLengthMeters": 0.31838733,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 286,
+      "referenceLengthMeters": 0.338215947,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 287,
+      "referenceLengthMeters": 0.147604734,
+      "tonicExcitation": 0.000358180725,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 288,
+      "referenceLengthMeters": 0.282733113,
+      "tonicExcitation": 0.00839570165,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 289,
+      "referenceLengthMeters": 0.166610479,
+      "tonicExcitation": 0.00209058006,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 290,
+      "referenceLengthMeters": 0.154238284,
+      "tonicExcitation": 0.00201411173,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 291,
+      "referenceLengthMeters": 0.0215048585,
+      "tonicExcitation": 3.03785437e-05,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 292,
+      "referenceLengthMeters": 0.0640121847,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 293,
+      "referenceLengthMeters": 0.428851694,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 294,
+      "referenceLengthMeters": 0.348503113,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 295,
+      "referenceLengthMeters": 0.142450079,
+      "tonicExcitation": 0.19747901,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 296,
+      "referenceLengthMeters": 0.331050247,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 297,
+      "referenceLengthMeters": 0.332498133,
+      "tonicExcitation": 0.016663326,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 298,
+      "referenceLengthMeters": 0.285678595,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 299,
+      "referenceLengthMeters": 0.290431917,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 300,
+      "referenceLengthMeters": 0.310871929,
+      "tonicExcitation": 0.0343773216,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 301,
+      "referenceLengthMeters": 0.311480522,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 302,
+      "referenceLengthMeters": 0.336499631,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 303,
+      "referenceLengthMeters": 0.155004889,
+      "tonicExcitation": 0.0625358894,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 304,
+      "referenceLengthMeters": 0.0312065762,
+      "tonicExcitation": 0.00826977566,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 305,
+      "referenceLengthMeters": 0.40706417,
+      "tonicExcitation": 0.0153840715,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 306,
+      "referenceLengthMeters": 0.408972263,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 307,
+      "referenceLengthMeters": 0.372571081,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 308,
+      "referenceLengthMeters": 0.373854637,
+      "tonicExcitation": 0.00148654671,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 309,
+      "referenceLengthMeters": 0.379884899,
+      "tonicExcitation": 0.142987385,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 310,
+      "referenceLengthMeters": 0.400990516,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 311,
+      "referenceLengthMeters": 0.387414783,
+      "tonicExcitation": 0.00025074443,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 312,
+      "referenceLengthMeters": 0.388936698,
+      "tonicExcitation": 0.0212217756,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 313,
+      "referenceLengthMeters": 0.396080703,
+      "tonicExcitation": 0.00272449106,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 314,
+      "referenceLengthMeters": 0.413801223,
+      "tonicExcitation": 0.0140891355,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 315,
+      "referenceLengthMeters": 0.417992413,
+      "tonicExcitation": 0.0213768296,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 316,
+      "referenceLengthMeters": 0.416355044,
+      "tonicExcitation": 0.107016146,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 317,
+      "referenceLengthMeters": 0.390586644,
+      "tonicExcitation": 0.448315978,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 318,
+      "referenceLengthMeters": 0.258461088,
+      "tonicExcitation": 0.023981506,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 319,
+      "referenceLengthMeters": 0.285089165,
+      "tonicExcitation": 0.00853922684,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 320,
+      "referenceLengthMeters": 0.176327452,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 321,
+      "referenceLengthMeters": 0.265201002,
+      "tonicExcitation": 0.00271974457,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 322,
+      "referenceLengthMeters": 0.202263877,
+      "tonicExcitation": 0.0460878015,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 323,
+      "referenceLengthMeters": 0.0446915999,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 324,
+      "referenceLengthMeters": 0.041013971,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 325,
+      "referenceLengthMeters": 0.0973111466,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 326,
+      "referenceLengthMeters": 0.0973500386,
+      "tonicExcitation": 0.00903914776,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 327,
+      "referenceLengthMeters": 0.0492294952,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 328,
+      "referenceLengthMeters": 0.0933333486,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 329,
+      "referenceLengthMeters": 0.0925201625,
+      "tonicExcitation": 0.00821183808,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 330,
+      "referenceLengthMeters": 0.0567965657,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 331,
+      "referenceLengthMeters": 0.0770840421,
+      "tonicExcitation": 0.000781334005,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 332,
+      "referenceLengthMeters": 0.0786570087,
+      "tonicExcitation": 0.0377738774,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 333,
+      "referenceLengthMeters": 0.0411304608,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 334,
+      "referenceLengthMeters": 0.0975710452,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 335,
+      "referenceLengthMeters": 0.096891135,
+      "tonicExcitation": 0.169145778,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 336,
+      "referenceLengthMeters": 0.140136659,
+      "tonicExcitation": 0.0256266259,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 337,
+      "referenceLengthMeters": 0.243887663,
+      "tonicExcitation": 0.0707892478,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 338,
+      "referenceLengthMeters": 0.222771585,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 339,
+      "referenceLengthMeters": 0.339293152,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 340,
+      "referenceLengthMeters": 0.143412128,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 341,
+      "referenceLengthMeters": 0.116233416,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 342,
+      "referenceLengthMeters": 0.414019555,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 343,
+      "referenceLengthMeters": 0.237936348,
+      "tonicExcitation": 0.301033646,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 344,
+      "referenceLengthMeters": 0.436891764,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 345,
+      "referenceLengthMeters": 0.397753447,
+      "tonicExcitation": 0.592398047,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 346,
+      "referenceLengthMeters": 0.424076617,
+      "tonicExcitation": 0.625103652,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 347,
+      "referenceLengthMeters": 0.394135475,
+      "tonicExcitation": 0.503284752,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 348,
+      "referenceLengthMeters": 0.457352161,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 349,
+      "referenceLengthMeters": 0.468749434,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 350,
+      "referenceLengthMeters": 0.191437244,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 351,
+      "referenceLengthMeters": 0.218403965,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 352,
+      "referenceLengthMeters": 0.21887292,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 353,
+      "referenceLengthMeters": 0.120616324,
+      "tonicExcitation": 0.075276807,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 354,
+      "referenceLengthMeters": 0.131686375,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 355,
+      "referenceLengthMeters": 0.111228473,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 356,
+      "referenceLengthMeters": 0.0813786536,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 357,
+      "referenceLengthMeters": 0.083128646,
+      "tonicExcitation": 0.0119271139,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 358,
+      "referenceLengthMeters": 0.0889682919,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 359,
+      "referenceLengthMeters": 0.438518137,
+      "tonicExcitation": 0.309791744,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 360,
+      "referenceLengthMeters": 0.207042441,
+      "tonicExcitation": 0.027955845,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 361,
+      "referenceLengthMeters": 0.20539102,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 362,
+      "referenceLengthMeters": 0.386150807,
+      "tonicExcitation": 0.196593568,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 363,
+      "referenceLengthMeters": 0.138025597,
+      "tonicExcitation": 0.0221084543,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 364,
+      "referenceLengthMeters": 0.227639034,
+      "tonicExcitation": 0.21791856,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 365,
+      "referenceLengthMeters": 0.511930227,
+      "tonicExcitation": 0.366512477,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 366,
+      "referenceLengthMeters": 0.585386515,
+      "tonicExcitation": 0.0156372283,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 367,
+      "referenceLengthMeters": 0.411559582,
+      "tonicExcitation": 0.171216935,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 368,
+      "referenceLengthMeters": 0.454069495,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 369,
+      "referenceLengthMeters": 0.329863191,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 370,
+      "referenceLengthMeters": 0.547580481,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 371,
+      "referenceLengthMeters": 0.304139704,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 372,
+      "referenceLengthMeters": 0.320441604,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 373,
+      "referenceLengthMeters": 0.282056689,
+      "tonicExcitation": 0.134785533,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 374,
+      "referenceLengthMeters": 0.295626521,
+      "tonicExcitation": 0.0130942427,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 375,
+      "referenceLengthMeters": 0.270166248,
+      "tonicExcitation": 0.302364796,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 376,
+      "referenceLengthMeters": 0.140085414,
+      "tonicExcitation": 0.079668887,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 377,
+      "referenceLengthMeters": 0.243831322,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 378,
+      "referenceLengthMeters": 0.222758651,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 379,
+      "referenceLengthMeters": 0.339248925,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 380,
+      "referenceLengthMeters": 0.143389225,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 381,
+      "referenceLengthMeters": 0.116255134,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 382,
+      "referenceLengthMeters": 0.414047986,
+      "tonicExcitation": 0.0810060874,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 383,
+      "referenceLengthMeters": 0.237936348,
+      "tonicExcitation": 0.301033646,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 384,
+      "referenceLengthMeters": 0.436889082,
+      "tonicExcitation": 0.669727325,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 385,
+      "referenceLengthMeters": 0.396878719,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 386,
+      "referenceLengthMeters": 0.424082518,
+      "tonicExcitation": 0.311043501,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 387,
+      "referenceLengthMeters": 0.394290149,
+      "tonicExcitation": 0.502707958,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 388,
+      "referenceLengthMeters": 0.456343263,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 389,
+      "referenceLengthMeters": 0.467764139,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 390,
+      "referenceLengthMeters": 0.191611901,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 391,
+      "referenceLengthMeters": 0.218569398,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 392,
+      "referenceLengthMeters": 0.219000384,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 393,
+      "referenceLengthMeters": 0.120535232,
+      "tonicExcitation": 0.203300297,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 394,
+      "referenceLengthMeters": 0.131804004,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 395,
+      "referenceLengthMeters": 0.111503378,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 396,
+      "referenceLengthMeters": 0.0813225061,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 397,
+      "referenceLengthMeters": 0.0831530243,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 398,
+      "referenceLengthMeters": 0.0890856087,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 399,
+      "referenceLengthMeters": 0.438536525,
+      "tonicExcitation": 0.800000012,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 400,
+      "referenceLengthMeters": 0.206977084,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 401,
+      "referenceLengthMeters": 0.20384419,
+      "tonicExcitation": 0.661070764,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 402,
+      "referenceLengthMeters": 0.386203587,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 403,
+      "referenceLengthMeters": 0.138236865,
+      "tonicExcitation": 0.0565559156,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 404,
+      "referenceLengthMeters": 0.227635473,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 405,
+      "referenceLengthMeters": 0.511949539,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 406,
+      "referenceLengthMeters": 0.585417569,
+      "tonicExcitation": 0.300651044,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 407,
+      "referenceLengthMeters": 0.411549091,
+      "tonicExcitation": 0.02133446,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 408,
+      "referenceLengthMeters": 0.454058945,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 409,
+      "referenceLengthMeters": 0.328659713,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 410,
+      "referenceLengthMeters": 0.547591209,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 411,
+      "referenceLengthMeters": 0.302750081,
+      "tonicExcitation": 0.546003044,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 412,
+      "referenceLengthMeters": 0.318721294,
+      "tonicExcitation": 0.0,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 413,
+      "referenceLengthMeters": 0.282056689,
+      "tonicExcitation": 0.0050896965,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 414,
+      "referenceLengthMeters": 0.295626521,
+      "tonicExcitation": 0.0560688823,
+      "velocityGainSeconds": 0.0
+    },
+    {
+      "gaitCosine": 0.0,
+      "gaitSine": 0.0,
+      "lengthGain": 0.0,
+      "maximumExcitation": 1.0,
+      "muscleIdentifier": 415,
+      "referenceLengthMeters": 0.270166248,
+      "tonicExcitation": 0.294583231,
+      "velocityGainSeconds": 0.0
+    }
+  ],
+  "epochMicroseconds": 1000,
+  "jointPathFeedback": {
+    "lengthGain": 10.0,
+    "maximumCorrection": 0.2,
+    "velocityGainSeconds": 1.0
+  },
+  "modelSourceFingerprint": 17189768548153141200,
+  "periodMicroseconds": 0,
+  "sensoryProfileFingerprint": 5912876110719801687,
+  "version": 4
+}

@@ -5,6 +5,8 @@ import NumiBrainCore
 private struct MetalMuscleBalanceHistorySourceRecord {
   var delayMicroseconds: UInt32 = 0
   var filterTimeConstantSeconds: Float = 0
+  var eventThreshold: Float = 0
+  var eventConsecutiveSamples: UInt32 = 0
   var reserved0: UInt32 = 0
   var reserved1: UInt32 = 0
 }
@@ -143,7 +145,7 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
     guard program.requiresTransactionalHistory,
       initialGeneration == 0,
       parameterVersionFingerprint > 0,
-      MemoryLayout<MetalMuscleBalanceHistorySourceRecord>.stride == 16,
+      MemoryLayout<MetalMuscleBalanceHistorySourceRecord>.stride == 24,
       MemoryLayout<MetalMuscleBalanceHistoryUniforms>.stride == 32,
       let historyFunction = library.makeFunction(
         name: "nb_muscle_balance_history"
@@ -237,6 +239,8 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
         MetalMuscleBalanceHistorySourceRecord(
           delayMicroseconds: $0.conductionDelayMicroseconds,
           filterTimeConstantSeconds: $0.filterTimeConstantSeconds,
+          eventThreshold: $0.eventThreshold ?? 0,
+          eventConsecutiveSamples: $0.eventConsecutiveSamples ?? 0,
           reserved0: 0,
           reserved1: 0
         )
@@ -326,7 +330,7 @@ final class MetalMuscleBalanceHistoryRuntime: @unchecked Sendable {
       historyCapacity: UInt32(historyCapacity),
       writeIndex: writeIndex,
       correctionEnabled: correctionEnabled ? 1 : 0,
-      reserved0: 0,
+      reserved0: updatePeriodMicroseconds,
       reserved1: 0
     )
     withUnsafeBytes(of: &historyUniforms) { bytes in

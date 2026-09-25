@@ -139,10 +139,10 @@ extension MetalNumiBrainRuntime {
     guard configuration.muscleLocomotor == nil || (configuration.connectome == nil && foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
       throw TissueError.transaction("research locomotor control cannot inherit policy qualification or compete with another controller")
     }
-    guard (configuration.muscleLocomotor?.version == 4)
+    guard (configuration.muscleLocomotor?.jointPathFeedback != nil)
       == (configuration.jointPathCalibration != nil) else {
       throw TissueError.transaction(
-        "joint-path calibration must belong to an explicit version 4 locomotor program")
+        "joint-path calibration must belong to an explicit joint-path locomotor program")
     }
     guard configuration.connectome == nil || (foundationPolicyArchitecture == nil && numanXUncertaintyGate == nil) else {
       throw ConnectomeError.invalid("a modified connectome controller cannot inherit an existing policy qualification")

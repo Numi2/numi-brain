@@ -1,0 +1,59 @@
+{
+  "brain_library_sha256": "aaa10ee1c794d74cc15129fedae6497aea40d73170432c9ec87e6c75636ec02a",
+  "candidate_program_sha256": "82e44f4ddf49e5a98f7111dd810e24c88a8a230eb315efa839d329563ffc7b23",
+  "contact_sweeps": 64,
+  "controller": "v4 joint-path standing baseline; three accepted vestibular velocity samples arm a positive-direction spindle response; accepted-root direction latch prevents opposite rebound activation",
+  "discovery": {
+    "force_x_n": 50,
+    "name": "force50",
+    "push_duration_steps": 20,
+    "push_start_step": 100,
+    "seed": 1314213193,
+    "steps": 500
+  },
+  "heldout": [
+    {
+      "force_x_n": 60,
+      "name": "force60",
+      "push_duration_steps": 20,
+      "push_start_step": 100,
+      "seed": 1314213194,
+      "steps": 500
+    },
+    {
+      "force_x_n": 50,
+      "name": "shifted200",
+      "push_duration_steps": 20,
+      "push_start_step": 200,
+      "seed": 1314213195,
+      "steps": 600
+    }
+  ],
+  "native_binary_sha256": "b976b85539f7329c55ef03afdcfd6efd84c8d333b3310e2f3b127c15b4cbd8e9",
+  "no_push": {
+    "both_arms": true,
+    "seed": 1314213193,
+    "steps": 10000
+  },
+  "opposite_safety": {
+    "expected": "exact off/on accepted physical and motor trace equality; opposite recovery remains unqualified",
+    "force_x_n": -50,
+    "name": "opposite50",
+    "push_duration_steps": 20,
+    "push_start_step": 100,
+    "seed": 1314213196,
+    "steps": 500
+  },
+  "pass_conditions": [
+    "all requested native steps and sensor packets accepted; exit 0; no root assistance",
+    "matched exact native binary and Brain library, source, seed, push and timestep",
+    "at least six contacts; speed at most 1 m/s; penetration at most 2 mm each step",
+    "positive heldout pairs improve frozen J by at least 10 percent and do not worsen terminal x speed or peak penetration",
+    "receptor to muscle to physical timing is causal",
+    "opposite safety trace is exactly equal to off",
+    "ten-second no-push arms are identical and remain in the standing envelope"
+  ],
+  "prior_design_evidence": "P1 positive heldouts passed; P1 and subsequent opposite-direction variants failed; P6 disables unqualified opposite motor correction",
+  "schema": "numi.brain.autonomous-push-recovery-protocol.v2",
+  "timestep_microseconds": 1000
+}
