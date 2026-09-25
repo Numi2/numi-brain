@@ -240,6 +240,7 @@ private struct AcceptedConsequenceImmutableBuffers {
   let actuatorDescriptors: any MTLBuffer
   let bodyReceptorBindings: any MTLBuffer
   let jointReceptorBindings: any MTLBuffer
+  let jointGraphLevels: any MTLBuffer
   let muscleReceptorBindings: any MTLBuffer
   let neutralProtectiveCommand: any MTLBuffer
 }
@@ -647,6 +648,39 @@ private func makeAcceptedConsequenceImmutableBuffers(
       * MemoryLayout<AcceptedJointReceptorBindingRecord>.stride,
     label: "NumiBrain immutable anatomical joint receptor bindings"
   )
+  // The validated directed tree has a unique child per joint. A breadth
+  // level is immutable for this species; siblings can reconcile in parallel
+  // after all parents in the previous level are visible.
+  var bodyLevels = [UInt32](repeating: 0, count: Int(jointTopologyCatalog.bodyCount))
+  guard !bodyLevels.isEmpty else {
+    throw TissueError.metal("joint graph has no root body")
+  }
+  var reachedBodies = [Bool](repeating: false, count: bodyLevels.count)
+  reachedBodies[0] = true
+  var jointGraphLevels = [UInt32](
+    repeating: 0, count: jointTopologyCatalog.joints.count + 1)
+  for (index, joint) in jointTopologyCatalog.joints.enumerated() {
+    let parent = Int(joint.parentBodyIdentifier)
+    let child = Int(joint.childBodyIdentifier)
+    guard reachedBodies[parent], !reachedBodies[child],
+      bodyLevels[parent] < UInt32.max
+    else {
+      throw TissueError.metal("joint graph level order is invalid")
+    }
+    let level = bodyLevels[parent] + 1
+    bodyLevels[child] = level
+    reachedBodies[child] = true
+    jointGraphLevels[index + 1] = level
+    jointGraphLevels[0] = max(jointGraphLevels[0], level)
+  }
+  guard reachedBodies.allSatisfy({ $0 }) else {
+    throw TissueError.metal("joint graph levels do not cover every body")
+  }
+  let jointGraphLevelBuffer = try makeAcceptedConsequenceImmutableBuffer(
+    device: device,
+    length: jointGraphLevels.count * MemoryLayout<UInt32>.stride,
+    label: "NumiBrain immutable anatomical joint graph levels"
+  )
   let muscleReceptorBindingBuffer = try makeAcceptedConsequenceImmutableBuffer(
     device: device,
     length: MemoryLayout<AcceptedMuscleReceptorBindingTableHeader>.stride
@@ -746,7 +780,14 @@ private func makeAcceptedConsequenceImmutableBuffers(
         + jointTables.ranges.count
         * MemoryLayout<AcceptedBodyReceptorBindingRange>.stride
     ) else {
-    throw TissueError.metal("accepted joint receptor upload exceeds its buffer")
+      throw TissueError.metal("accepted joint receptor upload exceeds its buffer")
+  }
+  guard copyAcceptedConsequenceArray(
+      jointGraphLevels,
+      to: jointGraphLevelBuffer,
+      byteOffset: 0
+    ) else {
+    throw TissueError.metal("accepted joint graph levels exceed their buffer")
   }
   var muscleHeader = AcceptedMuscleReceptorBindingTableHeader(
     bindingCount: UInt32(muscleTables.bindings.count),
@@ -794,6 +835,7 @@ private func makeAcceptedConsequenceImmutableBuffers(
     actuatorDescriptors: actuatorDescriptorBuffer,
     bodyReceptorBindings: bodyReceptorBindingBuffer,
     jointReceptorBindings: jointReceptorBindingBuffer,
+    jointGraphLevels: jointGraphLevelBuffer,
     muscleReceptorBindings: muscleReceptorBindingBuffer,
     neutralProtectiveCommand: neutralProtectiveCommandBuffer
   )
@@ -862,7 +904,7 @@ private func makeAcceptedConsequenceProgramResources(
   }
   let descriptor = MTL4ArgumentTableDescriptor()
   descriptor.label = "NumiBrain accepted-consequence arguments"
-  descriptor.maxBufferBindCount = 14
+  descriptor.maxBufferBindCount = 15
   descriptor.initializeBindings = true
   guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
     let uniformBuffer = device.makeBuffer(
@@ -933,6 +975,8 @@ private func makeAcceptedConsequenceProgramResources(
     immutableBuffers.jointReceptorBindings.gpuAddress,
     index: 10
   )
+  argumentTable.setAddress(immutableBuffers.jointGraphLevels.gpuAddress,
+    index: 14)
   argumentTable.setAddress(
     immutableBuffers.muscleReceptorBindings.gpuAddress,
     index: 11
@@ -962,6 +1006,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let actuatorDescriptorBuffer: any MTLBuffer
   private let bodyReceptorBindingBuffer: any MTLBuffer
   private let jointReceptorBindingBuffer: any MTLBuffer
+  private let jointGraphLevelBuffer: any MTLBuffer
   private let muscleReceptorBindingBuffer: any MTLBuffer
   private let neutralProtectiveCommandBuffer: any MTLBuffer
   private let unconditionalAcceptanceGateBuffer: any MTLBuffer
@@ -1069,6 +1114,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     let actuatorDescriptorBuffer = immutableBuffers.actuatorDescriptors
     let bodyReceptorBindingBuffer = immutableBuffers.bodyReceptorBindings
     let jointReceptorBindingBuffer = immutableBuffers.jointReceptorBindings
+    let jointGraphLevelBuffer = immutableBuffers.jointGraphLevels
     let muscleReceptorBindingBuffer = immutableBuffers.muscleReceptorBindings
     let neutralProtectiveCommandBuffer = immutableBuffers.neutralProtectiveCommand
     let programResources = try makeAcceptedConsequenceProgramResources(
@@ -1091,6 +1137,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     self.actuatorDescriptorBuffer = actuatorDescriptorBuffer
     self.bodyReceptorBindingBuffer = bodyReceptorBindingBuffer
     self.jointReceptorBindingBuffer = jointReceptorBindingBuffer
+    self.jointGraphLevelBuffer = jointGraphLevelBuffer
     self.muscleReceptorBindingBuffer = muscleReceptorBindingBuffer
     self.neutralProtectiveCommandBuffer = neutralProtectiveCommandBuffer
     self.unconditionalAcceptanceGateBuffer =
@@ -1103,6 +1150,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     [
       uniformBuffer, actuatorDescriptorBuffer, bodyReceptorBindingBuffer,
       jointReceptorBindingBuffer, muscleReceptorBindingBuffer,
+      jointGraphLevelBuffer,
       neutralProtectiveCommandBuffer, unconditionalAcceptanceGateBuffer,
     ]
   }

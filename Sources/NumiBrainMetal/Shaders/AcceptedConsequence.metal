@@ -2545,6 +2545,7 @@ kernel void reconcile_accepted_articulated_body_graph(
     [[buffer(10)]],
   device const uint *acceptance_gate [[buffer(12)]],
   device const NBAcceptedPhysicsGateResult *acceptance_result [[buffer(13)]],
+  device const uint *joint_graph_levels [[buffer(14)]],
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
@@ -2585,8 +2586,13 @@ kernel void reconcile_accepted_articulated_body_graph(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  if (gid != 0u) return;
-  for (uint joint_index = 0u; joint_index < joint_count; ++joint_index) {
+  // One body-rooted tree level is independent once the preceding parents
+  // have published. Each child has one owning joint, so this preserves the
+  // exact per-child FP32 arithmetic while exposing sibling branches to SIMD.
+  for (uint level = 1u; level <= joint_graph_levels[0]; ++level) {
+  for (uint joint_index = gid; joint_index < joint_count;
+      joint_index += 32u) {
+    if (joint_graph_levels[1u + joint_index] != level) continue;
     const NBJointTopologyRecord topology = topologies[joint_index];
     const uint parent_index = topology.identifiers.y;
     const uint child_index = topology.identifiers.z;
@@ -2750,6 +2756,8 @@ kernel void reconcile_accepted_articulated_body_graph(
     );
     child_identity[3] = (child_valid ? child_identity[3] : 0ul)
       | ulong(NB_ACCEPTED_STATE_VALID) | NB_ACCEPTED_BODY_ARTICULATED;
+  }
+  threadgroup_barrier(mem_flags::mem_device);
   }
 }
 
