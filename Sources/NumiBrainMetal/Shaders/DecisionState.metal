@@ -1231,29 +1231,33 @@ inline NBCounterfactualWorldOutcome nb_counterfactual_world_outcome(
   NBCounterfactualWorldOutcome outcome = {};
   float head_values[NB_WORLD_HEAD_COUNT];
   const uint planning_level = step == 0u ? 3u : 4u;
-  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
-    float prediction = 0.0f;
-    for (uint feature = 0u; feature < 16u; ++feature) {
-      const uint world_component = (step * 16u + feature)
-        % NB_WORLD_EVENT_OPTION_DIMENSION;
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head)
+    head_values[head] = 0.0f;
+  // Each head retains its ascending feature accumulation. Sharing the
+  // candidate context across the five heads avoids repeated source-option
+  // transforms without storing a dynamically indexed feature array.
+  for (uint feature = 0u; feature < 16u; ++feature) {
+    const uint world_component = (step * 16u + feature)
+      % NB_WORLD_EVENT_OPTION_DIMENSION;
+    const float option_context = nb_counterfactual_option_context(
+      candidate, rollout_state, world_component);
+    for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
       const float baseline = structured_world_available
         ? world[NB_WORLD_EVENT_OPTION_BASE
             + (3u + head) * NB_WORLD_EVENT_OPTION_DIMENSION + world_component]
         : world[(world_component * NB_WORLD_HEAD_COUNT + head)
             % uniforms.world_model_scalar_count];
       const float base_logit = atanh(clamp(baseline, -0.999f, 0.999f));
-      const float option_context = nb_counterfactual_option_context(
-        candidate, rollout_state, world_component
-      );
-      prediction += tanh(
+      head_values[head] += tanh(
         base_logit
           + world_parameters[
             160u + planning_level * NB_WORLD_HEAD_COUNT + head
           ] * option_context
       ) / 16.0f;
     }
-    head_values[head] = prediction;
-    outcome.mean_prediction += prediction / float(NB_WORLD_HEAD_COUNT);
+  }
+  for (uint head = 0u; head < NB_WORLD_HEAD_COUNT; ++head) {
+    outcome.mean_prediction += head_values[head] / float(NB_WORLD_HEAD_COUNT);
   }
   float epistemic_variance = 0.0f;
   float largest_head_damage = 0.0f;
