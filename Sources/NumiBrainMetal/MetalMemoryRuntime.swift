@@ -401,6 +401,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let consolidationUniformBuffer: any MTLBuffer
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
   private let committedTransitionUniformBuffer: any MTLBuffer
+  private let committedTransitionThreadCount: Int
   private let counterfactualLearningUniformBuffer: any MTLBuffer
   private let regionalLayoutBuffer: any MTLBuffer
   private let unconditionalAcceptanceGateBuffer: any MTLBuffer
@@ -506,6 +507,15 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       pipelines = try functions.map { try device.makeComputePipelineState(function: $0) }
     } catch {
       throw TissueError.metal("memory-state pipeline creation failed: \(error)")
+    }
+    // One threadgroup owns the transition journal. Up to eight SIMD groups
+    // prepare independent modality sketches concurrently; devices with a
+    // smaller supported group retain the same ordered per-modality fold.
+    let committedTransitionThreadCount = min(
+      256, (pipelines[10].maxTotalThreadsPerThreadgroup / 32) * 32
+    )
+    guard committedTransitionThreadCount >= 32 else {
+      throw TissueError.metal("committed transition requires a SIMD32 group")
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
@@ -622,6 +632,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.consolidationPipeline = pipelines[8]
     self.prospectiveLifecyclePipeline = pipelines[9]
     self.committedTransitionPipeline = pipelines[10]
+    self.committedTransitionThreadCount = committedTransitionThreadCount
     self.counterfactualLearningPipeline = pipelines[11]
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
@@ -984,7 +995,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       }
       argumentTable.setAddress(address, index: 10 + index)
     }
-    try encoder.dispatch(pipeline: committedTransitionPipeline, argumentTable: argumentTable, count: 32)
+    let threadgroup = MTLSize(width: committedTransitionThreadCount, height: 1, depth: 1)
+    try encoder.dispatch(
+      pipeline: committedTransitionPipeline,
+      argumentTable: argumentTable,
+      threadsPerGrid: threadgroup,
+      threadsPerThreadgroup: threadgroup
+    )
   }
 
   /// Journals a bounded risk-balanced subset of the accepted decision's

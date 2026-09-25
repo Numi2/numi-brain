@@ -4869,7 +4869,8 @@ kernel void journal_committed_learning_transition(
   device const float *raw_sensor5 [[buffer(15)]],
   device const float *raw_sensor6 [[buffer(16)]],
   device const float *raw_sensor7 [[buffer(17)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[thread_position_in_grid]],
+  uint thread_count [[threads_per_threadgroup]])
 {
   if (acceptance_gate[0] != 1u) return;
   if (uniforms.recurrent_scalar_count == 0u
@@ -4897,9 +4898,7 @@ kernel void journal_committed_learning_transition(
   device const uint *observation_validity = reinterpret_cast<device const uint *>(
     output_hot_state + uniforms.observation_validity_offset
   );
-  // Keep each modality's original floating-point accumulation order. SIMD
-  // lanes prepare its expensive signed samples in parallel; lane zero then
-  // sums those samples in the original ascending source order.
+  // The plasticity/body preparation below reuses this fixed scratch arena.
   threadgroup float sketch_terms[1024][3];
   threadgroup uint sketch_valid[1024];
   threadgroup float modality_sums[8][3];
@@ -4913,63 +4912,82 @@ kernel void journal_committed_learning_transition(
   threadgroup float *plastic_terms = &sketch_terms[0][0];
   threadgroup float plastic_trace[12];
   const uint modality_count = min(uniforms.modality_count, 8u);
-  for (uint modality_slot = 0u; modality_slot < modality_count;
-      ++modality_slot) {
+  const uint simd_lane = gid & 31u;
+  const uint modality_groups = max(thread_count / 32u, 1u);
+  for (uint modality_base = 0u; modality_base < modality_count;
+      modality_base += modality_groups) {
+    const uint modality_slot = modality_base + gid / 32u;
+    if (modality_slot < modality_count) {
     const uint scalar_offset = uniforms.modality_offsets[modality_slot];
     const uint scalar_count = uniforms.modality_scalar_counts[modality_slot];
-    if (uniforms.modality_codes[modality_slot] == 0u
-        || scalar_count == 0u
-        || scalar_offset >= uniforms.observation_count
-        || scalar_count > uniforms.observation_count - scalar_offset) {
-      if (gid == 0u) modality_valid_count[modality_slot] = 0u;
-      continue;
-    }
+    const bool valid_range = uniforms.modality_codes[modality_slot] != 0u
+        && scalar_count != 0u
+        && scalar_offset < uniforms.observation_count
+        && scalar_count <= uniforms.observation_count - scalar_offset;
+    if (valid_range) {
     const uint sample_count = min(scalar_count, 1024u);
-    for (uint sample = gid; sample < sample_count; sample += 32u) {
-      const uint local_index = uint(
-        (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
-      );
-      const uint observation_index = scalar_offset + local_index;
-      if (observation_validity[observation_index] == 0u) {
-        sketch_valid[sample] = 0u;
-        continue;
+    float projection_sums[3] = {};
+    uint valid_sample_count = 0u;
+    // One SIMD wave prepares 32 samples. The same lane-zero accumulator
+    // consumes them in ascending sample order via broadcasts, preserving
+    // each signed sketch's exact floating-point addition sequence.
+    for (uint sample_base = 0u; sample_base < sample_count;
+        sample_base += 32u) {
+      const uint sample = sample_base + simd_lane;
+      uint valid = 0u;
+      float signed_terms[3] = {};
+      if (sample < sample_count) {
+        const uint local_index = uint(
+          (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
+        );
+        const uint observation_index = scalar_offset + local_index;
+        if (observation_validity[observation_index] != 0u) {
+          const float value = uniforms.reserved_modality[0] == 1u
+            ? committed_raw_sensor_value(
+              modality_slot, local_index,
+              raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
+              raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
+            )
+            : observations[observation_index];
+          if (isfinite(value)) {
+            for (uint projection = 0u; projection < 3u; ++projection) {
+              const ulong projection_key =
+                (ulong(uniforms.modality_codes[modality_slot]) << 48u)
+                ^ (ulong(local_index) << 8u)
+                ^ ulong(projection)
+                ^ 0x4e58534b45544348ul; // "NXSKETCH"
+              const float sign =
+                (consolidation_hash(projection_key) & 1ul) != 0ul
+                  ? 1.0f : -1.0f;
+              signed_terms[projection] = sign * value;
+            }
+            valid = 1u;
+          }
+        }
       }
-      const float value = uniforms.reserved_modality[0] == 1u
-        ? committed_raw_sensor_value(
-          modality_slot, local_index,
-          raw_sensor0, raw_sensor1, raw_sensor2, raw_sensor3,
-          raw_sensor4, raw_sensor5, raw_sensor6, raw_sensor7
-        )
-        : observations[observation_index];
-      if (!isfinite(value)) {
-        sketch_valid[sample] = 0u;
-        continue;
+      const uint wave_count = min(sample_count - sample_base, 32u);
+      for (uint source_lane = 0u; source_lane < wave_count;
+          ++source_lane) {
+        const uint source_valid = simd_broadcast(valid, source_lane);
+        const float term0 = simd_broadcast(signed_terms[0], source_lane);
+        const float term1 = simd_broadcast(signed_terms[1], source_lane);
+        const float term2 = simd_broadcast(signed_terms[2], source_lane);
+        if (simd_lane == 0u && source_valid != 0u) {
+          projection_sums[0] += term0;
+          projection_sums[1] += term1;
+          projection_sums[2] += term2;
+          valid_sample_count += 1u;
+        }
       }
-      for (uint projection = 0u; projection < 3u; ++projection) {
-        const ulong projection_key =
-          (ulong(uniforms.modality_codes[modality_slot]) << 48u)
-          ^ (ulong(local_index) << 8u)
-          ^ ulong(projection)
-          ^ 0x4e58534b45544348ul; // "NXSKETCH"
-        const float sign = (consolidation_hash(projection_key) & 1ul) != 0ul
-          ? 1.0f : -1.0f;
-        sketch_terms[sample][projection] = sign * value;
-      }
-      sketch_valid[sample] = 1u;
     }
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (gid == 0u) {
-      float projection_sums[3] = {};
-      uint valid_sample_count = 0u;
-      for (uint sample = 0u; sample < sample_count; ++sample) {
-        if (sketch_valid[sample] == 0u) continue;
-        for (uint projection = 0u; projection < 3u; ++projection)
-          projection_sums[projection] += sketch_terms[sample][projection];
-        valid_sample_count += 1u;
-      }
+    if (simd_lane == 0u) {
       for (uint projection = 0u; projection < 3u; ++projection)
         modality_sums[modality_slot][projection] = projection_sums[projection];
       modality_valid_count[modality_slot] = valid_sample_count;
+    }
+    } else if (simd_lane == 0u) {
+      modality_valid_count[modality_slot] = 0u;
+    }
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
@@ -4985,7 +5003,7 @@ kernel void journal_committed_learning_transition(
   for (uint base = 0u; base < uniforms.fast_plasticity_count;
       base += 256u) {
     const uint count = min(uniforms.fast_plasticity_count - base, 256u);
-    for (uint local = gid; local < count; local += 32u) {
+    for (uint local = gid; local < count; local += thread_count) {
       const NBFastPlasticityRecord prior_site = prior_plasticity[base + local];
       const NBFastPlasticityRecord accepted_site = accepted_plasticity[base + local];
       const float coefficient_delta =
@@ -5026,7 +5044,7 @@ kernel void journal_committed_learning_transition(
     device const uchar *accepted_body_bytes =
       output_hot_state + uniforms.body_belief_offset;
     for (uint body_index = gid; body_index < uniforms.body_belief_count;
-        body_index += 32u) {
+        body_index += thread_count) {
       device const float *prior_body = reinterpret_cast<device const float *>(
         prior_body_bytes + ulong(body_index) * 256ul);
       device const float *accepted_body = reinterpret_cast<device const float *>(
@@ -5127,7 +5145,7 @@ kernel void journal_committed_learning_transition(
     device const uchar *accepted_joint_bytes =
       output_hot_state + uniforms.joint_belief_offset;
     for (uint joint_index = gid; joint_index < uniforms.joint_belief_count;
-        joint_index += 32u) {
+        joint_index += thread_count) {
       device const float *prior_joint = reinterpret_cast<device const float *>(
         prior_joint_bytes + ulong(joint_index) * 256ul);
       device const float *accepted_joint = reinterpret_cast<device const float *>(
@@ -5242,7 +5260,7 @@ kernel void journal_committed_learning_transition(
       output_hot_state + uniforms.muscle_belief_offset;
     for (uint muscle_index = gid;
         muscle_index < uniforms.muscle_belief_count;
-        muscle_index += 32u) {
+        muscle_index += thread_count) {
       device const float *prior_muscle = reinterpret_cast<device const float *>(
         prior_muscle_bytes + ulong(muscle_index) * 192ul);
       device const float *accepted_muscle = reinterpret_cast<device const float *>(
