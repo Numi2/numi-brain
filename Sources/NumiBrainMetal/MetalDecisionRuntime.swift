@@ -875,10 +875,18 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     try advance("brain_policy_planning")
-    try dispatch(
-      encoder,
+    let planningCandidateCount = Int(species.capacities.activeOptionCandidateCapacity)
+    guard planningPipeline.threadExecutionWidth == 32,
+      planningPipeline.maxTotalThreadsPerThreadgroup >= 32,
+      planningCandidateCount <= Int.max / 32
+    else {
+      throw TissueError.metal("planning requires one SIMD32 group per candidate")
+    }
+    try encoder.dispatch(
       pipeline: planningPipeline,
-      count: Int(species.capacities.activeOptionCandidateCapacity)
+      argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(width: planningCandidateCount * 32, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1)
     )
     barrier(encoder)
     try advance("brain_policy_selection")

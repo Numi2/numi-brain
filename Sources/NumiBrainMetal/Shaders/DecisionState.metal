@@ -2547,7 +2547,8 @@ kernel void simulate_candidate_option_outcomes(
   device const float *world_parameters [[buffer(11)]],
   device const float *policy_observation_sketch [[buffer(14)]],
   device const uint *policy_observation_metadata [[buffer(24)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[threadgroup_position_in_grid]],
+  uint simd_lane [[thread_index_in_simdgroup]])
 {
   device const NBAffectiveStateRecord *affect =
     reinterpret_cast<device const NBAffectiveStateRecord *>(
@@ -2587,7 +2588,7 @@ kernel void simulate_candidate_option_outcomes(
       || (candidates[gid].flags & NB_CONTROL_FLAG_VALID) == 0u) {
     for (uint step = 0u; step < uniforms.maximum_planning_horizon; ++step) {
       NBPlanStepRecord inactive = {};
-      plans[plan_base + step] = inactive;
+      if (simd_lane == 0u) plans[plan_base + step] = inactive;
     }
     return;
   }
@@ -2631,184 +2632,205 @@ kernel void simulate_candidate_option_outcomes(
   for (uint step = 0u; step < uniforms.maximum_planning_horizon; ++step) {
     if (step >= active_horizon) {
       NBPlanStepRecord inactive = {};
-      plans[plan_base + step] = inactive;
+      if (simd_lane == 0u) plans[plan_base + step] = inactive;
       continue;
     }
     if (step > 0u) {
       float best_followup_score = -INFINITY;
       uint best_followup = selected_option;
-      for (uint candidate_index = 0u; candidate_index < candidate_limit;
-          ++candidate_index) {
-        const NBOptionCandidateRecord followup = candidates[candidate_index];
-        if ((followup.flags & NB_CONTROL_FLAG_VALID) == 0u) continue;
-        float compatibility = 0.0f;
-        for (uint component = 0u; component < 4u; ++component) {
-          compatibility += rollout_state[component]
-            * followup.parameters[component] * 0.05f;
+      // A SIMD lane owns each independent follow-up score. Reduce score and
+      // then source index so the original highest-score/lowest-index rule
+      // survives even when the candidate count exceeds one SIMD group.
+      for (uint candidate_base = 0u; candidate_base < candidate_limit;
+          candidate_base += 32u) {
+        const uint candidate_index = candidate_base + simd_lane;
+        float lane_score = -INFINITY;
+        uint lane_index = best_followup;
+        if (candidate_index < candidate_limit) {
+          const NBOptionCandidateRecord followup = candidates[candidate_index];
+          if ((followup.flags & NB_CONTROL_FLAG_VALID) != 0u) {
+            float compatibility = 0.0f;
+            for (uint component = 0u; component < 4u; ++component) {
+              compatibility += rollout_state[component]
+                * followup.parameters[component] * 0.05f;
+            }
+            const NBCounterfactualWorldOutcome followup_world =
+              nb_counterfactual_world_outcome(
+                world, world_parameters, uniforms, followup, rollout_state,
+                step, structured_world_available
+              );
+            const NBRetrievedOptionOutcome followup_memory =
+              nb_retrieved_option_outcome(
+                workspace, workspace_metadata, uniforms,
+                followup.option_identifier
+              );
+            const NBSemanticGoalOutcome followup_semantic =
+              nb_retrieved_semantic_goal_outcome(
+                workspace, workspace_metadata, uniforms,
+                followup.goal_identifier
+              );
+            const NBExternalGoalContext followup_external =
+              nb_external_goal_context(
+                workspace, workspace_metadata, uniforms,
+                followup.goal_identifier
+              );
+            float predicted_followup_state[16];
+            for (uint component = 0u; component < 16u; ++component) {
+              predicted_followup_state[component] = tanh(
+                policy_parameters[11] * rollout_state[component]
+                  + policy_parameters[12] * followup_world.mean_prediction
+                  + policy_parameters[13] * followup.parameters[component]
+              );
+            }
+            const float followup_goal_alignment =
+              nb_external_goal_state_alignment(
+                followup_external, predicted_followup_state
+              );
+            const float followup_risk = clamp(
+              max(
+                max(
+                  max(followup.damage_cvar, followup_world.damage_cvar),
+                  followup_memory.support * followup_memory.damage
+                ),
+                followup_semantic.support * followup_semantic.damage
+              )
+                + 0.05f * sqrt(followup_world.aleatoric_variance)
+                + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
+              0.0f, 1.0f
+            );
+            const float followup_affective_value = nb_affective_option_value(
+              affect_pain, affect_pleasure, affect_relief, followup
+            );
+            const float followup_score = value_parameters[0] * followup.task_value
+              + value_parameters[1] * followup.homeostatic_value
+              + value_parameters[2] * followup.social_value
+              + value_parameters[3] * uniforms.curiosity_weight
+                * followup.information_gain
+              + value_parameters[0] * followup_memory.support
+                * followup_memory.reinforcement
+              + value_parameters[0] * followup_semantic.support
+                * followup_semantic.reinforcement
+              + value_parameters[0] * followup_goal_alignment
+              + followup_affective_value
+              + compatibility - value_parameters[4] * uniforms.risk_weight
+                * followup_risk
+              - value_parameters[5] * followup.effort_cost
+              - value_parameters[6] * followup.switching_cost;
+            if (followup_risk <= followup_external.damage_risk_budget
+                && !isnan(followup_score)) {
+              lane_score = followup_score;
+              lane_index = candidate_index;
+            }
+          }
         }
-        const NBCounterfactualWorldOutcome followup_world =
-          nb_counterfactual_world_outcome(
-            world, world_parameters, uniforms, followup, rollout_state,
-            step, structured_world_available
-          );
-        const NBRetrievedOptionOutcome followup_memory =
-          nb_retrieved_option_outcome(
-            workspace, workspace_metadata, uniforms,
-            followup.option_identifier
-          );
-        const NBSemanticGoalOutcome followup_semantic =
-          nb_retrieved_semantic_goal_outcome(
-            workspace, workspace_metadata, uniforms,
-            followup.goal_identifier
-          );
-        const NBExternalGoalContext followup_external =
-          nb_external_goal_context(
-            workspace, workspace_metadata, uniforms,
-            followup.goal_identifier
-          );
-        float predicted_followup_state[16];
-        for (uint component = 0u; component < 16u; ++component) {
-          predicted_followup_state[component] = tanh(
-            policy_parameters[11] * rollout_state[component]
-              + policy_parameters[12] * followup_world.mean_prediction
-              + policy_parameters[13] * followup.parameters[component]
-          );
-        }
-        const float followup_goal_alignment =
-          nb_external_goal_state_alignment(
-            followup_external, predicted_followup_state
-          );
-        const float followup_risk = clamp(
-          max(
-            max(
-              max(followup.damage_cvar, followup_world.damage_cvar),
-              followup_memory.support * followup_memory.damage
-            ),
-            followup_semantic.support * followup_semantic.damage
-          )
-            + 0.05f * sqrt(followup_world.aleatoric_variance)
-            + embodied_self_risk * (0.25f + 0.75f * followup.effort_cost),
-          0.0f, 1.0f
+        const float block_score = simd_max(lane_score);
+        const uint block_index = simd_min(
+          lane_score == block_score ? lane_index : 0xffffffffu
         );
-        const float followup_affective_value = nb_affective_option_value(
-          affect_pain, affect_pleasure, affect_relief, followup
-        );
-        const float followup_score = value_parameters[0] * followup.task_value
-          + value_parameters[1] * followup.homeostatic_value
-          + value_parameters[2] * followup.social_value
-          + value_parameters[3] * uniforms.curiosity_weight
-            * followup.information_gain
-          + value_parameters[0] * followup_memory.support
-            * followup_memory.reinforcement
-          + value_parameters[0] * followup_semantic.support
-            * followup_semantic.reinforcement
-          + value_parameters[0] * followup_goal_alignment
-          + followup_affective_value
-          + compatibility - value_parameters[4] * uniforms.risk_weight
-            * followup_risk
-          - value_parameters[5] * followup.effort_cost
-          - value_parameters[6] * followup.switching_cost;
-        if (followup_risk <= followup_external.damage_risk_budget
-            && (followup_score > best_followup_score
-              || (followup_score == best_followup_score
-                && candidate_index < best_followup))) {
-          best_followup_score = followup_score;
-          best_followup = candidate_index;
+        if (block_score > best_followup_score
+            || (block_score == best_followup_score
+              && block_index < best_followup)) {
+          best_followup_score = block_score;
+          best_followup = block_index;
         }
       }
       selected_option = best_followup;
     }
-    const NBOptionCandidateRecord candidate = candidates[selected_option];
-    const NBRetrievedOptionOutcome episodic = nb_retrieved_option_outcome(
-      workspace, workspace_metadata, uniforms, candidate.option_identifier
-    );
-    const NBSemanticGoalOutcome semantic =
-      nb_retrieved_semantic_goal_outcome(
+    if (simd_lane == 0u) {
+      const NBOptionCandidateRecord candidate = candidates[selected_option];
+      const NBRetrievedOptionOutcome episodic = nb_retrieved_option_outcome(
+        workspace, workspace_metadata, uniforms, candidate.option_identifier
+      );
+      const NBSemanticGoalOutcome semantic =
+        nb_retrieved_semantic_goal_outcome(
+          workspace, workspace_metadata, uniforms, candidate.goal_identifier
+        );
+      const NBExternalGoalContext external = nb_external_goal_context(
         workspace, workspace_metadata, uniforms, candidate.goal_identifier
       );
-    const NBExternalGoalContext external = nb_external_goal_context(
-      workspace, workspace_metadata, uniforms, candidate.goal_identifier
-    );
-    const NBCounterfactualWorldOutcome world_outcome =
-      nb_counterfactual_world_outcome(
-        world, world_parameters, uniforms, candidate, rollout_state,
-        step, structured_world_available
-      );
-    const float ensemble_mean = world_outcome.mean_prediction;
-    float predicted_state[16];
-    for (uint component = 0u; component < 16u; ++component) {
-      predicted_state[component] = tanh(
-        policy_parameters[11] * rollout_state[component]
-          + policy_parameters[12] * ensemble_mean
-          + policy_parameters[13] * candidate.parameters[component]
-      );
-    }
-    const float external_goal_alignment =
-      nb_external_goal_state_alignment(external, predicted_state);
-    const float epistemic = max(
-      observation_support_uncertainty,
-      max(
-        world_outcome.epistemic_uncertainty,
-        episodic.support * episodic.uncertainty
-      )
-    );
-    const float step_damage = clamp(
-      max(
+      const NBCounterfactualWorldOutcome world_outcome =
+        nb_counterfactual_world_outcome(
+          world, world_parameters, uniforms, candidate, rollout_state,
+          step, structured_world_available
+        );
+      const float ensemble_mean = world_outcome.mean_prediction;
+      float predicted_state[16];
+      for (uint component = 0u; component < 16u; ++component) {
+        predicted_state[component] = tanh(
+          policy_parameters[11] * rollout_state[component]
+            + policy_parameters[12] * ensemble_mean
+            + policy_parameters[13] * candidate.parameters[component]
+        );
+      }
+      const float external_goal_alignment =
+        nb_external_goal_state_alignment(external, predicted_state);
+      const float epistemic = max(
+        observation_support_uncertainty,
         max(
-          max(candidate.damage_cvar, world_outcome.damage_cvar),
-          episodic.support * episodic.damage
-        ),
-        semantic.support * semantic.damage
-      )
-        + 0.05f * sqrt(world_outcome.aleatoric_variance)
-        + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
-      0.0f, 1.0f
-    );
-    const float affective_value = nb_affective_option_value(
-      affect_pain, affect_pleasure, affect_relief, candidate
-    );
-    accumulated_damage = 1.0f
-      - (1.0f - accumulated_damage) * (1.0f - step_damage);
-    const float step_effort = candidate.effort_cost * (1.0f + epistemic);
-    const float step_information = max(candidate.information_gain, epistemic);
-    const float discount = pow(0.97f, float(step));
-    accumulated_effort += discount * step_effort;
-    accumulated_information += discount * step_information;
-    accumulated_drive_change += discount * candidate.homeostatic_value;
-    accumulated_objective += discount * (
-      value_parameters[0] * candidate.task_value
-        + value_parameters[1] * candidate.homeostatic_value
-        + value_parameters[2] * candidate.social_value
-        + value_parameters[3] * uniforms.curiosity_weight * step_information
-        + value_parameters[0] * episodic.support * episodic.reinforcement
-        + value_parameters[0] * semantic.support * semantic.reinforcement
-        + value_parameters[0] * external_goal_alignment
-        + affective_value
-        - value_parameters[4] * uniforms.risk_weight * step_damage
-        - value_parameters[5] * step_effort
-        - value_parameters[6]
-          * (step == 0u ? candidate.switching_cost : 0.0f)
-    );
-    NBPlanStepRecord plan = {};
-    plan.option_identifier = candidate.option_identifier;
-    plan.goal_identifier = candidate.goal_identifier;
-    plan.objective_value = accumulated_objective;
-    plan.damage_cvar = accumulated_damage;
-    plan.epistemic_uncertainty = epistemic;
-    plan.predicted_effort = accumulated_effort;
-    plan.predicted_information_gain = accumulated_information;
-    plan.duration_seconds = 0.1f + 0.05f * float(selected_option % 8u);
-    plan.predicted_drive_change = accumulated_drive_change;
-    plan.admissibility = accumulated_damage <= external.damage_risk_budget
-      ? 1.0f : 0.0f;
-    plan.sequence = step;
-    plan.flags = NB_CONTROL_FLAG_VALID;
-    plan.parameter_count = 16u;
-    for (uint component = 0u; component < 16u; ++component) {
-      rollout_state[component] = predicted_state[component];
-      plan.predicted_state[component] = rollout_state[component];
+          world_outcome.epistemic_uncertainty,
+          episodic.support * episodic.uncertainty
+        )
+      );
+      const float step_damage = clamp(
+        max(
+          max(
+            max(candidate.damage_cvar, world_outcome.damage_cvar),
+            episodic.support * episodic.damage
+          ),
+          semantic.support * semantic.damage
+        )
+          + 0.05f * sqrt(world_outcome.aleatoric_variance)
+          + embodied_self_risk * (0.25f + 0.75f * candidate.effort_cost),
+        0.0f, 1.0f
+      );
+      const float affective_value = nb_affective_option_value(
+        affect_pain, affect_pleasure, affect_relief, candidate
+      );
+      accumulated_damage = 1.0f
+        - (1.0f - accumulated_damage) * (1.0f - step_damage);
+      const float step_effort = candidate.effort_cost * (1.0f + epistemic);
+      const float step_information = max(candidate.information_gain, epistemic);
+      const float discount = pow(0.97f, float(step));
+      accumulated_effort += discount * step_effort;
+      accumulated_information += discount * step_information;
+      accumulated_drive_change += discount * candidate.homeostatic_value;
+      accumulated_objective += discount * (
+        value_parameters[0] * candidate.task_value
+          + value_parameters[1] * candidate.homeostatic_value
+          + value_parameters[2] * candidate.social_value
+          + value_parameters[3] * uniforms.curiosity_weight * step_information
+          + value_parameters[0] * episodic.support * episodic.reinforcement
+          + value_parameters[0] * semantic.support * semantic.reinforcement
+          + value_parameters[0] * external_goal_alignment
+          + affective_value
+          - value_parameters[4] * uniforms.risk_weight * step_damage
+          - value_parameters[5] * step_effort
+          - value_parameters[6]
+            * (step == 0u ? candidate.switching_cost : 0.0f)
+      );
+      NBPlanStepRecord plan = {};
+      plan.option_identifier = candidate.option_identifier;
+      plan.goal_identifier = candidate.goal_identifier;
+      plan.objective_value = accumulated_objective;
+      plan.damage_cvar = accumulated_damage;
+      plan.epistemic_uncertainty = epistemic;
+      plan.predicted_effort = accumulated_effort;
+      plan.predicted_information_gain = accumulated_information;
+      plan.duration_seconds = 0.1f + 0.05f * float(selected_option % 8u);
+      plan.predicted_drive_change = accumulated_drive_change;
+      plan.admissibility = accumulated_damage <= external.damage_risk_budget
+        ? 1.0f : 0.0f;
+      plan.sequence = step;
+      plan.flags = NB_CONTROL_FLAG_VALID;
+      plan.parameter_count = 16u;
+      for (uint component = 0u; component < 16u; ++component) {
+        rollout_state[component] = predicted_state[component];
+        plan.predicted_state[component] = rollout_state[component];
+      }
+      plans[plan_base + step] = plan;
     }
-    plans[plan_base + step] = plan;
+    for (uint component = 0u; component < 16u; ++component)
+      rollout_state[component] = simd_broadcast(rollout_state[component], 0u);
   }
 }
 
