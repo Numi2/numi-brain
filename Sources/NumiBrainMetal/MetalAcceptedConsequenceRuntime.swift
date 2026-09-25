@@ -676,6 +676,27 @@ private func makeAcceptedConsequenceImmutableBuffers(
   guard reachedBodies.allSatisfy({ $0 }) else {
     throw TissueError.metal("joint graph levels do not cover every body")
   }
+  // Keep the source-index level map, then append stable level ranges and joint
+  // indices. The GPU can visit each joint once per accepted graph update
+  // instead of testing every joint at every depth of this immutable tree.
+  let maximumJointLevel = Int(jointGraphLevels[0])
+  var levelOffsets = [UInt32](repeating: 0, count: maximumJointLevel + 2)
+  var jointsInLevelOrder = [UInt32]()
+  jointsInLevelOrder.reserveCapacity(jointTopologyCatalog.joints.count)
+  for level in 0...maximumJointLevel {
+    levelOffsets[level] = UInt32(jointsInLevelOrder.count)
+    for jointIndex in jointTopologyCatalog.joints.indices where
+      jointGraphLevels[jointIndex + 1] == UInt32(level)
+    {
+      jointsInLevelOrder.append(UInt32(jointIndex))
+    }
+  }
+  levelOffsets[maximumJointLevel + 1] = UInt32(jointsInLevelOrder.count)
+  guard jointsInLevelOrder.count == jointTopologyCatalog.joints.count else {
+    throw TissueError.metal("joint graph level order is incomplete")
+  }
+  jointGraphLevels.append(contentsOf: levelOffsets)
+  jointGraphLevels.append(contentsOf: jointsInLevelOrder)
   let jointGraphLevelBuffer = try makeAcceptedConsequenceImmutableBuffer(
     device: device,
     length: jointGraphLevels.count * MemoryLayout<UInt32>.stride,

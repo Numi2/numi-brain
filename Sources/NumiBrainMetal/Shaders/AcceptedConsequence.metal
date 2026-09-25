@@ -2586,13 +2586,18 @@ kernel void reconcile_accepted_articulated_body_graph(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
+  device const uint *level_offsets = joint_graph_levels + 1u
+    + joint_receptor_table->joint_count;
+  device const uint *joints_in_level_order = level_offsets
+    + joint_graph_levels[0] + 2u;
   // One body-rooted tree level is independent once the preceding parents
   // have published. Each child has one owning joint, so this preserves the
   // exact per-child FP32 arithmetic while exposing sibling branches to SIMD.
   for (uint level = 1u; level <= joint_graph_levels[0]; ++level) {
-  for (uint joint_index = gid; joint_index < joint_count;
-      joint_index += 32u) {
-    if (joint_graph_levels[1u + joint_index] != level) continue;
+  for (uint level_index = level_offsets[level] + gid;
+      level_index < level_offsets[level + 1u]; level_index += 32u) {
+    const uint joint_index = joints_in_level_order[level_index];
+    if (joint_index >= joint_count) continue;
     const NBJointTopologyRecord topology = topologies[joint_index];
     const uint parent_index = topology.identifiers.y;
     const uint child_index = topology.identifiers.z;
