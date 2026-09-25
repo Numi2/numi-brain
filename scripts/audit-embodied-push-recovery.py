@@ -19,10 +19,18 @@ FIELDS = re.compile(
     r"root_assistance_force_n=([^ ]+) root_assistance_torque_nm=([^ ]+)"
 )
 SENSOR = re.compile(
-    r"human_brain_sensor_audit=accepted step=(\d+) .*?"
-    r"receptor_timestamp_us=(\d+) delivery_timestamp_us=(\d+) .*?"
+    r"human_brain_sensor_audit=accepted step=(\d+) brain_generation=(\d+) .*?"
+    r"receptor_timestamp_us=(\d+) delivery_timestamp_us=(\d+) "
+    r"physical_fingerprint=(\d+) joint_commit_fingerprint=(\d+) .*?"
     r"root_linear_velocity_validity=(\d+) "
     r"root_linear_velocity_xyz_m_s=\[([^]]+)\]"
+)
+JOINT = re.compile(
+    r"human_brain_joint_commit=accepted step=(\d+) brain_generation=(\d+) "
+    r"joint_commit_fingerprint=(\d+) locomotor_program_fingerprint=(\d+) "
+    r"physical_motor_same_command=(\w+) "
+    r"accepted_consequence_followup_command=(\w+) "
+    r"same_native_owner_queue=(\w+)"
 )
 MATCHED_MANIFEST_PREFIXES = (
     "native_timestep_microseconds=", "brain_epoch_microseconds=", "seed=",
@@ -43,6 +51,7 @@ def read_run(directory, steps):
     rows, sensors, errors = {}, {}, []
     completed = False
     terminal = False
+    final_joint = None
     for line in log.open(errors="replace"):
         match = FIELDS.search(line)
         if match:
@@ -66,10 +75,22 @@ def read_run(directory, steps):
             if step in sensors:
                 errors.append(f"duplicate accepted sensor step {step}")
             sensors[step] = {
-                "receptor_us": int(match[2]),
-                "delivery_us": int(match[3]),
-                "validity": int(match[4]),
-                "velocity": vector(match[5]),
+                "raw": line.strip(),
+                "generation": int(match[2]),
+                "receptor_us": int(match[3]),
+                "delivery_us": int(match[4]),
+                "physical_fingerprint": int(match[5]),
+                "joint_fingerprint": int(match[6]),
+                "validity": int(match[7]),
+                "velocity": vector(match[8]),
+            }
+        match = JOINT.search(line)
+        if match and int(match[1]) == steps:
+            final_joint = {
+                "generation": int(match[2]),
+                "joint_fingerprint": int(match[3]),
+                "program_fingerprint": int(match[4]),
+                "ownership": (match[5], match[6], match[7]),
             }
         if f"human_execution_stage=native_horizon_end " in line and f"stage_step={steps}" in line:
             completed = True
@@ -91,10 +112,19 @@ def read_run(directory, steps):
     if list(sensors) != list(range(1, steps + 1)):
         errors.append(f"expected {steps} ordered accepted sensor packets; found {len(sensors)}")
     for step, sensor in sensors.items():
-        if (sensor["receptor_us"] != step * 1_000
+        if (sensor["generation"] != step
+                or sensor["physical_fingerprint"] == 0
+                or sensor["joint_fingerprint"] == 0
+                or sensor["receptor_us"] != step * 1_000
                 or sensor["delivery_us"] != (step + 1) * 1_000):
-            errors.append(f"sensor latency or accepted-root clock drift at step {step}")
+            errors.append(f"accepted-root ownership, sensor latency, or clock drift at step {step}")
             break
+    if (final_joint is None or final_joint["generation"] != steps
+            or final_joint["program_fingerprint"] == 0
+            or final_joint["ownership"] != ("true", "true", "true")
+            or steps not in sensors
+            or final_joint["joint_fingerprint"] != sensors[steps]["joint_fingerprint"]):
+        errors.append("final Brain joint ownership witness is missing or mismatched")
     for step, row in rows.items():
         if not all(math.isfinite(value) for value in
                    (*row["position"], *row["velocity"], row["speed"], row["penetration"])):
@@ -130,6 +160,11 @@ def locomotor_program_sha(directory):
                 if line.startswith("locomotor_program "))
 
 
+def measured_sensor_payload(sensor):
+    return re.sub(r"(physical_fingerprint|joint_commit_fingerprint)=\d+",
+                  r"\1=<source-bound>", sensor["raw"])
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("off", type=Path)
@@ -154,7 +189,11 @@ def main():
     result = {"schema": "numi.brain.embodied-push-pair-audit.v1",
               "off": str(args.off), "on": str(args.on), "errors": errors}
     if (args.no_push or args.expect_identical or args.replay_identical) and len(off) == args.steps and len(on) == args.steps:
-        if off_sensors != sensors:
+        sensor_match = off_sensors == sensors if args.replay_identical else all(
+            measured_sensor_payload(off_sensors[step]) == measured_sensor_payload(sensors[step])
+            for step in off_sensors if step in sensors
+        ) and list(off_sensors) == list(sensors)
+        if not sensor_match:
             errors.append("physical receptor traces diverged")
         first_difference = next((step for step in off if off[step] != on[step]), None)
         result["first_difference_step"] = first_difference
