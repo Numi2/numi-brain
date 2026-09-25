@@ -706,10 +706,11 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    // One SIMD32 evaluates the independent interoceptive feature sums.
     try dispatch(
       encoder: encoder,
       pipeline: homeostasisPipeline,
-      threadCount: max(DriveKind.allCases.count, NeuromodulatorKind.allCases.count)
+      threadCount: max(32, max(DriveKind.allCases.count, NeuromodulatorKind.allCases.count))
     )
     barrier(encoder)
     for (index, record) in worldModelLevelRecords.enumerated() {

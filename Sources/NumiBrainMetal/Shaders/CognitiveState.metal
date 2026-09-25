@@ -565,15 +565,14 @@ kernel void advance_homeostasis_and_neuromodulation(
   device uchar *hot_state [[buffer(0)]],
   constant NBCognitiveUniforms &uniforms [[buffer(1)]],
   device atomic_uint *plasticity_layout_flag [[buffer(5)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[thread_position_in_grid]],
+  uint thread_count [[threads_per_threadgroup]],
+  uint simd_width [[threads_per_simdgroup]])
 {
   // This dispatch precedes every fast-plasticity update on the same command
   // buffer. A later site marks a noncanonical region before reduction begins.
   if (gid == 0u)
     atomic_store_explicit(plasticity_layout_flag, 0u, memory_order_relaxed);
-  if (gid >= max(uniforms.drive_count, uniforms.neuromodulator_count)) {
-    return;
-  }
   device NBDriveStateRecord *drives =
     reinterpret_cast<device NBDriveStateRecord *>(hot_state + uniforms.drive_offset);
   device NBNeuromodulatorStateRecord *neuromodulators =
@@ -589,6 +588,32 @@ kernel void advance_homeostasis_and_neuromodulation(
   device const float *physiology = reinterpret_cast<device const float *>(
     hot_state + uniforms.physiology_belief_offset
   );
+  const bool parallel_interoception = thread_count == 32u
+    && simd_width == 32u;
+  float interoceptive_features[6] = {};
+  if (parallel_interoception) {
+    // Each feature keeps its receptor sum in ascending order. Six SIMD lanes
+    // perform those independent sums together and share their final values.
+    const float owned_feature = gid < 6u
+      ? nb_fused_interoceptive_feature(
+          observations, validity,
+          uniforms.interoception_observation_offset,
+          uniforms.interoception_observation_count,
+          uniforms.interoception_feature_dimension,
+          physiology, uniforms.physiology_belief_count,
+          gid, gid == 0u ? 0u : gid + 1u
+        )
+      : 0.0f;
+    interoceptive_features[0] = simd_broadcast(owned_feature, 0u);
+    interoceptive_features[1] = simd_broadcast(owned_feature, 1u);
+    interoceptive_features[2] = simd_broadcast(owned_feature, 2u);
+    interoceptive_features[3] = simd_broadcast(owned_feature, 3u);
+    interoceptive_features[4] = simd_broadcast(owned_feature, 4u);
+    interoceptive_features[5] = simd_broadcast(owned_feature, 5u);
+  }
+  if (gid >= max(uniforms.drive_count, uniforms.neuromodulator_count)) {
+    return;
+  }
   device NBEventQueueStateHeader *event_header =
     reinterpret_cast<device NBEventQueueStateHeader *>(
       hot_state + uniforms.event_queue_offset
@@ -625,7 +650,9 @@ kernel void advance_homeostasis_and_neuromodulation(
       state.viable_minimum = 0.0f;
       state.viable_maximum = 0.1f;
     }
-    const float energy_availability = nb_saturate(nb_fused_interoceptive_feature(
+    const float energy_availability = nb_saturate(
+      parallel_interoception ? interoceptive_features[0]
+      : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
@@ -636,7 +663,9 @@ kernel void advance_homeostasis_and_neuromodulation(
       0u,
       0u
     ));
-    const float oxygen = nb_saturate(nb_fused_interoceptive_feature(
+    const float oxygen = nb_saturate(
+      parallel_interoception ? interoceptive_features[1]
+      : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
@@ -647,7 +676,9 @@ kernel void advance_homeostasis_and_neuromodulation(
       1u,
       2u
     ));
-    const float carbon_dioxide = nb_saturate(nb_fused_interoceptive_feature(
+    const float carbon_dioxide = nb_saturate(
+      parallel_interoception ? interoceptive_features[2]
+      : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
@@ -658,7 +689,8 @@ kernel void advance_homeostasis_and_neuromodulation(
       2u,
       3u
     ));
-    const float temperature = nb_fused_interoceptive_feature(
+    const float temperature = parallel_interoception
+      ? interoceptive_features[3] : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
@@ -669,7 +701,9 @@ kernel void advance_homeostasis_and_neuromodulation(
       3u,
       4u
     );
-    const float sensed_fatigue = nb_saturate(nb_fused_interoceptive_feature(
+    const float sensed_fatigue = nb_saturate(
+      parallel_interoception ? interoceptive_features[4]
+      : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
@@ -680,7 +714,9 @@ kernel void advance_homeostasis_and_neuromodulation(
       4u,
       5u
     ));
-    const float tissue_damage = nb_saturate(nb_fused_interoceptive_feature(
+    const float tissue_damage = nb_saturate(
+      parallel_interoception ? interoceptive_features[5]
+      : nb_fused_interoceptive_feature(
       observations,
       validity,
       uniforms.interoception_observation_offset,
