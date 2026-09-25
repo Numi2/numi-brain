@@ -711,6 +711,42 @@ kernel void numanx_publish_decision_ready(
   nb_publish_decision_gate(gate, output);
 }
 
+// Preserve the ordered motor ABI digest while letting its independent byte
+// stream run concurrently with the decision and descending-command digests.
+inline ulong nb_motor_output_aggregate(
+  constant const NBNumanXMotorCandidateGPU &candidate,
+  device const NBMotorOutputHeaderGPU *motorHeader,
+  device const float *muscleCommands,
+  device const uchar *autonomicCommands,
+  device const uchar *activeSensingCommands
+) {
+  ulong aggregate = NB_FNV_OFFSET;
+  nb_mix_uint(aggregate, 0x4d4f5431u);
+  nb_mix_ulong(aggregate, ulong(sizeof(NBMotorOutputHeaderGPU)));
+  nb_mix_bytes(
+    aggregate,
+    reinterpret_cast<device const uchar *>(motorHeader),
+    ulong(sizeof(NBMotorOutputHeaderGPU))
+  );
+  nb_mix_ulong(aggregate, ulong(candidate.muscleExcitationByteCount));
+  nb_mix_bytes(
+    aggregate,
+    reinterpret_cast<device const uchar *>(muscleCommands),
+    ulong(candidate.muscleExcitationByteCount)
+  );
+  nb_mix_ulong(aggregate, ulong(candidate.autonomicCommandByteCount));
+  nb_mix_bytes(
+    aggregate, autonomicCommands, ulong(candidate.autonomicCommandByteCount)
+  );
+  nb_mix_ulong(aggregate, ulong(candidate.activeSensingCommandByteCount));
+  nb_mix_bytes(
+    aggregate,
+    activeSensingCommands,
+    ulong(candidate.activeSensingCommandByteCount)
+  );
+  return aggregate == 0ul ? NB_FNV_OFFSET : aggregate;
+}
+
 kernel void numanx_publish_motor_ready(
   constant NBNumanXMotorReadyGateGPU &expected [[buffer(0)]],
   constant NBNumanXMotorCandidateGPU &candidate [[buffer(1)]],
@@ -731,9 +767,48 @@ kernel void numanx_publish_motor_ready(
 {
   // Each long FNV chain retains its byte order. Independent chains run on
   // separate SIMD groups so device loads and integer multiplies can overlap.
-  threadgroup ulong partialFingerprint[5];
+  threadgroup ulong partialFingerprint[6];
   threadgroup uint partialValid[2];
   threadgroup ulong decisionChunks[NB_DECISION_CHUNK_LANES];
+  // The candidate identity and byte counts are checked before any lane reads
+  // the aggregate's ranges. All remaining gate predicates stay below.
+  threadgroup uint candidateValidForAggregate;
+  if (tid == 0u) {
+    const NBNumanXMotorCandidateGPU candidateValue = candidate;
+    const ulong candidateFingerprint = nb_candidate_fingerprint(candidateValue);
+    const bool candidateValid =
+      candidate.formatVersion == NB_NUMANX_MOTOR_CANDIDATE_VERSION
+      && candidate.flags == (NB_NUMANX_MOTOR_CANDIDATE_VALID
+        | NB_NUMANX_MOTOR_CANDIDATE_DECISION_SHADOW)
+      && candidate.transactionFingerprint == expected.transactionFingerprint
+      && candidate.substepFingerprint == expected.substepFingerprint
+      && candidate.acceptedBrainTimestampMicroseconds
+        == expected.acceptedBrainTimestampMicroseconds
+      && candidate.brainGeneration == expected.brainGeneration
+      && candidate.motorProfileFingerprint == expected.motorProfileFingerprint
+      && candidate.randomCounterGeneration == expected.randomCounterGeneration
+      && candidate.muscleCount == expected.muscleCount
+      && candidate.environmentIdentifier == expected.environment
+      && candidate.actuatorCommandKind == expected.actuatorCommandKind
+      && candidate.speciesTemplateFingerprint == expected.speciesTemplateFingerprint
+      && candidate.compiledSpeciesTemplateFingerprint
+        == expected.compiledSpeciesTemplateFingerprint
+      && candidate.motorOutputHeaderByteCount == sizeof(NBMotorOutputHeaderGPU)
+      && candidate.muscleCount != 0u
+      && ulong(candidate.muscleExcitationByteCount)
+        == ulong(candidate.muscleCount) * 4ul
+      && candidate.autonomicCommandCount != 0u
+      && ulong(candidate.autonomicCommandByteCount)
+        == ulong(candidate.autonomicCommandCount) * 16ul
+      && ulong(candidate.activeSensingCommandByteCount)
+        == ulong(candidate.activeSensingCommandCount) * 16ul
+      && candidate.reserved == 0u
+      && candidate.candidateFingerprint != 0ul
+      && candidate.candidateFingerprint == candidateFingerprint
+      && candidate.candidateFingerprint == expected.candidateFingerprint;
+    candidateValidForAggregate = candidateValid ? 1u : 0u;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
   const bool chunkedDecision =
     lanesPerThreadgroup.x >= 416u &&
     nb_decision_source_chunk_count(decisionExpected)
@@ -773,6 +848,11 @@ kernel void numanx_publish_motor_ready(
         partialFingerprint[4] = digest.fingerprint;
         partialValid[0] = digest.rangesValid ? 1u : 0u;
       }
+    } else if (tid == (chunkedDecision ? 385u : 161u)) {
+      partialFingerprint[5] = candidateValidForAggregate != 0u
+        ? nb_motor_output_aggregate(candidate, motorHeader, muscleCommands,
+            autonomicCommands, activeSensingCommands)
+        : 0ul;
     } else if (tid == (chunkedDecision ? 384u : 160u)) {
       bool commandsValid = true;
       const NBMotorOutputHeaderGPU header = motorHeader[0];
@@ -825,6 +905,10 @@ kernel void numanx_publish_motor_ready(
         && command <= header.outputMaximum;
     }
     partialValid[1] = commandsValid ? 1u : 0u;
+    partialFingerprint[5] = candidateValidForAggregate != 0u
+      ? nb_motor_output_aggregate(candidate, motorHeader, muscleCommands,
+          autonomicCommands, activeSensingCommands)
+      : 0ul;
   }
   if (tid != 0u) return;
   NBNumanXMotorReadyGateGPU output = expected;
@@ -832,8 +916,6 @@ kernel void numanx_publish_motor_ready(
     decisionExpected.expected;
   const NBNumanXDecisionReadyGateGPU decision = decisionGate[0];
   const NBMotorOutputHeaderGPU header = motorHeader[0];
-  const NBNumanXMotorCandidateGPU candidateValue = candidate;
-  const ulong candidateFingerprint = nb_candidate_fingerprint(candidateValue);
   const ulong somaticFingerprint = partialFingerprint[0];
   const ulong descendingFingerprint = partialFingerprint[1];
   const ulong autonomicFingerprint = partialFingerprint[2];
@@ -910,36 +992,7 @@ kernel void numanx_publish_motor_ready(
     && decision.autonomicCommandFingerprint == autonomicFingerprint
     && decision.activeSensingCommandFingerprint == activeSensingFingerprint
     && decision.gateFingerprint == nb_record_fingerprint(decision);
-  const bool candidateValid =
-    candidate.formatVersion == NB_NUMANX_MOTOR_CANDIDATE_VERSION
-    && candidate.flags == (NB_NUMANX_MOTOR_CANDIDATE_VALID
-      | NB_NUMANX_MOTOR_CANDIDATE_DECISION_SHADOW)
-    && candidate.transactionFingerprint == expected.transactionFingerprint
-    && candidate.substepFingerprint == expected.substepFingerprint
-    && candidate.acceptedBrainTimestampMicroseconds
-      == expected.acceptedBrainTimestampMicroseconds
-    && candidate.brainGeneration == expected.brainGeneration
-    && candidate.motorProfileFingerprint == expected.motorProfileFingerprint
-    && candidate.randomCounterGeneration == expected.randomCounterGeneration
-    && candidate.muscleCount == expected.muscleCount
-    && candidate.environmentIdentifier == expected.environment
-    && candidate.actuatorCommandKind == expected.actuatorCommandKind
-    && candidate.speciesTemplateFingerprint == expected.speciesTemplateFingerprint
-    && candidate.compiledSpeciesTemplateFingerprint
-      == expected.compiledSpeciesTemplateFingerprint
-    && candidate.motorOutputHeaderByteCount == sizeof(NBMotorOutputHeaderGPU)
-    && candidate.muscleCount != 0u
-    && ulong(candidate.muscleExcitationByteCount)
-      == ulong(candidate.muscleCount) * 4ul
-    && candidate.autonomicCommandCount != 0u
-    && ulong(candidate.autonomicCommandByteCount)
-      == ulong(candidate.autonomicCommandCount) * 16ul
-    && ulong(candidate.activeSensingCommandByteCount)
-      == ulong(candidate.activeSensingCommandCount) * 16ul
-    && candidate.reserved == 0u
-    && candidate.candidateFingerprint != 0ul
-    && candidate.candidateFingerprint == candidateFingerprint
-    && candidate.candidateFingerprint == expected.candidateFingerprint;
+  const bool candidateValid = candidateValidForAggregate != 0u;
   const bool headerValid =
     header.formatVersion == NB_MOTOR_OUTPUT_VERSION
     && (header.flags & NB_MOTOR_OUTPUT_VALID) != 0u
@@ -983,32 +1036,7 @@ kernel void numanx_publish_motor_ready(
     && expected.reserved64_0 == 0ul
     && expected.gateFingerprint == nb_record_fingerprint(output);
   if (expectedValid && decisionValid && candidateValid && headerValid) {
-    ulong aggregate = NB_FNV_OFFSET;
-    nb_mix_uint(aggregate, 0x4d4f5431u);
-    nb_mix_ulong(aggregate, ulong(sizeof(NBMotorOutputHeaderGPU)));
-    nb_mix_bytes(
-      aggregate,
-      reinterpret_cast<device const uchar *>(motorHeader),
-      ulong(sizeof(NBMotorOutputHeaderGPU))
-    );
-    nb_mix_ulong(aggregate, ulong(candidate.muscleExcitationByteCount));
-    nb_mix_bytes(
-      aggregate,
-      reinterpret_cast<device const uchar *>(muscleCommands),
-      ulong(candidate.muscleExcitationByteCount)
-    );
-    nb_mix_ulong(aggregate, ulong(candidate.autonomicCommandByteCount));
-    nb_mix_bytes(
-      aggregate, autonomicCommands, ulong(candidate.autonomicCommandByteCount)
-    );
-    nb_mix_ulong(aggregate, ulong(candidate.activeSensingCommandByteCount));
-    nb_mix_bytes(
-      aggregate,
-      activeSensingCommands,
-      ulong(candidate.activeSensingCommandByteCount)
-    );
-    output.motorOutputFingerprint = aggregate == 0ul
-      ? NB_FNV_OFFSET : aggregate;
+    output.motorOutputFingerprint = partialFingerprint[5];
     output.decisionGateFingerprint = decision.gateFingerprint;
     output.status = NB_NUMANX_READY_SUCCESS;
   } else {
