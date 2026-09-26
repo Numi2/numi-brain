@@ -5300,6 +5300,23 @@ kernel void journal_committed_learning_transition(
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
+  // The five structured context summaries read independent prior and
+  // accepted sections. Keep each summary's original ordered accumulation,
+  // while assigning the ten summaries to separate SIMD groups. Distributing
+  // the distinct level branches across groups avoids divergence in one SIMD.
+  threadgroup float structured_world_context[10];
+  if ((gid & 31u) == 0u) {
+    const uint context_groups = max(thread_count / 32u, 1u);
+    for (uint context = gid / 32u; context < 10u;
+        context += context_groups) {
+      device const uchar *world_state = context < 5u
+        ? input_hot_state : output_hot_state;
+      structured_world_context[context] = committed_structured_world_context(
+        world_state, uniforms, context % 5u
+      );
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
   if (gid != 0u) return;
   // These are the exact accepted cortical somatic-synergy coordinates, not an
   // arbitrary prefix of the decoded muscle excitation vector. The learner's
@@ -5472,12 +5489,8 @@ kernel void journal_committed_learning_transition(
       ];
     } else {
       const uint level = component - 19u;
-      record.prior_state[component] = committed_structured_world_context(
-        input_hot_state, uniforms, level
-      );
-      record.posterior_state[component] = committed_structured_world_context(
-        output_hot_state, uniforms, level
-      );
+      record.prior_state[component] = structured_world_context[level];
+      record.posterior_state[component] = structured_world_context[5u + level];
     }
   }
   // Preserve explicit spatial evidence from every enabled modality. Each
