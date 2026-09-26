@@ -1772,7 +1772,12 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(memory.journalGPUAddress, index: 2)
     argumentTable.setAddress(uniformBuffer.gpuAddress, index: 3)
     bindAcceptanceGate(acceptanceGateGPUAddress)
-    try encoder.dispatch(pipeline: segmentPipeline, argumentTable: argumentTable, count: 1)
+    try encoder.dispatch(
+      pipeline: segmentPipeline,
+      argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(width: 32, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1)
+    )
   }
 
   private func dispatch(

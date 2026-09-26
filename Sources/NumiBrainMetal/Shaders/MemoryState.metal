@@ -6333,6 +6333,15 @@ kernel void journal_committed_counterfactual_rollouts(
   }
 }
 
+struct NBSegmentationLaneResult {
+  float salience;
+  float uncertainty;
+  float damage;
+  uint source;
+  uint event_kind;
+  uint ordinal;
+};
+
 kernel void segment_and_journal_episode(
   device uchar *hot_state [[buffer(0)]],
   device uchar *persistent_memory [[buffer(1)]],
@@ -6343,7 +6352,8 @@ kernel void segment_and_journal_episode(
   uint gid [[thread_position_in_grid]])
 {
   if (acceptance_gate[0] != 1u) return;
-  if (gid != 0u || uniforms.active_episode_capacity == 0u) return;
+  if (gid >= 32u || uniforms.active_episode_capacity == 0u) return;
+  threadgroup NBSegmentationLaneResult lane_results[32];
   device const float *recurrent = reinterpret_cast<device const float *>(
     hot_state + uniforms.recurrent_offset
   );
@@ -6423,12 +6433,11 @@ kernel void segment_and_journal_episode(
       );
     }
   }
-  float embodied_salience = 0.0f;
-  float embodied_uncertainty = 0.0f;
-  uint embodied_source = 0u;
-  uint embodied_event_kind = 9u;
-  for (uint body_index = 0u;
-      body_index < uniforms.body_belief_count; ++body_index) {
+  // Belief records are independent. Preserve the serial winner on equal
+  // salience by reducing with the original body, joint, muscle ordinal.
+  NBSegmentationLaneResult local = {0.0f, 0.0f, 0.0f, 0u, 9u, ~0u};
+  for (uint body_index = gid;
+      body_index < uniforms.body_belief_count; body_index += 32u) {
     device const float *body = reinterpret_cast<device const float *>(
       hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
     );
@@ -6453,18 +6462,19 @@ kernel void segment_and_journal_episode(
     const float salience = max(
       max(damage_risk, vulnerability), 0.5f * normalized_load
     );
-    if (salience > embodied_salience) {
-      embodied_salience = salience;
-      embodied_source = uint(identity[0]);
-      embodied_event_kind = 9u;
+    if (salience > local.salience) {
+      local.salience = salience;
+      local.source = uint(identity[0]);
+      local.event_kind = 9u;
+      local.ordinal = body_index;
     }
-    embodied_uncertainty = max(
-      embodied_uncertainty, normalized_uncertainty
+    local.uncertainty = max(
+      local.uncertainty, normalized_uncertainty
     );
-    damage = max(damage, damage_risk);
+    local.damage = max(local.damage, damage_risk);
   }
-  for (uint joint_index = 0u;
-      joint_index < uniforms.joint_belief_count; ++joint_index) {
+  for (uint joint_index = gid;
+      joint_index < uniforms.joint_belief_count; joint_index += 32u) {
     device const float *joint = reinterpret_cast<device const float *>(
       hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
     );
@@ -6504,17 +6514,18 @@ kernel void segment_and_journal_episode(
     const float salience = max(
       maximum_limit, max(prediction_error, 0.5f * uncertainty)
     );
-    if (salience > embodied_salience) {
-      embodied_salience = salience;
-      embodied_source = uint(identity[0]);
-      embodied_event_kind = 6u;
+    if (salience > local.salience) {
+      local.salience = salience;
+      local.source = uint(identity[0]);
+      local.event_kind = 6u;
+      local.ordinal = uniforms.body_belief_count + joint_index;
     }
-    embodied_uncertainty = max(
-      embodied_uncertainty, max(uncertainty, prediction_error)
+    local.uncertainty = max(
+      local.uncertainty, max(uncertainty, prediction_error)
     );
   }
-  for (uint muscle_index = 0u;
-      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+  for (uint muscle_index = gid;
+      muscle_index < uniforms.muscle_belief_count; muscle_index += 32u) {
     device const float *muscle = reinterpret_cast<device const float *>(
       hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
     );
@@ -6533,16 +6544,40 @@ kernel void segment_and_journal_episode(
     const float prediction_error = raw_prediction_error
       / (1.0f + raw_prediction_error);
     const float salience = max(fatigue, max(disturbance, prediction_error));
-    if (salience > embodied_salience) {
-      embodied_salience = salience;
+    if (salience > local.salience) {
+      local.salience = salience;
       const ulong source_identifier = identity[0] != 0ul
         ? identity[0] : identity[5];
-      embodied_source = uint(
+      local.source = uint(
         source_identifier ^ (source_identifier >> 32u)
       );
-      embodied_event_kind = 7u;
+      local.event_kind = 7u;
+      local.ordinal = uniforms.body_belief_count
+        + uniforms.joint_belief_count + muscle_index;
     }
-    embodied_uncertainty = max(embodied_uncertainty, prediction_error);
+    local.uncertainty = max(local.uncertainty, prediction_error);
+  }
+  lane_results[gid] = local;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (gid != 0u) return;
+  float embodied_salience = 0.0f;
+  float embodied_uncertainty = 0.0f;
+  uint embodied_source = 0u;
+  uint embodied_event_kind = 9u;
+  uint winning_ordinal = ~0u;
+  for (uint lane = 0u; lane < 32u; ++lane) {
+    const NBSegmentationLaneResult candidate = lane_results[lane];
+    if (candidate.salience > embodied_salience
+        || (candidate.salience > 0.0f
+          && candidate.salience == embodied_salience
+          && candidate.ordinal < winning_ordinal)) {
+      embodied_salience = candidate.salience;
+      embodied_source = candidate.source;
+      embodied_event_kind = candidate.event_kind;
+      winning_ordinal = candidate.ordinal;
+    }
+    embodied_uncertainty = max(embodied_uncertainty, candidate.uncertainty);
+    damage = max(damage, candidate.damage);
   }
   const float affect_pain = isfinite(affect->pain)
     ? clamp(affect->pain, 0.0f, 1.0f) : 0.0f;
