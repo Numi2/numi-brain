@@ -21,7 +21,9 @@ constant uint NB_MOTOR_OUTPUT_EMERGENCY_STOP = 2u;
 constant uint NB_MOTOR_OUTPUT_KNOWN_FLAGS = 15u;
 constant ulong NB_FNV_OFFSET = 14695981039346656037ul;
 constant ulong NB_FNV_PRIME = 1099511628211ul;
-constant uint NB_DECISION_CHUNK_BYTES = 1024u;
+// Fill the bounded 256-lane source digest on the live full Human layout:
+// 704-byte chunks cover all 256 pieces while shortening each ordered chain.
+constant uint NB_DECISION_CHUNK_BYTES = 704u;
 constant uint NB_DECISION_CHUNK_LANES = 256u;
 
 struct NBNumanXDecisionReadyGateGPU {
@@ -436,7 +438,7 @@ inline uint nb_decision_source_chunk_count(
 }
 
 // One lane owns one canonical range chunk. Its ordered FNV chain is bounded
-// to 1024 bytes; no source byte is omitted or sampled. The range metadata and
+// to 704 bytes; no source byte is omitted or sampled. The range metadata and
 // chunk hashes are folded in source order below. The old serial digest remains
 // available when a model exceeds the bounded GPU chunk capacity.
 inline ulong nb_decision_source_chunk_fingerprint(
