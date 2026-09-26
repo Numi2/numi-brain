@@ -397,6 +397,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   private let argumentTable: MetalBrainArgumentTable
   private let uniformBuffer: any MTLBuffer
   private let retrievalUniformBuffers: [any MTLBuffer]
+  private let retrievalIndirectBuffer: any MTLBuffer
+  private let indirectRetrieval: Bool
   private let reconsolidationUniformBuffer: any MTLBuffer
   private let consolidationUniformBuffer: any MTLBuffer
   private let prospectiveLifecycleUniformBuffer: any MTLBuffer
@@ -519,7 +521,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     let descriptor = MTL4ArgumentTableDescriptor()
     descriptor.label = "NumiBrain memory-state arguments"
-    descriptor.maxBufferBindCount = 18
+    descriptor.maxBufferBindCount = 19
     descriptor.initializeBindings = true
     guard let argumentTable = try? MetalBrainArgumentTable(device.makeArgumentTable(descriptor: descriptor)),
       let uniformBuffer = device.makeBuffer(
@@ -540,6 +542,10 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       ),
       let fourthRetrievalUniform = device.makeBuffer(
         length: MemoryLayout<MemoryRetrievalUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let retrievalIndirectBuffer = device.makeBuffer(
+        length: 5 * 3 * MemoryLayout<UInt32>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
       let reconsolidationUniformBuffer = device.makeBuffer(
@@ -581,6 +587,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       firstRetrievalUniform, secondRetrievalUniform,
       thirdRetrievalUniform, fourthRetrievalUniform,
     ]
+    retrievalIndirectBuffer.label = "NumiBrain GPU-driven retrieval grids"
     for (index, buffer) in retrievalUniformBuffers.enumerated() {
       buffer.label = "NumiBrain memory retrieval pass \(index) uniforms"
     }
@@ -637,6 +644,8 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     self.argumentTable = argumentTable
     self.uniformBuffer = uniformBuffer
     self.retrievalUniformBuffers = retrievalUniformBuffers
+    self.retrievalIndirectBuffer = retrievalIndirectBuffer
+    self.indirectRetrieval = ProcessInfo.processInfo.environment["NUMI_BRAIN_RETRIEVAL_INDIRECT"] == "1"
     self.reconsolidationUniformBuffer = reconsolidationUniformBuffer
     self.consolidationUniformBuffer = consolidationUniformBuffer
     self.prospectiveLifecycleUniformBuffer = prospectiveLifecycleUniformBuffer
@@ -653,6 +662,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       prospectiveLifecycleUniformBuffer, committedTransitionUniformBuffer,
       counterfactualLearningUniformBuffer, regionalLayoutBuffer,
       unconditionalAcceptanceGateBuffer,
+      retrievalIndirectBuffer,
     ]
       + retrievalUniformBuffers
   }
@@ -1583,6 +1593,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(retrievalUniformBuffers[0].gpuAddress, index: 2)
+    argumentTable.setAddress(retrievalIndirectBuffer.gpuAddress, index: 18)
     let beginThreads = min(256, retrievalBeginPipeline.maxTotalThreadsPerThreadgroup)
     guard beginThreads >= maximumResults else {
       throw TissueError.metal("memory retrieval begin group cannot cover all results")
@@ -1593,33 +1604,30 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
       threadsPerThreadgroup: MTLSize(width: beginThreads, height: 1, depth: 1)
     )
     barrier(encoder)
+    let indirectGroup = MTLSize(width: 32, height: 1, depth: 1)
+    func retrievalDispatch(_ pipeline: any MTLComputePipelineState,
+      count: Int, slot: Int) throws {
+      if indirectRetrieval {
+        try encoder.dispatchIndirect(pipeline: pipeline, argumentTable: argumentTable,
+          indirectBuffer: retrievalIndirectBuffer, byteOffset: slot * 12,
+          threadsPerThreadgroup: indirectGroup)
+      } else {
+        try dispatch(encoder, pipeline: pipeline, count: count)
+      }
+    }
     for pass in 0..<maximumResults {
       argumentTable.setAddress(retrievalUniformBuffers[pass].gpuAddress, index: 2)
-      try dispatch(
-        encoder,
-        pipeline: archiveShortlistClearPipeline,
-        count: 32
-      )
+      try retrievalDispatch(archiveShortlistClearPipeline, count: 32, slot: 0)
       barrier(encoder)
-      try dispatch(
-        encoder,
-        pipeline: archiveShortlistScorePipeline,
-        count: archiveSearchCandidateCount
-      )
+      try retrievalDispatch(archiveShortlistScorePipeline,
+        count: archiveSearchCandidateCount, slot: 1)
       barrier(encoder)
-      try dispatch(
-        encoder,
-        pipeline: retrievalScorePipeline,
-        count: candidateCount
-      )
+      try retrievalDispatch(retrievalScorePipeline,
+        count: candidateCount, slot: 2)
       barrier(encoder)
-      try dispatch(
-        encoder,
-        pipeline: archiveRerankPipeline,
-        count: 32
-      )
+      try retrievalDispatch(archiveRerankPipeline, count: 32, slot: 3)
       barrier(encoder)
-      try dispatch(encoder, pipeline: retrievalPublishPipeline, count: 1)
+      try retrievalDispatch(retrievalPublishPipeline, count: 1, slot: 4)
       barrier(encoder)
     }
   }

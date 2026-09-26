@@ -111,6 +111,30 @@ enum MetalBrainCommandEncoder {
     }
   }
 
+  func dispatchIndirect(pipeline: any MTLComputePipelineState,
+    argumentTable: MetalBrainArgumentTable, indirectBuffer: any MTLBuffer,
+    byteOffset: Int, threadsPerThreadgroup: MTLSize) throws {
+    guard byteOffset >= 0, byteOffset <= indirectBuffer.length - 12,
+      indirectBuffer.device.registryID == pipeline.device.registryID
+    else { throw TissueError.transaction("indirect neural dispatch lacks its GPU arguments") }
+    try bind(argumentTable: argumentTable.metal4, bindings: argumentTable.bindings)
+    switch self {
+    case let .metal4(encoder):
+      encoder.setComputePipelineState(pipeline)
+      encoder.dispatchThreadgroups(
+        indirectBuffer: indirectBuffer.gpuAddress + UInt64(byteOffset),
+        threadsPerThreadgroup: threadsPerThreadgroup)
+    case let .borrowedResolved(encoder, resolver, _):
+      guard resolver.contains(indirectBuffer) else {
+        throw TissueError.transaction("borrowed indirect neural dispatch lacks its buffer lease")
+      }
+      encoder.setComputePipelineState(pipeline)
+      encoder.dispatchThreadgroups(indirectBuffer: indirectBuffer,
+        indirectBufferOffset: byteOffset,
+        threadsPerThreadgroup: threadsPerThreadgroup)
+    }
+  }
+
   func dispatch(pipeline: any MTLComputePipelineState,
     argumentTable: any MTL4ArgumentTable, count: Int) {
     let grid = MTLSize(width: count, height: 1, depth: 1)

@@ -2110,6 +2110,7 @@ kernel void begin_memory_retrieval(
   device const uchar *persistent_memory [[buffer(1)]],
   constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
   device const float *memory_parameters [[buffer(6)]],
+  device uint *indirect_grids [[buffer(18)]],
   uint gid [[thread_position_in_grid]],
   uint thread_count [[threads_per_threadgroup]])
 {
@@ -2125,8 +2126,31 @@ kernel void begin_memory_retrieval(
     scratch->winner_indices[gid] = 0u;
     scratch->winner_scores[gid] = 0.0f;
   }
+  if (gid < NB_MEMORY_ARCHIVE_SHORTLIST_COUNT)
+    atomic_store_explicit(&scratch->archive_shortlist_keys[gid], 0u,
+      memory_order_relaxed);
   if (gid == 0u) {
     scratch->flags = 0u;
+    device const NBDevelopmentalHeader *development =
+      reinterpret_cast<device const NBDevelopmentalHeader *>(
+        hot_state + uniforms.developmental_state_offset);
+    device const NBInternalActionRecord *actions =
+      reinterpret_cast<device const NBInternalActionRecord *>(
+        hot_state + uniforms.internal_action_offset);
+    const bool requested = development->stage >= 7u
+      && actions[0].kind == 1u
+      && (actions[0].flags & NB_MEMORY_CONTROL_FLAG_VALID) != 0u;
+    const uint group_counts[5] = {
+      1u,
+      (uniforms.archive_search_candidate_count + 31u) / 32u,
+      (uniforms.candidate_count + 31u) / 32u,
+      1u, 1u
+    };
+    for (uint slot = 0u; slot < 5u; ++slot) {
+      indirect_grids[3u * slot] = requested ? group_counts[slot] : 0u;
+      indirect_grids[3u * slot + 1u] = 1u;
+      indirect_grids[3u * slot + 2u] = 1u;
+    }
   }
   threadgroup float lane_salience[256];
   threadgroup ulong lane_rank[256];
