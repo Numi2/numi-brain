@@ -1956,27 +1956,33 @@ inline bool is_memory_workspace_source(const uint source_module) {
     || source_module == 61u;
 }
 
-/// Finds the strongest currently accepted articulated context once per
-/// retrieval cycle. Candidate kernels consume the compact result from scratch
-/// rather than rescanning the body graph for every memory record.
-inline void current_embodied_retrieval_context(
+// Every belief site has an independent salience expression. Lanes keep their
+// local maximum and its original body-then-joint-then-muscle index; lane zero
+// chooses the strongest site, breaking equal scores by that original index.
+// This is the same strict-greater winner as the serial retrieval scan.
+inline void current_embodied_retrieval_context_parallel(
   device const uchar *hot_state,
   constant NBMemoryRetrievalUniforms &uniforms,
+  uint lane,
+  uint lane_count,
+  threadgroup float *lane_salience,
+  threadgroup ulong *lane_rank,
+  threadgroup uint *lane_kind,
+  threadgroup uint *lane_source,
   thread uint &event_kind,
   thread uint &source_identifier,
   thread float &salience)
 {
-  event_kind = 0u;
-  source_identifier = 0u;
-  salience = 0.0f;
-  for (uint body_index = 0u;
-      body_index < uniforms.body_belief_count; ++body_index) {
+  float best_salience = 0.0f;
+  ulong best_rank = ~0ul;
+  uint best_kind = 0u;
+  uint best_source = 0u;
+  for (uint body_index = lane; body_index < uniforms.body_belief_count;
+      body_index += lane_count) {
     device const float *body = reinterpret_cast<device const float *>(
-      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul
-    );
+      hot_state + uniforms.body_belief_offset + ulong(body_index) * 256ul);
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      body + NB_BODY_IDENTITY_FLOAT_OFFSET
-    );
+      body + NB_BODY_IDENTITY_FLOAT_OFFSET);
     if ((identity[3] & 1ul) == 0ul) continue;
     const float load = isfinite(body[NB_BODY_LOAD])
       ? max(body[NB_BODY_LOAD], 0.0f) : 0.0f;
@@ -1986,71 +1992,99 @@ inline void current_embodied_retrieval_context(
       max(
         isfinite(body[NB_BODY_VULNERABILITY])
           ? clamp(body[NB_BODY_VULNERABILITY], 0.0f, 1.0f) : 0.0f,
-        0.5f * load / (1.0f + load)
-      )
-    );
-    if (body_salience > salience) {
-      salience = body_salience;
-      event_kind = 9u;
-      source_identifier = uint(identity[0]);
+        0.5f * load / (1.0f + load)));
+    const ulong rank = ulong(body_index);
+    if (body_salience > best_salience
+        || (body_salience == best_salience && body_salience > 0.0f
+            && rank < best_rank)) {
+      best_salience = body_salience;
+      best_rank = rank;
+      best_kind = 9u;
+      best_source = uint(identity[0]);
     }
   }
-  for (uint joint_index = 0u;
-      joint_index < uniforms.joint_belief_count; ++joint_index) {
+  for (uint joint_index = lane; joint_index < uniforms.joint_belief_count;
+      joint_index += lane_count) {
     device const float *joint = reinterpret_cast<device const float *>(
-      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul
-    );
+      hot_state + uniforms.joint_belief_offset + ulong(joint_index) * 256ul);
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET
-    );
+      joint + NB_JOINT_IDENTITY_FLOAT_OFFSET);
     if ((identity[7] & 1ul) == 0ul) continue;
     const uint coordinate_count = min(uint(identity[3]), 6u);
     float maximum_limit = 0.0f;
     for (uint coordinate = 0u; coordinate < coordinate_count; ++coordinate) {
       if (!isfinite(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate])) continue;
-      maximum_limit = max(
-        maximum_limit,
-        clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f)
-      );
+      maximum_limit = max(maximum_limit,
+        clamp(joint[NB_JOINT_LIMIT_ACTIVATION + coordinate], 0.0f, 1.0f));
     }
     const float raw_error = isfinite(joint[NB_JOINT_PREDICTION_ERROR])
       ? abs(joint[NB_JOINT_PREDICTION_ERROR]) : 0.0f;
-    const float joint_salience = max(
-      maximum_limit, raw_error / (1.0f + raw_error)
-    );
-    if (joint_salience > salience) {
-      salience = joint_salience;
-      event_kind = 6u;
-      source_identifier = uint(identity[0]);
+    const float joint_salience = max(maximum_limit,
+      raw_error / (1.0f + raw_error));
+    const ulong rank = ulong(uniforms.body_belief_count)
+      + ulong(joint_index);
+    if (joint_salience > best_salience
+        || (joint_salience == best_salience && joint_salience > 0.0f
+            && rank < best_rank)) {
+      best_salience = joint_salience;
+      best_rank = rank;
+      best_kind = 6u;
+      best_source = uint(identity[0]);
     }
   }
-  for (uint muscle_index = 0u;
-      muscle_index < uniforms.muscle_belief_count; ++muscle_index) {
+  for (uint muscle_index = lane; muscle_index < uniforms.muscle_belief_count;
+      muscle_index += lane_count) {
     device const float *muscle = reinterpret_cast<device const float *>(
-      hot_state + uniforms.muscle_belief_offset + ulong(muscle_index) * 192ul
-    );
+      hot_state + uniforms.muscle_belief_offset
+        + ulong(muscle_index) * 192ul);
     device const ulong *identity = reinterpret_cast<device const ulong *>(
-      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET
-    );
+      muscle + NB_MUSCLE_IDENTITY_FLOAT_OFFSET);
     if ((identity[3] & 1ul) == 0ul) continue;
     const float fatigue = isfinite(muscle[NB_MUSCLE_FATIGUE])
       ? clamp(muscle[NB_MUSCLE_FATIGUE], 0.0f, 1.0f) : 0.0f;
     const float disturbance = isfinite(
-      muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE]
-    ) ? clamp(muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f) : 0.0f;
+      muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE])
+      ? clamp(muscle[NB_MUSCLE_EXTERNAL_DISTURBANCE], 0.0f, 1.0f) : 0.0f;
     const float raw_error = isfinite(muscle[NB_MUSCLE_PREDICTION_ERROR])
       ? abs(muscle[NB_MUSCLE_PREDICTION_ERROR]) : 0.0f;
-    const float muscle_salience = max(
-      fatigue, max(disturbance, raw_error / (1.0f + raw_error))
-    );
-    if (muscle_salience > salience) {
-      salience = muscle_salience;
-      event_kind = 7u;
+    const float muscle_salience = max(fatigue,
+      max(disturbance, raw_error / (1.0f + raw_error)));
+    const ulong rank = ulong(uniforms.body_belief_count)
+      + ulong(uniforms.joint_belief_count) + ulong(muscle_index);
+    if (muscle_salience > best_salience
+        || (muscle_salience == best_salience && muscle_salience > 0.0f
+            && rank < best_rank)) {
+      best_salience = muscle_salience;
+      best_rank = rank;
+      best_kind = 7u;
       const ulong physical_identifier = identity[0] != 0ul
         ? identity[0] : identity[5];
-      source_identifier = uint(
-        physical_identifier ^ (physical_identifier >> 32u)
-      );
+      best_source = uint(physical_identifier
+        ^ (physical_identifier >> 32u));
+    }
+  }
+  lane_salience[lane] = best_salience;
+  lane_rank[lane] = best_rank;
+  lane_kind[lane] = best_kind;
+  lane_source[lane] = best_source;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  event_kind = 0u;
+  source_identifier = 0u;
+  salience = 0.0f;
+  if (lane == 0u) {
+    ulong winning_rank = ~0ul;
+    for (uint candidate = 0u; candidate < lane_count; ++candidate) {
+      const float candidate_salience = lane_salience[candidate];
+      const ulong candidate_rank = lane_rank[candidate];
+      if (candidate_salience > salience
+          || (candidate_salience == salience
+              && candidate_salience > 0.0f
+              && candidate_rank < winning_rank)) {
+        salience = candidate_salience;
+        winning_rank = candidate_rank;
+        event_kind = lane_kind[candidate];
+        source_identifier = lane_source[candidate];
+      }
     }
   }
 }
@@ -2076,32 +2110,41 @@ kernel void begin_memory_retrieval(
   device const uchar *persistent_memory [[buffer(1)]],
   constant NBMemoryRetrievalUniforms &uniforms [[buffer(2)]],
   device const float *memory_parameters [[buffer(6)]],
-  uint gid [[thread_position_in_grid]])
+  uint gid [[thread_position_in_grid]],
+  uint thread_count [[threads_per_threadgroup]])
 {
-  if (gid >= uniforms.maximum_results || gid >= 4u) return;
   device NBMemoryRetrievalScratch *scratch =
     reinterpret_cast<device NBMemoryRetrievalScratch *>(
       hot_state + uniforms.retrieval_scratch_offset
     );
-  atomic_store_explicit(&scratch->winner_keys[gid], 0u, memory_order_relaxed);
-  scratch->winner_record_identifiers[gid] = 0ul;
-  scratch->winner_kinds[gid] = 0u;
-  scratch->winner_indices[gid] = 0u;
-  scratch->winner_scores[gid] = 0.0f;
+  if (gid < uniforms.maximum_results && gid < 4u) {
+    atomic_store_explicit(&scratch->winner_keys[gid], 0u,
+      memory_order_relaxed);
+    scratch->winner_record_identifiers[gid] = 0ul;
+    scratch->winner_kinds[gid] = 0u;
+    scratch->winner_indices[gid] = 0u;
+    scratch->winner_scores[gid] = 0.0f;
+  }
   if (gid == 0u) {
     scratch->flags = 0u;
-    uint embodied_event_kind = 0u;
-    uint embodied_source_identifier = 0u;
-    float embodied_salience = 0.0f;
-    current_embodied_retrieval_context(
-      hot_state, uniforms, embodied_event_kind,
-      embodied_source_identifier, embodied_salience
-    );
+  }
+  threadgroup float lane_salience[256];
+  threadgroup ulong lane_rank[256];
+  threadgroup uint lane_kind[256];
+  threadgroup uint lane_source[256];
+  uint embodied_event_kind = 0u;
+  uint embodied_source_identifier = 0u;
+  float embodied_salience = 0.0f;
+  current_embodied_retrieval_context_parallel(
+    hot_state, uniforms, gid, thread_count, lane_salience, lane_rank,
+    lane_kind, lane_source, embodied_event_kind,
+    embodied_source_identifier, embodied_salience);
+  if (gid == 0u) {
     scratch->reserved[0] = embodied_event_kind;
     scratch->reserved[1] = embodied_source_identifier;
     scratch->reserved[2] = as_type<uint>(embodied_salience);
   }
-
+  if (gid >= uniforms.maximum_results || gid >= 4u) return;
   const uint slot = 3u + gid;
   if (slot >= uniforms.workspace_capacity || uniforms.workspace_dimension == 0u) {
     return;

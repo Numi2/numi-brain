@@ -1583,7 +1583,15 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     argumentTable.setAddress(hot.outputGPUAddress, index: 0)
     argumentTable.setAddress(memory.memoryGPUAddress, index: 1)
     argumentTable.setAddress(retrievalUniformBuffers[0].gpuAddress, index: 2)
-    try dispatch(encoder, pipeline: retrievalBeginPipeline, count: maximumResults)
+    let beginThreads = min(256, retrievalBeginPipeline.maxTotalThreadsPerThreadgroup)
+    guard beginThreads >= maximumResults else {
+      throw TissueError.metal("memory retrieval begin group cannot cover all results")
+    }
+    try encoder.dispatch(
+      pipeline: retrievalBeginPipeline, argumentTable: argumentTable,
+      threadsPerGrid: MTLSize(width: beginThreads, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: beginThreads, height: 1, depth: 1)
+    )
     barrier(encoder)
     for pass in 0..<maximumResults {
       argumentTable.setAddress(retrievalUniformBuffers[pass].gpuAddress, index: 2)
