@@ -1316,6 +1316,108 @@ inline float committed_structured_world_context(
   return count == 0u ? 0.0f : clamp(total / float(count), -1.0f, 1.0f);
 }
 
+// Each context has independent slot expressions but an ordered floating-point
+// sum. A SIMD group prepares one wave of slot values, then lane zero consumes
+// those values in the same ascending order as the scalar learner projection.
+inline float committed_structured_world_context_simd(
+  device const uchar *hot_state,
+  constant NBCommittedTransitionUniforms &uniforms,
+  uint level,
+  uint simd_lane,
+  uint simd_width)
+{
+  const uint sample_count = level == 0u
+    ? min(uniforms.spatial_transform_count, 5u)
+    : (level == 1u || level == 2u
+      ? uniforms.object_slot_count
+      : (level == 3u
+        ? uniforms.relation_slot_count
+        : uniforms.other_agent_slot_count));
+  float total = 0.0f;
+  uint count = 0u;
+  for (uint base = 0u; base < sample_count; base += simd_width) {
+    const uint index = base + simd_lane;
+    uint valid = 0u;
+    float term = 0.0f;
+    if (index < sample_count) {
+      if (level == 0u) {
+        device const NBSpatialTransformRecord *transforms =
+          reinterpret_cast<device const NBSpatialTransformRecord *>(
+            hot_state + uniforms.spatial_transform_offset);
+        const NBSpatialTransformRecord transform = transforms[index];
+        if ((transform.flags & 1u) != 0u) {
+          const float motion = (transform.linear_velocity[0]
+            + transform.linear_velocity[1] + transform.linear_velocity[2])
+            / 3.0f;
+          term = transform.confidence
+            * (0.5f * tanh(motion)
+              + 0.5f * (1.0f - transform.uncertainty));
+          valid = 1u;
+        }
+      } else if (level == 1u || level == 2u) {
+        device const NBObjectSlotRecord *objects =
+          reinterpret_cast<device const NBObjectSlotRecord *>(
+            hot_state + uniforms.object_slot_offset);
+        const NBObjectSlotRecord object = objects[index];
+        if (!(object.identifier == 0ul
+            || object.existence_probability <= 0.0f)) {
+          const float certainty = object.existence_probability
+            * (1.0f - object.uncertainty);
+          if (level == 1u) {
+            const float motion = (object.velocity[0] + object.velocity[1]
+              + object.velocity[2]) / 3.0f;
+            term = certainty
+              * (0.5f * tanh(motion) + 0.5f * object.affordances[0]);
+          } else {
+            const float position = (object.pose[0] + object.pose[1]
+              + object.pose[2]) / 3.0f;
+            term = certainty * (
+              0.25f * tanh(position) + 0.25f * object.identity_confidence
+                + 0.25f * object.visibility + 0.25f * object.affordances[0]);
+          }
+          valid = 1u;
+        }
+      } else if (level == 3u) {
+        device const NBRelationSlotRecord *relations =
+          reinterpret_cast<device const NBRelationSlotRecord *>(
+            hot_state + uniforms.relation_slot_offset);
+        const NBRelationSlotRecord relation = relations[index];
+        if (!((relation.flags & 1u) == 0u
+            || relation.probability <= 0.0f)) {
+          term = relation.probability * (1.0f - relation.uncertainty)
+            * tanh(relation.latent[0]);
+          valid = 1u;
+        }
+      } else {
+        device const NBOtherAgentSlotRecord *agents =
+          reinterpret_cast<device const NBOtherAgentSlotRecord *>(
+            hot_state + uniforms.other_agent_slot_offset);
+        const NBOtherAgentSlotRecord agent = agents[index];
+        if (!(agent.identifier == 0ul
+            || agent.existence_probability <= 0.0f)) {
+          const float social = 0.25f * (
+            agent.predicted_action + agent.social_relation
+              + agent.communication_evidence + agent.goal_confidence);
+          term = agent.existence_probability * (1.0f - agent.uncertainty)
+            * tanh(social);
+          valid = 1u;
+        }
+      }
+    }
+    const uint wave_count = min(sample_count - base, simd_width);
+    for (uint source_lane = 0u; source_lane < wave_count; ++source_lane) {
+      const uint source_valid = simd_broadcast(valid, source_lane);
+      const float source_term = simd_broadcast(term, source_lane);
+      if (simd_lane == 0u && source_valid != 0u) {
+        total += source_term;
+        count += 1u;
+      }
+    }
+  }
+  return count == 0u ? 0.0f
+    : clamp(total / float(count), -1.0f, 1.0f);
+}
+
 inline void advance_archive_page_epoch(
   device uchar *hot_state,
   ulong epoch_offset,
@@ -4870,7 +4972,9 @@ kernel void journal_committed_learning_transition(
   device const float *raw_sensor6 [[buffer(16)]],
   device const float *raw_sensor7 [[buffer(17)]],
   uint gid [[thread_position_in_grid]],
-  uint thread_count [[threads_per_threadgroup]])
+  uint thread_count [[threads_per_threadgroup]],
+  uint context_simd_lane [[thread_index_in_simdgroup]],
+  uint simd_width [[threads_per_simdgroup]])
 {
   if (acceptance_gate[0] != 1u) return;
   if (uniforms.recurrent_scalar_count == 0u
@@ -5302,18 +5406,31 @@ kernel void journal_committed_learning_transition(
   }
   // The five structured context summaries read independent prior and
   // accepted sections. Keep each summary's original ordered accumulation,
-  // while assigning the ten summaries to separate SIMD groups. Distributing
-  // the distinct level branches across groups avoids divergence in one SIMD.
+  // while assigning the ten summaries to separate SIMD groups. Every lane
+  // prepares an independent slot expression; lane zero folds them in source
+  // order, so learning records retain their original numeric sequence.
   threadgroup float structured_world_context[10];
-  if ((gid & 31u) == 0u) {
-    const uint context_groups = max(thread_count / 32u, 1u);
-    for (uint context = gid / 32u; context < 10u;
+  const bool full_context_groups = simd_width != 0u
+    && thread_count >= simd_width
+    && thread_count % simd_width == 0u;
+  if (full_context_groups) {
+    const uint context_groups = thread_count / simd_width;
+    for (uint context = gid / simd_width; context < 10u;
         context += context_groups) {
       device const uchar *world_state = context < 5u
         ? input_hot_state : output_hot_state;
-      structured_world_context[context] = committed_structured_world_context(
-        world_state, uniforms, context % 5u
-      );
+      const float value = committed_structured_world_context_simd(
+        world_state, uniforms, context % 5u, context_simd_lane, simd_width);
+      if (context_simd_lane == 0u)
+        structured_world_context[context] = value;
+    }
+  } else if (gid == 0u) {
+    for (uint context = 0u; context < 10u; ++context) {
+      device const uchar *world_state = context < 5u
+        ? input_hot_state : output_hot_state;
+      structured_world_context[context] =
+        committed_structured_world_context(
+          world_state, uniforms, context % 5u);
     }
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
