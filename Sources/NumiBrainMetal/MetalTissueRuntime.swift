@@ -9627,7 +9627,7 @@ public final class MetalTissueRuntime: @unchecked Sendable {
 
   private func regionalThreadgroupSize() -> MTLSize {
     MTLSize(
-      width: min(256, regionalPipeline.maxTotalThreadsPerThreadgroup),
+      width: min(1024, regionalPipeline.maxTotalThreadsPerThreadgroup),
       height: 1,
       depth: 1
     )
