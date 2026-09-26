@@ -8,17 +8,28 @@ final class MetalBrainBorrowedBufferResolver {
     let offset: Int
   }
 
+  private struct BufferRange {
+    let buffer: any MTLBuffer
+    let address: UInt64
+    let length: UInt64
+    let deviceRegistryID: UInt64
+  }
+
   // Retain the complete borrowed lease set while the owner's encoder is open.
   // Shader stages reuse the same GPU addresses throughout one borrowed pass.
   let allocations: [any MTLAllocation]
-  private let buffers: [any MTLBuffer]
+  private let ranges: [BufferRange]
   private let bufferIdentities: Set<ObjectIdentifier>
   private var resolutions: [UInt64: Resolution] = [:]
 
   init(allocations: [any MTLAllocation]) {
     self.allocations = allocations
-    buffers = allocations.compactMap { $0 as? any MTLBuffer }
-    bufferIdentities = Set(buffers.map { ObjectIdentifier($0 as AnyObject) })
+    ranges = allocations.compactMap { allocation in
+      guard let buffer = allocation as? any MTLBuffer else { return nil }
+      return BufferRange(buffer: buffer, address: buffer.gpuAddress,
+        length: UInt64(buffer.length), deviceRegistryID: buffer.device.registryID)
+    }
+    bufferIdentities = Set(ranges.map { ObjectIdentifier($0.buffer as AnyObject) })
   }
 
   func contains(_ buffer: any MTLBuffer) -> Bool {
@@ -27,14 +38,14 @@ final class MetalBrainBorrowedBufferResolver {
 
   func resolve(_ address: UInt64, deviceRegistryID: UInt64) throws -> Resolution {
     if let cached = resolutions[address] { return cached }
-    guard let buffer = buffers.first(where: {
-      address >= $0.gpuAddress && address - $0.gpuAddress < UInt64($0.length)
-    }), buffer.device.registryID == deviceRegistryID,
-      let offset = Int(exactly: address - buffer.gpuAddress)
+    guard let range = ranges.first(where: {
+      address >= $0.address && address - $0.address < $0.length
+    }), range.deviceRegistryID == deviceRegistryID,
+      let offset = Int(exactly: address - range.address)
     else {
       throw TissueError.transaction("borrowed neural argument has no matching device buffer lease")
     }
-    let result = Resolution(buffer: buffer, offset: offset)
+    let result = Resolution(buffer: range.buffer, offset: offset)
     resolutions[address] = result
     return result
   }
