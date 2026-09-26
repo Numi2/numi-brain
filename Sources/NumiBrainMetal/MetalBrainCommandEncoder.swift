@@ -21,6 +21,8 @@ final class MetalBrainBorrowedBufferResolver {
   private let ranges: [BufferRange]
   private let bufferIdentities: Set<ObjectIdentifier>
   private var resolutions: [UInt64: Resolution] = [:]
+  private var boundArgumentTable: ObjectIdentifier?
+  private var boundRevision: UInt64 = 0
 
   init(allocations: [any MTLAllocation]) {
     self.allocations = allocations
@@ -35,6 +37,17 @@ final class MetalBrainBorrowedBufferResolver {
   func contains(_ buffer: any MTLBuffer) -> Bool {
     bufferIdentities.contains(ObjectIdentifier(buffer as AnyObject))
   }
+
+  func hasBound(_ table: MetalBrainArgumentTable) -> Bool {
+    boundArgumentTable == ObjectIdentifier(table) && boundRevision == table.revision
+  }
+
+  func recordBound(_ table: MetalBrainArgumentTable) {
+    boundArgumentTable = ObjectIdentifier(table)
+    boundRevision = table.revision
+  }
+
+  func invalidateBindings() { boundArgumentTable = nil }
 
   func resolve(_ address: UInt64, deviceRegistryID: UInt64) throws -> Resolution {
     if let cached = resolutions[address] { return cached }
@@ -91,16 +104,28 @@ enum MetalBrainCommandEncoder {
     }
   }
 
+  private func bind(_ table: MetalBrainArgumentTable) throws {
+    switch self {
+    case let .metal4(encoder):
+      // setAddress already materialized the Metal 4 table's current revision.
+      encoder.setArgumentTable(table.metal4)
+    case let .borrowedResolved(_, resolver, _):
+      if resolver.hasBound(table) { return }
+      try bind(argumentTable: table.metal4, bindings: table.bindings)
+      resolver.recordBound(table)
+    }
+  }
+
   func dispatch(pipeline: any MTLComputePipelineState,
     argumentTable: MetalBrainArgumentTable, count: Int) throws {
-    try bind(argumentTable: argumentTable.metal4, bindings: argumentTable.bindings)
+    try bind(argumentTable)
     dispatch(pipeline: pipeline, argumentTable: argumentTable.metal4, count: count)
   }
 
   func dispatch(pipeline: any MTLComputePipelineState,
     argumentTable: MetalBrainArgumentTable, threadsPerGrid: MTLSize,
     threadsPerThreadgroup: MTLSize) throws {
-    try bind(argumentTable: argumentTable.metal4, bindings: argumentTable.bindings)
+    try bind(argumentTable)
     switch self {
     case let .metal4(encoder):
       encoder.setComputePipelineState(pipeline)
@@ -117,7 +142,7 @@ enum MetalBrainCommandEncoder {
     guard byteOffset >= 0, byteOffset <= indirectBuffer.length - 12,
       indirectBuffer.device.registryID == pipeline.device.registryID
     else { throw TissueError.transaction("indirect neural dispatch lacks its GPU arguments") }
-    try bind(argumentTable: argumentTable.metal4, bindings: argumentTable.bindings)
+    try bind(argumentTable)
     switch self {
     case let .metal4(encoder):
       encoder.setComputePipelineState(pipeline)
@@ -186,6 +211,7 @@ enum MetalBrainCommandEncoder {
         }
       }
       var count = byteCount
+      resolver.invalidateBindings()
       encoder.setComputePipelineState(pipeline)
       encoder.setBuffer(sourceBuffer, offset: sourceOffset, index: 0)
       encoder.setBuffer(destinationBuffer, offset: destinationOffset, index: 1)

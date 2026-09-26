@@ -6,11 +6,14 @@
 final class MetalBrainArgumentTable {
   let metal4: any MTL4ArgumentTable
   private(set) var bindings: [Int: UInt64] = [:]
+  private(set) var revision: UInt64 = 0
 
   init(_ metal4: any MTL4ArgumentTable) { self.metal4 = metal4 }
 
   func setAddress(_ address: UInt64, index: Int) {
+    if bindings[index] == address { return }
     bindings[index] = address
     metal4.setAddress(address, index: index)
+    revision &+= 1
   }
 }
