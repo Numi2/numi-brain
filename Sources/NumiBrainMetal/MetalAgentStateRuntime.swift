@@ -33,6 +33,14 @@ private struct ArchivePageResidencyUniforms {
   var clearRequests: UInt32 = 0
 }
 
+private final class PendingJournalConsolidation: @unchecked Sendable {
+  let generation: UInt64
+  let semaphore = DispatchSemaphore(value: 0)
+  var feedback: (any MTL4CommitFeedback)?
+
+  init(generation: UInt64) { self.generation = generation }
+}
+
 /// Executes generation seeding and persistent-memory journal application for
 /// `MetalAgentStateArena`. All state movement stays device-side; CPU only
 /// publishes or discards generation pointers after command completion.
@@ -65,6 +73,8 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   private let commandQueue: any MTL4CommandQueue
   private let commandAllocator: any MTL4CommandAllocator
   private let commandBuffer: any MTL4CommandBuffer
+  private let journalCommandAllocator: any MTL4CommandAllocator
+  private let journalCommandBuffer: any MTL4CommandBuffer
   private let initializePipeline: any MTLComputePipelineState
   private let beginPipeline: any MTLComputePipelineState
   private let applyJournalPipeline: any MTLComputePipelineState
@@ -75,15 +85,18 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   private let initializeArguments: any MTL4ArgumentTable
   private let beginArguments: any MTL4ArgumentTable
   private let applyJournalArguments: any MTL4ArgumentTable
+  private let asyncJournalArguments: any MTL4ArgumentTable
   private let checkpointSnapshotArguments: any MTL4ArgumentTable
   private let checkpointRestoreArguments: any MTL4ArgumentTable
   private let memoryRangeSnapshotArguments: any MTL4ArgumentTable
   private let archivePageResidencyArguments: any MTL4ArgumentTable
   private let uniformBuffer: any MTLBuffer
+  private let asyncJournalUniformBuffer: any MTLBuffer
   private let checkpointCopyUniformBuffer: any MTLBuffer
   private let memoryRangeCopyUniformBuffer: any MTLBuffer
   private let archivePageResidencyUniformBuffer: any MTLBuffer
   private let residencySet: any MTLResidencySet
+  private var pendingJournalConsolidation: PendingJournalConsolidation?
   private let lock = NSLock()
 
   public init(
@@ -110,7 +123,13 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     guard let commandQueue = device.makeMTL4CommandQueue(),
       let commandAllocator = device.makeCommandAllocator(),
       let commandBuffer = device.makeCommandBuffer(),
+      let journalCommandAllocator = device.makeCommandAllocator(),
+      let journalCommandBuffer = device.makeCommandBuffer(),
       let uniformBuffer = device.makeBuffer(
+        length: MemoryLayout<AgentArenaUniforms>.stride,
+        options: [.storageModeShared, .hazardTrackingModeTracked]
+      ),
+      let asyncJournalUniformBuffer = device.makeBuffer(
         length: MemoryLayout<AgentArenaUniforms>.stride,
         options: [.storageModeShared, .hazardTrackingModeTracked]
       ),
@@ -130,6 +149,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       throw TissueError.metal("failed to create agent-state Metal 4 execution objects")
     }
     uniformBuffer.label = "NumiBrain complete agent-state arena uniforms"
+    asyncJournalUniformBuffer.label = "NumiBrain committed journal uniforms"
     checkpointCopyUniformBuffer.label = "NumiBrain checkpoint copy uniforms"
     memoryRangeCopyUniformBuffer.label = "NumiBrain learner range-copy uniforms"
     archivePageResidencyUniformBuffer.label =
@@ -218,6 +238,11 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       label: "NumiBrain agent-memory journal arguments",
       count: 3
     )
+    let asyncJournalArguments = try Self.makeArgumentTable(
+      device: device,
+      label: "NumiBrain asynchronous committed journal arguments",
+      count: 3
+    )
     let checkpointSnapshotArguments = try Self.makeArgumentTable(
       device: device,
       label: "NumiBrain checkpoint snapshot arguments",
@@ -240,7 +265,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     )
     let residencyDescriptor = MTLResidencySetDescriptor()
     residencyDescriptor.label = "NumiBrain complete agent-state residency"
-    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 5
+    residencyDescriptor.initialCapacity = arena.residencyAllocations.count + 6
     let residencySet: any MTLResidencySet
     do {
       residencySet = try device.makeResidencySet(descriptor: residencyDescriptor)
@@ -251,6 +276,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       residencySet.addAllocation(allocation)
     }
     residencySet.addAllocation(uniformBuffer)
+    residencySet.addAllocation(asyncJournalUniformBuffer)
     residencySet.addAllocation(checkpointCopyUniformBuffer)
     residencySet.addAllocation(memoryRangeCopyUniformBuffer)
     residencySet.addAllocation(archivePageResidencyUniformBuffer)
@@ -262,6 +288,8 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     self.commandQueue = commandQueue
     self.commandAllocator = commandAllocator
     self.commandBuffer = commandBuffer
+    self.journalCommandAllocator = journalCommandAllocator
+    self.journalCommandBuffer = journalCommandBuffer
     self.initializePipeline = initializePipeline
     self.beginPipeline = beginPipeline
     self.applyJournalPipeline = applyJournalPipeline
@@ -272,11 +300,13 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     self.initializeArguments = initializeArguments
     self.beginArguments = beginArguments
     self.applyJournalArguments = applyJournalArguments
+    self.asyncJournalArguments = asyncJournalArguments
     self.checkpointSnapshotArguments = checkpointSnapshotArguments
     self.checkpointRestoreArguments = checkpointRestoreArguments
     self.memoryRangeSnapshotArguments = memoryRangeSnapshotArguments
     self.archivePageResidencyArguments = archivePageResidencyArguments
     self.uniformBuffer = uniformBuffer
+    self.asyncJournalUniformBuffer = asyncJournalUniformBuffer
     self.checkpointCopyUniformBuffer = checkpointCopyUniformBuffer
     self.memoryRangeCopyUniformBuffer = memoryRangeCopyUniformBuffer
     self.archivePageResidencyUniformBuffer = archivePageResidencyUniformBuffer
@@ -304,7 +334,10 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     try arena.markInitialized(generation: initialGeneration)
   }
 
-  deinit { residencySet.endResidency() }
+  deinit {
+    pendingJournalConsolidation?.semaphore.wait()
+    residencySet.endResidency()
+  }
 
   public func beginShadow(
     expectedBaseGeneration: UInt64,
@@ -467,6 +500,15 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     arena.publishPreparedCommit(prepared.arenaCommit)
+  }
+
+  func startPublishedMemoryJournalConsolidation() {
+    lock.lock()
+    defer { lock.unlock() }
+    guard arena.committedJournalNeedsConsolidation else { return }
+    // Only the owning joint coordinator calls this after external publication
+    // succeeds. If encoding cannot start, the next reader uses the synchronous path.
+    try? startCommittedMemoryJournalConsolidationLocked()
   }
 
   public func abort(transaction: MetalAgentStateTransactionToken) throws {
@@ -1186,6 +1228,18 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   }
 
   private func consolidateCommittedMemoryJournalLocked() throws {
+    if let pending = pendingJournalConsolidation {
+      pending.semaphore.wait()
+      pendingJournalConsolidation = nil
+      guard let feedback = pending.feedback else {
+        throw TissueError.metal("committed journal completed without Metal feedback")
+      }
+      if let error = feedback.error {
+        throw TissueError.metal("committed journal failed: \(error)")
+      }
+      try arena.markCommittedMemoryJournalConsolidated(generation: pending.generation)
+      return
+    }
     let memory = try arena.committedMemoryJournalView()
     guard memory.generation > 0 else {
       throw TissueError.transaction("generation zero cannot own a committed memory journal")
@@ -1208,6 +1262,51 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
     }
     try arena.markCommittedMemoryJournalConsolidated(generation: memory.generation)
+  }
+
+  private func startCommittedMemoryJournalConsolidationLocked() throws {
+    guard pendingJournalConsolidation == nil else {
+      throw TissueError.transaction("a committed journal command is already pending")
+    }
+    let memory = try arena.committedMemoryJournalView()
+    guard memory.generation > 0 else {
+      throw TissueError.transaction("generation zero cannot own a committed memory journal")
+    }
+    try writeUniforms(
+      baseGeneration: memory.generation - 1,
+      shadowGeneration: memory.generation,
+      applyMutations: true
+    )
+    asyncJournalUniformBuffer.contents().copyMemory(
+      from: uniformBuffer.contents(), byteCount: MemoryLayout<AgentArenaUniforms>.stride
+    )
+    journalCommandAllocator.reset()
+    journalCommandBuffer.beginCommandBuffer(allocator: journalCommandAllocator)
+    journalCommandBuffer.useResidencySet(residencySet)
+    guard let encoder = journalCommandBuffer.makeComputeCommandEncoder() else {
+      journalCommandBuffer.endCommandBuffer()
+      throw TissueError.metal("failed to encode committed journal")
+    }
+    encoder.label = "NumiBrain consolidate committed individual memory journal"
+    asyncJournalArguments.setAddress(memory.memoryGPUAddress, index: 0)
+    asyncJournalArguments.setAddress(memory.journalGPUAddress, index: 1)
+    asyncJournalArguments.setAddress(asyncJournalUniformBuffer.gpuAddress, index: 2)
+    encoder.setComputePipelineState(applyJournalPipeline)
+    encoder.setArgumentTable(asyncJournalArguments)
+    encoder.dispatchThreads(
+      threadsPerGrid: MTLSize(width: journalEntryCapacity, height: 1, depth: 1),
+      threadsPerThreadgroup: threadgroupSize(for: applyJournalPipeline)
+    )
+    encoder.endEncoding()
+    journalCommandBuffer.endCommandBuffer()
+    let pending = PendingJournalConsolidation(generation: memory.generation)
+    let options = MTL4CommitOptions()
+    options.addFeedbackHandler { feedback in
+      pending.feedback = feedback
+      pending.semaphore.signal()
+    }
+    pendingJournalConsolidation = pending
+    commandQueue.commit([journalCommandBuffer], options: options)
   }
 
   private func threadgroupSize(

@@ -2743,6 +2743,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
         ticket,
         brainGeneration: targetGeneration
       )
+      ticket.transaction.cognitiveTransaction
+        .startPublishedMemoryJournalConsolidation()
 
     case .reject:
       guard validation.commandDisposition == .rejectedReleased,
@@ -3461,6 +3463,7 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       brainGeneration: prepared.fast.receipt.brainGeneration,
       transaction: transaction
     )
+    prepared.cognitive.startPublishedMemoryJournalConsolidation()
   }
 
   /// This is the complete private pointer flip. The NumanX path deliberately

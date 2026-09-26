@@ -312,7 +312,9 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   }
 
   public func commit(with receipt: BrainJointCommitToken) throws {
-    try prepareCommit(with: receipt); publishPreparedCommit()
+    try prepareCommit(with: receipt)
+    publishPreparedCommit()
+    startPublishedMemoryJournalConsolidation()
   }
   func prepareCommit(with receipt: BrainJointCommitToken) throws {
     lock.lock(); defer { lock.unlock() }; try require(.gpuStateFinished)
@@ -342,6 +344,13 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
     borrowedMuscleController?.releaseBorrowedRoot(jointToken)
     borrowedMuscleController = nil; borrowedMuscleOutput = nil
     self.preparedCommit = nil; acceptedFastMotorState = nil; currentStatus = .committed
+  }
+  func startPublishedMemoryJournalConsolidation() {
+    lock.lock(); defer { lock.unlock() }
+    guard currentStatus == .committed else {
+      preconditionFailure("journal consolidation requires a committed joint generation")
+    }
+    runtime.startPublishedMemoryJournalConsolidation()
   }
   public func abort() throws {
     lock.lock(); defer { lock.unlock() }
