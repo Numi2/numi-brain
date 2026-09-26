@@ -69,8 +69,8 @@ final class MetalBorrowedHumanMotorWriter {
     encoder.setBuffer(standStatuses ?? noPriorFailure, offset: 0, index: 7)
     encoder.setBuffer(buffers.autonomicBuffer, offset: 0, index: 8)
     encoder.setBuffer(buffers.activeSensingBuffer, offset: 0, index: 9)
-    encoder.dispatchThreads(MTLSize(width: 1, height: 1, depth: 1),
-      threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+    encoder.dispatchThreads(MTLSize(width: 64, height: 1, depth: 1),
+      threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
     encoder.memoryBarrier(scope: .buffers)
   }
 }
