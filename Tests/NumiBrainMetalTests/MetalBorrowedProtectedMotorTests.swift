@@ -104,14 +104,16 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
   }
 
   private func begin(_ fixture: Fixture, step: UInt64 = 1,
-    basePhysicsGeneration: UInt64 = 100) throws
+    basePhysicsGeneration: UInt64 = 100,
+    borrowedEncoder: (any MTLComputeCommandEncoder)? = nil) throws
     -> MetalNumiBrainRuntime.ControlTransaction {
     let generation = fixture.brain.committedGeneration
     return try fixture.brain.beginControl(controlStepIdentifier: step,
       basePhysicsGeneration: basePhysicsGeneration + generation,
       committedTimestamp: .init(microseconds: 10_000 + generation * 1_000),
       targetTimestamp: .init(microseconds: 11_000 + generation * 1_000),
-      cachedDecisionFingerprint: 0x5500 + step)
+      cachedDecisionFingerprint: 0x5500 + step,
+      borrowedEncoder: borrowedEncoder)
   }
 
   private func read(_ buffer: any MTLBuffer, device: any MTLDevice) throws -> [UInt32] {
@@ -139,6 +141,23 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
     XCTAssertTrue(motor.evaluation.hasValidSuccess(), "the normal ready proof must authorize the command")
     return motor
+  }
+
+  private func borrowedSeededMotor(_ fixture: Fixture) throws
+    -> (MetalNumiBrainRuntime.ControlTransaction, MetalNumiBrainRuntime.BorrowedMotorCommand) {
+    let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
+    let command = try XCTUnwrap(queue.makeCommandBuffer())
+    let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+    let root = try begin(fixture, borrowedEncoder: encoder)
+    let input = try sensors(fixture, timestamp: root.token.committedTimestamp)
+    let motor = try fixture.brain.encodeBorrowedMotorCommand(root,
+      encoder: encoder, rawSensors: input)
+    encoder.endEncoding()
+    command.commit()
+    command.waitUntilCompleted()
+    XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+    XCTAssertTrue(motor.evaluation.hasValidSuccess())
+    return (root, motor)
   }
 
   private func acceptBorrowed(_ fixture: Fixture,
@@ -321,6 +340,31 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
       XCTAssertEqual(retryState, freshState,
         "an executed rejected root changed the accepted cognitive or fast checkpoint")
     }
+  }
+
+  func testBorrowedShadowSeedAbortThenRetryMatchesSynchronousSeed() throws {
+    let retried = try makeFixture(), fresh = try makeFixture()
+    let (rejectedRoot, _) = try borrowedSeededMotor(retried)
+    try retried.brain.abortBorrowedControl(rejectedRoot)
+
+    let (retryRoot, retryMotor) = try borrowedSeededMotor(retried)
+    let retryExcitations = try read(retryMotor.buffers.excitationBuffer, device: retried.device)
+    let retryHeader = try read(retryMotor.buffers.headerBuffer, device: retried.device)
+    let retryReceipt = try acceptBorrowed(retried, root: retryRoot, motor: retryMotor)
+    let retryCheckpoint = try retried.brain.saveCheckpoint(controlStepIdentifier: 1,
+      physicalCheckpointFingerprint: 99)
+
+    let freshRoot = try begin(fresh)
+    let freshMotor = try borrowedMotor(fresh, root: freshRoot)
+    XCTAssertEqual(retryExcitations,
+      try read(freshMotor.buffers.excitationBuffer, device: fresh.device))
+    XCTAssertEqual(retryHeader,
+      try read(freshMotor.buffers.headerBuffer, device: fresh.device))
+    XCTAssertEqual(retryReceipt,
+      try acceptBorrowed(fresh, root: freshRoot, motor: freshMotor))
+    XCTAssertEqual(retryCheckpoint,
+      try fresh.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99))
   }
 
   func testExecutedBorrowedAbortAfterAcceptedHistoryMatchesFreshSecondRoot() throws {

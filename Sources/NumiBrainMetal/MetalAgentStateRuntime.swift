@@ -307,10 +307,14 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
   deinit { residencySet.endResidency() }
 
   public func beginShadow(
-    expectedBaseGeneration: UInt64
+    expectedBaseGeneration: UInt64,
+    borrowedEncoder: (any MTLComputeCommandEncoder)? = nil
   ) throws -> MetalAgentStateTransactionToken {
     lock.lock()
     defer { lock.unlock() }
+    if let borrowedEncoder, borrowedEncoder.device.registryID != device.registryID {
+      throw TissueError.transaction("borrowed agent-state encoder belongs to another device")
+    }
     if arena.committedJournalNeedsConsolidation {
       try consolidateCommittedMemoryJournalLocked()
     }
@@ -325,17 +329,30 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
       let hot = try arena.hotStateView(transaction: transaction)
       let memory = try arena.persistentMemoryView(transaction: transaction)
-      try submit(label: "NumiBrain seed complete agent shadow") { encoder in
-        beginArguments.setAddress(hot.inputGPUAddress, index: 0)
-        beginArguments.setAddress(hot.outputGPUAddress, index: 1)
-        beginArguments.setAddress(memory.journalGPUAddress, index: 2)
-        beginArguments.setAddress(uniformBuffer.gpuAddress, index: 3)
-        encoder.setComputePipelineState(beginPipeline)
-        encoder.setArgumentTable(beginArguments)
-        encoder.dispatchThreads(
-          threadsPerGrid: MTLSize(width: self.shadowThreadCount, height: 1, depth: 1),
-          threadsPerThreadgroup: self.threadgroupSize(for: beginPipeline)
-        )
+      let arguments = MetalBrainArgumentTable(beginArguments)
+      arguments.setAddress(hot.inputGPUAddress, index: 0)
+      arguments.setAddress(hot.outputGPUAddress, index: 1)
+      arguments.setAddress(memory.journalGPUAddress, index: 2)
+      arguments.setAddress(uniformBuffer.gpuAddress, index: 3)
+      let grid = MTLSize(width: shadowThreadCount, height: 1, depth: 1)
+      let group = threadgroupSize(for: beginPipeline)
+      if let borrowedEncoder {
+        // The native Human owns submission and completion. Downstream neural
+        // kernels consume this shadow on the same encoder after the barrier.
+        let commands = MetalBrainCommandEncoder.borrowed(borrowedEncoder,
+          allocations: residencySet.allAllocations)
+        try commands.dispatch(pipeline: beginPipeline, argumentTable: arguments,
+          threadsPerGrid: grid, threadsPerThreadgroup: group)
+        commands.barrier()
+      } else {
+        try submit(label: "NumiBrain seed complete agent shadow") { encoder in
+          encoder.setComputePipelineState(beginPipeline)
+          encoder.setArgumentTable(beginArguments)
+          encoder.dispatchThreads(
+            threadsPerGrid: grid,
+            threadsPerThreadgroup: group
+          )
+        }
       }
       return transaction
     } catch {

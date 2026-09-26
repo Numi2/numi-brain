@@ -300,7 +300,8 @@ private final class StandingBridge {
       basePhysicsGeneration: UInt64(stepIndex),
       committedTimestamp: .init(microseconds: committedTime),
       targetTimestamp: .init(microseconds: targetTime),
-      cachedDecisionFingerprint: 0x4e554d4900000000 | UInt64(stepIndex + 1))
+      cachedDecisionFingerprint: 0x4e554d4900000000 | UInt64(stepIndex + 1),
+      borrowedEncoder: encoder)
     pending = transaction
     try brain.encodeBorrowedMotorDecision(transaction,
       encoder: encoder, rawSensors: input, nextPhase: nextPhase)

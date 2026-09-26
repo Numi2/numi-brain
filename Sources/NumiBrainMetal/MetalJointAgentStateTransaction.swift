@@ -30,12 +30,14 @@ public final class MetalJointAgentStateTransaction: @unchecked Sendable {
   private var borrowedMuscleEncodingFailed = false
 
   public init(jointToken: BrainJointTransactionToken, runtime: MetalAgentStateRuntime,
-              cachedDecisionFingerprint: UInt64) throws {
+              cachedDecisionFingerprint: UInt64,
+              borrowedEncoder: (any MTLComputeCommandEncoder)? = nil) throws {
     guard jointToken.parameterVersionFingerprint > 0, cachedDecisionFingerprint > 0,
       runtime.arena.committedGeneration == jointToken.baseBrainGeneration else {
       throw TissueError.transaction("joint brain-state transaction does not match committed generation")
     }
-    let token = try runtime.beginShadow(expectedBaseGeneration: jointToken.baseBrainGeneration)
+    let token = try runtime.beginShadow(expectedBaseGeneration: jointToken.baseBrainGeneration,
+      borrowedEncoder: borrowedEncoder)
     guard token.shadowGeneration == jointToken.shadowGeneration else {
       try? runtime.abort(transaction: token)
       throw TissueError.transaction("joint and complete-state shadow generations diverged")

@@ -715,7 +715,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
 
   public func beginControl(
     jointToken: BrainJointTransactionToken,
-    cachedDecisionFingerprint: UInt64
+    cachedDecisionFingerprint: UInt64,
+    borrowedEncoder: (any MTLComputeCommandEncoder)? = nil
   ) throws -> MetalJointAgentStateTransaction {
     guard jointToken.parameterVersionFingerprint == parameterVersionFingerprint else {
       throw TissueError.transaction("control root parameter version is not bound")
@@ -723,7 +724,8 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
     return try MetalJointAgentStateTransaction(
       jointToken: jointToken,
       runtime: agentStateRuntime,
-      cachedDecisionFingerprint: cachedDecisionFingerprint
+      cachedDecisionFingerprint: cachedDecisionFingerprint,
+      borrowedEncoder: borrowedEncoder
     )
   }
 

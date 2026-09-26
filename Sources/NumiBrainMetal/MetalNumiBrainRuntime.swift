@@ -1197,7 +1197,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     basePhysicsGeneration: UInt64,
     committedTimestamp: BrainTimestamp,
     targetTimestamp: BrainTimestamp,
-    cachedDecisionFingerprint: UInt64
+    cachedDecisionFingerprint: UInt64,
+    borrowedEncoder: (any MTLComputeCommandEncoder)? = nil
   ) throws -> ControlTransaction {
     lock.lock()
     defer { lock.unlock() }
@@ -1226,7 +1227,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     do {
       let cognitiveTransaction = try cognitive.beginControl(
         jointToken: token,
-        cachedDecisionFingerprint: cachedDecisionFingerprint
+        cachedDecisionFingerprint: cachedDecisionFingerprint,
+        borrowedEncoder: borrowedEncoder
       )
       let transaction = ControlTransaction(
         token: token,
