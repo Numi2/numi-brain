@@ -597,14 +597,27 @@ kernel void numanx_publish_decision_ready(
   uint3 lanesPerThreadgroup [[threads_per_threadgroup]])
 {
   threadgroup ulong chunkFingerprints[NB_DECISION_CHUNK_LANES];
+  threadgroup ulong commandFingerprints[3];
   const uint chunkCount = nb_decision_source_chunk_count(dispatch);
   const bool chunked = lanesPerThreadgroup.x >= NB_DECISION_CHUNK_LANES
     && chunkCount <= NB_DECISION_CHUNK_LANES;
+  const bool parallelCommands = chunked && lanesPerThreadgroup.x >= 352u;
   NBDecisionSourceDigestGPU sourceDigest{NB_FNV_OFFSET, false};
   if (chunked) {
     if (lane < chunkCount)
       chunkFingerprints[lane] = nb_decision_source_chunk_fingerprint(
         dispatch, decisionBytes, lane);
+    if (parallelCommands && lane >= 256u && lane < 352u && (lane & 31u) == 0u) {
+      const uint command = (lane - 256u) / 32u;
+      const uint rangeIndex = command == 0u ? 0u : (command == 1u ? 8u : 10u);
+      const uint domain = command == 0u ? 0x534f4d31u
+        : (command == 1u ? 0x41555431u : 0x41435431u);
+      const NBNumanXDecisionRangeGPU range = dispatch.ranges[rangeIndex];
+      const ulong end = ulong(range.byteOffset) + ulong(range.byteCount);
+      commandFingerprints[command] = end < ulong(range.byteOffset)
+        || end > dispatch.sourceByteCount ? 0ul : nb_range_fingerprint(
+          domain, decisionBytes + ulong(range.byteOffset), ulong(range.byteCount));
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     if (lane == 0u)
       sourceDigest = nb_decision_source_digest_chunks(
@@ -676,17 +689,20 @@ kernel void numanx_publish_decision_ready(
     const NBNumanXDecisionRangeGPU activeSensing = dispatch.ranges[10];
     output.decisionOutputFingerprint = aggregate == 0ul
       ? NB_FNV_OFFSET : aggregate;
-    output.descendingSomaticFingerprint = nb_range_fingerprint(
+    output.descendingSomaticFingerprint = parallelCommands
+      ? commandFingerprints[0] : nb_range_fingerprint(
       0x534f4d31u,
       decisionBytes + ulong(descending.byteOffset),
       ulong(descending.byteCount)
     );
-    output.autonomicCommandFingerprint = nb_range_fingerprint(
+    output.autonomicCommandFingerprint = parallelCommands
+      ? commandFingerprints[1] : nb_range_fingerprint(
       0x41555431u,
       decisionBytes + ulong(autonomic.byteOffset),
       ulong(autonomic.byteCount)
     );
-    output.activeSensingCommandFingerprint = nb_range_fingerprint(
+    output.activeSensingCommandFingerprint = parallelCommands
+      ? commandFingerprints[2] : nb_range_fingerprint(
       0x41435431u,
       decisionBytes + ulong(activeSensing.byteOffset),
       ulong(activeSensing.byteCount)
