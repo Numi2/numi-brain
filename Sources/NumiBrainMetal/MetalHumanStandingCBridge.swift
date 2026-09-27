@@ -218,9 +218,11 @@ private final class StandingBridge {
       program = source.baseline(template: template, sourceHash: sourceHash,
         epochMicroseconds: epochMicroseconds)
     }
-    guard ((program.version == 4 || program.version == 5) && source.version == 3 &&
+    guard ((program.version == 4 || program.version == 5 || program.version == 6) &&
+        source.version == 3 &&
         source.jointPathCalibration != nil)
-      || (program.version != 4 && program.version != 5 && source.version != 3) else {
+      || (program.version != 4 && program.version != 5 && program.version != 6 &&
+        source.version != 3) else {
       throw BrainRuntimeError.invalidDescriptor(
         "standing joint-path program requires the version 3 prepared physical source")
     }

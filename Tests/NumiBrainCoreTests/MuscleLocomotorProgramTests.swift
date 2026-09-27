@@ -206,6 +206,46 @@ final class MuscleLocomotorProgramTests: XCTestCase {
     XCTAssertThrowsError(try program(samples: 2).validate(template: template))
   }
 
+  func testJointPathRoutesHaveSeparateIdentityAndRequireCausalBoundedSource() throws {
+    let template = try fixture()
+    let velocity = try XCTUnwrap(template.sensoryProfile.bodyReceptorBindings.first {
+      $0.modality == .vestibular && $0.signal == .velocity && $0.component == 1
+    })
+    let channels = (UInt32(0)..<416).map {
+      MuscleLocomotorChannel(muscleIdentifier: $0, referenceLengthMeters: 0.25,
+        tonicExcitation: 0.03, lengthGain: 0, velocityGainSeconds: 0,
+        maximumExcitation: 1)
+    }
+    let baseline = MuscleLocomotorProgram(modelSourceFingerprint: 123,
+      sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+      calibrationArtifactSHA256: String(repeating: "a", count: 64), channels: channels)
+    func routed(gain: Float) -> MuscleLocomotorProgram {
+      let feedback = MuscleBalanceFeedbackProgram(
+        locomotorProgramFingerprint: baseline.baselineFingerprint,
+        modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "b", count: 64),
+        mode: .posture, updatePeriodMicroseconds: 1_000,
+        sources: [.init(identifier: 1,
+          bodyReceptorBindingIdentifier: velocity.identifier, referenceValue: 0)],
+        routes: [.init(sourceIdentifier: 1, muscleIdentifier: 0,
+          gain: gain, maximumCorrection: 0.25)])
+      return MuscleLocomotorProgram(modelSourceFingerprint: 123,
+        sensoryProfileFingerprint: template.sensoryProfile.fingerprint,
+        calibrationArtifactSHA256: String(repeating: "a", count: 64),
+        channels: channels, balanceFeedback: feedback,
+        jointPathFeedback: .init(lengthGain: 10,
+          velocityGainSeconds: 1, maximumCorrection: 0.2))
+    }
+    let first = routed(gain: 1)
+    try first.validate(template: template)
+    XCTAssertEqual(first.version, 6)
+    XCTAssertNotEqual(first.fingerprint, routed(gain: -1).fingerprint)
+    XCTAssertEqual(first, try JSONDecoder().decode(MuscleLocomotorProgram.self,
+      from: JSONEncoder().encode(first)))
+    XCTAssertThrowsError(try routed(gain: 11).validate(template: template))
+  }
+
   func testJointPathCalibrationRejectsPartialAndNonfiniteSourceValues() throws {
     func calibration(reference: [UInt32], optimal: [UInt32],
       jacobian: [UInt32]) -> MuscleJointPathCalibration {

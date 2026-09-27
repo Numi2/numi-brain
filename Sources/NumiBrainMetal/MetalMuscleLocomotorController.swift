@@ -103,8 +103,9 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
       )
     }
     let functionName = program.jointPathFeedback != nil
-      ? (program.version == 5 ? "nb_muscle_locomotor_joint_path_recovery"
-          : "nb_muscle_locomotor_joint_path")
+      ? (program.version == 6 ? "nb_muscle_locomotor_joint_path_routes"
+          : (program.version == 5 ? "nb_muscle_locomotor_joint_path_recovery"
+            : "nb_muscle_locomotor_joint_path"))
       : (program.spindleFeedbackOnsetMicroseconds != nil
         ? "nb_muscle_locomotor_delayed"
         : (balanceController == nil ? "nb_muscle_locomotor" : "nb_muscle_locomotor_balanced"))
@@ -113,7 +114,7 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
     }
     pipeline = try device.makeComputePipelineState(function: function)
     let descriptor = MTL4ArgumentTableDescriptor()
-    descriptor.maxBufferBindCount = program.version == 5 ? 11 :
+    descriptor.maxBufferBindCount = (program.version == 5 || program.version == 6) ? 11 :
       (program.version == 4 ? 10 : 6)
     descriptor.initializeBindings = true
     arguments = try device.makeArgumentTable(descriptor: descriptor)
@@ -244,6 +245,11 @@ public final class MetalMuscleLocomotorController: @unchecked Sendable {
           throw TissueError.transaction("push recovery lacks its receptor candidate")
         }
         addresses.append(eventError.gpuAddress)
+      } else if program.version == 6 {
+        guard let routeCorrections = balanceCandidate?.corrections else {
+          throw TissueError.transaction("joint-path routes lack their receptor candidate")
+        }
+        addresses.append(routeCorrections.gpuAddress)
       }
     } else {
       addresses = [view.gpuAddress, view.validityGPUAddress, channels.gpuAddress,

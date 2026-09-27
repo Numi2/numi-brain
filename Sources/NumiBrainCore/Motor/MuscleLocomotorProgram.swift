@@ -49,7 +49,8 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
     balanceFeedback: MuscleBalanceFeedbackProgram? = nil,
     spindleFeedbackOnsetMicroseconds: UInt64? = nil,
     jointPathFeedback: MuscleJointPathFeedbackProgram? = nil) {
-    version = jointPathFeedback != nil ? (balanceFeedback != nil ? 5 : 4) :
+    version = jointPathFeedback != nil ? (balanceFeedback == nil ? 4 :
+      (balanceFeedback?.routes.isEmpty == true ? 5 : 6)) :
       (spindleFeedbackOnsetMicroseconds != nil ? 3 : (balanceFeedback == nil ? 1 : 2))
     self.modelSourceFingerprint = modelSourceFingerprint
     self.sensoryProfileFingerprint = sensoryProfileFingerprint
@@ -112,6 +113,8 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
         && jointPathFeedback != nil)
       || (version == 5 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil
         && jointPathFeedback != nil)
+      || (version == 6 && balanceFeedback != nil && spindleFeedbackOnsetMicroseconds == nil
+        && jointPathFeedback != nil && balanceFeedback?.routes.isEmpty == false)
     else {
       throw BrainRuntimeError.invalidDescriptor(
         "locomotor program version does not match its whole-body feedback layer"
@@ -179,6 +182,23 @@ public struct MuscleLocomotorProgram: Codable, Equatable, Sendable {
 
   /// Canonical ordered bytes retain v1/v2 identity and bind the v3 onset.
   public var fingerprint: UInt64 {
+    if version == 6, let jointPathFeedback, let balanceFeedback {
+      var hash: UInt64 = 0xcbf29ce484222325
+      func bytes(_ values: [UInt8]) {
+        for byte in values { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+      }
+      func integer(_ value: UInt64) {
+        bytes((0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+      }
+      bytes(Array("NBMUSCLELOCOMOTOR6ROUTES".utf8))
+      integer(baselineFingerprint)
+      for value in [jointPathFeedback.lengthGain,
+        jointPathFeedback.velocityGainSeconds, jointPathFeedback.maximumCorrection] {
+        integer(UInt64(value.bitPattern))
+      }
+      integer(balanceFeedback.fingerprint)
+      return hash
+    }
     if version == 5, let jointPathFeedback, let balanceFeedback {
       var hash: UInt64 = 0xcbf29ce484222325
       func bytes(_ values: [UInt8]) {

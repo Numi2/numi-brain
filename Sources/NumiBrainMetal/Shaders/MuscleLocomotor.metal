@@ -240,6 +240,64 @@ kernel void nb_muscle_locomotor_joint_path_recovery(
   logits[gid] = excitation == 1.0f ? 10.0f : atanh(excitation);
 }
 
+// v6 keeps the exact joint-path standing command and adds the bounded sparse
+// correction produced from delivered body receptors on this command buffer.
+// Each route is part of the immutable program and is committed with its root.
+kernel void nb_muscle_locomotor_joint_path_routes(
+  device const float *spindles [[buffer(0)]],
+  device const uint *spindle_validity [[buffer(1)]],
+  device const float *kinesthesia [[buffer(2)]],
+  device const uint *joint_validity [[buffer(3)]],
+  device const NBMuscleLocomotorChannel *channels [[buffer(4)]],
+  device float *logits [[buffer(5)]],
+  constant uint4 &uniforms [[buffer(6)]],
+  device const float *reference_position [[buffer(7)]],
+  device const float *optimal_length [[buffer(8)]],
+  device const float *path_jacobian [[buffer(9)]],
+  device const float *route_corrections [[buffer(10)]],
+  uint gid [[thread_position_in_grid]]) {
+  if (gid >= uniforms.x) return;
+  const auto c = channels[gid];
+  float spindle_length = 0.0f, spindle_velocity = 0.0f;
+  if (!nb_muscle_locomotor_inputs(spindles, spindle_validity, c,
+      spindle_length, spindle_velocity)) {
+    logits[gid] = NAN;
+    return;
+  }
+  float length_error = 0.0f;
+  float velocity = 0.0f;
+  for (uint local = 0u; local < 122u; ++local) {
+    const uint row = local + 6u;
+    if ((joint_validity[row] & 3u) != 3u) {
+      logits[gid] = NAN;
+      return;
+    }
+    const float q = kinesthesia[row * 7u];
+    const float v = kinesthesia[row * 7u + 1u];
+    const float derivative = path_jacobian[gid * 122u + local];
+    if (!isfinite(q) || !isfinite(v) || !isfinite(reference_position[local])
+        || !isfinite(derivative)) {
+      logits[gid] = NAN;
+      return;
+    }
+    length_error += derivative * (q - reference_position[local]);
+    velocity += derivative * v;
+  }
+  const float length = optimal_length[gid];
+  const float error = as_type<float>(uniforms.y) * length_error / length
+    + as_type<float>(uniforms.z) * velocity / length;
+  const float correction = route_corrections[gid];
+  if (!isfinite(length) || length <= 0.0f || !isfinite(error)
+      || !isfinite(correction)) {
+    logits[gid] = NAN;
+    return;
+  }
+  const float excitation = clamp(c.tonic +
+    clamp(error, -as_type<float>(uniforms.w), as_type<float>(uniforms.w))
+    + clamp(correction, -0.5f, 0.5f), 0.0f, 1.0f);
+  logits[gid] = excitation == 1.0f ? 10.0f : atanh(excitation);
+}
+
 // Reads only the exact body-receptor rows named by the immutable feedback
 // program. Invalid receptor evidence is recorded as invalid and is never
 // interpreted as a measured zero error. Extraction continues during baseline
