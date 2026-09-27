@@ -495,6 +495,42 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
     XCTAssertGreaterThan(corrected[0], 0)
     XCTAssertGreaterThan(corrected[1], 0)
     XCTAssertEqual(corrected[0].bitPattern, corrected[1].bitPattern)
+
+    let eventConfig = HistorySource(delayMicroseconds: 0,
+      filterTimeConstantSeconds: 0, eventThreshold: 0.01,
+      eventConsecutiveSamples: 3)
+    let eventValues = try upload([Float](repeating: 0, count: 3), device: device)
+    let eventTimestamps = try upload([UInt64](repeating: 0, count: 3), device: device)
+    let eventValidity = try upload([UInt32](repeating: 0, count: 3), device: device)
+    let eventFiltered = try upload([Float(0)], device: device)
+    let eventFilteredTime = try upload([UInt64(0)], device: device)
+    let eventFilteredValidity = try upload([UInt32(0)], device: device)
+    func event(_ observedValidity: UInt32) throws -> (Float, UInt32) {
+      let candidate = try run(pipeline: historyPipeline, queue: queue,
+        observed: 0.02, observedValidity: observedValidity,
+        config: eventConfig,
+        committedValues: eventValues, committedTimestamps: eventTimestamps,
+        committedValidity: eventValidity,
+        committedFilteredValues: eventFiltered,
+        committedFilteredTimestamps: eventFilteredTime,
+        committedFilteredValidity: eventFilteredValidity,
+        timestamp: 1_000, capacity: 3, writeIndex: 0,
+        correctionEnabled: 1, device: device)
+      return (candidate.output, candidate.outputValidity)
+    }
+    let inactiveEvent = try event(1)
+    XCTAssertEqual(inactiveEvent.0, 0)
+    XCTAssertEqual(inactiveEvent.1, 1)
+    let independent = try corrections(
+      kinematic: inactiveEvent, support: validSupport)
+    XCTAssertEqual(independent[0], 0)
+    XCTAssertGreaterThan(independent[1], 0,
+      "an observed inactive event must not suppress an independent source")
+    let missingEvent = try event(0)
+    XCTAssertEqual(missingEvent.1, 0)
+    XCTAssertEqual(try corrections(
+      kinematic: missingEvent, support: validSupport), [0, 0],
+      "a missing physical event receptor must still hold every route")
   }
 
   func testPushEventNeedsThreeAcceptedSamplesAndRejectedCandidateDoesNotAdvanceIt() throws {
@@ -523,7 +559,8 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
       committedFilteredValidity: zeroFilteredValidity,
       timestamp: 1_000, capacity: capacity, writeIndex: 0,
       correctionEnabled: 1, device: device)
-    XCTAssertEqual(first.outputValidity, 0)
+    XCTAssertEqual(first.output, 0)
+    XCTAssertEqual(first.outputValidity, 1)
     XCTAssertEqual(zeroValidity.contents().load(as: UInt32.self), 0)
     let second = try run(pipeline: pipeline, queue: queue, observed: 0.03,
       observedValidity: 1, config: config,
@@ -534,7 +571,8 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
       committedFilteredValidity: first.filteredValidity,
       timestamp: 2_000, capacity: capacity, writeIndex: 1,
       correctionEnabled: 1, device: device)
-    XCTAssertEqual(second.outputValidity, 0)
+    XCTAssertEqual(second.output, 0)
+    XCTAssertEqual(second.outputValidity, 1)
     func third(_ valid: UInt32, _ value: Float) throws -> (Float, UInt32) {
       let result = try run(pipeline: pipeline, queue: queue, observed: value,
         observedValidity: valid, config: config,
@@ -548,7 +586,7 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
       return (result.output, result.outputValidity)
     }
     XCTAssertEqual(try third(0, 0.04).1, 0)
-    XCTAssertEqual(try third(1, 0.005).1, 0)
+    XCTAssertEqual(try third(1, 0.005).1, 1)
     let accepted = try third(1, 0.04)
     XCTAssertEqual(accepted.1, 1)
     XCTAssertEqual(accepted.0, 1)
@@ -605,7 +643,8 @@ final class MetalMuscleBalanceHistoryKernelTests: XCTestCase {
         capacity: 3, writeIndex: UInt32(index % 3),
         correctionEnabled: 1, device: device)
       if index < 2 {
-        XCTAssertEqual(candidate.outputValidity, 0)
+        XCTAssertEqual(candidate.output, 0)
+        XCTAssertEqual(candidate.outputValidity, 1)
       } else {
         XCTAssertEqual(candidate.outputValidity, 1)
         XCTAssertEqual(candidate.output, -1)

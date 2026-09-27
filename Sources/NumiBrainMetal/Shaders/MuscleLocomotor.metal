@@ -449,7 +449,9 @@ kernel void nb_muscle_balance_history(
     if (uniforms.correction_enabled != 0u) {
       output_errors[gid] = direction > 0.0f && observed <= 0.0f
         ? 0.0f : direction;
-      output_validity[gid] = direction != 0.0f ? 1u : 0u;
+      // A sampled but inactive event is known zero, not missing evidence.
+      // Other physical sources may still drive their declared routes.
+      output_validity[gid] = 1u;
     }
     return;
   }
