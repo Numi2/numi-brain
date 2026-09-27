@@ -346,6 +346,18 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
     } catch {
       throw TissueError.metal("decision-state Metal 4 compilation failed: \(error)")
     }
+    // Keep motor command arithmetic precise while using faster arithmetic
+    // for the planning and context pipelines measured on the Human.
+    let fastOptions = MTLCompileOptions()
+    fastOptions.languageVersion = .version4_0
+    fastOptions.mathMode = .fast
+    fastOptions.mathFloatingPointFunctions = .fast
+    let fastLibrary: any MTLLibrary
+    do {
+      fastLibrary = try device.makeLibrary(source: source, options: fastOptions)
+    } catch {
+      throw TissueError.metal("fast decision Metal 4 compilation failed: \(error)")
+    }
     let names = [
       "generate_active_goal_state", "apply_internal_workspace_write",
       "propose_dynamic_options",
@@ -358,8 +370,14 @@ public final class MetalDecisionRuntime: @unchecked Sendable {
       "generate_structured_motor_goal_state",
       "sketch_policy_observations",
     ]
+    let fastPipelineNames: Set<String> = [
+      "simulate_candidate_option_outcomes",
+      "select_cerebellar_context_experts",
+      "generate_structured_motor_goal_state",
+    ]
     let functions = try names.map { name -> any MTLFunction in
-      guard let function = library.makeFunction(name: name) else {
+      let shaderLibrary = fastPipelineNames.contains(name) ? fastLibrary : library
+      guard let function = shaderLibrary.makeFunction(name: name) else {
         throw TissueError.metal("\(name) is missing from decision-state Metal")
       }
       return function

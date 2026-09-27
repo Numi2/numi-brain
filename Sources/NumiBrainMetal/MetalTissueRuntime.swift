@@ -1537,8 +1537,8 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     }
     let compileOptions = MTLCompileOptions()
     compileOptions.languageVersion = .version4_0
-    compileOptions.mathMode = .safe
-    compileOptions.mathFloatingPointFunctions = .precise
+    compileOptions.mathMode = .fast
+    compileOptions.mathFloatingPointFunctions = .fast
     let library: any MTLLibrary
     do {
       library = try device.makeLibrary(source: source, options: compileOptions)

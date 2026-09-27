@@ -5074,9 +5074,9 @@ kernel void journal_committed_learning_transition(
   threadgroup uint sketch_valid[1024];
   threadgroup float modality_sums[8][3];
   threadgroup uint modality_valid_count[8];
-  // Stage each accepted plasticity site across SIMD lanes. Twelve lanes then
-  // fold independent trace components in original site order, retaining each
-  // learner statistic's exact floating-point accumulation sequence.
+  // Stage each accepted plasticity site across SIMD lanes, then reduce each
+  // independent trace component on a SIMD group. Every site contributes;
+  // the pairwise reduction changes only floating-point summation order.
   // The modality sketch has completed before the plasticity pass. Its
   // 3,072-float scratch exactly fits 256 sites x 12 prepared terms, so reuse
   // it instead of reserving another 12 KiB of scarce threadgroup memory.
@@ -5099,9 +5099,10 @@ kernel void journal_committed_learning_transition(
     const uint sample_count = min(scalar_count, 1024u);
     float projection_sums[3] = {};
     uint valid_sample_count = 0u;
-    // One SIMD wave prepares 32 samples. The same lane-zero accumulator
-    // consumes them in ascending sample order via broadcasts, preserving
-    // each signed sketch's exact floating-point addition sequence.
+    // One SIMD wave prepares 32 samples. Reduce that wave on GPU lanes,
+    // then fold wave totals in ascending sample-base order. The pairwise
+    // sum changes roundoff within a wave but keeps the sketch deterministic
+    // and every selected source sample in the committed transition.
     for (uint sample_base = 0u; sample_base < sample_count;
         sample_base += 32u) {
       const uint sample = sample_base + simd_lane;
@@ -5136,19 +5137,15 @@ kernel void journal_committed_learning_transition(
           }
         }
       }
-      const uint wave_count = min(sample_count - sample_base, 32u);
-      for (uint source_lane = 0u; source_lane < wave_count;
-          ++source_lane) {
-        const uint source_valid = simd_broadcast(valid, source_lane);
-        const float term0 = simd_broadcast(signed_terms[0], source_lane);
-        const float term1 = simd_broadcast(signed_terms[1], source_lane);
-        const float term2 = simd_broadcast(signed_terms[2], source_lane);
-        if (simd_lane == 0u && source_valid != 0u) {
-          projection_sums[0] += term0;
-          projection_sums[1] += term1;
-          projection_sums[2] += term2;
-          valid_sample_count += 1u;
-        }
+      const float wave_sum0 = simd_sum(signed_terms[0]);
+      const float wave_sum1 = simd_sum(signed_terms[1]);
+      const float wave_sum2 = simd_sum(signed_terms[2]);
+      const uint wave_valid_count = simd_sum(valid);
+      if (simd_lane == 0u) {
+        projection_sums[0] += wave_sum0;
+        projection_sums[1] += wave_sum1;
+        projection_sums[2] += wave_sum2;
+        valid_sample_count += wave_valid_count;
       }
     }
     if (simd_lane == 0u) {
@@ -5170,7 +5167,10 @@ kernel void journal_committed_learning_transition(
     reinterpret_cast<device const NBFastPlasticityRecord *>(
       output_hot_state + uniforms.fast_plasticity_offset
     );
-  float component_trace = 0.0f;
+  if (gid < 12u) plastic_trace[gid] = 0.0f;
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  const uint plastic_lane = gid & 31u;
+  const uint plastic_group_count = max(thread_count / 32u, 1u);
   for (uint base = 0u; base < uniforms.fast_plasticity_count;
       base += 256u) {
     const uint count = min(uniforms.fast_plasticity_count - base, 256u);
@@ -5195,13 +5195,16 @@ kernel void journal_committed_learning_transition(
       plastic_terms[12u * local + 11u] = abs(eligibility_delta);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (gid < 12u)
-      for (uint local = 0u; local < count; ++local)
-        component_trace += plastic_terms[12u * local + gid];
+    for (uint component = gid / 32u; component < 12u;
+        component += plastic_group_count) {
+      float lane_sum = 0.0f;
+      for (uint local = plastic_lane; local < count; local += 32u)
+        lane_sum += plastic_terms[12u * local + component];
+      const float wave_sum = simd_sum(lane_sum);
+      if (plastic_lane == 0u) plastic_trace[component] += wave_sum;
+    }
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
-  if (gid < 12u) plastic_trace[gid] = component_trace;
-  threadgroup_barrier(mem_flags::mem_threadgroup);
   // Prepare the finite body loads and joint uncertainty on all lanes. The
   // accepted transition keeps its original ascending body/joint fold below:
   // only independent per-site normalization moves out of lane zero.

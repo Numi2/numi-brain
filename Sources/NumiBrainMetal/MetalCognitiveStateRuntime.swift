@@ -206,8 +206,8 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let options = MTLCompileOptions()
     options.languageVersion = .version4_0
-    options.mathMode = .safe
-    options.mathFloatingPointFunctions = .precise
+    options.mathMode = .fast
+    options.mathFloatingPointFunctions = .fast
     let library: any MTLLibrary
     do {
       library = try device.makeLibrary(source: source, options: options)
