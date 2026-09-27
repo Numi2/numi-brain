@@ -330,13 +330,15 @@ private final class StandingBridge {
   }
 
   func encodeMotorTissue(encoder: any MTLComputeCommandEncoder,
-    muscleStates: any MTLBuffer, muscleCount: UInt32) throws {
+    muscleStates: any MTLBuffer, muscleCount: UInt32,
+    muscleStateByteOffset: Int = 0) throws {
     guard let pending, pendingMotor == nil, muscleCount == 416 else {
       throw BrainRuntimeError.transaction("standing tissue phase lacks one open decision")
     }
     let motor = try brain.encodeBorrowedMotorAfterDecision(pending, encoder: encoder)
     try brain.encodeBorrowedHumanExcitation(command: motor, encoder: encoder,
-      destinationMuscleStates: muscleStates, count: 416)
+      destinationMuscleStates: muscleStates,
+      destinationByteOffset: muscleStateByteOffset, count: 416)
     pendingMotor = motor
   }
 
@@ -420,14 +422,15 @@ private final class StandingBridge {
 
   func encodeMotor(encoder: any MTLComputeCommandEncoder, stepIndex: UInt32,
     receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
-    muscleStates: any MTLBuffer, muscleCount: UInt32) throws {
+    muscleStates: any MTLBuffer, muscleCount: UInt32,
+    muscleStateByteOffset: Int = 0) throws {
     guard muscleCount == 416 else {
       throw BrainRuntimeError.transaction("standing muscle count differs from physical source")
     }
     try encodeMotorDecision(encoder: encoder, stepIndex: stepIndex,
       receptors: receptors, count: count)
     try encodeMotorTissue(encoder: encoder, muscleStates: muscleStates,
-      muscleCount: muscleCount)
+      muscleCount: muscleCount, muscleStateByteOffset: muscleStateByteOffset)
   }
 
   func encodeAccepted(encoder: any MTLComputeCommandEncoder,
@@ -589,6 +592,27 @@ public func nbHumanStandingEncodeMotor(_ handle: UnsafeMutableRawPointer?,
     try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
       .encodeMotor(encoder: metalEncoder, stepIndex: step, receptors: receptors,
         count: receptorCount, muscleStates: states, muscleCount: muscleCount)
+    return 1
+  } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
+}
+
+@_cdecl("nb_human_standing_encode_motor_v2")
+public func nbHumanStandingEncodeMotorV2(_ handle: UnsafeMutableRawPointer?,
+  _ encoder: UnsafeMutableRawPointer?, _ step: UInt32,
+  _ receptors: UnsafePointer<NBHumanStandingReceptor>?, _ receptorCount: UInt32,
+  _ muscleStates: UnsafeMutableRawPointer?, _ muscleCount: UInt32,
+  _ muscleStateByteOffset: Int,
+  _ errorBuffer: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> UInt32 {
+  guard #available(macOS 26.0, *) else { standingError("macOS 26 required", errorBuffer, capacity); return 0 }
+  do {
+    guard let handle, let encoder, let muscleStates,
+      let metalEncoder = Unmanaged<AnyObject>.fromOpaque(encoder).takeUnretainedValue() as? any MTLComputeCommandEncoder,
+      let states = Unmanaged<AnyObject>.fromOpaque(muscleStates).takeUnretainedValue() as? any MTLBuffer
+    else { throw BrainRuntimeError.transaction("standing motor objects are missing") }
+    try Unmanaged<StandingBridge>.fromOpaque(handle).takeUnretainedValue()
+      .encodeMotor(encoder: metalEncoder, stepIndex: step, receptors: receptors,
+        count: receptorCount, muscleStates: states, muscleCount: muscleCount,
+        muscleStateByteOffset: muscleStateByteOffset)
     return 1
   } catch { standingError(String(describing: error), errorBuffer, capacity); return 0 }
 }

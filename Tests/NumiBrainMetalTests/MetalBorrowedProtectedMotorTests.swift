@@ -219,6 +219,45 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     XCTAssertTrue((0..<416).allSatisfy { values[$0].x == 0.75 }, "a preexisting native failure remains untouched")
   }
 
+  func testBorrowedHumanMotorWritesOnlySelectedEnvironmentSlice() throws {
+    let fixture = try makeFixture()
+    let root = try begin(fixture)
+    defer { try? fixture.brain.abortBorrowedControl(root) }
+    let motor = try borrowedMotor(fixture, root: root)
+    let count = 416
+    let stride = count * MemoryLayout<SIMD4<Float>>.stride
+    let states = try XCTUnwrap(fixture.device.makeBuffer(
+      length: 3 * stride, options: .storageModeShared))
+    let values = states.contents().assumingMemoryBound(to: SIMD4<Float>.self)
+    values.initialize(repeating: SIMD4<Float>(0.75, 0.25, 0.3, 0.4),
+      count: 3 * count)
+    let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
+    let command = try XCTUnwrap(queue.makeCommandBuffer())
+    let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+    try fixture.brain.encodeBorrowedHumanExcitation(command: motor,
+      encoder: encoder, destinationMuscleStates: states,
+      destinationByteOffset: stride)
+    encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+    XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+    let protected = try read(motor.buffers.excitationBuffer, device: fixture.device)
+    for index in 0..<(3 * count) {
+      XCTAssertEqual(values[index].x.bitPattern,
+        index / count == 1 ? protected[index % count] : Float(0.75).bitPattern)
+      XCTAssertEqual(values[index].y, 0.25)
+      XCTAssertEqual(values[index].z, 0.3)
+      XCTAssertEqual(values[index].w, 0.4)
+    }
+    let invalid = try XCTUnwrap(queue.makeCommandBuffer())
+    let invalidEncoder = try XCTUnwrap(invalid.makeComputeCommandEncoder())
+    XCTAssertThrowsError(try fixture.brain.encodeBorrowedHumanExcitation(
+      command: motor, encoder: invalidEncoder,
+      destinationMuscleStates: states, destinationByteOffset: stride + 4))
+    XCTAssertThrowsError(try fixture.brain.encodeBorrowedHumanExcitation(
+      command: motor, encoder: invalidEncoder,
+      destinationMuscleStates: states, destinationByteOffset: 3 * stride))
+    invalidEncoder.endEncoding()
+  }
+
   func testBorrowedProtectedOutputMatchesMetal4AndAbortPreservesHistory() throws {
     for critical in [false, true] {
       let borrowed = try makeFixture(), reference = try makeFixture()

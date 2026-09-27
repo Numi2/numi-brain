@@ -31,7 +31,8 @@ final class MetalBorrowedHumanMotorWriter {
 
   func encode(command: MetalNumiBrainRuntime.BorrowedMotorCommand,
     encoder: any MTLComputeCommandEncoder, destinationMuscleStates: any MTLBuffer,
-    count: Int, standStatuses: (any MTLBuffer)?) throws {
+    destinationByteOffset: Int, count: Int,
+    standStatuses: (any MTLBuffer)?) throws {
     let buffers = command.buffers
     let evaluation = command.evaluation
     let sources = [buffers.excitationBuffer, buffers.headerBuffer, evaluation.gateBuffer,
@@ -45,7 +46,11 @@ final class MetalBorrowedHumanMotorWriter {
       evaluation.candidateBuffer.length == 152,
       Int(command.candidate.autonomicCommandByteCount) <= buffers.autonomicBuffer.length,
       Int(command.candidate.activeSensingCommandByteCount) <= buffers.activeSensingBuffer.length,
-      destinationMuscleStates.length >= count * MemoryLayout<SIMD4<Float>>.stride,
+      destinationByteOffset >= 0,
+      destinationByteOffset % MemoryLayout<SIMD4<Float>>.alignment == 0,
+      destinationByteOffset <= destinationMuscleStates.length,
+      destinationMuscleStates.length - destinationByteOffset >=
+        count * MemoryLayout<SIMD4<Float>>.stride,
       pipeline.device.registryID == encoder.device.registryID,
       destinationMuscleStates.device.registryID == encoder.device.registryID,
       sources.allSatisfy({ $0.device.registryID == encoder.device.registryID
@@ -64,7 +69,7 @@ final class MetalBorrowedHumanMotorWriter {
     encoder.setBuffer(evaluation.gateBuffer, offset: 0, index: 2)
     encoder.setBuffer(evaluation.expectedBuffer, offset: 0, index: 3)
     encoder.setBuffer(evaluation.candidateBuffer, offset: 0, index: 4)
-    encoder.setBuffer(destinationMuscleStates, offset: 0, index: 5)
+    encoder.setBuffer(destinationMuscleStates, offset: destinationByteOffset, index: 5)
     encoder.setBytes(&shape, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 6)
     encoder.setBuffer(standStatuses ?? noPriorFailure, offset: 0, index: 7)
     encoder.setBuffer(buffers.autonomicBuffer, offset: 0, index: 8)

@@ -1400,7 +1400,8 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
   @_spi(NumanXInterop)
   public func encodeBorrowedHumanExcitation(command: BorrowedMotorCommand,
     encoder: any MTLComputeCommandEncoder, destinationMuscleStates: any MTLBuffer,
-    count: Int = 416, standStatuses: (any MTLBuffer)? = nil) throws {
+    destinationByteOffset: Int = 0, count: Int = 416,
+    standStatuses: (any MTLBuffer)? = nil) throws {
     lock.lock()
     defer { lock.unlock() }
     guard let activeTransaction, activeTransaction.status == .borrowedMotorEncoded,
@@ -1411,7 +1412,9 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       borrowedHumanMotorWriter = try MetalBorrowedHumanMotorWriter(device: encoder.device)
     }
     try borrowedHumanMotorWriter!.encode(command: command, encoder: encoder,
-      destinationMuscleStates: destinationMuscleStates, count: count, standStatuses: standStatuses)
+      destinationMuscleStates: destinationMuscleStates,
+      destinationByteOffset: destinationByteOffset, count: count,
+      standStatuses: standStatuses)
   }
 
   /// Appends only neural consequence work after the actual native owner has
