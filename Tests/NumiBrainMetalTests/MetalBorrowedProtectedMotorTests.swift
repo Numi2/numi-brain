@@ -258,6 +258,124 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     invalidEncoder.endEncoding()
   }
 
+  func testUnrolledHashesMatchCompleteReadyGatesIncludingNativeRejection() throws {
+    let sourceURL = try XCTUnwrap(MetalBrainResourceBundle.bundle.url(
+      forResource: "NumanXMotorReady", withExtension: "metal", subdirectory: "Shaders")
+      ?? MetalBrainResourceBundle.bundle.url(forResource: "NumanXMotorReady", withExtension: "metal"))
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    for critical in [false, true] {
+      let fixture = try makeFixture()
+      let root = try begin(fixture)
+      defer { try? fixture.brain.abortBorrowedControl(root) }
+      let motor = try borrowedMotor(fixture, root: root, critical: critical)
+      let decision = motor.evaluation.decisionEvaluation
+      let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
+      let sourceWords = try read(decision.sourceBuffer, device: fixture.device)
+      let excitationWords = try read(motor.buffers.excitationBuffer, device: fixture.device)
+      func upload(_ words: [UInt32]) throws -> any MTLBuffer {
+        try XCTUnwrap(words.withUnsafeBytes {
+          fixture.device.makeBuffer(bytes: $0.baseAddress!, length: $0.count, options: .storageModeShared)
+        })
+      }
+      let clonedSource = try upload(sourceWords)
+      let excitationInput = try upload(excitationWords)
+      func copyExcitation() throws {
+        let command = try XCTUnwrap(queue.makeCommandBuffer())
+        let blit = try XCTUnwrap(command.makeBlitCommandEncoder())
+        blit.copy(from: excitationInput, sourceOffset: 0,
+          to: motor.buffers.excitationBuffer, destinationOffset: 0,
+          size: motor.buffers.excitationBuffer.length)
+        blit.endEncoding(); command.commit(); command.waitUntilCompleted()
+        XCTAssertEqual(command.status, .completed)
+      }
+      let rangeBase = MetalNumanXDecisionReadyEvaluation.rangeTableByteOffset
+      func range(_ index: Int) -> (Int, Int) {
+        let bytes = decision.dispatchBuffer.contents()
+        return (Int(bytes.load(fromByteOffset: rangeBase + index * 8, as: UInt32.self)),
+          Int(bytes.load(fromByteOffset: rangeBase + index * 8 + 4, as: UInt32.self)))
+      }
+      let changedRange = try XCTUnwrap([11, 9, 7, 6, 5, 4, 3, 2, 1]
+        .map(range).first { $0.1 >= 4 })
+      XCTAssertEqual(changedRange.0 % 4, 0)
+      let changedWord = (changedRange.0 + changedRange.1 - 4) / 4
+      let autonomicOffset = range(8).0
+      var pipelines: [(Int, any MTLComputePipelineState, any MTLComputePipelineState)] = []
+      for width in [0, 8, 16] {
+        let options = MTLCompileOptions()
+        options.languageVersion = .version4_0
+        options.mathMode = .safe
+        options.mathFloatingPointFunctions = .precise
+        options.preprocessorMacros = ["NB_READY_HASH_UNROLL": NSNumber(value: width)]
+        let library = try fixture.device.makeLibrary(source: source, options: options)
+        let decisionPipeline = try fixture.device.makeComputePipelineState(function:
+          XCTUnwrap(library.makeFunction(name: "numanx_publish_decision_ready")))
+        let motorPipeline = try fixture.device.makeComputePipelineState(function:
+          XCTUnwrap(library.makeFunction(name: "numanx_publish_motor_ready")))
+        XCTAssertGreaterThanOrEqual(decisionPipeline.maxTotalThreadsPerThreadgroup, 352)
+        XCTAssertGreaterThanOrEqual(motorPipeline.maxTotalThreadsPerThreadgroup, 416)
+        pipelines.append((width, decisionPipeline, motorPipeline))
+      }
+      func evaluate(_ decisionPipeline: any MTLComputePipelineState,
+        _ motorPipeline: any MTLComputePipelineState, stale: Bool) throws -> ([UInt32], [UInt32]) {
+        let decisionGate = try XCTUnwrap(fixture.device.makeBuffer(length: 160, options: .storageModeShared))
+        let motorGate = try XCTUnwrap(fixture.device.makeBuffer(length: 160, options: .storageModeShared))
+        let command = try XCTUnwrap(queue.makeCommandBuffer())
+        let encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+        encoder.setComputePipelineState(decisionPipeline)
+        encoder.setBuffer(decision.dispatchBuffer, offset: 0, index: 0)
+        encoder.setBuffer(clonedSource, offset: 0, index: 1)
+        encoder.setBuffer(decisionGate, offset: 0, index: 2)
+        encoder.setBuffer(clonedSource, offset: decision.controlHeaderSourceOffset, index: 3)
+        encoder.setBuffer(decision.uncertaintyPolicyBuffer, offset: 0, index: 4)
+        encoder.dispatchThreads(MTLSize(width: 352, height: 1, depth: 1),
+          threadsPerThreadgroup: MTLSize(width: 352, height: 1, depth: 1))
+        encoder.memoryBarrier(scope: .buffers)
+        encoder.setComputePipelineState(motorPipeline)
+        let buffers: [(any MTLBuffer, Int)] = [
+          (motor.evaluation.expectedBuffer, 0), (motor.evaluation.candidateBuffer, 0),
+          (decision.dispatchBuffer, 0), (stale ? decision.gateBuffer : decisionGate, 0),
+          (clonedSource, 0), (motor.buffers.headerBuffer, 0),
+          (motor.buffers.excitationBuffer, 0), (motor.buffers.descendingBuffer, 0),
+          (clonedSource, autonomicOffset), (motor.buffers.autonomicBuffer, 0),
+          (motor.buffers.activeSensingBuffer, 0), (motorGate, 0),
+          (clonedSource, decision.controlHeaderSourceOffset), (decision.uncertaintyPolicyBuffer, 0)]
+        for (index, item) in buffers.enumerated() {
+          encoder.setBuffer(item.0, offset: item.1, index: index)
+        }
+        encoder.dispatchThreads(MTLSize(width: 416, height: 1, depth: 1),
+          threadsPerThreadgroup: MTLSize(width: 416, height: 1, depth: 1))
+        encoder.endEncoding(); command.commit(); command.waitUntilCompleted()
+        XCTAssertEqual(command.status, .completed, "\(String(describing: command.error))")
+        return (try read(decisionGate, device: fixture.device),
+          try read(motorGate, device: fixture.device))
+      }
+      for scenario in ["ordinary", "changed-source", "stale-decision", "nonfinite-excitation"] {
+        clonedSource.contents().storeBytes(of: sourceWords[changedWord]
+          ^ (scenario == "changed-source" || scenario == "stale-decision" ? 1 : 0),
+          toByteOffset: changedWord * 4, as: UInt32.self)
+        excitationInput.contents().storeBytes(of: scenario == "nonfinite-excitation"
+          ? Float.nan.bitPattern : excitationWords[0], as: UInt32.self)
+        try copyExcitation()
+        let reference = try evaluate(pipelines[0].1, pipelines[0].2, stale: scenario == "stale-decision")
+        if scenario == "ordinary" {
+          XCTAssertEqual(reference.0, try read(decision.gateBuffer, device: fixture.device))
+          XCTAssertEqual(reference.1, try read(motor.evaluation.gateBuffer, device: fixture.device))
+          XCTAssertEqual(reference.1[2], UInt32(1), "ordinary fixture must authorize motor output")
+        } else if scenario == "stale-decision" || scenario == "nonfinite-excitation" {
+          XCTAssertEqual(reference.1[2], UInt32(2), "native gate must reject \(scenario)")
+        }
+        for (width, decisionPipeline, motorPipeline) in pipelines.dropFirst() {
+          let actual = try evaluate(decisionPipeline, motorPipeline, stale: scenario == "stale-decision")
+          XCTAssertEqual(actual.0, reference.0, "complete decision gate width=\(width) scenario=\(scenario)")
+          XCTAssertEqual(actual.1, reference.1, "complete motor gate width=\(width) scenario=\(scenario)")
+        }
+      }
+      excitationInput.contents().storeBytes(of: excitationWords[0], as: UInt32.self)
+      try copyExcitation()
+      try checkNativeWriter(fixture, command: motor)
+    }
+  }
+
   func testBorrowedProtectedOutputMatchesMetal4AndAbortPreservesHistory() throws {
     for critical in [false, true] {
       let borrowed = try makeFixture(), reference = try makeFixture()

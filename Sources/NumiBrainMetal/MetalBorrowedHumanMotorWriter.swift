@@ -15,10 +15,7 @@ final class MetalBorrowedHumanMotorWriter {
       }
       return try String(contentsOf: url, encoding: .utf8)
     }
-    let options = MTLCompileOptions()
-    options.languageVersion = .version4_0
-    options.mathMode = .safe
-    options.mathFloatingPointFunctions = .precise
+    let options = try MetalNumanXReadyShaderConfiguration.compileOptions()
     let library = try device.makeLibrary(source: source("NumanXMotorReady") + "\n" + source("BorrowedHumanMotor"), options: options)
     guard let function = library.makeFunction(name: "borrowed_human_motor_excitation"),
       let noPriorFailure = device.makeBuffer(length: 4, options: .storageModeShared) else {

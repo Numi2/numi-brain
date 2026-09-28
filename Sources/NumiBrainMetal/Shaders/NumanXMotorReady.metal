@@ -1,6 +1,13 @@
 #include <metal_stdlib>
 using namespace metal;
 
+#ifndef NB_READY_HASH_UNROLL
+#define NB_READY_HASH_UNROLL 0
+#endif
+#if NB_READY_HASH_UNROLL != 0 && NB_READY_HASH_UNROLL != 8 && NB_READY_HASH_UNROLL != 16
+#error NB_READY_HASH_UNROLL must be 0, 8, or 16
+#endif
+
 constant uint NB_NUMANX_READY_ABI_VERSION = 1u;
 constant uint NB_NUMANX_READY_PENDING = 0u;
 constant uint NB_NUMANX_READY_SUCCESS = 1u;
@@ -225,9 +232,27 @@ inline void nb_mix_bytes(
   device const uchar *bytes,
   ulong byteCount
 ) {
+#if NB_READY_HASH_UNROLL != 0
+  // Preserve the complete FNV byte stream and dependency chain. Unroll only
+  // loop bookkeeping; aligned loads, padding reads and sampled bytes are not
+  // required. The remainder also covers arbitrary small or unaligned ranges.
+  const ulong fullByteCount = byteCount
+    - byteCount % ulong(NB_READY_HASH_UNROLL);
+  ulong index = 0ul;
+  for (; index < fullByteCount; index += ulong(NB_READY_HASH_UNROLL)) {
+    #pragma unroll
+    for (uint part = 0u; part < NB_READY_HASH_UNROLL; ++part) {
+      nb_mix_byte(hash, bytes[index + ulong(part)]);
+    }
+  }
+  for (; index < byteCount; ++index) {
+    nb_mix_byte(hash, bytes[index]);
+  }
+#else
   for (ulong index = 0ul; index < byteCount; ++index) {
     nb_mix_byte(hash, bytes[index]);
   }
+#endif
 }
 
 template <typename T>

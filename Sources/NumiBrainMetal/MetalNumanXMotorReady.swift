@@ -818,6 +818,24 @@ final class MetalNumanXMotorReadyEvaluation: @unchecked Sendable {
 }
 
 @available(macOS 26.0, *)
+enum MetalNumanXReadyShaderConfiguration {
+  /// Called once by each owning pipeline constructor. Arithmetic and all
+  /// digest domains/chunk boundaries remain identical for every width.
+  static func compileOptions() throws -> MTLCompileOptions {
+    let rawWidth = ProcessInfo.processInfo.environment["NUMI_BRAIN_READY_HASH_UNROLL"] ?? "16"
+    guard ["0", "8", "16"].contains(rawWidth), let width = UInt32(rawWidth) else {
+      throw TissueError.metal("NUMI_BRAIN_READY_HASH_UNROLL must be 0, 8, or 16")
+    }
+    let options = MTLCompileOptions()
+    options.languageVersion = .version4_0
+    options.mathMode = .safe
+    options.mathFloatingPointFunctions = .precise
+    options.preprocessorMacros = ["NB_READY_HASH_UNROLL": NSNumber(value: width)]
+    return options
+  }
+}
+
+@available(macOS 26.0, *)
 final class MetalNumanXMotorReadyRuntime {
   private struct BoundBufferRange {
     let name: String
@@ -844,10 +862,7 @@ final class MetalNumanXMotorReadyRuntime {
       throw TissueError.metal("NumanXMotorReady.metal is missing")
     }
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let options = MTLCompileOptions()
-    options.languageVersion = .version4_0
-    options.mathMode = .safe
-    options.mathFloatingPointFunctions = .precise
+    let options = try MetalNumanXReadyShaderConfiguration.compileOptions()
     let library: any MTLLibrary
     do {
       library = try device.makeLibrary(source: source, options: options)
