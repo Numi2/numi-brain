@@ -1535,10 +1535,21 @@ public final class MetalTissueRuntime: @unchecked Sendable {
     guard numanXFastProgramFingerprint != 0 else {
       throw TissueError.metal("NumanX fast program fingerprint is zero")
     }
+    let protectiveHashSetting = ProcessInfo.processInfo.environment[
+      "NUMI_BRAIN_PROTECTIVE_HASH_UNROLL"] ?? "8"
+    guard let protectiveHashUnroll = Int(protectiveHashSetting),
+      [0, 4, 8, 16].contains(protectiveHashUnroll),
+      String(protectiveHashUnroll) == protectiveHashSetting
+    else {
+      throw TissueError.metal("NUMI_BRAIN_PROTECTIVE_HASH_UNROLL must be 0, 4, 8, or 16")
+    }
     let compileOptions = MTLCompileOptions()
     compileOptions.languageVersion = .version4_0
     compileOptions.mathMode = .fast
     compileOptions.mathFloatingPointFunctions = .fast
+    compileOptions.preprocessorMacros = [
+      "NB_PROTECTIVE_HASH_UNROLL": NSNumber(value: protectiveHashUnroll),
+    ]
     let library: any MTLLibrary
     do {
       library = try device.makeLibrary(source: source, options: compileOptions)

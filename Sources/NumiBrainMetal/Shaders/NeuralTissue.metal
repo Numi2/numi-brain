@@ -1,3 +1,10 @@
+#ifndef NB_PROTECTIVE_HASH_UNROLL
+#define NB_PROTECTIVE_HASH_UNROLL 8
+#endif
+#if NB_PROTECTIVE_HASH_UNROLL != 0 && NB_PROTECTIVE_HASH_UNROLL != 4 && NB_PROTECTIVE_HASH_UNROLL != 8 && NB_PROTECTIVE_HASH_UNROLL != 16
+#error NB_PROTECTIVE_HASH_UNROLL must be 0, 4, 8, or 16
+#endif
+
 #include <metal_stdlib>
 using namespace metal;
 
@@ -968,9 +975,25 @@ inline ulong motor_output_fingerprint(
     protective_mix_uint(hash, header.reserved);
     protective_mix_float(hash, header.output_minimum);
     protective_mix_float(hash, header.output_maximum);
+#if NB_PROTECTIVE_HASH_UNROLL > 0
+    // Every original float bit pattern and FNV byte remains in source order.
+    // Group only loop bookkeeping; the running hash is still one serial chain.
+    uint index = 0u;
+    while (header.muscle_count - index >= NB_PROTECTIVE_HASH_UNROLL) {
+#pragma unroll
+        for (uint offset = 0u; offset < NB_PROTECTIVE_HASH_UNROLL; ++offset) {
+            protective_mix_float(hash, muscleExcitations[index + offset]);
+        }
+        index += NB_PROTECTIVE_HASH_UNROLL;
+    }
+    for (; index < header.muscle_count; ++index) {
+        protective_mix_float(hash, muscleExcitations[index]);
+    }
+#else
     for (uint index = 0u; index < header.muscle_count; ++index) {
         protective_mix_float(hash, muscleExcitations[index]);
     }
+#endif
     return hash;
 }
 
