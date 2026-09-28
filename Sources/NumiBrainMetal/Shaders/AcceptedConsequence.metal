@@ -1,4 +1,11 @@
 #include <metal_stdlib>
+
+#ifndef NB_ACCEPTED_AFFECT_PARALLEL
+#define NB_ACCEPTED_AFFECT_PARALLEL 0
+#endif
+#if NB_ACCEPTED_AFFECT_PARALLEL != 0 && NB_ACCEPTED_AFFECT_PARALLEL != 1
+#error NB_ACCEPTED_AFFECT_PARALLEL must be 0 or 1
+#endif
 using namespace metal;
 
 constant uint NB_ACCEPTED_STATE_VALID = 1u;
@@ -1759,6 +1766,13 @@ kernel void assimilate_accepted_body_and_physiology(
   }
 }
 
+// Match the original fast-compiled energy accumulation's add-then-subtract.
+// A lane-selected prepared deficit must not move subtraction before addition.
+inline float nb_accepted_ordered_energy_sum(float previous, float energy) {
+#pragma clang fp reassociate(off)
+  return (previous + 1.0f) - energy;
+}
+
 /// Derives affect from fresh, accepted interoceptive and nociceptive evidence.
 /// State changes stay in the transaction shadow and therefore disappear with
 /// every rejected physical future.
@@ -1772,13 +1786,18 @@ kernel void update_accepted_affective_state(
   device const uint *acceptance_gate [[buffer(12)]],
   uint gid [[thread_position_in_grid]])
 {
+#if NB_ACCEPTED_AFFECT_PARALLEL
+  if (gid >= 32u || acceptance_gate[0] != 1u) return;
+#else
   if (gid != 0u || acceptance_gate[0] != 1u) return;
+#endif
   device NBAffectiveStateRecord *state = reinterpret_cast<device NBAffectiveStateRecord *>(
     hot_state + uniforms.affective_state_offset
   );
   const ulong now = uniforms.target_timestamp_microseconds;
   if (now <= state->timestamp_microseconds) return;
   if (uniforms.affective_enabled == 0u) {
+    if (gid != 0u) return;
     state->pain = 0.0f;
     state->pleasure = 0.0f;
     state->relief = 0.0f;
@@ -1833,6 +1852,160 @@ kernel void update_accepted_affective_state(
     }
   }
 
+#if NB_ACCEPTED_AFFECT_PARALLEL
+  float prepared_nociception = 0.0f;
+  bool prepared_nociception_is_new = false;
+  float prepared_event_pain = 0.0f;
+  bool prepared_has_fresh_pain_event = false;
+  if (touch_frame_valid
+      && (touch_frame.receptor_timestamp_microseconds
+          > state->last_pain_timestamp_microseconds
+        || (state->last_pain_timestamp_microseconds == 0ul
+          && state->timestamp_microseconds == 0ul))
+      && touch_frame.receptor_count * touch_frame.feature_dimension
+        == uniforms.touch_count) {
+    device const NBBodyReceptorBindingRange *ranges =
+      reinterpret_cast<device const NBBodyReceptorBindingRange *>(
+        body_receptor_table + 1
+      );
+    device const NBBodyReceptorBindingRecord *bindings =
+      reinterpret_cast<device const NBBodyReceptorBindingRecord *>(
+        ranges + body_receptor_table->body_count
+      );
+    float strongest_body_pain = 0.0f;
+    bool has_nociception_source = false;
+    uint expected_nociception_binding_count = 0u;
+    uint valid_nociception_binding_count = 0u;
+    for (uint index = gid; index < body_receptor_table->binding_count; index += 32u) {
+      const NBBodyReceptorBindingRecord binding = bindings[index];
+      if (binding.signal == NB_AFFECTIVE_NOCICEPTION_SIGNAL
+          && (binding.flags & NB_ACCEPTED_STATE_VALID) != 0u) {
+        expected_nociception_binding_count += 1u;
+      }
+    }
+    for (uint body = gid; body < body_receptor_table->body_count; body += 32u) {
+      float weighted_pain = 0.0f;
+      float total_weight = 0.0f;
+      const NBBodyReceptorBindingRange range = ranges[body];
+      const uint binding_end = min(
+        range.binding_offset + range.binding_count,
+        body_receptor_table->binding_count
+      );
+      for (uint index = range.binding_offset; index < binding_end; ++index) {
+        const NBBodyReceptorBindingRecord binding = bindings[index];
+        if ((binding.flags & NB_ACCEPTED_STATE_VALID) == 0u
+            || binding.body_identifier != body
+            || binding.signal != NB_AFFECTIVE_NOCICEPTION_SIGNAL
+            || binding.observation_scalar_index < uniforms.touch_offset
+            || binding.observation_scalar_index
+              >= uniforms.touch_offset + uniforms.touch_count
+            || validity[binding.observation_scalar_index] == 0u
+            || !isfinite(observations[binding.observation_scalar_index])
+            || !isfinite(binding.scale) || !isfinite(binding.bias)
+            || !isfinite(binding.weight) || binding.weight <= 0.0f) continue;
+        const float evidence = observations[binding.observation_scalar_index]
+          * binding.scale + binding.bias;
+        if (!isfinite(evidence) || evidence < 0.0f || evidence > 1.0f) continue;
+        weighted_pain += evidence * binding.weight;
+        total_weight += binding.weight;
+        valid_nociception_binding_count += 1u;
+      }
+      if (total_weight > 0.0f) {
+        has_nociception_source = true;
+        strongest_body_pain = max(
+          strongest_body_pain, weighted_pain / total_weight
+        );
+      }
+    }
+    // Per-body weighted sums retain their original binding order. Only
+    // finite nonnegative maxima and exact unsigned counts cross SIMD lanes.
+    strongest_body_pain = simd_max(strongest_body_pain);
+    has_nociception_source = simd_or(uint(has_nociception_source)) != 0u;
+    expected_nociception_binding_count = simd_sum(expected_nociception_binding_count);
+    valid_nociception_binding_count = simd_sum(valid_nociception_binding_count);
+    if (has_nociception_source && expected_nociception_binding_count > 0u
+        && valid_nociception_binding_count
+          == expected_nociception_binding_count) {
+      prepared_nociception = strongest_body_pain;
+      prepared_nociception_is_new = true;
+    }
+  }
+  {
+  device NBEventQueueHeader *event_header = reinterpret_cast<device NBEventQueueHeader *>(
+    hot_state + uniforms.event_queue_offset
+  );
+  const uint event_count = min(
+    atomic_load_explicit(&event_header->count, memory_order_relaxed),
+    event_header->capacity
+  );
+  device const NBReceptorEventRecord *events =
+    reinterpret_cast<device const NBReceptorEventRecord *>(event_header + 1);
+  prepared_event_pain = 0.0f;
+  prepared_has_fresh_pain_event = false;
+  for (uint index = gid; index < event_count; index += 32u) {
+    const NBReceptorEventRecord event = events[index];
+    if ((event.kind == 8u || event.kind == 9u)
+        && event.timestamp_microseconds <= now
+        && now - event.timestamp_microseconds
+          <= uniforms.affective_maximum_evidence_age_microseconds
+        && isfinite(event.magnitude)) {
+      prepared_has_fresh_pain_event = true;
+      prepared_event_pain = max(prepared_event_pain, clamp(event.magnitude, 0.0f, 1.0f));
+    }
+  }
+    prepared_event_pain = simd_max(prepared_event_pain);
+    prepared_has_fresh_pain_event = simd_or(uint(prepared_has_fresh_pain_event)) != 0u;
+  }
+  // Five independent physiological sums preserve ascending receptor order.
+  // No floating-point sum crosses SIMD lanes.
+  threadgroup float prepared_feature_totals[5];
+  threadgroup uint prepared_feature_counts[5];
+  const bool prepare_fullbody_features = interoception_frame_valid
+    && (interoception_frame.receptor_timestamp_microseconds
+        > state->last_interoception_timestamp_microseconds
+      || (state->last_interoception_timestamp_microseconds == 0ul
+        && state->timestamp_microseconds == 0ul))
+    && interoception_frame.receptor_count * interoception_frame.feature_dimension
+      == uniforms.interoception_count
+    && interoception_frame.feature_dimension
+      == NB_AFFECTIVE_NUMANX_FULLBODY_FEATURE_DIMENSION
+    && uniforms.interoception_feature_schema_fingerprint
+      == NB_AFFECTIVE_NUMANX_FULLBODY_SCHEMA_FINGERPRINT;
+  if (prepare_fullbody_features && gid < 5u) {
+    float total = 0.0f;
+    uint valid_count = 0u;
+    const uint feature = gid < 2u ? gid : gid + 1u;
+    for (uint receptor = 0u; receptor < interoception_frame.receptor_count;
+        ++receptor) {
+      const uint base = uniforms.interoception_offset
+        + receptor * NB_AFFECTIVE_NUMANX_FULLBODY_FEATURE_DIMENSION;
+      const uint index = base + feature;
+      const float value = observations[index];
+      bool valid = validity[index] != 0u && isfinite(value)
+        && value >= (gid == 2u ? -1.0f : 0.0f) && value <= 1.0f;
+      float carbon_dioxide = 0.0f;
+      if (gid == 1u) {
+        carbon_dioxide = observations[base + 2u];
+        valid = valid && validity[base + 2u] != 0u
+          && isfinite(carbon_dioxide)
+          && carbon_dioxide >= 0.0f && carbon_dioxide <= 1.0f;
+      }
+      const float deficit = gid == 0u ? 1.0f - value
+        : gid == 1u ? max(1.0f - value, carbon_dioxide)
+        : gid == 2u ? abs(value) : value;
+      if (valid) {
+        total = gid == 0u ? nb_accepted_ordered_energy_sum(total, value)
+          : total + deficit;
+        valid_count += 1u;
+      }
+    }
+    prepared_feature_totals[gid] = total;
+    prepared_feature_counts[gid] = valid_count;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  if (gid != 0u) return;
+#endif
+
   const float source_weights[5] = {
     uniforms.affective_source_weight_0,
     uniforms.affective_source_weight_1,
@@ -1861,6 +2034,12 @@ kernel void update_accepted_affective_state(
       // The schema fingerprint binds these feature positions to the current
       // NumanX contract. Require complete coverage per source so changing
       // validity coverage cannot masquerade as physiological recovery.
+#if NB_ACCEPTED_AFFECT_PARALLEL
+      for (uint source = 0u; source < 5u; ++source) {
+        feature_totals[source] = prepared_feature_totals[source];
+        feature_valid_counts[source] = prepared_feature_counts[source];
+      }
+#else
       for (uint receptor = 0u; receptor < interoception_frame.receptor_count;
           ++receptor) {
         const uint base = uniforms.interoception_offset
@@ -1906,6 +2085,7 @@ kernel void update_accepted_affective_state(
           feature_valid_counts[4] += 1u;
         }
       }
+#endif
       for (uint source = 0u; source < 5u; ++source) {
         if (feature_valid_counts[source] != interoception_frame.receptor_count
             || interoception_frame.receptor_count == 0u) continue;
@@ -1986,6 +2166,10 @@ kernel void update_accepted_affective_state(
           && state->timestamp_microseconds == 0ul))
       && touch_frame.receptor_count * touch_frame.feature_dimension
         == uniforms.touch_count) {
+#if NB_ACCEPTED_AFFECT_PARALLEL
+    current_nociception = prepared_nociception;
+    nociception_is_new = prepared_nociception_is_new;
+#else
     device const NBBodyReceptorBindingRange *ranges =
       reinterpret_cast<device const NBBodyReceptorBindingRange *>(
         body_receptor_table + 1
@@ -2045,8 +2229,13 @@ kernel void update_accepted_affective_state(
       current_nociception = strongest_body_pain;
       nociception_is_new = true;
     }
+#endif
   }
 
+#if NB_ACCEPTED_AFFECT_PARALLEL
+  const float event_pain = prepared_event_pain;
+  const bool has_fresh_pain_event = prepared_has_fresh_pain_event;
+#else
   device NBEventQueueHeader *event_header = reinterpret_cast<device NBEventQueueHeader *>(
     hot_state + uniforms.event_queue_offset
   );
@@ -2069,6 +2258,7 @@ kernel void update_accepted_affective_state(
       event_pain = max(event_pain, clamp(event.magnitude, 0.0f, 1.0f));
     }
   }
+#endif
 
   const float fresh_tissue_damage = (current_feature_mask & (1u << 4u)) != 0u
     ? state->source_evidence[4] : 0.0f;

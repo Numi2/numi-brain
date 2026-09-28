@@ -27,7 +27,7 @@ private func copyAcceptedConsequenceArray<Element>(
   return true
 }
 
-private struct AcceptedConsequenceUniforms {
+struct AcceptedConsequenceUniforms {
   var targetTimestampMicroseconds: UInt64 = 0
   var deltaMicroseconds: UInt64 = 0
   var observationOffset: UInt64 = 0
@@ -251,6 +251,7 @@ private struct AcceptedConsequenceProgramResources {
   let uniformBuffer: any MTLBuffer
   let unconditionalAcceptanceGate: any MTLBuffer
   let plasticityParameterCount: UInt32
+  let affectThreadCount: Int
 }
 
 @inline(never)
@@ -882,10 +883,19 @@ private func makeAcceptedConsequenceProgramResources(
     throw TissueError.metal("AcceptedConsequence.metal is missing from resources")
   }
   let source = try String(contentsOf: sourceURL, encoding: .utf8)
+  let affectParallelSetting =
+    ProcessInfo.processInfo.environment["NUMI_BRAIN_AFFECT_PARALLEL"] ?? "1"
+  guard affectParallelSetting == "0" || affectParallelSetting == "1" else {
+    throw TissueError.metal("NUMI_BRAIN_AFFECT_PARALLEL must be 0 or 1")
+  }
+  let affectParallel = affectParallelSetting == "1"
   let options = MTLCompileOptions()
   options.languageVersion = .version4_0
   options.mathMode = .fast
   options.mathFloatingPointFunctions = .fast
+  options.preprocessorMacros = [
+    "NB_ACCEPTED_AFFECT_PARALLEL": NSNumber(value: affectParallel ? 1 : 0),
+  ]
   let library: any MTLLibrary
   do {
     library = try device.makeLibrary(source: source, options: options)
@@ -922,6 +932,9 @@ private func makeAcceptedConsequenceProgramResources(
     }
   } catch {
     throw TissueError.metal("accepted-consequence pipeline creation failed: \(error)")
+  }
+  guard !affectParallel || pipelines[14].threadExecutionWidth == 32 else {
+    throw TissueError.metal("parallel affect requires one native SIMD32 group")
   }
   let descriptor = MTL4ArgumentTableDescriptor()
   descriptor.label = "NumiBrain accepted-consequence arguments"
@@ -1007,7 +1020,8 @@ private func makeAcceptedConsequenceProgramResources(
     argumentTable: argumentTable,
     uniformBuffer: uniformBuffer,
     unconditionalAcceptanceGate: unconditionalAcceptanceGateBuffer,
-    plasticityParameterCount: UInt32(plasticityScalarCount)
+    plasticityParameterCount: UInt32(plasticityScalarCount),
+    affectThreadCount: affectParallel ? 32 : 1
   )
 }
 
@@ -1033,6 +1047,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
   private let unconditionalAcceptanceGateBuffer: any MTLBuffer
   private let plasticityParameterCount: UInt32
   private let sensorimotorWorldDimension: Int
+  private let affectThreadCount: Int
 
   public init(
     device: any MTLDevice,
@@ -1165,6 +1180,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       programResources.unconditionalAcceptanceGate
     self.plasticityParameterCount = programResources.plasticityParameterCount
     self.sensorimotorWorldDimension = sensorimotorWorldDimension
+    self.affectThreadCount = programResources.affectThreadCount
   }
 
   public var residencyAllocations: [any MTLAllocation] {
@@ -1458,7 +1474,7 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       count: sensorimotorWorldDimension
     )
     barrier(encoder)
-    try dispatch(encoder, pipeline: pipelines[14], count: 1)
+    try dispatch(encoder, pipeline: pipelines[14], count: affectThreadCount)
     barrier(encoder)
     try dispatch(
       encoder,
