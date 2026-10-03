@@ -1,8 +1,5 @@
 name: Inspect Apple connectome execution hardware
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/connectome-hardware-probe.yml']
   workflow_dispatch:
 permissions:
   contents: read

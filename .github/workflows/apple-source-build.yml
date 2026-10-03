@@ -1,35 +1,6 @@
 name: Apple source build
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'Package.swift'
-      - 'Contracts/**'
-      - 'Sources/NumiBrainABI/**'
-      - 'Sources/NumiBrainCore/**'
-      - 'Sources/NumiBrainMetal/**'
-      - 'Sources/NumiBrainMLX/**'
-      - 'Sources/NumiBrainExperimentCLI/**'
-      - 'Tests/NumiBrainCoreTests/**'
-      - 'Tests/NumiBrainMetalTests/**'
-      - 'scripts/generate-executable-model-contract.py'
-      - 'scripts/check-executable-model-contract.py'
-      - '.github/workflows/apple-source-build.yml'
-  pull_request:
-    paths:
-      - 'Package.swift'
-      - 'Contracts/**'
-      - 'Sources/NumiBrainABI/**'
-      - 'Sources/NumiBrainCore/**'
-      - 'Sources/NumiBrainMetal/**'
-      - 'Sources/NumiBrainMLX/**'
-      - 'Sources/NumiBrainExperimentCLI/**'
-      - 'Tests/NumiBrainCoreTests/**'
-      - 'Tests/NumiBrainMetalTests/**'
-      - 'scripts/generate-executable-model-contract.py'
-      - 'scripts/check-executable-model-contract.py'
-      - '.github/workflows/apple-source-build.yml'
   workflow_dispatch:
 
 permissions:

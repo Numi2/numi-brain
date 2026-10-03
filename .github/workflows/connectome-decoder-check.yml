@@ -1,8 +1,5 @@
 name: Connectome checked-out source and learning
 on:
-  push:
-    branches: [main]
-    paths: ['Sources/**', 'Tests/**', 'Package.swift', 'tools/*connectome*', 'tools/*numilab*', '.github/workflows/connectome-decoder-check.yml']
   workflow_dispatch:
 permissions:
   contents: read
