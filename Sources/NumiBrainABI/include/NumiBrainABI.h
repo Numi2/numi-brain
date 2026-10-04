@@ -6,6 +6,7 @@
 #include "NumiBrainNumanXMotorReadyABI.h"
 #include "NumiBrainNumanXHumanMatterABI.h"
 #include "NumiBrainHumanStandingABI.h"
+#include "NumiBrainRespiratoryChemoreflexV1.h"
 
 #ifdef __cplusplus
 extern "C" {
