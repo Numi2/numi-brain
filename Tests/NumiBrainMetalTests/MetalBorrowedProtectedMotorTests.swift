@@ -745,4 +745,66 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
     XCTAssertEqual(retryCheckpoint, try fresh.brain.saveCheckpoint(
       controlStepIdentifier: 1, physicalCheckpointFingerprint: 99))
   }
+  func testProfiledBorrowedStagesPreserveCommittedCheckpoint() throws {
+    func run(profile: Bool) throws -> (MetalNumiBrainCheckpoint, [String]) {
+      let fixture = try makeFixture()
+      let root = try begin(fixture)
+      let queue = try XCTUnwrap(fixture.device.makeCommandQueue())
+      var stages: [String] = []
+      func submit(_ encode: (any MTLComputeCommandEncoder,
+        ((String) throws -> any MTLComputeCommandEncoder)?) throws -> Void) throws
+        -> any MTLCommandBuffer {
+        let command = try XCTUnwrap(queue.makeCommandBuffer())
+        var encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+        let next: ((String) throws -> any MTLComputeCommandEncoder)? = profile ? { stage in
+          encoder.endEncoding()
+          encoder = try XCTUnwrap(command.makeComputeCommandEncoder())
+          stages.append(stage)
+          return encoder
+        } : nil
+        try encode(encoder, next)
+        encoder.endEncoding()
+        command.commit()
+        command.waitUntilCompleted()
+        XCTAssertEqual(command.status, .completed, String(describing: command.error))
+        return command
+      }
+      let input = try sensors(fixture, timestamp: root.token.committedTimestamp)
+      _ = try submit { encoder, next in
+        try fixture.brain.encodeBorrowedMotorDecision(root,
+          encoder: encoder, rawSensors: input, nextPhase: next)
+      }
+      var motor: MetalNumiBrainRuntime.BorrowedMotorCommand?
+      _ = try submit { encoder, _ in
+        motor = try fixture.brain.encodeBorrowedMotorAfterDecision(root,
+          encoder: encoder)
+      }
+      let ready = try XCTUnwrap(motor)
+      XCTAssertTrue(ready.evaluation.hasValidSuccess())
+      let accepted = try AcceptedPhysicsStateToken(transaction: root.token,
+        substep: ready.substep, physicsStateFingerprint: 0x8811,
+        physicsGeneration: root.token.basePhysicsGeneration + 1)
+      let observations = try sensors(fixture, timestamp: root.token.targetTimestamp)
+      _ = try submit { encoder, _ in
+        try fixture.brain.encodeBorrowedAcceptedFast(root,
+          encoder: encoder, accepted: accepted)
+      }
+      let command = try submit { encoder, next in
+        try fixture.brain.encodeBorrowedAcceptedCognitive(root,
+          encoder: encoder, rawSensors: observations, nextPhase: next)
+      }
+      _ = try fixture.brain.finishBorrowedControl(root,
+        gpuStartSeconds: command.gpuStartTime, gpuEndSeconds: command.gpuEndTime)
+      return (try fixture.brain.saveCheckpoint(controlStepIdentifier: 1,
+        physicalCheckpointFingerprint: 99), stages)
+    }
+    let ordinary = try run(profile: false)
+    let profiled = try run(profile: true)
+    XCTAssertEqual(ordinary.0, profiled.0)
+    XCTAssertTrue(ordinary.1.isEmpty)
+    XCTAssertTrue(profiled.1.contains("brain_cognitive_homeostasis"))
+    XCTAssertTrue(profiled.1.contains("memory_begin"))
+    XCTAssertTrue(profiled.1.contains("brain_consequence_body_physiology"))
+  }
+
 }

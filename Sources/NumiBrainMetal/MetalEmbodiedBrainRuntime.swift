@@ -1034,12 +1034,20 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       transaction: transaction.agentStateToken,
       targetTimestamp: transaction.jointToken.committedTimestamp,
       deltaMicroseconds: duration, receptorEventCapacity: sensory.eventCapacity,
-      regionalRecurrentInput: regionalRecurrentInput)
+      regionalRecurrentInput: regionalRecurrentInput,
+      nextPhase: nextPhase == nil ? nil : { stage in
+        try advance(stage)
+        return commands
+      })
     commands.barrier()
     try advance("brain_decision_memory")
     try memoryRuntime.encodeRetrieval(encoder: commands,
       transaction: transaction.agentStateToken,
-      timestamp: transaction.jointToken.committedTimestamp)
+      timestamp: transaction.jointToken.committedTimestamp,
+      nextPhase: nextPhase == nil ? nil : { stage in
+        try advance(stage)
+        return commands
+      })
     commands.barrier()
     try advance("brain_decision_locomotor")
     let logits = try transaction.encodeMuscleLocomotor(muscleLocomotorController,
@@ -1658,13 +1666,19 @@ public final class MetalEmbodiedBrainRuntime: @unchecked Sendable {
       )
       commands.barrier()
       try advance("brain_accepted_cognitive_consequence")
+      let consequenceNextPhase: ((String) throws -> MetalBrainCommandEncoder)? =
+        nextPhase == nil ? nil : { stage in
+          try advance(stage)
+          return commands
+        }
       try acceptedConsequenceRuntime.encode(
         encoder: commands,
         transaction: transaction.agentStateToken,
         acceptedPhysicsState: acceptedPhysicsState,
         deltaMicroseconds: duration,
         receptorEventCapacity: sensory.eventCapacity,
-        acceptedFastMotorState: acceptedFastMotorState
+        acceptedFastMotorState: acceptedFastMotorState,
+        nextPhase: consequenceNextPhase
       )
       commands.barrier()
       try advance("brain_accepted_cognitive_belief")

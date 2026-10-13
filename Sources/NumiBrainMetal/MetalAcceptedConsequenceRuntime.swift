@@ -1259,7 +1259,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     deltaMicroseconds: UInt64,
     receptorEventCapacity: Int,
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease? = nil,
-    acceptanceGateGPUAddress: UInt64? = nil
+    acceptanceGateGPUAddress: UInt64? = nil,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws {
     try encode(
       encoder: encoder,
@@ -1271,7 +1272,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
       receptorEventCapacity: receptorEventCapacity,
       acceptedFastMotorState: acceptedFastMotorState,
       acceptanceGateGPUAddress: acceptanceGateGPUAddress,
-      acceptanceGateResultGPUAddress: nil
+      acceptanceGateResultGPUAddress: nil,
+      nextPhase: nextPhase
     )
   }
 
@@ -1360,7 +1362,8 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
     receptorEventCapacity: Int,
     acceptedFastMotorState: MetalTissueRuntime.AcceptedFastMotorStateLease?,
     acceptanceGateGPUAddress: UInt64?,
-    acceptanceGateResultGPUAddress: UInt64?
+    acceptanceGateResultGPUAddress: UInt64?,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws {
     guard acceptedTimestamp.rawValue >= deltaMicroseconds,
       receptorEventCapacity >= 0,
@@ -1410,16 +1413,22 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         ?? neutralProtectiveCommandBuffer.gpuAddress,
       index: 8
     )
+    var phaseEncoder = encoder
+    func phase(_ name: String) throws {
+      if let nextPhase { phaseEncoder = try nextPhase("brain_consequence_" + name) }
+    }
     if species.body.muscleCount > 0 {
+      try phase("muscle_task")
       try dispatch(
-        encoder,
+        phaseEncoder,
         pipeline: pipelines[11],
         count: Int(species.body.muscleCount)
       )
-      barrier(encoder)
+      barrier(phaseEncoder)
     }
+    try phase("body_physiology")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[0],
       count: max(
         Int(species.body.bodyCount),
@@ -1429,82 +1438,95 @@ public final class MetalAcceptedConsequenceRuntime: @unchecked Sendable {
         )
       )
     )
-    barrier(encoder)
+    barrier(phaseEncoder)
     if species.body.jointCount > 0 {
+      try phase("joint_schema")
       try dispatch(
-        encoder,
+        phaseEncoder,
         pipeline: pipelines[10],
         count: Int(species.body.jointCount)
       )
-      barrier(encoder)
+      barrier(phaseEncoder)
     }
-    try dispatch(encoder, pipeline: pipelines[12], count: 32)
-    barrier(encoder)
+    try phase("body_graph")
+    try dispatch(phaseEncoder, pipeline: pipelines[12], count: 32)
+    barrier(phaseEncoder)
     if species.body.muscleCount > 0 {
+      try phase("muscle_schema")
       try dispatch(
-        encoder,
+        phaseEncoder,
         pipeline: pipelines[13],
         count: Int(species.body.muscleCount)
       )
-      barrier(encoder)
+      barrier(phaseEncoder)
     }
     if let acceptedFastMotorState,
       acceptedFastMotorState.bodySchemaByteCount > 0
     {
+      try phase("fast_body_schema")
       argumentTable.setAddress(
         acceptedFastMotorState.bodySchemaBuffer.gpuAddress,
         index: 7
       )
       try dispatch(
-        encoder,
+        phaseEncoder,
         pipeline: pipelines[7],
         count: acceptedFastMotorState.bodySchemaCount
       )
-      barrier(encoder)
+      barrier(phaseEncoder)
     }
+    try phase("self_model")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[8],
       count: Int(species.body.bodyCount)
     )
-    barrier(encoder)
+    barrier(phaseEncoder)
+    try phase("sensorimotor_world")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[9],
       count: sensorimotorWorldDimension
     )
-    barrier(encoder)
-    try dispatch(encoder, pipeline: pipelines[14], count: affectThreadCount)
-    barrier(encoder)
+    barrier(phaseEncoder)
+    try phase("world_summary")
+    try dispatch(phaseEncoder, pipeline: pipelines[14], count: affectThreadCount)
+    barrier(phaseEncoder)
+    try phase("world_model")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[1],
       count: min(arena.layout.section(.worldModel).elementCount, 128)
     )
-    barrier(encoder)
+    barrier(phaseEncoder)
+    try phase("active_sensing")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[2],
       count: Int(species.motor.activeSensingActionDimension)
     )
-    barrier(encoder)
+    barrier(phaseEncoder)
+    try phase("prediction_error")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[3],
       count: 32
     )
-    barrier(encoder)
+    barrier(phaseEncoder)
+    try phase("cerebellar")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[4],
       count: Int(species.capacities.activeCerebellarExpertCapacity)
     )
+    try phase("plasticity")
     try dispatch(
-      encoder,
+      phaseEncoder,
       pipeline: pipelines[5],
       count: Int(species.capacities.fastPlasticityCapacity)
     )
-    try dispatch(encoder, pipeline: pipelines[6], count: 1)
+    try phase("procedural_trace")
+    try dispatch(phaseEncoder, pipeline: pipelines[6], count: 1)
   }
 
   private func makeUniforms(

@@ -668,8 +668,13 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     targetTimestamp: BrainTimestamp,
     deltaMicroseconds: UInt64,
     receptorEventCapacity: Int,
-    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil
+    regionalRecurrentInput: MetalRegionalRecurrentBufferView? = nil,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws {
+    var encoder = encoder
+    func advance(_ stage: String) throws {
+      if let nextPhase { encoder = try nextPhase(stage) }
+    }
     guard transaction.layoutFingerprint == layoutFingerprint,
       deltaMicroseconds > 0,
       receptorEventCapacity >= 0,
@@ -707,6 +712,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       barrier(encoder)
     }
     // One SIMD32 evaluates the independent interoceptive feature sums.
+    try advance("brain_cognitive_homeostasis")
     try dispatch(
       encoder: encoder,
       pipeline: homeostasisPipeline,
@@ -714,6 +720,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     for (index, record) in worldModelLevelRecords.enumerated() {
+      try advance("brain_cognitive_world_\(index)")
       let worldTable = worldModelArgumentTables[index]
       worldTable.setAddress(hot.outputGPUAddress, index: 0)
       worldTable.setAddress(uniformBuffer.gpuAddress, index: 1)
@@ -731,6 +738,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
       barrier(encoder)
     }
+    try advance("brain_cognitive_curiosity")
     try dispatch(
       encoder: encoder,
       pipeline: curiosityPipeline,
@@ -738,6 +746,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    try advance("brain_cognitive_entity")
     try dispatch(
       encoder: encoder,
       pipeline: entityStatePipeline,
@@ -747,12 +756,14 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
       )
     )
     barrier(encoder)
+    try advance("brain_cognitive_relation")
     try dispatch(
       encoder: encoder,
       pipeline: relationStatePipeline,
       threadCount: arena.layout.section(.relationSlots).elementCount
     )
     barrier(encoder)
+    try advance("brain_cognitive_spatial")
     try dispatch(
       encoder: encoder,
       pipeline: spatialStatePipeline,
@@ -760,24 +771,28 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     argumentTable.setAddress(plasticityParameterGPUAddress, index: 2)
+    try advance("brain_cognitive_plasticity")
     try dispatch(
       encoder: encoder,
       pipeline: fastPlasticityPipeline,
       threadCount: Int(species.capacities.fastPlasticityCapacity)
     )
     barrier(encoder)
+    try advance("brain_cognitive_plasticity_reduce")
     try dispatch(
       encoder: encoder,
       pipeline: regionalPlasticityPipeline,
       threadCount: species.enabledModuleIdentifiers.count
     )
     barrier(encoder)
+    try advance("brain_cognitive_route")
     try dispatch(
       encoder: encoder,
       pipeline: routeActionPipeline,
       threadCount: 1
     )
     barrier(encoder)
+    try advance("brain_cognitive_workspace_clear")
     try dispatch(
       encoder: encoder,
       pipeline: clearWorkspacePipeline,
@@ -785,6 +800,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     argumentTable.setAddress(memoryParameterGPUAddress, index: 2)
+    try advance("brain_cognitive_workspace_merge")
     try dispatch(
       encoder: encoder,
       pipeline: workspaceMergePipeline,
@@ -792,6 +808,7 @@ public final class MetalCognitiveStateRuntime: @unchecked Sendable {
     )
     barrier(encoder)
     argumentTable.setAddress(beliefParameterGPUAddress, index: 2)
+    try advance("brain_cognitive_social")
     try dispatch(
       encoder: encoder,
       pipeline: socialContextPipeline,

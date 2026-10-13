@@ -1460,8 +1460,13 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
   func encodeRetrieval(
     encoder: MetalBrainCommandEncoder,
     transaction: MetalAgentStateTransactionToken,
-    timestamp: BrainTimestamp
+    timestamp: BrainTimestamp,
+    nextPhase: ((String) throws -> MetalBrainCommandEncoder)? = nil
   ) throws {
+    var encoder = encoder
+    func advance(_ stage: String) throws {
+      if let nextPhase { encoder = try nextPhase(stage) }
+    }
     let hot = try arena.hotStateView(transaction: transaction)
     let memory = try arena.persistentMemoryView(transaction: transaction)
     let active = arena.memoryLayout.section(.activeEpisodes)
@@ -1598,6 +1603,7 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     guard beginThreads >= maximumResults else {
       throw TissueError.metal("memory retrieval begin group cannot cover all results")
     }
+    try advance("memory_begin")
     try encoder.dispatch(
       pipeline: retrievalBeginPipeline, argumentTable: argumentTable,
       threadsPerGrid: MTLSize(width: beginThreads, height: 1, depth: 1),
@@ -1617,16 +1623,21 @@ public final class MetalMemoryRuntime: @unchecked Sendable {
     }
     for pass in 0..<maximumResults {
       argumentTable.setAddress(retrievalUniformBuffers[pass].gpuAddress, index: 2)
+      try advance("memory_clear_\(pass)")
       try retrievalDispatch(archiveShortlistClearPipeline, count: 32, slot: 0)
       barrier(encoder)
+      try advance("memory_archive_score_\(pass)")
       try retrievalDispatch(archiveShortlistScorePipeline,
         count: archiveSearchCandidateCount, slot: 1)
       barrier(encoder)
+      try advance("memory_candidate_score_\(pass)")
       try retrievalDispatch(retrievalScorePipeline,
         count: candidateCount, slot: 2)
       barrier(encoder)
+      try advance("memory_rerank_\(pass)")
       try retrievalDispatch(archiveRerankPipeline, count: 32, slot: 3)
       barrier(encoder)
+      try advance("memory_publish_\(pass)")
       try retrievalDispatch(retrievalPublishPipeline, count: 1, slot: 4)
       barrier(encoder)
     }
