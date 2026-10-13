@@ -343,6 +343,9 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     expectedBaseGeneration: UInt64,
     borrowedEncoder: (any MTLComputeCommandEncoder)? = nil
   ) throws -> MetalAgentStateTransactionToken {
+    var hostTrace = NBHostPhaseTrace(step: expectedBaseGeneration,
+      eligible: expectedBaseGeneration < 8)
+    defer { hostTrace.emit() }
     lock.lock()
     defer { lock.unlock() }
     if let borrowedEncoder, borrowedEncoder.device.registryID != device.registryID {
@@ -351,9 +354,11 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
     if arena.committedJournalNeedsConsolidation {
       try consolidateCommittedMemoryJournalLocked()
     }
+    hostTrace.mark("begin_journal_consolidation")
     let transaction = try arena.beginShadow(
       expectedBaseGeneration: expectedBaseGeneration
     )
+    hostTrace.mark("begin_arena_shadow")
     do {
       try writeUniforms(
         baseGeneration: transaction.baseGeneration,
@@ -362,6 +367,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
       )
       let hot = try arena.hotStateView(transaction: transaction)
       let memory = try arena.persistentMemoryView(transaction: transaction)
+      hostTrace.mark("begin_uniforms_and_views")
       let arguments = MetalBrainArgumentTable(beginArguments)
       arguments.setAddress(hot.inputGPUAddress, index: 0)
       arguments.setAddress(hot.outputGPUAddress, index: 1)
@@ -387,6 +393,7 @@ public final class MetalAgentStateRuntime: @unchecked Sendable {
           )
         }
       }
+      hostTrace.mark("begin_shadow_seed")
       return transaction
     } catch {
       try? arena.abort(transaction: transaction)

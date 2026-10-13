@@ -747,6 +747,13 @@ final class MetalBorrowedProtectedMotorTests: XCTestCase {
   }
   func testProfiledBorrowedStagesPreserveCommittedCheckpoint() throws {
     func run(profile: Bool) throws -> (MetalNumiBrainCheckpoint, [String]) {
+      let key = "NUMI_HUMAN_BRAIN_HOST_PROFILE"
+      let original = getenv(key).map { String(cString: $0) }
+      setenv(key, profile ? "1" : "0", 1)
+      defer {
+        if let original { setenv(key, original, 1) }
+        else { unsetenv(key) }
+      }
       let fixture = try makeFixture()
       let root = try begin(fixture)
       let queue = try XCTUnwrap(fixture.device.makeCommandQueue())

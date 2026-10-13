@@ -309,6 +309,8 @@ private final class StandingBridge {
   func encodeMotorDecision(encoder: any MTLComputeCommandEncoder, stepIndex: UInt32,
     receptors: UnsafePointer<NBHumanStandingReceptor>?, count: UInt32,
     nextPhase: ((String) throws -> any MTLComputeCommandEncoder)? = nil) throws {
+    var hostTrace = NBHostPhaseTrace(step: UInt64(stepIndex), eligible: stepIndex < 8)
+    defer { hostTrace.emit() }
     guard pending == nil, stepIndex < UInt32.max,
       UInt64(stepIndex) == brain.committedGeneration,
       UInt64(stepIndex) + 1 <= (UInt64.max - epochMicroseconds) / UInt64(timestepMicroseconds) else {
@@ -317,6 +319,7 @@ private final class StandingBridge {
     let committedTime = epochMicroseconds + UInt64(stepIndex) * UInt64(timestepMicroseconds)
     let targetTime = committedTime + UInt64(timestepMicroseconds)
     let input = try sensors(receptors, count: count, timestamp: committedTime)
+    hostTrace.mark("receptor_leases")
     let transaction = try brain.beginControl(controlStepIdentifier: UInt64(stepIndex) + 1,
       basePhysicsGeneration: UInt64(stepIndex),
       committedTimestamp: .init(microseconds: committedTime),
@@ -324,8 +327,10 @@ private final class StandingBridge {
       cachedDecisionFingerprint: 0x4e554d4900000000 | UInt64(stepIndex + 1),
       borrowedEncoder: encoder)
     pending = transaction
+    hostTrace.mark("begin_control")
     try brain.encodeBorrowedMotorDecision(transaction,
       encoder: encoder, rawSensors: input, nextPhase: nextPhase)
+    hostTrace.mark("borrowed_decision")
   }
 
   /// Diagnostic boundaries remain on the physical owner's command buffer.

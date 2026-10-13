@@ -1200,6 +1200,10 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
     cachedDecisionFingerprint: UInt64,
     borrowedEncoder: (any MTLComputeCommandEncoder)? = nil
   ) throws -> ControlTransaction {
+    let hostStep = controlStepIdentifier > 0 ? controlStepIdentifier - 1 : 0
+    var hostTrace = NBHostPhaseTrace(step: hostStep,
+      eligible: controlStepIdentifier > 0 && controlStepIdentifier <= 8)
+    defer { hostTrace.emit() }
     lock.lock()
     defer { lock.unlock() }
     guard activeTransaction == nil,
@@ -1224,17 +1228,20 @@ public final class MetalNumiBrainRuntime: @unchecked Sendable {
       committedTimestamp: committedTimestamp,
       targetTimestamp: targetTimestamp
     )
+    hostTrace.mark("begin_tissue_root")
     do {
       let cognitiveTransaction = try cognitive.beginControl(
         jointToken: token,
         cachedDecisionFingerprint: cachedDecisionFingerprint,
         borrowedEncoder: borrowedEncoder
       )
+      hostTrace.mark("begin_cognitive_root")
       let transaction = ControlTransaction(
         token: token,
         cognitiveTransaction: cognitiveTransaction
       )
       activeTransaction = transaction
+      hostTrace.mark("begin_root_finish")
       return transaction
     } catch {
       try? fastTissue.abortInteractiveJointControl()
