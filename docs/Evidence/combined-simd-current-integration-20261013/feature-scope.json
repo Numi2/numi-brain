@@ -1,0 +1,78 @@
+{
+  "passed": true,
+  "currentPublishedHead": "a5d7e276d95a5d34aed9802f19bc58093cf31b07",
+  "rows": [
+    {
+      "workspace": "/Users/home/numi-brain-combined-plastic-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift",
+      "originalSnapshotSHA256": "881b8221fbe20b520bc3bce9b16abe7453985fe08a8c62a8171729cd02438bba",
+      "currentSHA256": "98f5b315f5730a4b6d30e1b41d9ff97e4a47f91cd51a275c3c051ef574702843",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-plastic-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalCognitiveStateRuntime.swift",
+      "originalSnapshotSHA256": "e4c37fbbd06d8de1ea0417f5d802feb62d6e1486ac5c706ab184590b4f4065c9",
+      "currentSHA256": "2b1ea539087ddc9c28c3a85f14f6fd6ae145254f28441f2cdef3b4f04c838222",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-plastic-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalDecisionRuntime.swift",
+      "originalSnapshotSHA256": "e7ac18a76d46becd2af43cfdd161956691ecdf22dd1900c36193b6a31f3996ea",
+      "currentSHA256": "71fc04bc4a65ae8fb4ab6f3415eac90ced3ede8d162b5a6d48c69a74277e1e07",
+      "review": "Prototype arbitrary index-selection experiment superseded by the published named three-pipeline routing; motor/other decision arithmetic stays precise. Diagnostic alternatives remain recovery evidence."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-plastic-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalMemoryRuntime.swift",
+      "originalSnapshotSHA256": "d952a34e4e0579367cadd436dc330186058c2f29a6b65f74ec9fb3a0217f5a88",
+      "currentSHA256": "162727dc3ab4d1f7488f30caa350840ed8b12297511f0e1aaaa70774ee3362ce",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-plastic-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalTissueRuntime.swift",
+      "originalSnapshotSHA256": "c33ec7959ddc0322ea1c04ff4e7f6902594100107e8be4662fd287b00fac1184",
+      "currentSHA256": "1d0dc5360106260aefda805599eed6cffbd0db0a83ddfac03fe79103b79fbbe5",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-transition-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalAcceptedConsequenceRuntime.swift",
+      "originalSnapshotSHA256": "881b8221fbe20b520bc3bce9b16abe7453985fe08a8c62a8171729cd02438bba",
+      "currentSHA256": "98f5b315f5730a4b6d30e1b41d9ff97e4a47f91cd51a275c3c051ef574702843",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-transition-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalCognitiveStateRuntime.swift",
+      "originalSnapshotSHA256": "e4c37fbbd06d8de1ea0417f5d802feb62d6e1486ac5c706ab184590b4f4065c9",
+      "currentSHA256": "2b1ea539087ddc9c28c3a85f14f6fd6ae145254f28441f2cdef3b4f04c838222",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-transition-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalDecisionRuntime.swift",
+      "originalSnapshotSHA256": "e7ac18a76d46becd2af43cfdd161956691ecdf22dd1900c36193b6a31f3996ea",
+      "currentSHA256": "71fc04bc4a65ae8fb4ab6f3415eac90ced3ede8d162b5a6d48c69a74277e1e07",
+      "review": "Prototype arbitrary index-selection experiment superseded by the published named three-pipeline routing; motor/other decision arithmetic stays precise. Diagnostic alternatives remain recovery evidence."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-transition-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalMemoryRuntime.swift",
+      "originalSnapshotSHA256": "d952a34e4e0579367cadd436dc330186058c2f29a6b65f74ec9fb3a0217f5a88",
+      "currentSHA256": "162727dc3ab4d1f7488f30caa350840ed8b12297511f0e1aaaa70774ee3362ce",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    },
+    {
+      "workspace": "/Users/home/numi-brain-combined-transition-simd-pilot-20260927",
+      "path": "Sources/NumiBrainMetal/MetalTissueRuntime.swift",
+      "originalSnapshotSHA256": "c33ec7959ddc0322ea1c04ff4e7f6902594100107e8be4662fd287b00fac1184",
+      "currentSHA256": "1d0dc5360106260aefda805599eed6cffbd0db0a83ddfac03fe79103b79fbbe5",
+      "review": "Both changed compile options remain explicitly fast in current owner; later unrelated source evolution preserved."
+    }
+  ],
+  "learningKernelScope": "Complete old combined-plastic kernel body byte identical after one explicitly checked replacement of its UInt64 expression with the current bounded helper. For sample<1024 the small-count product cannot overflow; equal counts return sample; larger counts retain UInt64. Native every-sample bounds oracle verifies equivalence. Combined-transition is the historical subset; current owner also includes plastic reduction. Native source-bound UInt64 oracle and committed learning/replay regressions required separately.",
+  "qualification": "Software feature integration review; historical throughput remains historical, no new speed claim."
+}

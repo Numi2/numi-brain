@@ -1,0 +1,7 @@
+# Integrated SIMD learning feature review
+
+The two preserved combined transition/plastic SIMD proposals are already represented by the current Brain owner. The complete combined-plastic committed-transition kernel body matches after replacing its original UInt64 index expression with the published bounded helper. That helper preserves every sampled index: equal-count identity, nonoverflowing small-count UInt32 arithmetic and UInt64 for larger counts. The native production helper test checks every sample over1218 scalar-count cases, including integer boundaries.
+
+The four fast library compiler settings are retained. The experimental arbitrary decision-pipeline index switch is superseded by the qualified named selection: candidate-option simulation, cerebellar context selection and structured motor goal generation. Other decision and motor arithmetic stays precise. Original diagnostic alternatives remain preserved in recovery; current owned phase and source admission rules stay authoritative.
+
+Three focused native M4 tests pass on source base a5d7e276: production sample index versus UInt64 oracle, committed injury/recovery/reinjury transition factors, and timestamped affect replay across chunked checkpoint restore. The current full shader already includes both SIMD reduction features. This closes integration of the old proposal copies, while keeping the broader performance objective open. Historical matched horizon timing is historical evidence; these tests establish no new speed, five-second throughput, or anatomical/physical qualification.

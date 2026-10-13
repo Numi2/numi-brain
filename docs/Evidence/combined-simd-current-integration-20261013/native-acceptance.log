@@ -1,0 +1,29 @@
+[0/1] Planning build
+Building for debugging...
+[0/29] Write swift-version-3CD7052B146186F2.txt
+Build complete! (1.71s)
+Test Suite 'Selected tests' started at 2026-10-13 18:22:39.717.
+Test Suite 'NumiBrainPackageTests.xctest' started at 2026-10-13 18:22:39.722.
+Test Suite 'MetalAffectReinforcementTransitionTests' started at 2026-10-13 18:22:39.722.
+Test Case '-[NumiBrainMetalTests.MetalAffectReinforcementTransitionTests testCommittedInjuryRecoveryReinjuryKeepsSignedAndPainFactorsSeparate]' started.
+Test Case '-[NumiBrainMetalTests.MetalAffectReinforcementTransitionTests testCommittedInjuryRecoveryReinjuryKeepsSignedAndPainFactorsSeparate]' passed (6.475 seconds).
+Test Suite 'MetalAffectReinforcementTransitionTests' passed at 2026-10-13 18:22:46.197.
+	 Executed 1 test, with 0 failures (0 unexpected) in 6.475 (6.476) seconds
+Test Suite 'MetalAffectReplayChunkingTests' started at 2026-10-13 18:22:46.197.
+Test Case '-[NumiBrainMetalTests.MetalAffectReplayChunkingTests testTimestampedInteroceptionAndNociceptionReplayMatchesChunkedRestore]' started.
+Test Case '-[NumiBrainMetalTests.MetalAffectReplayChunkingTests testTimestampedInteroceptionAndNociceptionReplayMatchesChunkedRestore]' passed (7.367 seconds).
+Test Suite 'MetalAffectReplayChunkingTests' passed at 2026-10-13 18:22:53.564.
+	 Executed 1 test, with 0 failures (0 unexpected) in 7.367 (7.367) seconds
+Test Suite 'MetalCommittedTransitionIndexTests' started at 2026-10-13 18:22:53.564.
+Test Case '-[NumiBrainMetalTests.MetalCommittedTransitionIndexTests testProductionSampleIndexMatchesUInt64OracleAcrossBounds]' started.
+Test Case '-[NumiBrainMetalTests.MetalCommittedTransitionIndexTests testProductionSampleIndexMatchesUInt64OracleAcrossBounds]' passed (0.077 seconds).
+Test Suite 'MetalCommittedTransitionIndexTests' passed at 2026-10-13 18:22:53.641.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.077 (0.077) seconds
+Test Suite 'NumiBrainPackageTests.xctest' passed at 2026-10-13 18:22:53.641.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 13.919 (13.919) seconds
+Test Suite 'Selected tests' passed at 2026-10-13 18:22:53.641.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 13.919 (13.925) seconds
+◇ Test run started.
+↳ Testing Library Version: 1902
+↳ Target Platform: arm64e-apple-macos14.0
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.
