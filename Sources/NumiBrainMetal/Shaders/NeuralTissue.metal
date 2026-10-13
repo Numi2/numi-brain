@@ -1979,6 +1979,21 @@ kernel void copy_regional_route_history_values(
     }
 }
 
+// Select the last prefix offset not greater than an admitted scalar index.
+// Equal offsets represent zero-length due modules and must be skipped.
+// Caller guarantees chunkCount > 0 and workIndex < offsets[chunkCount].
+inline uint nb_regional_scalar_owner(
+    threadgroup const uint* offsets, uint chunkCount, uint workIndex) {
+    uint lower = 0u;
+    uint upper = chunkCount;
+    while (lower + 1u < upper) {
+        const uint middle = (lower + upper) >> 1u;
+        if (workIndex < offsets[middle]) upper = middle;
+        else lower = middle;
+    }
+    return lower;
+}
+
 kernel void advance_due_regional_tokens(
     device const NBRegionalProgramHeaderABI *header [[buffer(0)]],
     device const NBModuleDescriptorABI *modules [[buffer(1)]],
@@ -2460,10 +2475,8 @@ kernel void advance_due_regional_tokens(
             for (uint workIndex = lane;
                  workIndex < activeScalarOffsets[chunkCount];
                  workIndex += laneCount) {
-                uint localInvocation = 0u;
-                while (workIndex >= activeScalarOffsets[localInvocation + 1u]) {
-                    localInvocation += 1u;
-                }
+                const uint localInvocation = nb_regional_scalar_owner(
+                    activeScalarOffsets, chunkCount, workIndex);
                 const uint moduleIndex = activeModuleIndices[localInvocation];
                 const NBRegionalTokenLayoutABI layout = layouts[moduleIndex];
                 const NBRegionalMaturationRecordABI maturationRecord =
