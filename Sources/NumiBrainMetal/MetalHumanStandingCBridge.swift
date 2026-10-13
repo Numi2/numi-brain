@@ -234,6 +234,18 @@ private final class StandingBridge {
         "standing joint-path program requires the version 3 prepared physical source")
     }
     try program.validate(template: template)
+    // The launcher owns a fresh output directory. Export the actual admitted
+    // immutable program so generated baselines have the same replay identity
+    // as externally supplied programs, without reconstructing it in the host.
+    if let path = ProcessInfo.processInfo.environment["NUMI_HUMAN_BRAIN_PROGRAM_EXPORT"],
+      !path.isEmpty {
+      guard !FileManager.default.fileExists(atPath: path) else {
+        throw BrainRuntimeError.invalidDescriptor("standing program export already exists")
+      }
+      let encoder = JSONEncoder()
+      encoder.outputFormatting = [.sortedKeys]
+      try encoder.encode(program).write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
     // The program is immutable for this standing participant. Its canonical
     // fingerprint walks all 416 channels, so compute it at creation rather
     // than on every accepted-step ABI receipt.
