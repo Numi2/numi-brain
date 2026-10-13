@@ -178,7 +178,14 @@ struct StandingSource: Decodable {
           referenceLengthMeters: channel.referenceLengthMeters,
           tonicExcitation: channel.tonicExcitation, lengthGain: 0,
           velocityGainSeconds: 0, maximumExcitation: 1)
-      })
+      },
+      // Exporting the exact version-3 native joint calibration explicitly
+      // selects the existing frozen joint-path controller. This avoids a
+      // circular bootstrap requiring a program hash before source export.
+      // Version-1/2 sources retain their original tonic program and identity.
+      jointPathFeedback: jointPathCalibration == nil ? nil :
+        MuscleJointPathFeedbackProgram(lengthGain: 10,
+          velocityGainSeconds: 1, maximumCorrection: 0.2))
   }
 }
 

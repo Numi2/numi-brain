@@ -102,9 +102,11 @@ final class StandingSourceSupportAdmissionTests: XCTestCase {
       newTemplate.sensoryProfile.fingerprint)
     XCTAssertThrowsError(try retainedProgram.validate(template: newTemplate))
     XCTAssertThrowsError(try currentLegacyProgram.validate(template: newTemplate))
-    XCTAssertNoThrow(try newSource.baseline(template: newTemplate,
+    let tonic = newSource.baseline(template: newTemplate,
       sourceHash: newSourceHash, epochMicroseconds: 1_000)
-      .validate(template: newTemplate))
+    XCTAssertEqual(tonic.version, 1)
+    XCTAssertNil(tonic.jointPathFeedback)
+    XCTAssertNoThrow(try tonic.validate(template: newTemplate))
   }
 
   func testMalformedOrDuplicateNativeSupportMappingFailsClosed() throws {
@@ -170,7 +172,17 @@ final class StandingSourceSupportAdmissionTests: XCTestCase {
     let prepared = try decode(source)
     XCTAssertEqual(prepared.version, 3)
     XCTAssertNotNil(prepared.jointPathCalibration)
-    XCTAssertNoThrow(try prepared.compile(latencyMicroseconds: 1_000))
+    let template = try prepared.compile(latencyMicroseconds: 1_000)
+    let program = prepared.baseline(template: template,
+      sourceHash: String(repeating: "a", count: 64), epochMicroseconds: 1_000)
+    XCTAssertEqual(program.version, 4)
+    XCTAssertNoThrow(try program.validate(template: template),
+      "a prepared version-3 source must bootstrap its frozen controller without an external program")
+    XCTAssertEqual(program.jointPathFeedback?.lengthGain, 10)
+    XCTAssertEqual(program.jointPathFeedback?.velocityGainSeconds, 1)
+    XCTAssertEqual(program.jointPathFeedback?.maximumCorrection, 0.2)
+    XCTAssertEqual(program.channels.map(\.tonicExcitation),
+      prepared.channels.map(\.tonicExcitation), "preserve every prepared muscle recruitment")
 
     source.removeValue(forKey: "jointPathCalibration")
     XCTAssertThrowsError(try decode(source).compile(latencyMicroseconds: 1_000))
