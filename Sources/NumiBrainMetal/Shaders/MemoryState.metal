@@ -5017,6 +5017,16 @@ kernel void consolidate_lived_memory_during_rest(
   }
 }
 
+// Called only for sample < sample_count, with 1 <= sample_count <= 1024.
+// The bounded product fits uint; larger modalities keep the original ulong fold.
+inline uint nb_committed_transition_sample_index(
+    uint sample, uint scalar_count, uint sample_count) {
+  return scalar_count == sample_count ? sample
+    : scalar_count < (1u << 22u)
+      ? (sample * scalar_count) / sample_count
+      : uint((ulong(sample) * ulong(scalar_count)) / ulong(sample_count));
+}
+
 /// Emits exactly one compressed learning transition for an accepted root.
 /// The journal makes the record visible only after joint brain-physics commit;
 /// rejected trajectories therefore cannot enter replay or slow learning.
@@ -5109,8 +5119,8 @@ kernel void journal_committed_learning_transition(
       uint valid = 0u;
       float signed_terms[3] = {};
       if (sample < sample_count) {
-        const uint local_index = uint(
-          (ulong(sample) * ulong(scalar_count)) / ulong(sample_count)
+        const uint local_index = nb_committed_transition_sample_index(
+          sample, scalar_count, sample_count
         );
         const uint observation_index = scalar_offset + local_index;
         if (observation_validity[observation_index] != 0u) {
