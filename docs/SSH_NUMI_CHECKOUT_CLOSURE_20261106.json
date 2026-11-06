@@ -1,0 +1,50 @@
+{
+  "url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-index.tar.zst",
+  "sha256": "1caa65d86cf6debb6a94b3a03276b8adf9965b939f11295cfe3a387ca92c58c3",
+  "bytes": 3248,
+  "manifest_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-index.json",
+  "verification_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-index-verification.json",
+  "inventory_member": "Users/numi/Work/checkout-closure-20261106/owners/numi-brain/checkpoint-inventory.json",
+  "inventory_sha256": "c13fabcfc4a1617e3c5fee0dd39c99a4b7130a57bf8fb3b607bab009eba98af4",
+  "statistics": {
+    "physical_registered_locations": 2,
+    "dirty_existing_checkouts": 0,
+    "missing_registered_locations": 1,
+    "changed_and_untracked_file_paths": 0,
+    "hosted_human_artifact_paths": 0,
+    "checkpoint_metadata_files": 16
+  },
+  "payload_archives": [
+    {
+      "owner": "Numi2/numi-brain",
+      "asset": "numi-brain-ssh-numi-20261106-01.tar.zst",
+      "sha256": "8c48c3df9d3da144a0bc1dc93f9a2494b4579147fe1650bdd31fcf820611dfa6",
+      "bytes": 63819,
+      "url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-01.tar.zst",
+      "manifest_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-01.json",
+      "verification_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-numi-checkpoints-20261106/numi-brain-ssh-numi-20261106-01-verification.json",
+      "files": 12,
+      "raw_bytes": 183518
+    }
+  ],
+  "bundle_status": "ALL_REACHABLE_SOURCE_OBJECTS_ALREADY_ON_VERIFIED_MAIN",
+  "verified_main_before_closure": "64593a771ce586ebe86adcf612cb30caf6b167ab",
+  "owner": "Numi2/numi-brain",
+  "release": "https://github.com/Numi2/numi-brain/releases/tag/ssh-numi-checkpoints-20261106",
+  "status": "ARCHIVE_ONLY_UNVALIDATED_CHANGES_NOT_MERGED",
+  "source_freeze_verification": {
+    "status": "PASS_UNCHANGED_SOURCE_HEADS_INDEX_STATUS_REFS_FILES_SYMLINKS",
+    "utc": "2026-11-06T21:01:42.204549+00:00",
+    "physical_registered_locations": 89,
+    "file_paths_checked": 40082,
+    "same_hash_with_changed_stat": 0,
+    "symlink_paths_checked": 1193,
+    "originals_retained": true
+  },
+  "originals_retained": true,
+  "publication_parent": "64593a771ce586ebe86adcf612cb30caf6b167ab",
+  "documentation_paths": [
+    "docs/SSH_NUMI_CHECKOUT_CLOSURE_20261106.md",
+    "docs/SSH_NUMI_CHECKOUT_CLOSURE_20261106.json"
+  ]
+}
