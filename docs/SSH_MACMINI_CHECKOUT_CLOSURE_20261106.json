@@ -1,0 +1,50 @@
+{
+  "url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-index.tar.zst",
+  "sha256": "947d42682a6bb6a82b19d9142b65b4207902820ca04b0a359dd0217277a63b1c",
+  "bytes": 6453,
+  "manifest_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-index.json",
+  "verification_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-index-verification.json",
+  "inventory_member": "Users/n/checkout-closure-20261106/owners/numi-brain/checkpoint-inventory.json",
+  "inventory_sha256": "b1839b5c6eb7e8fb745c21162122667ac06ff37a8fb874d1214e28d542abb37a",
+  "statistics": {
+    "physical_registered_locations": 5,
+    "dirty_existing_checkouts": 1,
+    "missing_registered_locations": 0,
+    "changed_and_untracked_file_paths": 2,
+    "hosted_human_artifact_paths": 0,
+    "checkpoint_metadata_files": 54
+  },
+  "payload_archives": [
+    {
+      "owner": "Numi2/numi-brain",
+      "asset": "numi-brain-ssh-macmini-20261106-01.tar.zst",
+      "sha256": "eb0df9439fef3e5fdac2028465f8d53885ab96ee6b162337c08b27b100fca559",
+      "bytes": 142327,
+      "url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-01.tar.zst",
+      "manifest_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-01.json",
+      "verification_url": "https://github.com/Numi2/numi-brain/releases/download/ssh-macmini-checkpoints-20261106/numi-brain-ssh-macmini-20261106-01-verification.json",
+      "files": 36,
+      "raw_bytes": 1009484
+    }
+  ],
+  "bundle_status": "ALL_REACHABLE_SOURCE_OBJECTS_ALREADY_ON_VERIFIED_MAIN",
+  "verified_main_before_closure": "75a7f24a54477f7d021c3a0615f7055b6dae41af",
+  "owner": "Numi2/numi-brain",
+  "release": "https://github.com/Numi2/numi-brain/releases/tag/ssh-macmini-checkpoints-20261106",
+  "status": "ARCHIVE_ONLY_UNVALIDATED_CHANGES_NOT_MERGED",
+  "source_freeze_verification": {
+    "status": "PASS_UNCHANGED_SOURCE_HEADS_INDEX_STATUS_REFS_FILES_SYMLINKS",
+    "utc": "2026-11-06T21:18:38.843482+00:00",
+    "physical_registered_locations": 123,
+    "file_paths_checked": 648,
+    "same_hash_with_changed_stat": 0,
+    "symlink_paths_checked": 0,
+    "originals_retained": true
+  },
+  "originals_retained": true,
+  "publication_parent": "75a7f24a54477f7d021c3a0615f7055b6dae41af",
+  "documentation_paths": [
+    "docs/SSH_MACMINI_CHECKOUT_CLOSURE_20261106.md",
+    "docs/SSH_MACMINI_CHECKOUT_CLOSURE_20261106.json"
+  ]
+}
