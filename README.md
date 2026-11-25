@@ -29,6 +29,8 @@ root protocol accepts them together. Rejection restores the prior physical and
 neural reality; acceptance publishes one complete Brain + physics + sensor
 generation.
 
+[Numi Lab branch history and recovery](docs/NumiLabMigration/README.md)
+
 ## Why this architecture matters
 
 Most embodied-AI stacks connect a policy to a simulator through a sequence of
